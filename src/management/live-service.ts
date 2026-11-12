@@ -98,6 +98,8 @@ export function createLiveWorkspaceManagementService(
   const identity = options.identity ?? getIdentityStore(env);
   const config = overrides.config ?? getConfigStore(env);
   const slackCredentials = options.slackCredentials ?? getSlackCredentialDependencies(env);
+  const scheduleThreads = async () =>
+    (await import('./schedule-threads-live.ts')).liveScheduleThreads(env, config as ConfigStore, settings, slackCredentials);
   const slackTransport = async (workspaceId: string): Promise<SlackTransport> => {
     const installation = await config.getWorkspaceInstallation(workspaceId);
     if (!installation || installation.health === 'revoked') {
@@ -490,6 +492,11 @@ export function createLiveWorkspaceManagementService(
       work: () => getWorkStore(env),
       routines: () => getRoutineStore(env),
     }),
+    directScheduleThreads: {
+      open: async (input) => (await scheduleThreads()).open(input),
+      start: async (input) => (await scheduleThreads()).start(input),
+      withdraw: async (input) => (await scheduleThreads()).withdraw(input),
+    },
     ...agentAvatarInstallationField(env),
     ...overrides,
   });

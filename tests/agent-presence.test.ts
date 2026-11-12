@@ -24,6 +24,8 @@ import {
 } from '../src/slack/agent-presence/handles.ts';
 import { agentPresenceAnnouncements } from '../src/slack/agent-presence/announcements.ts';
 import { type AgentAppPresenceHooks, AgentPresenceReconciler } from '../src/slack/agent-presence/reconciler.ts';
+import { resolveAgentRoute } from '../src/slack/agent-routing.ts';
+import { turnRequiresOwnedThread } from '../src/channels/slack.ts';
 import {
   SlackTransportError,
   type SlackTransport,
@@ -1145,6 +1147,47 @@ test('publishing into a public Channel posts one top-level welcome under the Age
       post!.idempotencyKey,
       `agent-channel-welcome:TACME:C_SUPPORT:agent_support:${result.grant.revision}`,
     );
+  } finally {
+    config.close();
+  }
+});
+
+test('an unmentioned reply under an Agent\'s Channel welcome reaches that Agent, which reads the welcome as its own', async () => {
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const transport = new FakeSlackTransport();
+  try {
+    const chickpea = await config.materializeChickpeaAgent();
+    await config.ensureWorkspaceInstallation({
+      workspaceId: 'TACME', transportMode: 'direct', defaultAgentId: chickpea.id, runtimeContract: 'chickpea-v1',
+    });
+    await config.createAgent(agent('agent_support', 'Support', 'help'));
+    await new AgentPresenceReconciler({ config, transport, announce: announcing(transport) }).publish(PUBLISH_SUPPORT);
+    const welcomeTs = '1800000000.000001';
+    assert.equal(transport.posts.length, 1);
+
+    const reply = {
+      workspaceId: 'TACME', channelId: 'C_SUPPORT', eventId: 'Ev_REPLY', text: 'How are tickets trending this month?',
+      userId: 'UADA', messageTs: '1800000000.000002', threadTs: welcomeTs,
+      source: 'implicit_thread_reply', channelType: 'channel', contextMode: 'thread',
+    } as const;
+    assert.equal(turnRequiresOwnedThread(reply), true);
+    assert.equal((await config.getAgentThreadRoute('TACME', 'C_SUPPORT', welcomeTs))?.agentId, 'agent_support',
+      'the welcome thread is the Agent\'s, so the reply passes the owned-thread gate');
+    const routed = await resolveAgentRoute({
+      turn: reply,
+      surface: 'channel',
+      actor: { channelMember: true, fullMember: true },
+      config,
+      authorizeUserAgent: async () => ({ status: 'allowed', audience: 'workspace_members' }),
+    });
+    assert.equal(routed.kind, 'routed');
+    if (routed.kind !== 'routed') return;
+    assert.equal(routed.assignment.agentId, 'agent_support');
+    assert.equal(routed.source, 'thread_owner');
+    const record = await config.listSlackPublicContext('TACME', 'C_SUPPORT', welcomeTs);
+    assert.deepEqual(record.map(({ role, agentId, messageTs }) => ({ role, agentId, messageTs })),
+      [{ role: 'agent', agentId: 'agent_support', messageTs: welcomeTs }]);
+    assert.match(record[0]!.text, /^Hi, I’m \*Support\*\./);
   } finally {
     config.close();
   }

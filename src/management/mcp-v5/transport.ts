@@ -10,6 +10,15 @@ import {
 
 import { cardRefusal, withRefusalOutput } from './card-host.ts';
 import { mcpErrorResult, type McpToolError } from './conventions.ts';
+import {
+  REMOVED_RESOURCE_MESSAGE,
+  removedPrompt,
+  removedPromptMessage,
+  removedResource,
+  removedTool,
+  removedToolResult,
+  type RemovedToolName,
+} from './removed-v4.ts';
 
 /** On a card session, the tools whose refusals are results (tools.ts `cardReceives`). */
 export interface CardRefusals {
@@ -26,42 +35,50 @@ const NO_CARDS: CardRefusals = { session: () => false, tools: new Set() };
  *
  * - `tools/list` emits a fixed descriptor field set, so a tool's top-level
  *   `securitySchemes` (OpenAI's primary placement) is copied from the
- *   `_meta.securitySchemes` mirror the tool registers. Only 5.0 tools carry it.
+ *   `_meta.securitySchemes` mirror the tool registers.
  * - An error the SDK makes itself (input validation, a failed output check)
  *   is plain text. For a 5.0 tool it becomes the 5.0 error shape, so every
- *   error from these tools carries `structuredContent.error`. A 4.x tool's
- *   result passes through untouched.
+ *   error from these tools carries `structuredContent.error`.
  * - On a card session, a refusal from a tool a card receives becomes a
  *   result (`cardRefusal`), and that tool's listed output schema names the
  *   refusal too. The SDK checks a result against its tool's own schema
  *   before it gets here, so the refusal leaves the tool as an error.
- * - A card host's hidden 4.x tool is not found in the 5.0 error shape. The
- *   SDK answers with a protocol error, which carries no `resultType`, and a
- *   2026-07-28 client rejects a result without one, so a request that names
- *   its revision gets it here. It stays an error on a card session too.
+ * - A call of a tool, prompt or resource 5.0.0 removed gets an answer that
+ *   names its replacement (removed-v4.ts), for every client. The SDK answers
+ *   each with a protocol error, since none is registered. A tool's becomes an
+ *   error result, which a client passes to its model; it carries the
+ *   `resultType` a 2026-07-28 client requires, when the request names its
+ *   revision, and stays an error on a card session too. A prompt's or
+ *   resource's keeps its code and gets a message saying what replaced it. The
+ *   server keeps an empty prompts capability (mcp.ts), so both arrive in-band.
  */
 export function shapeFiveZeroResults(
   transport: Transport,
   toolNames: ReadonlySet<string>,
   cards: CardRefusals = NO_CARDS,
-  hiddenToolNames?: ReadonlySet<string>,
 ): void {
   const toolLists = new Set<RequestId>();
   const fiveZeroCalls = new Map<RequestId, string>();
-  /** Each hidden call, and whether its request names its revision (2026-07-28 on). */
-  const hiddenCalls = new Map<RequestId, boolean>();
+  const removed = new Map<RequestId, Removed>();
   const onmessage = transport.onmessage;
   transport.onmessage = (message, extra) => {
     try {
       if (isJSONRPCRequest(message)) {
         if (message.method === 'tools/list') toolLists.add(message.id);
-        const name = (message.params as { name?: unknown } | undefined)?.name;
+        const params = message.params as { name?: unknown; uri?: unknown; _meta?: unknown } | undefined;
+        const name = params?.name;
         if (message.method === 'tools/call' && typeof name === 'string' && toolNames.has(name)) {
           fiveZeroCalls.set(message.id, name);
         }
-        if (message.method === 'tools/call' && typeof name === 'string' && hiddenToolNames?.has(name)) {
-          const meta = (message.params as { _meta?: unknown } | undefined)?._meta;
-          hiddenCalls.set(message.id, typeof meta === 'object' && meta !== null && PROTOCOL_VERSION_META_KEY in meta);
+        if (message.method === 'tools/call' && typeof name === 'string' && removedTool(name)) {
+          const meta = params?._meta;
+          removed.set(message.id, { tool: name, namesRevision: typeof meta === 'object' && meta !== null && PROTOCOL_VERSION_META_KEY in meta });
+        }
+        if (message.method === 'prompts/get' && typeof name === 'string' && removedPrompt(name)) {
+          removed.set(message.id, { message: removedPromptMessage(name) });
+        }
+        if (message.method === 'resources/read' && typeof params?.uri === 'string' && removedResource(params.uri)) {
+          removed.set(message.id, { message: REMOVED_RESOURCE_MESSAGE });
         }
       }
     } catch {
@@ -74,18 +91,16 @@ export function shapeFiveZeroResults(
 
   function shaped(message: JSONRPCMessage): JSONRPCMessage {
     if (!(isJSONRPCResultResponse(message) || isJSONRPCErrorResponse(message)) || message.id === undefined) return message;
-    const namesRevision = hiddenCalls.get(message.id);
-    hiddenCalls.delete(message.id);
-    if (namesRevision !== undefined && isJSONRPCErrorResponse(message)) {
-      return { jsonrpc: '2.0', id: message.id, result: {
-        ...mcpErrorResult({
-          code: 'not_found',
-          message: 'That tool is not available.',
-          retryable: false,
-          nextStep: 'Call tools/list to see the available tools.',
-        }),
-        ...namesRevision ? { resultType: 'complete' } : {},
-      } };
+    const answer = removed.get(message.id);
+    removed.delete(message.id);
+    if (answer !== undefined && isJSONRPCErrorResponse(message)) {
+      if ('tool' in answer) {
+        return { jsonrpc: '2.0', id: message.id, result: {
+          ...removedToolResult(answer.tool),
+          ...answer.namesRevision ? { resultType: 'complete' } : {},
+        } };
+      }
+      return { jsonrpc: '2.0', id: message.id, error: { code: message.error.code, message: answer.message } };
     }
     if (!isJSONRPCResultResponse(message)) return message;
     if (toolLists.delete(message.id)) return listed(message, cards.session() ? cards.tools : NO_CARDS.tools);
@@ -96,6 +111,9 @@ export function shapeFiveZeroResults(
     return cards.session() && cards.tools.has(tool) ? asResult(result) : result;
   }
 }
+
+/** A request for something 5.0.0 removed, and how to answer it. */
+type Removed = { tool: RemovedToolName; namesRevision: boolean } | { message: string };
 
 type ResultResponse = Extract<JSONRPCMessage, { result: unknown }>;
 

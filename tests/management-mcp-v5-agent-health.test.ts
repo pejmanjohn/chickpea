@@ -533,6 +533,30 @@ test('check_agent reports a custom connection it could not test as unknown, neve
   }
 });
 
+test('check_agent reports an id two connections share as unknown, in words a 5.0 client can act on', async (t) => {
+  const { f, teamId, call, tested } = await harness(t, 'shared-id');
+  await seedOps(f, teamId);
+  // An API connection with the Docs MCP server's provider id: both rows are `docs`.
+  await f.config.putConnectionAccount({
+    id: 'connection_docs_api', providerId: 'docs', label: 'Docs API', lifecycle: 'ready', ownerKind: 'team',
+    workspaceId: teamId, createdByMembershipId: f.owner.membership.id, secretRefId: 'secret_connection_docs_api',
+    policy: {
+      kind: 'api', allowedHosts: ['api.docs.example'], pathPrefixes: ['/v1/'], headerName: 'Authorization',
+      allowedMethods: ['GET'], authMode: 'credential',
+    },
+  } as never, 0);
+  await f.config.putAgentConnectionBinding({
+    agentId: 'agent_ops', connectionAccountId: 'connection_docs_api', providerId: 'docs', allowedCapabilities: [], enabled: true,
+  });
+  const shared = part(await check(call, { agentId: 'agent_ops' }), 'connection').filter(({ connectionId }) => connectionId === 'docs');
+  assert.deepEqual(shared.map(({ name }) => name).sort(), ['Docs API', 'Docs MCP']);
+  assert.equal(tested.includes('docs'), false, 'nothing was sent for an id that names two connections');
+  for (const row of shared) {
+    assert.equal(row.status, 'unknown', row.name);
+    assert.match(row.detail, /^More than one connection uses docs, so Chickpea could not tell which one to test\./, row.name);
+  }
+});
+
 test('check_agent reports Slack presence and each Channel grant', async (t) => {
   const { f, teamId, call } = await harness(t, 'slack');
   await seedOps(f, teamId, { slackPresence: { ...PRESENCE, health: 'needs_attention', errorCode: 'handle_collision' } });

@@ -242,9 +242,14 @@ export type ManagementOperation =
       requiredConnectionAccountIds?: string[];
       agentId: string;
       workspaceId: string;
-      /** Required for Channel work. Direct work resolves only from trusted Slack origin. */
+      /** Required for Channel work. Direct work resolves only from trusted Slack origin, or the signed-in MCP caller. */
       channelId?: string;
-      destination?: { kind: 'current_dm_thread' | 'current_channel_thread' };
+      /**
+       * `initiator_dm`: a new thread in the MCP caller's own DM with Chickpea.
+       * Only 5.0 `save_schedule` builds it; the Slack door's operation
+       * schema never accepts it.
+       */
+      destination?: { kind: 'current_dm_thread' | 'current_channel_thread' | 'initiator_dm' };
       routineId?: string;
       expectedVersion?: number;
       name: string;
@@ -1327,7 +1332,6 @@ export interface ProposeWorkspaceChangesResult {
   };
   preview: ManagementChangeSetPreview;
   presentation: ManagementPresentation;
-  confirmationTool: 'confirm_workspace_change';
 }
 
 export interface ProposeSkillImportInput {
@@ -1654,6 +1658,8 @@ export class ManagementError extends Error {
       | 'routines_unavailable_on_target'
       | 'schedule_authority_missing'
       | 'slack_unavailable'
+      /** Slack refused for a reason that stays until someone changes it, so a retry cannot work. */
+      | 'slack_refused'
       | 'mcp_client_not_found'
       | 'key_rejected'
       | 'key_unconfirmed'

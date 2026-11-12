@@ -1,11 +1,13 @@
 import type { z } from 'zod';
 
-import { CHICKPEA_AGENT_ID } from '../../config/agent-id.ts';
+import { AGENT_ID_PATTERN, CHICKPEA_AGENT_ID } from '../../config/agent-id.ts';
 import { isMcpToolReviewRequired } from '../../config/mcp-access.ts';
 import { mcpToolDeclaredRead } from '../../config/mcp-tool-policy.ts';
 import { resolveConnectorCatalogPreset } from '../../config/presets.ts';
 import type { PlatformEnv } from '../../config/state-backend.ts';
-import type { CustomAgentConfig, McpConnectionConfig } from '../../config/types.ts';
+import type { GithubConnection } from '../../config/github-app.ts';
+import type { CustomAgentConfig, McpConnectionConfig, RepositoryGrant } from '../../config/types.ts';
+import { decodeBase64Url, encodeBase64Url } from '../../security/base64url.ts';
 import { agentAvatarInstallation, sameOriginAgentAvatarUrl } from '../../slack/agent-presence/avatar-assets.ts';
 import {
   ADMIN_PATH,
@@ -35,6 +37,7 @@ import {
 } from '../types.ts';
 import { accountProfileId, fail, versionToken } from './conventions.ts';
 import type * as schemas from './schemas.ts';
+import { withSkillText } from './skill-text.ts';
 
 /** What every 5.0 tool reads with: the service, the caller, and this deployment. */
 export interface FiveZeroDeps {
@@ -101,34 +104,75 @@ const LISTED_DESCRIPTION_CHARS = 100;
 
 /**
  * The Agents the caller can use, archived ones only when asked, each as a
- * list needs it: get_agent has the rest. One page stays inside the budget;
- * `nextCursor` is where the next starts.
+ * list needs it: get_agent has the rest. One page stays inside the budget.
+ * The ones the caller can edit come first, then shared ones, each group in
+ * agentId order, and `nextCursor` names the last one listed, so an Agent
+ * created or archived between pages never moves another one.
  */
 export async function listAgents(
   deps: FiveZeroDeps,
   input: Out<typeof schemas.listAgentsInput>,
 ): Promise<Out<typeof schemas.listAgentsOutput>> {
-  const { snapshot } = await readWorkspace(deps);
+  const after = input.cursor === undefined ? undefined : cursorPlace(input.cursor);
+  const { context, snapshot } = await readWorkspace(deps);
   const mine = new Set(snapshot.agents
     .filter(({ creatorMembershipId }) => creatorMembershipId === snapshot.caller.membershipId)
     .map(({ id }) => id));
-  const rows = agentRows(snapshot).filter(({ agentId, status }) =>
-    (input.include !== 'mine' || mine.has(agentId)) && (input.includeArchived === true || status !== 'archived'));
-  const from = Number(input.cursor ?? 0);
+  const github = snapshot.agents.some(({ repositories }) => repositories.some(({ enabled }) => enabled))
+    ? await deps.service.githubConnection(context)
+    : undefined;
+  const rows = agentRows(snapshot, github)
+    .filter((row) => (after === undefined || listOrder(row, after) > 0) &&
+      (input.include !== 'mine' || mine.has(row.agentId)) && (input.includeArchived === true || row.status !== 'archived'))
+    .sort(listOrder);
   const page = (count: number): Out<typeof schemas.listAgentsOutput> => ({
-    agents: rows.slice(from, from + count),
+    agents: rows.slice(0, count),
     canCreate: true,
-    ...(from + count < rows.length ? { nextCursor: String(from + count) } : {}),
+    ...(count < rows.length ? { nextCursor: agentsCursor(rows[count - 1]!) } : {}),
   });
   // The text block is the same JSON, so a page counts twice.
   const fits = (count: number) => 2 * JSON.stringify(page(count)).length <= LIST_AGENTS_BUDGET_CHARS;
-  let count = Math.min(1, Math.max(0, rows.length - from));
-  while (from + count < rows.length && fits(count + 1)) count += 1;
+  let count = Math.min(1, rows.length);
+  while (count < rows.length && fits(count + 1)) count += 1;
   return page(count);
 }
 
+/** Where an Agent stands in the list: its group, then its ID. */
+type ListPlace = Pick<AgentRow, 'agentId' | 'canEdit'>;
+
+function listOrder(left: ListPlace, right: ListPlace): number {
+  if (left.canEdit !== right.canEdit) return left.canEdit ? -1 : 1;
+  return left.agentId < right.agentId ? -1 : left.agentId > right.agentId ? 1 : 0;
+}
+
+const AGENTS_CURSOR_PREFIX = 'after1_';
+
+function agentsCursor({ agentId, canEdit }: ListPlace): string {
+  return `${AGENTS_CURSOR_PREFIX}${encodeBase64Url(new TextEncoder().encode(`${canEdit ? 'e' : 's'}:${agentId}`))}`;
+}
+
+/** The place a cursor names. Anything else, such as an offset an earlier Chickpea gave, is refused. */
+function cursorPlace(cursor: string): ListPlace {
+  let place: string | undefined;
+  if (cursor.startsWith(AGENTS_CURSOR_PREFIX)) {
+    try {
+      place = new TextDecoder('utf-8', { fatal: true }).decode(decodeBase64Url(cursor.slice(AGENTS_CURSOR_PREFIX.length)));
+    } catch {
+      place = undefined;
+    }
+  }
+  const group = place?.slice(0, 2);
+  const agentId = place?.slice(2);
+  if ((group === 'e:' || group === 's:') && agentId !== undefined && AGENT_ID_PATTERN.test(agentId)) {
+    return { agentId, canEdit: group === 'e:' };
+  }
+  return fail('invalid_input', 'Chickpea can\'t continue the list from that cursor.', {
+    nextStep: 'Call list_agents without a cursor to start again from the first page.',
+  });
+}
+
 /** Every Agent the caller can use: the ones they can edit, then shared ones they cannot. */
-function agentRows(snapshot: ManagementWorkspaceSnapshot): AgentRow[] {
+function agentRows(snapshot: ManagementWorkspaceSnapshot, github?: GithubConnection): AgentRow[] {
   const editable = snapshot.agents.map((agent): AgentRow => {
     const handle = agentHandle(agent);
     const description = agent.description?.replace(/\s+/g, ' ').trim();
@@ -139,7 +183,7 @@ function agentRows(snapshot: ManagementWorkspaceSnapshot): AgentRow[] {
       ...(description ? { description: shortDescription(description) } : {}),
       status: agentStatus(agent),
       canEdit: true,
-      needsAttention: needsAttention(agent),
+      needsAttention: needsAttention(agent, github),
     };
   });
   const listed = new Set(editable.map(({ agentId }) => agentId));
@@ -183,15 +227,60 @@ export function agentLinks(baseUrl: string | undefined, agentId: string, slack: 
   return { admin: `${origin}${ADMIN_PATH}/agents/${encodeURIComponent(agentId)}`, ...(slack ? { slack } : {}) };
 }
 
-/** Plain reasons, the way Admin's Agent page would say them. */
-function needsAttention(agent: SnapshotAgent): string[] {
+/**
+ * Plain reasons, the way Admin's Agent page would say them: each problem
+ * check_agent finds from stored state alone. `github` is the stored GitHub
+ * connection, read only when some Agent has a repository.
+ */
+function needsAttention(agent: SnapshotAgent, github: GithubConnection | undefined): string[] {
   const reasons: string[] = [];
-  if (agent.slackPresence?.health === 'needs_attention') reasons.push(presenceProblem(agent.slackPresence.errorCode));
+  const presence = agent.slackPresence;
+  if (presence?.health === 'needs_attention') reasons.push(presenceProblem(presence.errorCode));
+  // An Agent that is off or archived leaves Slack on purpose.
+  if (agentStatus(agent) === 'on' && notInSlack(presence)) reasons.push(NOT_IN_SLACK);
   for (const connection of connectionRows(agent)) {
     if (connection.status === 'needs_attention') reasons.push(`${connection.name} needs to be reconnected.`);
     if (connection.status === 'waiting_for_setup') reasons.push(`${connection.name} is waiting for its setup to finish.`);
   }
+  if (github) reasons.push(...repositoryProblems(agent.repositories, github).map(({ detail }) => detail));
   return reasons;
+}
+
+export const NOT_IN_SLACK = 'It is not in Slack yet, so no one can mention it.';
+
+type Presence = NonNullable<SnapshotAgent['slackPresence']>;
+
+export function notInSlack(presence: Presence | undefined): presence is undefined | (Presence & { health: 'unpublished' }) {
+  return !presence || presence.health === 'unpublished';
+}
+
+export type RepositoryProblem =
+  | { kind: 'github_not_connected'; detail: string }
+  | { kind: 'app_not_installed' | 'access_suspended'; grant: RepositoryGrant; detail: string };
+
+/**
+ * What keeps an Agent from its enabled repositories, by the stored GitHub
+ * connection: no GitHub at all, or each repository whose account the App
+ * isn't installed on or whose access is suspended. Empty when nothing does.
+ */
+export function repositoryProblems(repositories: readonly RepositoryGrant[], github: GithubConnection): RepositoryProblem[] {
+  const granted = repositories.filter(({ enabled }) => enabled);
+  if (granted.length === 0) return [];
+  if (github.mode === 'none') {
+    return [{ kind: 'github_not_connected', detail: 'GitHub is not connected to Chickpea, so it cannot reach its repositories.' }];
+  }
+  const active = github.platform
+    ? new Set(github.platform.bindings.map(({ githubInstallationId }) => githubInstallationId))
+    : undefined;
+  return granted.flatMap((grant): RepositoryProblem[] => {
+    if (grant.installationId === null) {
+      return [{ kind: 'app_not_installed', grant, detail: `Chickpea's GitHub App is not installed for ${grant.accountLogin}.` }];
+    }
+    if (active && !active.has(grant.installationId)) {
+      return [{ kind: 'access_suspended', grant, detail: `GitHub access for ${grant.accountLogin} is suspended or was removed.` }];
+    }
+    return [];
+  });
 }
 
 const PRESENCE_PROBLEMS: Readonly<Record<string, string>> = {
@@ -319,7 +408,7 @@ export async function getAgent(
   const handle = agentHandle(agent);
   const presence = agent.slackPresence;
   const links = agentLinks(deps.baseUrl, agent.id, await deps.service.slackAppLink(context));
-  return {
+  const output: Out<typeof schemas.getAgentOutput> = {
     agentId: agent.id,
     name: agent.name,
     ...(handle ? { handle } : {}),
@@ -337,7 +426,7 @@ export async function getAgent(
       imageSource: agent.effectiveModels.imageModelSource,
     },
     slack: {
-      presence: !presence || presence.health === 'unpublished' ? 'not_in_slack'
+      presence: notInSlack(presence) ? 'not_in_slack'
         : presence.health === 'healthy' ? 'ready'
           : presence.health === 'pending' ? 'joining' : 'needs_attention',
       ...(presence?.health === 'needs_attention' ? { problem: presenceProblem(presence.errorCode) } : {}),
@@ -360,6 +449,9 @@ export async function getAgent(
       .map(({ channelId, label }) => ({ channelId, ...(label ? { name: label } : {}) })),
     ...(links ? { links } : {}),
   };
+  return input.includeSkillText || input.skill !== undefined || input.offset !== undefined
+    ? withSkillText(output, agent.skills, input)
+    : output;
 }
 
 /** A member sees only the Agents they may edit, so any other ID reads as missing. */
@@ -708,7 +800,7 @@ async function setupConnection(
 }
 
 /**
- * One Agent's connections as inspect_workspace lists them, read alone: a card
+ * One Agent's connections as the workspace snapshot lists them, read alone: a card
  * polls get_setup_status every 2 s, so never the workspace snapshot or Slack.
  * Also whether it has a first ask, which decides the connect card's next step.
  * undefined when the snapshot would not list the Agent for this caller.

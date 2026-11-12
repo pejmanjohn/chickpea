@@ -131,6 +131,24 @@ test('Connect opens Chickpea\'s page for this one connection only when pressed, 
   assert.equal(connect.effects.filter(({ type }) => type === 'open').length, 2, 'two presses, two links');
 });
 
+// Dry run M4, on the connect card: its mount reads the link, so a reload in either host shows it connected.
+test('reloaded after its link was done, the connect card shows the service connected, offers no Connect, and only reads', async (t) => {
+  const { call, clock, finish } = await harness(t, 'connect-reload');
+  for (const host of ['chatgpt', 'claude'] as const) {
+    const result = await call('connect_service', { agentId: 'agent_research', service: 'Gmail', owner: 'me', idempotencyKey: `gmail-${host}` });
+    const connect = cardHost(CONNECT_CARD, call, clock, host);
+    await connect.result(result);
+    await connect.press('connect');
+    finish(result.structuredContent!.setup.setupToken, 'completed');
+    await connect.dispatch({ type: 'tick', now: clock.now });
+    assert.deepEqual(rows(connect.shown), ['Gmail is connected · [Open in Slack]'], host);
+    assert.equal(connect.modelReads, '"Gmail" is connected to the Agent "Research" now.', `${host}: the model reads what the person finished`);
+    await connect.reopen(result);
+    assert.deepEqual([rows(connect.shown), connect.calls().map(({ tool }) => tool)], [['Gmail is connected · [Open in Slack]'], ['get_setup_status']], host);
+    assert.deepEqual(connect.effects.filter(({ type }) => type !== 'call'), [], `${host}: a reload opens nothing and tells the model nothing`);
+  }
+});
+
 test('"I\'m done" reads at once; a link opened from the chat is followed too', async (t) => {
   const { call, card, clock, finish } = await harness(t, 'connect-done');
   const result = await call('connect_service', { agentId: 'agent_research', service: 'Gmail', owner: 'me', idempotencyKey: 'gmail' });

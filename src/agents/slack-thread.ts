@@ -75,6 +75,7 @@ import {
 import {
   resolveRuntimePlanMcpConnections,
 } from '../config/profile-mcp.ts';
+import { withMcpFailureCause } from '../config/mcp-unavailable.ts';
 import {
   projectMcpPolicyInstructions,
 } from '../config/mcp-policy-instructions.ts';
@@ -1507,7 +1508,7 @@ export function useRuntimePlanAgent(
     plan.actorMembershipId ? { workspaceId: plan.conversation.workspaceId, actorMembershipId: plan.actorMembershipId } : undefined,
     { readsOnly: plan.conversation.surface === 'test' },
   )) {
-    useMcpConnection(connection);
+    useMcpConnection(withMcpFailureCause(connection, id));
   }
   const sandbox = createRuntimePlanSandbox(plan, options.turn);
   useSandbox(options.artifactToolsDisabled ? sandbox : fileCompletion.wrapSandbox(sandbox));

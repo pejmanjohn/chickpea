@@ -12,10 +12,9 @@ import type {
 } from '../src/config/types.ts';
 import type { ManagementApiConnection, ManagementMcpConnection } from '../src/management/agent-connections.ts';
 import {
-  applyWorkspaceChangesZodSchema,
+  applyWorkspaceChangesValibotSchema,
   slackApplyWorkspaceChangesValibotSchema,
 } from '../src/management/schemas.ts';
-import { invokeWorkspaceManagementTool } from '../src/management/tool-adapter.ts';
 import type {
   ManagementActorContext,
   ManagementOperation,
@@ -31,11 +30,10 @@ import {
   type ManagementAdapterFixture as Fixture,
 } from './helpers/management-adapter-fixture.ts';
 import { withPersonApproval } from './helpers/slack-person-approval.ts';
+import { invokeAsDoor } from './helpers/management-service-result.ts';
 
 const SLACK_APPROVAL = 'Reply `approve` to apply these exact changes, or tell me what to adjust.';
-const MARKDOWN_APPROVAL =
-  'Show these changes to the person. When they approve, call confirm_workspace_change with the ' +
-  'proposalId; if they want something different, inspect again and send a new change.';
+const MARKDOWN_APPROVAL = 'Nothing changes until you confirm.';
 
 const SECRET_SEED = 'chickpea-avatar-v1:08:bc2be6c2-b7b6-4806-8c87-2a91fa6099ed';
 const USER_GROUP_ID = 'S0CCVAX57L0';
@@ -100,7 +98,7 @@ async function propose(
   idempotencyKey: string,
   operations: ManagementOperation[],
 ): Promise<ManagementPresentation> {
-  const response = await invokeWorkspaceManagementTool({
+  const response = await invokeAsDoor({
     service: f.service,
     resolveContext: async () => mcpContext(f),
   }, 'propose_workspace_changes', { ...authoringProposalMetadata(idempotencyKey), operations });
@@ -605,7 +603,7 @@ test('a proposed API connection edit shows an added host with Slack control text
       'Name changes from **Billing** to **\\<!channel\\> Billing**.',
     ));
 
-    const refused = await invokeWorkspaceManagementTool({
+    const refused = await invokeAsDoor({
       service: f.service,
       resolveContext: async () => mcpContext(f),
     }, 'propose_workspace_changes', {
@@ -621,7 +619,7 @@ test('a recipe overwrite shows the access it changes on an existing connection',
     const agent = await createAgent(f, 'agent_recipe_overwrite');
     await bindReviewedKnowledge(f, agent.id);
     const call = async <T>(tool: string, args: Record<string, unknown>): Promise<T> => {
-      const response = await invokeWorkspaceManagementTool({
+      const response = await invokeAsDoor({
         service: f.service,
         resolveContext: async () => mcpContext(f),
       }, tool as never, args as never);
@@ -661,7 +659,7 @@ test('a proposal whose widened access cannot fit in one preview is refused, not 
       displayName: `Overflow ${index}`,
       url: `https://mcp${index}.example.test/${'a'.repeat(1_900)}`,
     }));
-    const response = await invokeWorkspaceManagementTool({
+    const response = await invokeAsDoor({
       service: f.service,
       resolveContext: async () => mcpContext(f),
     }, 'propose_workspace_changes', {
@@ -688,7 +686,7 @@ test('a connection turned off, new or existing, is refused before any preview', 
         ['mcp_docs', [knowledge, { ...knowledge, id: 'mcp_docs', displayName: 'Docs', enabled: false }]],
         ['mcp_knowledge', [{ ...knowledge, enabled: false }]],
       ] as const) {
-        const response = await invokeWorkspaceManagementTool({
+        const response = await invokeAsDoor({
           service: f.service,
           resolveContext: async () => context,
         }, 'apply_workspace_changes', {
@@ -715,7 +713,7 @@ test('an Agent with two skills of the same name is refused before any preview', 
     const agent = await createAgent(f, 'agent_duplicate_skills');
     const notes = { name: 'notes', description: 'Take notes.', instructions: 'Write them down.', enabled: true };
     for (const [door, context] of [['slack', slackContext(f)], ['mcp', mcpContext(f)]] as const) {
-      const response = await invokeWorkspaceManagementTool({
+      const response = await invokeAsDoor({
         service: f.service,
         resolveContext: async () => context,
       }, 'apply_workspace_changes', {
@@ -738,7 +736,8 @@ test('an Agent with two skills of the same name is refused before any preview', 
 /** Each door's write schema, its actor, and the context the person's approval reaches the service with. */
 const DOORS = {
   mcp: {
-    schemaAccepts: (payload: unknown) => applyWorkspaceChangesZodSchema.safeParse(payload).success,
+    // The MCP door's 5.0 writes build their own operations; the operation schema they share with Admin is the generic one.
+    schemaAccepts: (payload: unknown) => v.safeParse(applyWorkspaceChangesValibotSchema, payload).success,
     context: mcpContext,
     approval: (f: Fixture, _proposalId: string) => mcpContext(f),
   },

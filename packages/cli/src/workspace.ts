@@ -26,11 +26,9 @@ export async function listAllAgents(
   const agents: AgentPage['agents'] = [];
   let canCreate = false;
   let cursor: string | undefined;
+  const asked = takesArchived && includeArchived ? { includeArchived: true } : {};
   for (let pages = 0; pages < MAX_AGENT_PAGES; pages += 1) {
-    const envelope = await callManagementTool(client, 'list_agents', {
-      ...(takesArchived && includeArchived ? { includeArchived: true } : {}),
-      ...(cursor ? { cursor } : {}),
-    });
+    const envelope = await callManagementTool(client, 'list_agents', { ...asked, ...(cursor ? { cursor } : {}) });
     if (!envelope.ok) return envelope;
     const page = envelope.result as AgentPage;
     agents.push(...page.agents);
@@ -40,7 +38,8 @@ export async function listAllAgents(
       return { ok: true, result: { agents, canCreate, ...(takesArchived && !includeArchived ? { archivedLeftOut: true } : {}) } };
     }
   }
-  throw new CliError('TOO_MANY_PAGES', `list_agents had more than ${MAX_AGENT_PAGES} pages; the CLI stopped instead of printing part of the list`, 'Page through it with: chickpea call <deployment-url> list_agents --args \'{"cursor":"<nextCursor>"}\'');
+  const args = JSON.stringify({ ...asked, cursor: '<nextCursor>' });
+  throw new CliError('TOO_MANY_PAGES', `list_agents had more than ${MAX_AGENT_PAGES} pages; the CLI stopped instead of printing part of the list`, `Page through it with: chickpea call <deployment-url> list_agents --args '${args}'`);
 }
 
 interface WorkspaceSummary {

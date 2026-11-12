@@ -13,55 +13,17 @@ export const slackUpdateAgentMemoryInputSchema = v.strictObject({
   body: v.pipe(v.string(), v.maxLength(65_536)),
 });
 
-/** This turn's own memory writes, kept across re-renders and redrives of the turn. */
-export interface MemoryWriteChainState {
-  turnJobId: string;
-  /** The revision injected into this turn. */
-  from: number;
-  /** The newest revision this turn's chained writes produced. */
-  head: number;
-}
-
-export interface MemoryWriteChain {
-  /** Marks the receipt chained when its write applied on the injected revision or a chained own write. */
-  link(expectedRevision: number, receipt: SlackMemoryUpdate): SlackMemoryUpdate;
-}
-
-/**
- * A write applies only when its expectedRevision is still live, so each
- * revision from..head was written by this turn on the one before it, with no
- * other writer in between. A replayed call returns its original revision,
- * which is already in the chain.
- */
-export function createMemoryWriteChain(
-  turnJobId: string,
-  from: number,
-  persisted: MemoryWriteChainState | undefined,
-  persist: (state: MemoryWriteChainState) => void = () => undefined,
-): MemoryWriteChain {
-  let head = persisted?.turnJobId === turnJobId && persisted.from === from ? persisted.head : from;
-  return {
-    link(expectedRevision, receipt) {
-      if (expectedRevision < from || expectedRevision > head) return receipt;
-      head = Math.max(head, receipt.revision);
-      persist({ turnJobId, from, head });
-      return { ...receipt, chainedFrom: from };
-    },
-  };
-}
-
-/** Apply the write and return the receipt delivery verifies against this turn. */
+/** Apply the write and return its receipt. */
 export async function executeSlackMemoryUpdate(input: {
   signal: Pick<SlackManagementSignal, 'agentId' | 'turnJobId'>;
   data: v.InferOutput<typeof slackUpdateAgentMemoryInputSchema>;
-  chain: MemoryWriteChain;
   apply(args: WorkspaceManagementToolArguments['apply_workspace_changes']): Promise<WorkspaceManagementToolResult>;
 }): Promise<{ result: WorkspaceManagementToolResult; receipt?: SlackMemoryUpdate }> {
   const { signal, data } = input;
   const result = await input.apply(slackMemoryUpdateArguments(signal, data));
   const receipt = result.ok ? appliedMemoryReceipt(result.result, signal.agentId) : undefined;
   if (!receipt || receipt.revision !== data.expectedRevision + 1) return { result };
-  return { result, receipt: input.chain.link(data.expectedRevision, receipt) };
+  return { result, receipt };
 }
 
 /** Reduce the model-facing contract without changing management authority. */

@@ -149,13 +149,10 @@ test('an archive the model proposed in a person\'s turn applies only on the pers
       operations: [{ itemId: 'archive', kind: 'archive_agent', agentId: desk.id, expectedRevision: desk.revision }],
     }));
 
-    const sameTurn = await tool(summarize, 'confirm_workspace_change', { proposalId });
-    assert.equal(sameTurn.ok, false, 'the model cannot confirm its own proposal in the same turn');
-    assert.ok(!sameTurn.ok && sameTurn.error.code === 'forbidden', JSON.stringify(sameTurn));
     await assert.rejects(f.service.confirmWorkspaceChange({
       context: await resolveSlackManagementActor(summarize, f.identity),
       proposalId,
-    }), forbidden, 'a Slack confirmation the host did not stamp is refused by the service itself');
+    }), forbidden, 'the model cannot confirm its own proposal in the same turn: the service refuses a Slack confirmation the host did not stamp');
     const later = signal(CHICKPEA_AGENT_ID, turn('approve'));
     await assert.rejects(f.service.confirmWorkspaceChange({
       context: await resolveSlackManagementActor(later, f.identity),

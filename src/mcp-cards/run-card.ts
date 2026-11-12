@@ -1,14 +1,15 @@
 import { applyHostContext, HostBridge, type CallToolResult } from './bridge.ts';
 import {
-  boundedTold,
   hostFailed,
-  keptState,
+  hostWrites,
+  keptMemory,
   refusalOf,
   withResponseMeta,
   type Call,
   type CardEvent,
   type CardState,
   type Effect,
+  type HostWrite,
   type Memory,
   type Presentation,
   type Step,
@@ -29,8 +30,6 @@ import { mountCard } from './render.ts';
 declare const CARD_VERSION: number;
 
 const REREAD_GAP_MS = 1_000;
-/** A sentence ChatGPT kept that is longer than any a card writes is not one. */
-const TOLD_SENTENCE_MAX = 1_000;
 
 export interface CardModel<V extends { kind: string }, A extends string> {
   /** Its view is `{ kind: 'waiting' }` until the tool result comes. */
@@ -51,12 +50,17 @@ export function runCard<V extends { kind: string }, A extends string>(name: stri
 
   function dispatch(event: CardEvent<A>): void {
     const next = model.step(state, event);
-    const remembered = next.state.told !== state.told || next.state.outcome !== state.outcome;
+    const writes = hostWrites(state, event, next, { keepsState: keepsState(), version: CARD_VERSION });
     state = next.state;
     if (event.type === 'press') mounted = undefined;
-    if (remembered && event.type !== 'result') keep(state);
     card.render(model.present(state));
+    for (const write of writes) send(write);
     for (const effect of next.effects) run(effect);
+  }
+
+  function send(write: HostWrite): void {
+    if (write.type === 'state') void Promise.resolve(window.openai?.setWidgetState?.(write.state)).catch(() => undefined);
+    else bridge.updateModelContext(write.text).catch(() => undefined);
   }
 
   function answered(made: Call, result: CallToolResult): void {
@@ -89,7 +93,7 @@ export function runCard<V extends { kind: string }, A extends string>(name: stri
         bridge.openLink(effect.url).catch(() => dispatch({ type: 'refused', effect, now: Date.now() }));
         return;
       case 'context':
-        bridge.updateModelContext(effect.text).catch(() => undefined);
+        // `hostWrites` sent it, in the widget state or as a model update.
         return;
     }
   }
@@ -110,14 +114,14 @@ export function runCard<V extends { kind: string }, A extends string>(name: stri
   bridge.on('ui/notifications/tool-result', (result) => {
     if (state.view.kind !== 'waiting') return;
     // ChatGPT keeps the card's _meta, and its widget state, in globals it may set only now.
-    mount(withResponseMeta(result as CallToolResult, window.openai?.toolResponseMetadata), keptMemory());
+    mount(withResponseMeta(result as CallToolResult, window.openai?.toolResponseMetadata), kept());
   });
   bridge.on('ui/notifications/tool-cancelled', () => dispatch({ type: 'no_result', now: Date.now() }));
   bridge.on('ui/notifications/host-context-changed', () => applyHostContext(bridge.hostContext));
   // Widget state that comes after the result, before any press, mounts the card again with it.
   window.addEventListener('openai:set_globals', () => {
-    const kept = mounted && !mounted.kept ? keptMemory() : undefined;
-    if (mounted && kept) mount(mounted.result, kept);
+    const memory = mounted && !mounted.kept ? kept() : undefined;
+    if (mounted && memory) mount(mounted.result, memory);
   });
   window.addEventListener('focus', reread);
   document.addEventListener('visibilitychange', () => {
@@ -137,15 +141,12 @@ export function runCard<V extends { kind: string }, A extends string>(name: stri
   );
 }
 
-/** What this version of the card kept in ChatGPT's widget state, read as untrusted. */
-function keptMemory(): Memory | undefined {
-  const saved = window.openai?.widgetState as { privateContent?: { card?: { version?: unknown; told?: unknown; outcome?: unknown } } } | undefined;
-  const card = saved?.privateContent?.card;
-  if (card?.version !== CARD_VERSION || !Array.isArray(card.told)) return undefined;
-  const told = card.told.filter((line): line is string => typeof line === 'string' && line.length <= TOLD_SENTENCE_MAX);
-  return { told: boundedTold(told), ...card.outcome === undefined ? {} : { outcome: card.outcome } };
+/** ChatGPT keeps a card's widget state; a host without it keeps nothing. */
+function keepsState(): boolean {
+  return typeof window.openai?.setWidgetState === 'function';
 }
 
-function keep(state: CardState<{ kind: string }>): void {
-  void Promise.resolve(window.openai?.setWidgetState?.(keptState(state, CARD_VERSION))).catch(() => undefined);
+/** What this version of the card kept in ChatGPT's widget state. */
+function kept(): Memory | undefined {
+  return keptMemory(window.openai?.widgetState, CARD_VERSION);
 }

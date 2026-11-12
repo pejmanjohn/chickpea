@@ -789,7 +789,7 @@ try {
     assert.deepEqual(await browser.inCard('[...document.querySelectorAll(".cp-msg .sr-only")].map((node) => node.textContent)'),
       ['You: ', 'Invoice Chaser: '], 'a screen reader hears who said each line of the example');
     assert.deepEqual(await smallPrint(), [
-      'Answers in your DMs and #finance. Anyone in Acme can message it.',
+      'Answers in your DMs and #finance. Everyone in its Channels can ask it there.',
       'Needs Stripe · you sign in after it\'s created',
     ]);
     await shot('1-proposal');
@@ -861,7 +861,7 @@ try {
     await open('proposalLong');
     await browser.waitForTitle(/^Churn Watch$/);
     assert.deepEqual(await said(), [{ lines: 2, cut: true }, { lines: 5, cut: true }], 'a long question shows two lines, a long reply five');
-    assert.deepEqual(await smallPrint(), ['Answers in your DMs, #finance and #billing. Anyone in Acme can message it.'], 'no Needs without a service');
+    assert.deepEqual(await smallPrint(), ['Answers in your DMs, #finance and #billing. Everyone in its Channels can ask it there.'], 'no Needs without a service');
     await shot('1-proposal-long');
     await open('proposalBare');
     await browser.waitForTitle(/^Churn Watch$/);
@@ -906,6 +906,21 @@ try {
     await browser.waitFor('/It changed since this preview|Undid the change/.test(document.querySelector(".cp-card")?.textContent ?? "")', 'no Save for what changed since');
     assert.deepEqual(await buttons(), host === 'chatgpt' ? [] : ['Cancel'], 'no Save, and no Undo');
     await shot('5-undone-reopened');
+    // Saved, then the chat reloads (dry run M4): ChatGPT kept that it was saved; claude.ai kept nothing, and the read finds it changed.
+    await open('change');
+    await browser.waitForTitle(/^Change Invoice Chaser$/);
+    await browser.waitFor('document.querySelectorAll(".cp-acts button:enabled").length === 2', 'Save, once the read answers');
+    await browser.click('save');
+    await browser.waitForTitle(/^✓ Saved Invoice Chaser$/);
+    if (host === 'chatgpt') await keptOnlyTold('Saved');
+    const savedCalls = (await browser.host('window.harness.calls')).length;
+    await browser.host('window.harness.reload()');
+    await browser.waitForTitle(host === 'chatgpt' ? /^✓ Saved Invoice Chaser$/ : /^Change Invoice Chaser$/);
+    await browser.waitFor('document.querySelectorAll(".cp-acts button:disabled").length === 0', 'its buttons, once the read answers');
+    assert.ok(!(await buttons()).some((label) => label === 'Save' || label === 'Undo'), `no Save, and no Undo without its token: ${await buttons()}`);
+    const savedReads = (await browser.host('window.harness.calls')).slice(savedCalls);
+    assert.ok(savedReads.length > 0 && savedReads.every((name) => name === 'get_agent'), `reloading only read: ${savedReads}`);
+    await shot('5-saved-reopened');
     await open('turnedOff');
     await browser.waitForTitle(/^✓ Turned off People Helper$/);
     assert.equal(await subtitle(), 'It won\'t answer in Slack until it\'s turned back on.');
@@ -1114,6 +1129,15 @@ try {
     await browser.waitForRow(/^Gmail is connected/, 10_000);
     await told(/^"Gmail" is connected to the Agent "Support Desk" now\.$/, 'Connected');
     await shot('3-connected');
+    // The chat reloads (dry run M4): the card reads the link, which says it is done, so no Connect again.
+    const connectedCalls = (await browser.host('window.harness.calls')).length;
+    await browser.host('window.harness.reload()');
+    await browser.waitForRow(/^Gmail is connected/, 10_000);
+    assert.notEqual(await browser.inCard('document.querySelector(".cp-row button")?.textContent ?? ""'), 'Connect', 'no Connect for a link that is done');
+    const connectedReads = (await browser.host('window.harness.calls')).slice(connectedCalls);
+    assert.ok(connectedReads.length > 0 && connectedReads.every((name) => name === 'get_setup_status'), `reloading only read: ${connectedReads}`);
+    assert.deepEqual([(await browser.host('window.harness.links')).length, await browser.host('window.harness.messages')], [1, []], 'and opened nothing');
+    await shot('3-connected-reopened');
 
     await open('reconnect');
     await browser.waitForTitle(/^Sign Notion in again$/);
@@ -1398,7 +1422,7 @@ try {
     await browser.waitForTitle(/^✓ Saved Renewals Desk$/);
     await browser.click('try_once');
     await shows('/This workspace is out of usage for now, so I can\'t start this one\./', 'the funding refusal');
-    await browser.waitForTitle(/^Renewals Desk after this change$/);
+    await browser.waitForTitle(/^Couldn't practice with Renewals Desk$/);
     await plain('Try it again refused');
     await shot('5-try-again-refused');
     current.slack.guest = true;

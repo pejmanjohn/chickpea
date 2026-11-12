@@ -12,18 +12,19 @@ import {
   deriveRuntimePlanInstanceId,
   type CompileRuntimePlanV2Input,
 } from '../src/agents/runtime-plan.ts';
+import { WEBSITE_LOGINS_SETTING } from '../src/browser/logins.ts';
 import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
 import {
   configureInstallationAdmission,
   resetInstallationAdmissionForTests,
 } from '../src/config/installation-admission.ts';
 import { installationOwnershipOf, scopeInstallationEnv } from '../src/config/installation-scope.ts';
-import { closeNodeStateStores, type PlatformEnv } from '../src/config/state-backend.ts';
+import { closeNodeStateStores, getSettingsStore, type PlatformEnv } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { configureRunReview } from '../src/review/port.ts';
-import type { RunReviewRecordV1 } from '../src/review/record.ts';
+import { BROWSER_STEP_OMITTED, type RunReviewRecordV1 } from '../src/review/record.ts';
 import { CHICKPEA_SLACK_AGENT_BINDING } from '../src/slack/bounded-agent-observation.ts';
 import {
   AgentPromptFailure,
@@ -190,8 +191,11 @@ async function reviewedTurn(
   return { turn, calls, delivered };
 }
 
-/** The real dispatch over a handle whose reply streams a tool call and its answer. */
-function streamedReply(name: string): Partial<RunTurnOptions> {
+/** The real dispatch over a handle whose reply streams a tool call, the `steps` given, and its answer. */
+function streamedReply(
+  name: string,
+  { steps = [], text = 'Here is the plan.' }: { steps?: Record<string, unknown>[]; text?: string } = {},
+): Partial<RunTurnOptions> {
   const submissionId = `sub_${name}`;
   let instanceId = '';
   const flueDispatch: SlackFlueDispatchState = {
@@ -220,9 +224,10 @@ function streamedReply(name: string): Partial<RunTurnOptions> {
         input: { limit: 5 },
       });
       emit({ type: 'tool-output', toolCallId: 'call_1', output: { author: { kind: 'person', id: 'U012ABCDEF3' } } });
-      emit({ type: 'message-delta', messageId: 'response', kind: 'text', delta: 'Here is the plan.' });
+      for (const step of steps) emit({ messageId: 'response', ...step });
+      emit({ type: 'message-delta', messageId: 'response', kind: 'text', delta: text });
       emit({ type: 'message-completed', messageId: 'response' });
-      return { text: 'Here is the plan.', data: {}, submissionId };
+      return { text, data: {}, submissionId };
     },
     abort: async () => {},
   } as unknown as AgentInstanceHandle;
@@ -273,32 +278,77 @@ const SIGNED_IN = {
   }],
 };
 
-test('a turn whose plan grants a website login keeps no copy, and its reply is unchanged', async (t) => {
+/** The installation's saved login, as Admin stores it in the catalog row. */
+async function savedLogin(): Promise<void> {
+  await getSettingsStore(HOSTED_ENV).setSetting(WEBSITE_LOGINS_SETTING, JSON.stringify([{
+    id: `wl_${'b'.repeat(32)}`, host: 'billing.example.com', label: 'Billing', ownerKind: 'team',
+    createdByMembershipId: 'mem_owner', method: 'credentials', username: 'ops@example.com', createdAt: 1,
+  }]));
+}
+
+const SIGNED_IN_STEPS = [
+  { type: 'tool-input', toolCallId: 'call_2', toolName: 'browser_open', input: { url: 'https://billing.example.com/invoices' } },
+  {
+    type: 'tool-output', toolCallId: 'call_2',
+    output: {
+      url: 'https://billing.example.com/callback?code=SYNTHCODE123#access_token=SYNTHTOKEN789',
+      snapshot: '- textbox "Email" [ref=e1] value="ops@example.com"\n- text "Invoice INV-2041 is due."',
+    },
+  },
+];
+
+test('a turn whose plan grants a website login is copied with its browser steps withheld and without the login\'s username', async (t) => {
   await turnState(t);
+  await savedLogin();
   const port = reviewPort();
-  const warnings: string[] = [];
-  t.mock.method(console, 'warn', (line: string) => { warnings.push(line); });
-  const { delivered, calls } = await reviewedTurn(HOSTED_ENV, { ...streamedReply('signed_in'), browser: SIGNED_IN });
+  const { delivered, calls } = await reviewedTurn(HOSTED_ENV, {
+    ...streamedReply('signed_in', { steps: SIGNED_IN_STEPS, text: 'Signed in as OPS@example.com. Invoice INV-2041 is due.' }),
+    browser: SIGNED_IN,
+  });
   assert.deepEqual(delivered, ['succeeded']);
   assert.ok(calls.length > 0, 'the reply reached Slack');
-  assert.equal(port.records.length, 0);
-  assert.ok(warnings.includes(JSON.stringify({ component: 'run_review', event: 'website_logins_granted' })));
-  assert.equal(warnings.some((line) => /ops@example|billing|wl_b/i.test(line)), false, 'the reason carries no content');
+  assert.equal(port.records.length, 1);
+  const serialized = JSON.stringify(port.records[0]!.record);
+  for (const value of ['ops@example.com', 'SYNTHCODE123', 'SYNTHTOKEN789']) {
+    assert.equal(serialized.toLowerCase().includes(value.toLowerCase()), false, `${value} is not in the copy`);
+  }
+  const browserSteps = port.records[0]!.record.steps.filter((step) => step.kind === 'tool' && step.name.startsWith('browser_'));
+  assert.deepEqual(browserSteps, [{ kind: 'tool', name: 'browser_open', input: BROWSER_STEP_OMITTED, output: BROWSER_STEP_OMITTED }]);
+  // The Agent's own words keep what it said about the page.
+  assert.equal(port.records[0]!.record.answer, 'Signed in as [credential redacted]. Invoice INV-2041 is due.');
 });
 
-test('a turn whose Agent is granted a login keeps no copy even when the login read froze none', async (t) => {
+test('a turn whose login was deleted before its copy was built still leaves out the username its plan froze', async (t) => {
   await turnState(t);
   const port = reviewPort();
-  t.mock.method(console, 'warn', () => undefined);
+  // No catalog row: the login is gone by the time the copy reads the catalog.
+  await reviewedTurn(HOSTED_ENV, {
+    ...streamedReply('deleted_login', { steps: SIGNED_IN_STEPS, text: 'Signed in as ops@example.com.' }),
+    browser: SIGNED_IN,
+  });
+  assert.equal(port.records.length, 1);
+  assert.equal(port.records[0]!.record.answer, 'Signed in as [credential redacted].');
+  assert.equal(/ops@example\.com|SYNTHCODE123|SYNTHTOKEN789/i.test(JSON.stringify(port.records[0]!.record)), false);
+});
+
+test('a turn whose Agent is granted a login is copied whether or not the plan froze it, and only an enabled grant withholds its browser steps', async (t) => {
+  await turnState(t);
+  await savedLogin();
+  const port = reviewPort();
   const granted = (enabled: boolean): ResolvedAssignment => ({
     ...ASSIGNMENT,
     agent: { ...ASSIGNMENT.agent, websiteLogins: [{ loginId: `wl_${'b'.repeat(32)}`, level: 'check', enabled }] },
   });
-  // The plan has the browser but no logins, as when reading them failed.
-  await reviewedTurn(HOSTED_ENV, { ...streamedReply('read_failed'), assignment: granted(true), browser: BROWSER });
-  assert.equal(port.records.length, 0);
-  await reviewedTurn(HOSTED_ENV, { ...streamedReply('grant_disabled'), assignment: granted(false), browser: BROWSER });
-  assert.equal(port.records.length, 1, 'a disabled grant grants nothing');
+  // The plan has the browser but no logins, as when reading them failed; the catalog still names the username.
+  const reply = { steps: SIGNED_IN_STEPS, text: 'Signed in as ops@example.com.' };
+  await reviewedTurn(HOSTED_ENV, { ...streamedReply('read_failed', reply), assignment: granted(true), browser: BROWSER });
+  await reviewedTurn(HOSTED_ENV, { ...streamedReply('grant_disabled', reply), assignment: granted(false), browser: BROWSER });
+  assert.deepEqual(port.records.map(({ record }) => record.answer), [
+    'Signed in as [credential redacted].', 'Signed in as [credential redacted].',
+  ]);
+  const opened = port.records.map(({ record }) => record.steps.find((step) => step.kind === 'tool' && step.name === 'browser_open'));
+  assert.deepEqual(opened[0], { kind: 'tool', name: 'browser_open', input: BROWSER_STEP_OMITTED, output: BROWSER_STEP_OMITTED });
+  assert.match(JSON.stringify(opened[1]), /Invoice INV-2041 is due/, 'a disabled grant grants nothing, so the step is kept');
 });
 
 test('a turn with the browser but no website login is still copied', async (t) => {
@@ -442,11 +492,12 @@ test('a Channel mention copies the name and size of the file it carried, never i
 
 for (const signedIn of [false, true]) {
   test(signedIn
-    ? 'a replayed settlement whose plan grants a website login keeps no copy and reads no history'
+    ? 'a replayed settlement whose plan grants a website login is copied from the same history read, its browser step withheld and without its username'
     : 'a settlement replayed from its checkpoint is copied from one bounded history read', async (t) => {
     await turnState(t);
+    if (signedIn) await savedLogin();
     const port = reviewPort();
-    if (signedIn) t.mock.method(console, 'warn', () => undefined);
+    const text = signedIn ? 'Signed in as ops@example.com.' : 'Here is the plan.';
     const requests: string[] = [];
     const submissionId = 'sub_checkpoint';
     const turn = dmTurn();
@@ -465,7 +516,11 @@ for (const signedIn of [false, true]) {
                   id: 'response', role: 'assistant', purpose: 'assistant', display: 'visible', submissionId,
                   parts: [
                     { type: 'dynamic-tool', toolName: 'web_fetch', toolCallId: 'call_1', state: 'output-available', input: {}, output: 'ok' },
-                    { type: 'text', text: 'Here is the plan.', state: 'done' },
+                    {
+                      type: 'dynamic-tool', toolName: 'browser_snapshot', toolCallId: 'call_2', state: 'output-available', input: {},
+                      output: '- textbox "Email" [ref=e1] value="ops@example.com"\n- text "Invoice INV-2041 is due."',
+                    },
+                    { type: 'text', text, state: 'done' },
                   ],
                 },
               ],
@@ -486,17 +541,19 @@ for (const signedIn of [false, true]) {
       ...(signedIn ? { browser: SIGNED_IN } : {}),
     });
     assert.deepEqual(delivered, ['succeeded']);
-    if (signedIn) {
-      assert.deepEqual([requests, port.records], [[], []]);
-      return;
-    }
     assert.deepEqual(requests, ['?view=history&limit=20']);
     assert.equal(port.records.length, 1);
     assert.equal(port.records[0]?.record.source, 'history');
     assert.equal(port.records[0]?.record.model, 'local-stub/review-1');
     assert.deepEqual(port.records[0]?.record.steps, [
       { kind: 'tool', name: 'web_fetch', input: '{}', output: 'ok' },
-      { kind: 'text', text: 'Here is the plan.' },
+      signedIn
+        ? { kind: 'tool', name: 'browser_snapshot', input: BROWSER_STEP_OMITTED, output: BROWSER_STEP_OMITTED }
+        : {
+            kind: 'tool', name: 'browser_snapshot', input: '{}',
+            output: '- textbox "Email" [ref=e1] value="ops@example.com"\n- text "Invoice INV-2041 is due."',
+          },
+      { kind: 'text', text: signedIn ? 'Signed in as [credential redacted].' : 'Here is the plan.' },
     ]);
   });
 }

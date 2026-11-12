@@ -308,7 +308,7 @@ export function withAgentConnectionIds<T extends { id: string }>(
     if (id !== undefined) return { ...connection, id };
     if (shared.has(connection.id)) {
       throw new AgentWriteRuleError(
-        `More than one connection uses ${connection.id}. Name the one to change by its id from inspect_workspace.`,
+        `More than one connection uses ${connection.id}, so Chickpea could not tell which one to change. Name it by its own connection id.`,
       );
     }
     // A new connection's id becomes its account's provider id; account ids start with connection_.

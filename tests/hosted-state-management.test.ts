@@ -230,12 +230,15 @@ test('on a deployment serving many, the state store lists the workspace Agents f
         operations: [{ itemId: 'remove_openai', kind: 'remove_provider_credential', providerId: 'openai' }],
       },
     })) as { proposalId: string };
+    // No Slack tool confirms a change, and since 5.0.0 the adapter serves no confirm_workspace_change: an
+    // older Worker that still sent one through this RPC during a deploy gets the refusal it always got.
     const byModel = await probe.workspaceManagementInvoke({
       signal: fromOwner('500.3', 'approve'),
-      name: 'confirm_workspace_change',
-      args: { proposalId: proposed.proposalId },
+      name: 'confirm_workspace_change' as string as WorkspaceManagementToolName,
+      args: { proposalId: proposed.proposalId } as unknown as WorkspaceManagementToolArguments[WorkspaceManagementToolName],
     });
     assert.ok(!byModel.ok && byModel.error.code === 'forbidden', 'the Agent cannot apply it through the state store');
+    assert.equal((await settings.readModelCredential('openai'))?.active, true, 'and nothing changed');
     const chickpea = await f.config.materializeChickpeaAgent();
     const approval = await probe.slackManagementApprovalInvoke({
       turn: {

@@ -62,17 +62,43 @@ test('a memory receipt survives durable settlement storage with legacy receipts 
       }));
       turns.prepareFlueDispatch(id, 'Test memory.', { generation: id });
       turns.recordFlueReceipt(id, { submissionId: id, acceptedAt: '2026-08-01T12:00:00.000Z', uid: 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAV' });
-      const memoryUpdate = { operationId: id, revision: 1, ...(summary ? { summary, preservesContext: true as const } : {}) };
+      const memoryUpdate = {
+        operationId: id, revision: 1, ...(summary ? { summary, preservesContext: true as const, chainedFrom: 0 } : {}),
+      };
       turns.recordFlueSettlement(id, { outcome: 'completed', settledAt: NOW, result: {
         text: 'Hidden old draft', memoryUpdate, requestedModel: null, returnedModel: null,
         reportedUsage: null, usageCompleteness: 'not_reported',
       } });
       const restored = turns.getFlueSettlement(id);
       assert.equal(restored?.outcome, 'completed');
-      // Older receipts also stored summary and preservesContext; reading drops them.
+      // Older receipts also stored summary, preservesContext and chainedFrom; reading drops them.
       assert.deepEqual(restored?.outcome === 'completed' ? restored.result.memoryUpdate : undefined,
         { operationId: id, revision: 1 });
     }
+  } finally { db.close(); }
+});
+
+test('a settlement an older host stored with a chained memory receipt re-records without a conflict', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const turns = new TurnJobStoreLogic(db, () => NOW);
+    const id = 'memory-chained-replay';
+    turns.enqueue({ id, evtKey: id, msgKey: id, turn: turn(), assignment: assignment() });
+    turns.freezeRuntimePlan(id, compileRuntimePlanV2({
+      turn: turn(), assignment: assignment(), instructions: 'Test memory.', memoryEpoch: 1,
+    }));
+    turns.prepareFlueDispatch(id, 'Test memory.', { generation: id });
+    turns.recordFlueReceipt(id, { submissionId: id, acceptedAt: '2026-08-01T12:00:00.000Z', uid: 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAV' });
+    const settlement = { outcome: 'completed' as const, settledAt: NOW, result: {
+      text: 'The answer.', memoryUpdate: { operationId: id, revision: 2, chainedFrom: 1 }, requestedModel: null,
+      returnedModel: null, reportedUsage: null, usageCompleteness: 'not_reported' as const,
+    } };
+    // The row as the older host wrote it, chain mark included.
+    db.run('UPDATE turn_jobs SET flue_settlement_json = ? WHERE id = ?', JSON.stringify(settlement), id);
+    const recorded = turns.recordFlueSettlement(id, settlement);
+    assert.deepEqual(recorded.outcome === 'completed' ? recorded.result.memoryUpdate : undefined,
+      { operationId: id, revision: 2 });
+    assert.equal(turns.getFlueSettlement(id)?.outcome, 'completed', 'the replay matched the stored settlement');
   } finally { db.close(); }
 });
 

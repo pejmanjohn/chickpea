@@ -26,24 +26,13 @@ function mcpHandler(f: ManagementAdapterFixture) {
 
 function createAgentCall(firstAsk: string) {
   return {
-    name: 'apply_workspace_changes',
+    name: 'create_agent',
     arguments: {
+      agentId: `agent_first_ask_${firstAsk.length}`,
+      name: 'CRM Desk',
+      instructions: 'Answer from the CRM.',
+      firstAsk,
       idempotencyKey: `first-ask-${firstAsk.length}`,
-      operations: [{
-        itemId: 'create',
-        kind: 'create_agent',
-        firstAsk,
-        agent: {
-          id: `agent_first_ask_${firstAsk.length}`,
-          name: 'CRM Desk',
-          instructions: 'Answer from the CRM.',
-          enabled: true,
-          skills: [],
-          mcpServers: [],
-          apiConnections: [],
-          repositories: [],
-        },
-      }],
     },
   };
 }
@@ -54,25 +43,25 @@ test('create_agent over MCP refuses a firstAsk longer than 200 characters, and t
     const listed = await mcpCall(handler.fetch, 'tools/list', {}) as {
       tools: Array<{ name: string; inputSchema: unknown }>;
     };
-    const apply = JSON.stringify(listed.tools.find(({ name }) => name === 'apply_workspace_changes')?.inputSchema);
-    assert.match(apply, /"firstAsk":\{[^}]*"maxLength":200/, 'clients see the bound before they call');
+    const create = JSON.stringify(listed.tools.find(({ name }) => name === 'create_agent')?.inputSchema);
+    assert.match(create, /"firstAsk":\{[^}]*"maxLength":200/, 'clients see the bound before they call');
 
     const tooLong = await mcpCall(handler.fetch, 'tools/call', createAgentCall('a'.repeat(201))) as {
       isError?: boolean;
-      content: Array<{ text: string }>;
+      structuredContent: { error: { code: string; nextStep: string } };
     };
     assert.equal(tooLong.isError, true);
-    assert.match(tooLong.content[0]!.text, /^Input validation error: .*firstAsk/);
-    assert.match(tooLong.content[0]!.text, /200/);
+    assert.equal(tooLong.structuredContent.error.code, 'invalid_input');
+    assert.match(tooLong.structuredContent.error.nextStep, /firstAsk/);
+    assert.match(tooLong.structuredContent.error.nextStep, /200/);
     await assert.rejects(f.config.getAgent('agent_first_ask_201'), 'nothing is created');
 
     const longest = await mcpCall(handler.fetch, 'tools/call', createAgentCall('a'.repeat(200))) as {
-      structuredContent: { ok: boolean; result: { operationId: string } };
+      isError?: boolean;
+      structuredContent: { status: string };
     };
-    assert.equal(longest.structuredContent.ok, true, JSON.stringify(longest));
-    const welcome = await f.management.getOutboxForOperation(longest.structuredContent.result.operationId);
-    assert.ok(welcome && 'kind' in welcome.receipt && welcome.receipt.kind === 'agent_created_welcome');
-    assert.equal(welcome.receipt.firstAsk, 'a'.repeat(200));
+    assert.equal(longest.isError, undefined, JSON.stringify(longest));
+    assert.equal(longest.structuredContent.status, 'done', JSON.stringify(longest));
     assert.equal(await f.config.getAgentFirstAsk('agent_first_ask_200'), 'a'.repeat(200));
   }));
 

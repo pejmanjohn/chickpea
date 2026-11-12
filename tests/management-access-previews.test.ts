@@ -11,9 +11,7 @@ import type { ManagementChangeSetPreview } from '../src/management/types.ts';
 import { longSkillEdits } from './helpers/synthetic-skill.ts';
 
 const SLACK_APPROVAL = 'Reply `approve` to apply these exact changes, or tell me what to adjust.';
-const MARKDOWN_APPROVAL =
-  'Show these changes to the person. When they approve, call confirm_workspace_change with the ' +
-  'proposalId; if they want something different, inspect again and send a new change.';
+const MARKDOWN_APPROVAL = 'Nothing changes until you confirm.';
 
 const knowledge = {
   id: 'mcp_knowledge',

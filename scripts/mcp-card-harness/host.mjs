@@ -28,7 +28,11 @@ const record = {
   answerHeld(how = 'send') {
     for (const settle of record.held.splice(0)) settle(how);
   },
-  /** What the card saved with window.openai.setWidgetState, oldest first. */
+  /**
+   * What ChatGPT keeps of the card, oldest first: each window.openai.setWidgetState, and each
+   * ui/update-model-context, which ChatGPT keeps in the same place, so either replaces the other
+   * (live check 2 bug 3, dry run M4). A reload mounts the card with the newest.
+   */
   widgetStates: [],
   /**
    * How a result with isError reaches the card: as the result, as ext-apps'
@@ -46,7 +50,11 @@ const scene = await (await fetch(`/scene?name=${encodeURIComponent(params.get('s
 record.scene = scene;
 
 window.addEventListener('message', ({ data }) => {
-  if (data && typeof data === 'object' && 'harnessWidgetState' in data) record.widgetStates.push(data.harnessWidgetState);
+  if (!data || typeof data !== 'object' || !('harnessWidgetState' in data)) return;
+  record.widgetStates.push(data.harnessWidgetState);
+  // ChatGPT's model reads a widget state's modelContent.
+  const told = data.harnessWidgetState?.modelContent;
+  if (typeof told === 'string') record.contexts.push(told);
 });
 
 /** The card in a new frame, drawn with the scene's result: a chat that opens, or reopens with what ChatGPT kept. */
@@ -98,7 +106,9 @@ async function mount(widgetState) {
     return {};
   };
   bridge.onupdatemodelcontext = async ({ content }) => {
-    record.contexts.push(content?.map(({ text }) => text).join('\n'));
+    const text = content?.map(({ text }) => text).join('\n');
+    record.contexts.push(text);
+    if (chatgpt) record.widgetStates.push({ modelContent: text });
     return {};
   };
   bridge.onopenlink = async ({ url }) => {

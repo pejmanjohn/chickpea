@@ -3,11 +3,10 @@ import type { FlueObservation } from '@flue/runtime';
 import { MCP_CLIENT_REGISTRATION_DENIALS } from '../auth/mcp-oauth.ts';
 import type { ManagementOperation } from './types.ts';
 import {
-  AGENT_AUTHORING_GUIDE_URI,
   AGENT_AUTHORING_GUIDE_VERSION,
   DISCOVERY_GUIDE_URI,
 } from './agent-authoring/index.ts';
-import { MANAGEMENT_OPERATION_SCHEMA_URI } from './schemas.ts';
+import { REMOVED_RESOURCE_URIS } from './mcp-v5/removed-v4.ts';
 
 export type ManagementMetricValue = boolean | number | string;
 
@@ -129,7 +128,7 @@ const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
     'undo_workspace_change', 'get_operation', 'revoke_setup_link',
     'list_mcp_clients', 'revoke_mcp_client',
     // 5.0 tools (management/mcp-v5/tools.ts).
-    'get_account', 'get_workspace', 'list_agents', 'get_agent', 'list_services', 'get_service', 'list_models',
+    'get_account', 'get_workspace', 'get_guide', 'list_agents', 'get_agent', 'list_services', 'get_service', 'list_models',
     'list_members', 'list_slack_channels', 'get_agent_memory', 'list_schedules', 'get_setup_status',
     'export_agents', 'list_connected_apps', 'propose_agent', 'propose_agent_change',
     'get_creation_status', 'practice_agent', 'get_practice_run', 'list_practice_runs', 'explain_agent', 'check_agent',
@@ -154,8 +153,9 @@ const EXACT_METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
     'notifications/initialized', 'notifications/cancelled', 'notifications/progress',
     'notifications/roots/list_changed',
   ]),
-  // Chickpea's own static guides only: any other URI can carry an identifier.
-  resource: new Set([AGENT_AUTHORING_GUIDE_URI, DISCOVERY_GUIDE_URI, MANAGEMENT_OPERATION_SCHEMA_URI]),
+  // Chickpea's own fixed URIs only, any other can carry an identifier: the discovery
+  // guide, and the resources 5.0.0 removed, so reads of them stay countable.
+  resource: new Set([DISCOVERY_GUIDE_URI, ...REMOVED_RESOURCE_URIS]),
 };
 
 const REASON_TOKENS = new Set([
@@ -176,7 +176,7 @@ const REASON_TOKENS = new Set([
   'paid_plan_required', 'user_group_policy_denied', 'two_factor_required',
   'handle_collision', 'name_collision', 'invalid_handle', 'channel_membership_required',
   'private_channel_invite_required', 'rate_limited', 'user_group_create_ambiguous',
-  'slack_unavailable', 'slack_operation_failed', 'agent_off',
+  'slack_unavailable', 'slack_refused', 'slack_operation_failed', 'agent_off',
   // 5.0 error codes (management/mcp-v5/conventions.ts) not already above.
   'not_allowed', 'not_found', 'invalid_input', 'changed_since_read', 'confirmation_expired',
   'in_progress', 'key_reused', 'still_in_use', 'setup_link_unusable', 'model_unavailable',

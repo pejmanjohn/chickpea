@@ -1,9 +1,8 @@
 import { createHash } from 'node:crypto';
 import type { z } from 'zod';
 
-import { formatChangeSetProposal } from '../change-set-presentation.ts';
 import { managementOriginKey } from '../contracts.ts';
-import { MARKDOWN_PRESENTATION_DIALECT } from '../markdown-presentation.ts';
+import { formatMarkdownChangeSetProposal } from '../markdown-presentation.ts';
 import {
   ManagementError,
   type ApplyWorkspaceChangesResult,
@@ -17,7 +16,7 @@ import {
 } from '../types.ts';
 import { channelNames } from '../channel-names.ts';
 import { confirmationAsk, turnsAgentOff } from './confirmation-ask.ts';
-import { fail, fiveZeroCode, versionToken, type McpErrorCode } from './conventions.ts';
+import { fail, fiveZeroCode, serviceCodeRetryable, versionToken, type McpErrorCode } from './conventions.ts';
 import { agentAvatar, agentLinks, agentStatus, type FiveZeroDeps } from './reads.ts';
 import type * as schemas from './schemas.ts';
 
@@ -193,7 +192,7 @@ async function confirmationResult(
     ...(agent ? { agent } : {}),
     confirmation: {
       confirmToken: pending.proposalId,
-      preview: formatChangeSetProposal(preview, CONFIRMATION_DIALECT),
+      preview: formatMarkdownChangeSetProposal(preview),
       expiresAt: new Date(result.confirmation.expiresAt).toISOString(),
       // Admin has a button for every change that waits here but deleting an Agent.
       inAdmin: !preview.changes.some(({ operationKind }) => operationKind === 'delete_agent'),
@@ -219,13 +218,6 @@ async function agentChannels(
     .map(({ label }) => ({ name: label })));
 }
 
-/** The 4.x preview, closing with a line for the person instead of a tool name. */
-const CONFIRMATION_DIALECT = {
-  ...MARKDOWN_PRESENTATION_DIALECT,
-  approvalInstruction: 'Nothing changes until you confirm.',
-  truncatedApprovalInstruction: 'Nothing changes until you confirm.',
-};
-
 export const EXPIRED_NEXT_STEP = 'Call the tool that proposed the change again, with a new idempotencyKey, for a fresh preview and confirmToken.';
 
 /**
@@ -245,9 +237,13 @@ const NEXT_STEPS: Partial<Record<McpErrorCode, string>> = {
   confirmation_expired: EXPIRED_NEXT_STEP,
 };
 
+/** Slack refused the change for a reason that stays: the message says what has to change first. */
+const SLACK_REFUSED_NEXT_STEP = 'Retrying will not help, and neither will opening the DM in Slack. Tell the person what the message says to do.';
+
 /** The change did not apply: its outcome as the 5.0 error. */
 function failedOutcome(outcome: ManagementItemOutcome): never {
-  const code = fiveZeroCode(outcome.code ?? 'operation_failed');
+  const serviceCode = outcome.code ?? 'operation_failed';
+  const code = fiveZeroCode(serviceCode);
   // A call sent again after its confirmation was retired.
   const retired = outcome.code === 'proposal_stale';
   const message = retired ? STALE_CONFIRMATION
@@ -257,8 +253,10 @@ function failedOutcome(outcome: ManagementItemOutcome): never {
   const nextStep = outcome.code === 'removal_incomplete'
     ? 'Call remove_connection again with a new idempotencyKey, then confirm_change. Resending this call replays this result.'
     : outcome.code === 'agent_off' ? AGENT_OFF_NEXT_STEP
-      : retired ? STALE_NEXT_STEP : NEXT_STEPS[code];
+      : outcome.code === 'slack_refused' ? SLACK_REFUSED_NEXT_STEP
+        : retired ? STALE_NEXT_STEP : NEXT_STEPS[code];
   fail(code, message, {
+    retryable: serviceCodeRetryable(serviceCode),
     ...(nextStep ? { nextStep } : {}),
     ...(outcome.links?.admin ? { fix: { label: 'Open Chickpea Admin', url: outcome.links.admin } } : {}),
   });

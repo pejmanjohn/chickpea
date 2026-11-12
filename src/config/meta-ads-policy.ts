@@ -22,8 +22,11 @@ export const META_ADS_WRITE_TOOL_EFFECTS = {
 
 /** Tools reviewed against Meta's official Ads MCP documentation. */
 export const META_ADS_REVIEWED_TOOL_EFFECTS = {
+  ads_account_get_activity_logs: 'read',
+  ads_get_ad_account_custom_audiences: 'read',
   ads_get_ad_accounts: 'read',
   ads_get_ad_entities: 'read',
+  ads_get_customconversions: 'read',
   ads_get_field_context: 'read',
   ads_get_opportunity_score: 'read',
   ads_insights_advertiser_context: 'read',
@@ -135,28 +138,137 @@ const META_ADS_WRITE_SCHEMA_CONTRACTS = {
   },
 } as const satisfies Readonly<Record<keyof typeof META_ADS_WRITE_TOOL_EFFECTS, MetaAdsWriteSchemaContract>>;
 
-const META_ADS_HELPER_RUNTIME_ARGUMENTS: Readonly<Record<string, readonly string[]>> = {
-  [META_ADS_ACCOUNT_HELPER]: ['advertiser_request', 'client_conversation_id'],
-  [META_ADS_FIELD_HELPER]: ['advertiser_request', 'client_conversation_id', 'field_names'],
-} as const;
-
 /**
- * Authenticated Meta schemas include correlation metadata and recognized
- * entity filters whose names end in `_id`/`_ids`. Entity-filter semantics are
- * not used as account-scope evidence: those arguments remain unavailable at
- * runtime so callers can only target the exact constrained `ad_account_id`.
+ * The arguments each reviewed tool may send: what the model is shown and what a
+ * call may carry. Anything else in Meta's live schema stays hidden and refused
+ * until it is reviewed into this list, so a tool can't gain an input when Meta
+ * adds one. A tool whose live schema requires another argument is unavailable.
+ *
+ * Tools reviewed before Meta's November change keep the names their schemas
+ * listed then, minus the entity filters and alternate routes Chickpea never
+ * sends (`object_ids`, `entity_ids`, and each write's `blockedRuntimeFields`).
+ * Custom audiences and custom conversions, reviewed in November, keep their
+ * live names minus `dataset_id` and Meta's November correlation fields
+ * (`advertiser_job`, `after_answer_offer_report`, `scheduled_task_run`), which
+ * no tool sends. The activity log sends its time window, category and limit
+ * only: no `object_id` or `user_id` filter and no correlation field. The
+ * helpers send request metadata only: no pagination.
  */
-const META_ADS_NON_ACCOUNT_ID_ARGUMENTS = {
-  ads_get_ad_accounts: [],
-  ads_get_ad_entities: ['client_conversation_id', 'object_ids'],
-  ads_get_field_context: [],
-  ads_get_opportunity_score: ['client_conversation_id'],
-  ads_insights_advertiser_context: ['client_conversation_id', 'entity_ids'],
-  ads_insights_anomaly_signal: ['client_conversation_id', 'entity_ids'],
-  ads_insights_auction_ranking_benchmarks: ['client_conversation_id', 'entity_ids'],
-  ads_insights_industry_benchmark: ['client_conversation_id', 'entity_ids'],
-  ads_insights_performance_trend: ['client_conversation_id', 'entity_ids'],
-} as const satisfies Readonly<Partial<Record<keyof typeof META_ADS_REVIEWED_TOOL_EFFECTS, readonly string[]>>>;
+const META_ADS_SENDABLE_ARGUMENTS = {
+  ads_account_get_activity_logs: [
+    'ad_account_id', 'end_time', 'event_category', 'limit', 'start_time',
+  ],
+  ads_get_ad_account_custom_audiences: [
+    'ad_account_id', 'advertiser_request', 'client_conversation_id', 'cursor', 'limit', 'subtype_filter',
+  ],
+  ads_get_ad_accounts: [
+    'advertiser_request', 'client_conversation_id',
+  ],
+  ads_get_ad_entities: [
+    'ad_account_id', 'advertiser_request', 'breakdowns', 'client_conversation_id', 'cursor', 'date_preset',
+    'fields', 'filtering', 'include_additional_context', 'level', 'limit', 'object_state', 'sort',
+    'time_increment', 'time_range',
+  ],
+  ads_get_customconversions: [
+    'ad_account_id', 'advertiser_request', 'client_conversation_id', 'cursor', 'limit',
+  ],
+  ads_get_field_context: [
+    'advertiser_request', 'client_conversation_id', 'field_names',
+  ],
+  ads_get_opportunity_score: [
+    'ad_account_id', 'advertiser_request', 'client_conversation_id',
+  ],
+  ads_insights_advertiser_context: [
+    'ad_account_id', 'advertiser_request', 'client_conversation_id', 'date_from', 'date_preset', 'date_to',
+  ],
+  ads_insights_anomaly_signal: [
+    'ad_account_id', 'advertiser_request', 'client_conversation_id',
+  ],
+  ads_insights_auction_ranking_benchmarks: [
+    'ad_account_id', 'advertiser_request', 'client_conversation_id', 'date_from', 'date_preset', 'date_to',
+  ],
+  ads_insights_industry_benchmark: [
+    'ad_account_id', 'advertiser_request', 'analysis_metric', 'cas_segment', 'client_conversation_id',
+    'conversation_intent', 'conversation_topic', 'date_from', 'date_preset', 'date_to',
+    'optimization_goal_override',
+  ],
+  ads_insights_performance_trend: [
+    'ad_account_id', 'advertiser_request', 'analysis_level', 'analysis_metric', 'client_conversation_id',
+    'conversation_intent', 'conversation_topic', 'hide_ui',
+  ],
+  ads_create_campaign: [
+    'ad_account_id', 'adlabels', 'advertiser_request', 'budget_schedule_specs', 'buying_type',
+    'campaign_bid_strategy', 'campaign_daily_budget', 'campaign_lifetime_budget', 'campaign_name',
+    'campaign_optimization_type', 'campaign_spend_cap', 'campaign_start_time', 'campaign_stop_time',
+    'client_conversation_id', 'is_skadnetwork_attribution', 'is_using_l3_schedule', 'iterative_split_test_configs',
+    'objective', 'promoted_object', 'special_ad_categories', 'special_ad_category_country',
+  ],
+  ads_create_ad_set: [
+    'ad_account_id', 'ad_set_name', 'adjust_lookalikes', 'adlabels', 'adset_schedule', 'advertiser_request',
+    'attribution_spec', 'automatic_manual_state', 'bid_amount', 'bid_constraints', 'bid_strategy', 'billing_event',
+    'biz_ai_enabled_state', 'brand_safety_config', 'breakdown_effect_eligibility', 'budget_schedule_specs',
+    'budget_source', 'calling_settings', 'campaign_active_time', 'campaign_attribution', 'campaign_id',
+    'campaign_targeting_consolidation', 'client_conversation_id', 'contextual_bundling_spec',
+    'conversion_locations', 'conversion_value_expression_spec', 'cost_bidding_mode', 'creative_diversity_data',
+    'creative_diversity_label', 'creative_diversity_score', 'creative_fatigue_prediction_ple', 'creative_sequence',
+    'daily_budget', 'daily_imps', 'daily_min_spend_target', 'daily_spend_cap', 'destination_type',
+    'dsa_beneficiary', 'dsa_payor', 'end_time', 'existing_customer_budget_percentage', 'frequency_control_specs',
+    'guidance_lift_estimate', 'io_number', 'is_dynamic_creative', 'is_dynamic_creative_format_automation',
+    'is_dynamic_creative_optimization', 'is_incremental_attribution_enabled',
+    'is_lifetime_flex_with_valid_schedule', 'is_message_marketing', 'is_sac_cfca_terms_certified',
+    'lifetime_budget', 'lifetime_imps', 'lifetime_min_spend_target', 'lifetime_spend_cap',
+    'lightweight_split_test_options', 'low_creative_reach', 'marketing_goal', 'max_budget_spend_percentage',
+    'metrics_metadata', 'min_budget_spend_percentage', 'multi_event_conversion_attribution_window_seconds',
+    'multi_optimization_goal_weight', 'naming_template_custom_fields', 'optimization_goal',
+    'optimization_sub_event', 'pacing_type', 'partnership_ad_content_lists', 'placement', 'placement_soft_opt_out',
+    'promoted_object', 'relative_value', 'reporting_audience', 'saved_audience', 'shops_ads_metadata_tags',
+    'split_test_config_splits_index', 'start_time', 'targeting', 'targeting_as_signal',
+    'time_based_ad_rotation_id_blocks', 'time_based_ad_rotation_intervals', 'time_start', 'time_stop',
+    'time_suggestion', 'tune_for_category', 'value_rules_applied', 'value_rules_spec',
+  ],
+  ads_create_ad: [
+    'ad_account_id', 'ad_name', 'ad_schedule_end_time', 'ad_schedule_start_time', 'ad_set_id', 'adlabels',
+    'advertiser_request', 'bid_amount', 'client_conversation_id', 'conversion_domain', 'creative',
+    'display_sequence', 'engagement_audience', 'source_ad_id', 'tracking_specs',
+  ],
+  ads_update_entity: [
+    'ad_account_id', 'advertiser_request', 'client_conversation_id', 'entity_id', 'entity_type', 'fields',
+  ],
+  ads_activate_entity: [
+    'ad_account_id', 'advertiser_request', 'client_conversation_id', 'entity_id', 'entity_type',
+    'ignore_validation_errors',
+  ],
+  ads_create_creative: [
+    'ad_account_id', 'advantage_plus_creative', 'advantage_plus_creative_features', 'advertiser_request',
+    'call_to_action_type', 'cards', 'client_conversation_id', 'degrees_of_freedom_spec', 'description',
+    'display_link', 'facebook_partnership_ad', 'headline', 'image_hash', 'image_url', 'instagram_user_id',
+    'link_url', 'message', 'name', 'object_story_id', 'page_id', 'placement_videos', 'self_ai_disclosure',
+    'video_id',
+  ],
+  ads_boost_ig_post: [
+    'ad_account_id', 'ad_name', 'ad_set_name', 'advertiser_request', 'bid_amount', 'bid_strategy', 'billing_event',
+    'buying_type', 'call_to_action', 'campaign_bid_strategy', 'campaign_daily_budget', 'campaign_lifetime_budget',
+    'campaign_name', 'client_conversation_id', 'confirmed', 'daily_budget', 'destination_type', 'duration_days',
+    'end_time', 'ig_account_id', 'ig_media_id', 'lifetime_budget', 'objective', 'optimization_goal',
+    'promoted_object', 'special_ad_categories', 'start_time', 'targeting',
+  ],
+  ads_create_custom_audience: [
+    'ad_account_id', 'advertiser_request', 'audience_labels', 'client_conversation_id', 'customer_file_source',
+    'description', 'is_value_based', 'lookalike_ratio', 'name', 'origin_audience_id', 'prefill', 'retention_days',
+    'rule', 'subtype',
+  ],
+  ads_update_custom_audience: [
+    'advertiser_request', 'audience_labels', 'client_conversation_id', 'custom_audience_id', 'description', 'name',
+    'rule',
+  ],
+  ads_update_custom_audience_users: [
+    'advertiser_request', 'audience_id', 'client_conversation_id', 'customer_consent', 'data', 'debug_identifier',
+    'operation', 'schema',
+  ],
+  ads_delete_custom_audience: [
+    'advertiser_request', 'client_conversation_id', 'custom_audience_id',
+  ],
+} as const satisfies Readonly<Record<keyof typeof META_ADS_REVIEWED_TOOL_EFFECTS, readonly string[]>>;
 
 export class MetaAdsAccessPolicyError extends Error {
   constructor(message: string) {
@@ -285,44 +397,44 @@ export function metaAdsRuntimePolicyConstraint(
   return field ? normalizedConstraint(constraints, field) : undefined;
 }
 
-/** A supported tool has exactly one required top-level scalar account field. */
+/** A supported account-scoped tool's one required scalar account field. */
 export function metaAdsAccountField(tool: McpConnectionToolInfo): 'ad_account_id' | 'account_id' | undefined {
-  if (!metaAdsToolEffect(tool.name) || isMetaAdsAccountScopeTool(tool.name)) return undefined;
-  const schema = tool.inputSchema;
-  if (!schema || schema.ambiguous || !/^[a-f0-9]{64}$/.test(schema.fingerprint) ||
-      schema.accountFields.length !== 1) return undefined;
-  const [field] = schema.accountFields;
-  if (!field || field.type !== 'string' || !field.required) return undefined;
-  const names = schema.propertyNames;
-  if (!Array.isArray(names) || names.length === 0 || names.length > MAX_META_ADS_SCHEMA_PROPERTIES ||
-      new Set(names).size !== names.length || !names.includes(field.name) ||
-      names.some((value) => typeof value !== 'string' || value.length === 0 || value.length > 120)) {
-    return undefined;
-  }
-  return field.name;
+  if (isMetaAdsAccountScopeTool(tool.name) || !metaAdsToolSchemaSupported(tool)) return undefined;
+  return tool.inputSchema!.accountFields[0]!.name;
 }
 
-/** Authenticated schema admission for both scoped report tools and exact helpers. */
+/**
+ * Admission from a stored discovery. Discovery already refused a schema that
+ * requires an argument outside the tool's sendable list; here the account
+ * field rule holds and no other account-shaped property exists. Other stored
+ * names are ignored: they are never shown or sent.
+ */
 export function metaAdsToolSchemaSupported(tool: McpConnectionToolInfo): boolean {
-  if (!metaAdsToolEffect(tool.name)) return false;
+  if (!isReviewedMetaAdsTool(tool.name)) return false;
   const schema = tool.inputSchema;
   if (!schema || schema.ambiguous || !/^[a-f0-9]{64}$/.test(schema.fingerprint)) return false;
-  if (isMetaAdsWriteTool(tool.name)) {
-    const contract = META_ADS_WRITE_SCHEMA_CONTRACTS[tool.name];
-    if (contract.accountScoped ? metaAdsAccountField(tool) === undefined : schema.accountFields.length !== 0) {
-      return false;
-    }
-    return contract.ownershipFields.every((field) => schema.propertyNames.includes(field)) &&
-      (!contract.entityType || schema.propertyNames.includes('entity_type'));
+  const names = schema.propertyNames;
+  if (!Array.isArray(names) || names.length > MAX_META_ADS_SCHEMA_PROPERTIES || new Set(names).size !== names.length ||
+      names.some((value) => typeof value !== 'string' || value.length === 0 || value.length > 120)) return false;
+  // Every account-shaped name must be one the contract reviewed, such as the
+  // account field itself or a boost's ig_account_id.
+  const sendable = metaAdsSendableArgumentNames(tool.name);
+  if (names.some((name) => /account/i.test(name) && !sendable.includes(name))) return false;
+  if (isMetaAdsAccountScopeTool(tool.name)) {
+    if (schema.accountFields.length !== 0) return false;
+  } else {
+    const [field] = schema.accountFields;
+    if (schema.accountFields.length !== 1 || !field || field.type !== 'string' || !field.required ||
+        !names.includes(field.name)) return false;
   }
-  if (!isMetaAdsHelperTool(tool.name)) return metaAdsAccountField(tool) !== undefined;
-  if (schema.accountFields.length !== 0) return false;
-  if (tool.name === META_ADS_ACCOUNT_HELPER) {
-    return schema.propertyNames.every((name) =>
-      [...(META_ADS_HELPER_RUNTIME_ARGUMENTS[META_ADS_ACCOUNT_HELPER] ?? []), 'cursor', 'limit'].includes(name));
-  }
-  return schema.propertyNames.every((name) =>
-    (META_ADS_HELPER_RUNTIME_ARGUMENTS[META_ADS_FIELD_HELPER] ?? []).includes(name));
+  const contract = metaAdsWriteSchemaContract(tool.name);
+  return !contract || (contract.ownershipFields.every((field) => names.includes(field)) &&
+    (!contract.entityType || names.includes('entity_type')));
+}
+
+/** The arguments a reviewed tool may send. Discovery refuses a tool that requires any other. */
+export function metaAdsSendableArgumentNames(name: string): readonly string[] {
+  return isReviewedMetaAdsTool(name) ? META_ADS_SENDABLE_ARGUMENTS[name] : [];
 }
 
 /** Trusted server-owned effect metadata for the reviewed Meta tool contract. */
@@ -330,23 +442,29 @@ export function metaAdsToolEffect(name: string): 'read' | 'write' | undefined {
   return isReviewedMetaAdsTool(name) ? META_ADS_REVIEWED_TOOL_EFFECTS[name] : undefined;
 }
 
+/** What a call to a tool whose stored discovery the contract admits may send. */
 export function metaAdsRuntimePropertyNames(
   connection: Pick<McpConnectionConfig, 'discoveredTools'>,
   name: string,
 ): string[] | undefined {
   const matches = connection.discoveredTools.filter((tool) => tool.name === name);
   if (matches.length !== 1 || !metaAdsToolSchemaSupported(matches[0]!)) return undefined;
-  if (isMetaAdsHelperTool(name)) {
-    const names = matches[0]!.inputSchema?.propertyNames ?? [];
-    const allowed = META_ADS_HELPER_RUNTIME_ARGUMENTS[name];
-    if (!allowed) return undefined;
-    return names.filter((value) => allowed.includes(value));
-  }
-  const names = matches[0]!.inputSchema?.propertyNames;
-  return Array.isArray(names) && names.length > 0 && names.length <= MAX_META_ADS_SCHEMA_PROPERTIES &&
-    names.every((value) => typeof value === 'string' && value.length > 0 && value.length <= 120)
-    ? [...new Set(names)].filter((value) => !metaAdsBlockedRuntimeArgumentNames(name).includes(value))
-    : undefined;
+  return [...metaAdsSendableArgumentNames(name)];
+}
+
+/**
+ * Whether a granted tool stays granted after rediscovery: the contract still
+ * admits its new schema, with the account field it had. A schema change alone
+ * doesn't drop it, because the arguments it may send come from the contract.
+ * A write's schema contract is part of admission.
+ */
+export function metaAdsGrantSurvivesDiscovery(
+  previous: McpConnectionToolInfo | undefined,
+  next: McpConnectionToolInfo,
+): boolean {
+  if (!previous?.inputSchema || !metaAdsToolSchemaSupported(next)) return false;
+  const accountFields = (tool: McpConnectionToolInfo) => JSON.stringify(tool.inputSchema!.accountFields.map(({ name }) => name));
+  return accountFields(previous) === accountFields(next);
 }
 
 export function isMetaAdsHelperTool(name: string): boolean {
@@ -445,21 +563,6 @@ export function assertMetaAdsHelperArguments(name: string, argumentsValue: unkno
       fields.every((field) => boundedFieldName(field)) && new Set(fields).size === fields.length;
     if (!valid) throw new Error(`Meta Ads helper ${name} has an invalid field_names value.`);
   }
-}
-
-/** Exact observed Meta ID-shaped fields that do not select the ad account. */
-export function metaAdsNonAccountIdArgumentNames(name: string): readonly string[] {
-  return isReviewedMetaAdsTool(name) && Object.hasOwn(META_ADS_NON_ACCOUNT_ID_ARGUMENTS, name)
-    ? META_ADS_NON_ACCOUNT_ID_ARGUMENTS[name as keyof typeof META_ADS_NON_ACCOUNT_ID_ARGUMENTS]
-    : [];
-}
-
-/** Optional entity filters stay unavailable even after their schema is accepted. */
-export function metaAdsBlockedRuntimeArgumentNames(name: string): readonly string[] {
-  const nonAccountIds = metaAdsNonAccountIdArgumentNames(name)
-    .filter((value) => value !== 'client_conversation_id');
-  const blockedWriteFields = metaAdsWriteSchemaContract(name)?.blockedRuntimeFields ?? [];
-  return [...new Set([...nonAccountIds, ...blockedWriteFields])];
 }
 
 export function normalizeMetaAdsAccountIds(ids: readonly string[]): string[] {

@@ -93,9 +93,9 @@ const FILE_REPAIR_TOOLS = new Set([
  * Tools after which the host can replace the model's draft at delivery: an
  * Agent creation swaps in the welcome, and a front-desk hand-off swaps in its
  * line. A streamed answer could then be overwritten, so a later declaration
- * is refused and the reply stays terminal. A memory write is not one: a
- * verified own write delivers the answer as written, and a lease that fails
- * instead replaces a streamed answer with the failure notice, as for any turn.
+ * is refused and the reply stays terminal. A memory write is not one: the
+ * answer delivers as written, and a lease that fails on lost access replaces
+ * a streamed answer with the failure notice, as for any turn.
  */
 export const DRAFT_REPLACING_TOOL_NAMES: ReadonlySet<string> = new Set([
   'apply_workspace_changes',

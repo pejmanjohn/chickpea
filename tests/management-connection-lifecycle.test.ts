@@ -22,7 +22,6 @@ import { createLiveWorkspaceManagementService } from '../src/management/live-ser
 import { createWorkspaceManagementMcpServer } from '../src/management/mcp.ts';
 import { executeHostSlackManagementApproval } from '../src/management/slack-approval.ts';
 import {
-  invokeWorkspaceManagementTool,
   type WorkspaceManagementToolArguments,
   type WorkspaceManagementToolName,
 } from '../src/management/tool-adapter.ts';
@@ -36,6 +35,7 @@ import type {
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { withEnv } from './helpers/env.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
+import { confirmThroughService, invokeAsDoor } from './helpers/management-service-result.ts';
 import { storeAsPersonalLogin } from './helpers/website-logins.ts';
 
 type Fixture = Awaited<ReturnType<typeof createManagementAdapterFixture>>;
@@ -79,12 +79,19 @@ async function call<TName extends WorkspaceManagementToolName>(
   name: TName,
   args: WorkspaceManagementToolArguments[TName],
 ): Promise<unknown> {
-  const response = await invokeWorkspaceManagementTool({
+  const response = await invokeAsDoor({
     service: f.service,
     resolveContext: async () => context,
   }, name, args);
   assert.equal(response.ok, true, JSON.stringify(response));
   return (response as { result: unknown }).result;
+}
+
+/** Confirms a held change over MCP, as 5.0's confirm_change does. */
+async function confirmChange(f: Fixture, context: ManagementActorContext, proposalId: string): Promise<ManagementApplyResult> {
+  const response = await confirmThroughService(f.service, context, proposalId);
+  assert.equal(response.ok, true, JSON.stringify(response));
+  return (response as { result: ManagementApplyResult }).result;
 }
 
 async function callRaw<TName extends WorkspaceManagementToolName>(
@@ -93,7 +100,7 @@ async function callRaw<TName extends WorkspaceManagementToolName>(
   name: TName,
   args: WorkspaceManagementToolArguments[TName],
 ) {
-  return invokeWorkspaceManagementTool({
+  return invokeAsDoor({
     service: f.service,
     resolveContext: async () => context,
   }, name, args);
@@ -453,9 +460,7 @@ test('disconnect_connection confirms on MCP, then revokes the account as Admin d
       /^\*\*Proposed changes\*\*\nDisconnect \*\*Linear\*\* from \*\*Ops\*\* \(@ops\)\. The Agent loses access to it, and schedules that use it pause\.\n/);
     assert.equal((await f.config.listConnectionAccounts(TEAM))[0]?.lifecycle, 'ready', 'nothing applies before confirm');
 
-    const confirmed = await call(f, mcpContext(f.owner), 'confirm_workspace_change', {
-      proposalId: pending.outcomes[0]!.proposalId!,
-    }) as ManagementApplyResult;
+    const confirmed = await confirmChange(f, mcpContext(f.owner), pending.outcomes[0]!.proposalId!);
     assert.equal(confirmed.status, 'completed', JSON.stringify(confirmed.outcomes));
     const account = (await f.config.listConnectionAccounts(TEAM)).find(({ id }) => id === linear.id);
     assert.equal(account?.lifecycle, 'revoked');
@@ -515,9 +520,7 @@ test('an Owner or Admin can disconnect another member\'s personal connection, as
       });
       const pending = await apply(f, mcpContext(admin), key, [{ ...disconnect[0]!, connectionId: bound.id }]);
       assert.equal(pending.status, 'confirmation_required', `${key}: ${JSON.stringify(pending.outcomes)}`);
-      const confirmed = await call(f, mcpContext(admin), 'confirm_workspace_change', {
-        proposalId: pending.outcomes[0]!.proposalId!,
-      }) as ManagementApplyResult;
+      const confirmed = await confirmChange(f, mcpContext(admin), pending.outcomes[0]!.proposalId!);
       assert.equal(confirmed.status, 'completed', `${key}: ${JSON.stringify(confirmed.outcomes)}`);
       assert.equal((await f.config.listConnectionAccounts(TEAM)).find(({ id }) => id === bound.id)?.lifecycle, 'revoked');
     }
@@ -595,7 +598,7 @@ async function removeConnection(
 ) {
   const tool = (as: ManagementActorContext) =>
     (name: WorkspaceManagementToolName, args: unknown) =>
-      invokeWorkspaceManagementTool({ service, resolveContext: async () => as }, name, args as never);
+      invokeAsDoor({ service, resolveContext: async () => as }, name, args as never);
   const proposed = await tool(context)('apply_workspace_changes', {
     idempotencyKey: `remove-${connectionId}-${++removals}`,
     operations: [{ itemId: 'remove', kind: 'disconnect_connection', agentId, connectionId }],
@@ -607,7 +610,7 @@ async function removeConnection(
   const approver = context.origin.kind === 'slack'
     ? { ...context, origin: { ...context.origin, approvedProposalId: proposalId } }
     : context;
-  return tool(approver)('confirm_workspace_change', { proposalId });
+  return confirmThroughService(service, approver, proposalId);
 }
 
 function notionAccount(id: string, accountRef: string) {
@@ -805,7 +808,7 @@ async function removeOver(
     return { done: false, message: error.message, code: error.code, ...(error.nextStep ? { nextStep: error.nextStep } : {}) };
   }
   // On Slack the person's Approve click applies the change, and the host's receipt is all they see.
-  const proposed = await invokeWorkspaceManagementTool({
+  const proposed = await invokeAsDoor({
     service,
     resolveContext: async () => slackContext(f.owner, agent.id),
   }, 'apply_workspace_changes', {
@@ -1060,9 +1063,7 @@ test('inspect lists website logins without secrets, and removal confirms as in A
       /^\*\*Proposed changes\*\*\nRemove the \*\*portal\.example\.com\*\* login from \*\*Ops\*\* \(@ops\)\. If no other Agent uses it, the saved sign-in is deleted too\.\n/);
     assert.equal((await listWebsiteLogins(store)).length, 2, 'nothing applies before confirm');
 
-    const confirmed = await call(f, mcpContext(f.owner), 'confirm_workspace_change', {
-      proposalId: pending.outcomes[0]!.proposalId!,
-    }) as ManagementApplyResult;
+    const confirmed = await confirmChange(f, mcpContext(f.owner), pending.outcomes[0]!.proposalId!);
     assert.equal(confirmed.status, 'completed', JSON.stringify(confirmed.outcomes));
     assert.deepEqual((await f.config.getAgent(agent.id)).websiteLogins, [{ loginId: personal.id, level: 'check', enabled: true }]);
     assert.deepEqual((await listWebsiteLogins(store)).map(({ id }) => id), [personal.id], 'the unused login and its secret are deleted');
@@ -1141,7 +1142,7 @@ test('deleting an Agent over the management door refuses a member a login, even 
       },
     });
     const live = (context: ManagementActorContext, name: WorkspaceManagementToolName, args: unknown) =>
-      invokeWorkspaceManagementTool({ service, resolveContext: async () => context }, name, args as never);
+      invokeAsDoor({ service, resolveContext: async () => context }, name, args as never);
 
     const proposed = await live(mcpContext(holder), 'apply_workspace_changes', {
       idempotencyKey: 'delete-desk',
@@ -1149,7 +1150,7 @@ test('deleting an Agent over the management door refuses a member a login, even 
     });
     assert.equal(proposed.ok, true, JSON.stringify(proposed));
     const proposalId = (proposed as { result: ManagementApplyResult }).result.outcomes[0]!.proposalId!;
-    const refused = await live(mcpContext(holder), 'confirm_workspace_change', { proposalId });
+    const refused = await confirmThroughService(service, mcpContext(holder), proposalId);
     assert.match(JSON.stringify(refused),
       /"code":"forbidden".*This Agent uses a website login you can't remove\. Ask an Owner or Admin to remove it first\./);
     assert.equal((await f.config.getAgent(agent.id)).websiteLogins?.length, 1, 'the Agent is kept');

@@ -54,7 +54,8 @@ export async function websiteLoginsForTurn(
 }
 
 /**
- * Whether a run grants a website login, for "Help improve Chickpea". The
+ * Whether a run grants a website login, for "Help improve Chickpea": a copy
+ * of such a run withholds its browser steps (`RunReviewStart`). The
  * Agent's enabled grants in the config the plan froze decide it, so a login
  * read that failed, or a browser key removed, and so froze no logins, still
  * counts. The plan's own logins count too.

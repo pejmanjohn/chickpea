@@ -1179,6 +1179,52 @@ test('model_step logs each model request\'s first token, first text, duration, t
   assert.equal(records[0]!.modelToken, 'openrouter_synthetic_model_2_5');
 });
 
+// Defects caught: no size when a tool result overflows the window (#775's
+// activity log), the largest result's tool misnamed, an image's data not
+// counted, text in the record.
+test('model_step carries its request\'s size and its largest tool result\'s size and tool, never their text', () => {
+  const time = clock(0);
+  const { records, sink } = captureSink();
+  const steps = new ModelStepMarks(time.now, sink);
+  const input = {
+    systemPrompt: 'Complete the verification.',
+    messages: [
+      { role: 'user', content: 'Complete the verification.' },
+      { role: 'assistant', content: [{ type: 'toolCall', id: 'call_a', name: 'mcp__meta-ads__activity_log', arguments: {} }] },
+      { role: 'toolResult', toolCallId: 'call_a', toolName: 'mcp__meta-ads__activity_log', isError: false,
+        content: [{ type: 'text', text: `U_LATENCY ${'é'.repeat(1_000)}` }] },
+      { role: 'toolResult', toolCallId: 'call_b', toolName: 'slack_read', isError: false,
+        content: [{ type: 'text', text: 'C_LATENCY' }, { type: 'image', data: 'A'.repeat(3_000), mimeType: 'image/png' }] },
+    ],
+    tools: [{ name: 'slack_read', description: 'Complete the verification.', parameters: { type: 'object' } }],
+  };
+  const turn = (turnId: string) => flueEvent({ type: 'turn', turnId, purpose: 'agent', durationMs: 2_400, isError: true,
+    request: { providerId: 'openai', providerName: 'openai', requestedModel: 'gpt-6.1-terra', api: 'openai-responses' },
+    response: {} });
+  steps.observe(flueEvent({ type: 'turn_request', turnId: 'step_tools', purpose: 'agent', request: { input } }));
+  steps.observe(turn('step_tools'));
+  steps.observe(flueEvent({ type: 'turn_request', turnId: 'step_plain', purpose: 'agent',
+    request: { input: { systemPrompt: 'x', messages: [{ role: 'user', content: 'x' }], tools: [] } } }));
+  steps.observe(turn('step_plain'));
+
+  const sizes = records.map(({ requestBytes, toolResults, largestToolResultBytes, largestToolResultTool }) =>
+    ({ requestBytes, toolResults, largestToolResultBytes, largestToolResultTool }));
+  assert.deepEqual(sizes, [{
+    requestBytes: Buffer.byteLength(JSON.stringify(input)),
+    toolResults: 2,
+    largestToolResultBytes: 'C_LATENCY'.length + 3_000,
+    largestToolResultTool: 'slack_read',
+  }, {
+    requestBytes: Buffer.byteLength(JSON.stringify({ systemPrompt: 'x', messages: [{ role: 'user', content: 'x' }], tools: [] })),
+    toolResults: 0,
+    largestToolResultBytes: undefined,
+    largestToolResultTool: undefined,
+  }]);
+  assert.equal(records[0]!.outcome, 'error', 'a failed step carries the sizes that may explain it');
+  for (const record of records) assertContentFree(record);
+  assert.doesNotMatch(JSON.stringify(records), /é|AAAA/);
+});
+
 test('turn_latency omits durations it cannot measure and never throws', () => {
   const time = clock(5_000);
   const { records, sink } = captureSink();

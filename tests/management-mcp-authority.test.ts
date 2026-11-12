@@ -7,7 +7,6 @@ import type { ManagementApiConnection, ManagementMcpConnection } from '../src/ma
 import { AGENT_AUTHORING_GUIDE_VERSION } from '../src/management/agent-authoring/index.ts';
 import type { WorkspaceManagementServiceInput } from '../src/management/service.ts';
 import {
-  invokeWorkspaceManagementTool,
   type WorkspaceManagementToolArguments,
   type WorkspaceManagementToolName,
 } from '../src/management/tool-adapter.ts';
@@ -19,6 +18,7 @@ import type {
   ManagementOperation,
 } from '../src/management/types.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
+import { confirmThroughService, invokeAsDoor } from './helpers/management-service-result.ts';
 
 type Fixture = Awaited<ReturnType<typeof createManagementAdapterFixture>>;
 type Person = Fixture['owner'] | Fixture['admin'];
@@ -67,7 +67,7 @@ async function call<TName extends WorkspaceManagementToolName>(
   name: TName,
   args: WorkspaceManagementToolArguments[TName],
 ): Promise<{ ok: true; result: unknown } | { ok: false; error: { code: string; message: string } }> {
-  return invokeWorkspaceManagementTool({
+  return invokeAsDoor({
     service: f.service,
     resolveContext: async () => mcpContext(person),
   }, name, args);
@@ -75,7 +75,6 @@ async function call<TName extends WorkspaceManagementToolName>(
 
 interface ToolResults {
   apply_workspace_changes: ManagementApplyResult;
-  confirm_workspace_change: ManagementApplyResult;
   undo_workspace_change: ManagementApplyResult;
   import_skill: ImportSkillResult;
 }
@@ -106,7 +105,9 @@ async function confirm(
   person: Pick<Person, 'user' | 'membership'>,
   proposalId: string,
 ): Promise<ManagementApplyResult> {
-  return succeed(f, person, 'confirm_workspace_change', { proposalId });
+  const response = await confirmThroughService(f.service, mcpContext(person), proposalId);
+  assert.equal(response.ok, true, JSON.stringify(response));
+  return (response as { result: ManagementApplyResult }).result;
 }
 
 function assertApplied(result: ManagementApplyResult, label: string): void {
@@ -663,7 +664,7 @@ test('MCP sends back a destructive change that cannot share a confirmation with 
     ['failed', 'revision_conflict'],
   ]);
   assert.match(result.outcomes[0]?.instruction ?? '', /other operations in this call were handled without it/);
-  assert.match(result.outcomes[0]?.instruction ?? '', /Resend only this operation, in its own apply_workspace_changes call/);
+  assert.match(result.outcomes[0]?.instruction ?? '', /Resend only this operation, in a call of its own\./);
   assert.deepEqual(await connectedIds(f, agent.id, 'mcp'), ['knowledge']);
 }));
 
@@ -677,7 +678,7 @@ test('MCP keeps only the newest destructive change confirmable', () => withFixtu
     itemId: 'delete', kind: 'delete_agent', agentId: second.id, expectedRevision: second.revision,
   }]), 'second delete');
 
-  const stale = await call(f, f.owner, 'confirm_workspace_change', { proposalId: firstProposal });
+  const stale = await confirmThroughService(f.service, mcpContext(f.owner), firstProposal);
   assert.equal(stale.ok ? undefined : stale.error.code, 'proposal_stale');
   assert.equal((await f.config.getAgent(first.id)).id, first.id);
 }));
@@ -694,8 +695,9 @@ test('MCP retries a direct archive whose first attempt failed after the write', 
       agentId: agent.id,
       expectedRevision: agent.revision,
     }];
-    const lost = await call(f, f.owner, 'apply_workspace_changes', { idempotencyKey: 'archive-retry', operations });
-    assert.equal(lost.ok ? undefined : lost.error.code, 'management_error');
+    // The lost response reaches the 5.0 write as an unexpected error, which it reports as temporarily_unavailable.
+    await assert.rejects(call(f, f.owner, 'apply_workspace_changes', { idempotencyKey: 'archive-retry', operations }),
+      /The archive response was lost after the write\./);
     assert.equal((await f.config.getAgent(agent.id)).lifecycle, 'archived');
 
     assertApplied(await apply(f, f.owner, 'archive-retry', operations), 'retried archive');

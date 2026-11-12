@@ -92,7 +92,7 @@ test('a Member cannot turn Chickpea back on in a Channel an Owner or Admin turne
   const member = secondPersonMcp(f);
 
   assertRefusedToMember(await putChannel(f, member, teamId, 'member-on', { lifecycle: 'active' }), teamId);
-  assert.equal(await lifecycle(f, teamId), 'archived', 'apply_workspace_changes leaves it off');
+  assert.equal(await lifecycle(f, teamId), 'archived', 'MCP leaves it off');
 
   assertRefusedToMember(
     await putChannel(f, member, teamId, 'member-relabel-off', { lifecycle: 'archived', label: 'renamed' }),

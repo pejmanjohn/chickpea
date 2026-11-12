@@ -643,6 +643,10 @@ const FLUE_INSTANCE_NAMING_SITES: Record<string, { covered: string; sites: reado
     covered: "a log correlation of a running Flue instance's own observation",
     sites: ["emitRuntimeCorrelation: opaqueId('flueinstance', observation.instanceId)"],
   },
+  'config/mcp-unavailable.ts': {
+    covered: "a dropped-connection log line of a running Flue instance's own observation",
+    sites: ["emitMcpConnectionUnavailable: opaqueId('flueinstance', observation.instanceId)"],
+  },
 };
 
 test('every Flue instance Core names comes from a recorded plan or envelope, never a fallback', () => {

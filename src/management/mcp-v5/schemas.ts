@@ -47,10 +47,18 @@ export const listAgentsInput = z.strictObject({
   include: z.enum(['all', 'mine']).optional()
     .describe('all (the default) lists every Agent you can use; mine lists the ones you created.'),
   includeArchived: z.boolean().optional().describe('true lists archived Agents too, which are left out by default.'),
-  cursor: z.string().regex(/^[1-9]\d{0,5}$/).optional()
+  cursor: z.string().min(1).max(256).optional()
     .describe('The nextCursor of the previous page, with the same include and includeArchived.'),
 });
-export const getAgentInput = z.strictObject({ agentId: zAgentId });
+const zSkillName = z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(64);
+export const getAgentInput = z.strictObject({
+  agentId: zAgentId,
+  includeSkillText: z.boolean().optional()
+    .describe('true adds each skill\'s text, its instructions, while the result has room; one that does not fit says so.'),
+  skill: zSkillName.optional().describe('Only this skill\'s text, from offset: how to read a long one in parts.'),
+  offset: z.number().int().min(0).max(1_000_000).optional()
+    .describe('With skill, where to start in its text: the nextOffset of the last read. 0 by default.'),
+});
 export const listServicesInput = z.strictObject({
   search: z.string().max(120).optional().describe('Words to match in a service\'s name or description.'),
 });
@@ -202,7 +210,9 @@ export const setAgentSkillInput = z.strictObject({
 });
 export const saveScheduleInput = z.strictObject({
   agentId: zAgentId,
-  channelId: zChannelId.optional().describe('Where it posts: a Channel the Agent answers in. Required for a new schedule.'),
+  channelId: zChannelId.optional().describe('Where it posts: a Channel the Agent answers in. A new schedule needs channelId or dm.'),
+  dm: z.literal('me').optional()
+    .describe('"me" posts in your own direct messages with the Agent, in a new thread it starts there, instead of a Channel. Only for a new schedule.'),
   scheduleId: zScheduleId.optional().describe('Omit to create a schedule; set to change one.'),
   version: zScheduleVersion.optional().describe('Required with scheduleId: the version list_schedules returned.'),
   name: zText(200),
@@ -415,6 +425,11 @@ export const getAgentOutput = z.strictObject({
     description: z.string(),
     enabled: z.boolean(),
     from: z.enum(['github', 'suggested', 'custom']),
+    text: z.string().nullable().optional()
+      .describe('With includeSkillText: its text, or the part from offset; null when it did not fit in this result.'),
+    size: z.number().int().optional().describe('With includeSkillText: the length of its whole text, in characters.'),
+    truncated: z.literal(true).optional().describe('text is not all of it; nextStep says how to read the rest.'),
+    nextOffset: z.number().int().optional().describe('Send it as offset, with this skill, for the next part.'),
   })),
   connections: z.array(z.strictObject({
     connectionId: z.string(),
@@ -444,6 +459,7 @@ export const getAgentOutput = z.strictObject({
   channels: z.array(z.strictObject({ channelId: z.string(), name: z.string().optional() }))
     .describe('The Slack Channels it answers in, besides direct messages.'),
   links: zLinks.optional(),
+  nextStep: z.string().optional().describe('With includeSkillText, when a skill\'s text is cut or left out: how to read the rest.'),
 });
 
 export const listServicesOutput = z.strictObject({
@@ -559,7 +575,7 @@ export const getSetupStatusOutput = z.strictObject({
   }).optional().describe('The Agent\'s connection this link sets up, as it is now. ready means it works, even when it was set up another way and the link is still waiting.'),
 });
 
-/** The recipe v2 document, unchanged from `export_workspace_recipe`. */
+/** The recipe v2 document, as the service exports it. */
 export const exportAgentsOutput = z.looseObject({ schemaVersion: z.number() });
 
 export const listConnectedAppsOutput = z.strictObject({
@@ -586,7 +602,7 @@ export const proposeAgentOutput = z.strictObject({
     needs: z.array(z.strictObject({ service: z.string(), name: z.string(), connected: z.literal(false) })),
     answersIn: z.array(z.strictObject({ channelId: z.string(), name: z.string().optional() })),
     model: z.string().optional(),
-    workspaceName: z.string().optional().describe('The Slack workspace whose people can message it once it exists.'),
+    workspaceName: z.string().optional().describe('The Slack workspace it would join. Until it joins a Channel, only its creator can message it.'),
     avatarUrl: z.string().optional().describe('The default picture it gets in Slack; create.arguments.avatar names it.'),
   }),
   create: z.strictObject({ tool: z.literal('create_agent'), arguments: createAgentInputSchema }),

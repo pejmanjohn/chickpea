@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { invokeWorkspaceManagementTool } from '../src/management/tool-adapter.ts';
 import type {
   ManagementActorContext,
   ManagementApplyResult,
@@ -9,6 +8,7 @@ import type {
 } from '../src/management/types.ts';
 import { authoringProposalMetadata } from './helpers/agent-authoring.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
+import { confirmThroughService, invokeAsDoor } from './helpers/management-service-result.ts';
 
 const agentInput = {
   id: 'agent_support',
@@ -36,12 +36,16 @@ function mcpContext(f: Fixture, clientId: string): ManagementActorContext {
   };
 }
 
+function adminContext(f: Fixture, sessionId: string): ManagementActorContext {
+  return { ...mcpContext(f, sessionId), origin: { kind: 'admin', sessionId } };
+}
+
 async function createAgentOverMcp(
   f: Fixture,
   clientId: string,
   idempotencyKey = 'links-create',
 ): Promise<ManagementApplyResult> {
-  const invocation = await invokeWorkspaceManagementTool({
+  const invocation = await invokeAsDoor({
     service: f.service,
     resolveContext: async () => mcpContext(f, clientId),
   }, 'apply_workspace_changes', {
@@ -160,9 +164,11 @@ test('reviewed proposals carry Slack and Markdown copy of the same change', asyn
   try {
     await createAgentOverMcp(f, 'links-proposal');
     const agent = await f.config.getAgent('agent_support');
-    const invocation = await invokeWorkspaceManagementTool({
+    // No MCP tool proposes a change set; an Admin context stands in for the set's own mechanics.
+    const reviewer = adminContext(f, 'links-proposal');
+    const invocation = await invokeAsDoor({
       service: f.service,
-      resolveContext: async () => mcpContext(f, 'links-proposal'),
+      resolveContext: async () => reviewer,
     }, 'propose_workspace_changes', {
       ...authoringProposalMetadata('links-proposal-edit'),
       operations: [{
@@ -184,15 +190,10 @@ test('reviewed proposals carry Slack and Markdown copy of the same change', asyn
     assert.match(proposal.presentation.markdown, /triage \\& billing \\<escalations\\>\./);
     assert.doesNotMatch(proposal.presentation.markdown, /&amp;|&lt;|&gt;/);
     assert.doesNotMatch(proposal.presentation.markdown, /Reply `approve`/);
-    assert.match(
-      proposal.presentation.markdown,
-      /call confirm_workspace_change with the proposalId/,
-    );
+    assert.equal(proposal.presentation.markdown.split('\n').at(-1), 'Nothing changes until you confirm.');
+    assert.doesNotMatch(proposal.presentation.markdown, /confirm_workspace_change/);
 
-    const confirmation = await invokeWorkspaceManagementTool({
-      service: f.service,
-      resolveContext: async () => mcpContext(f, 'links-proposal'),
-    }, 'confirm_workspace_change', { proposalId: proposal.proposalId });
+    const confirmation = await confirmThroughService(f.service, reviewer, proposal.proposalId);
     assert.equal(confirmation.ok, true);
     const confirmed = confirmation.result as ManagementApplyResult;
     assert.equal(confirmed.status, 'completed');

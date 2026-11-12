@@ -1,15 +1,15 @@
 import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 
-import { createMcpHandler, type Transport } from '@modelcontextprotocol/server';
+import { createMcpHandler, McpServer, type Transport } from '@modelcontextprotocol/server';
+import { z } from 'zod';
 
 import type { McpAuthenticatedPrincipal } from '../src/auth/mcp-oauth-routes.ts';
 import {
   createWorkspaceManagementMcpServer,
-  WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI,
 } from '../src/management/mcp.ts';
 import { observeMcpRequests } from '../src/management/mcp-request-telemetry.ts';
-import { DISCOVERY_GUIDE_URI } from '../src/management/agent-authoring/index.ts';
+import { AGENT_AUTHORING_GUIDE_URI, DISCOVERY_GUIDE_URI } from '../src/management/agent-authoring/index.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 
 const LEGACY = '2025-11-25';
@@ -95,24 +95,24 @@ for (const protocol of [LEGACY, MODERN]) {
     const { fetch, metrics, principal } = await harness(t, `refused-${protocol}`);
 
     const response = await post(fetch, protocol, 'tools/call', {
-      name: 'revoke_setup_link',
-      arguments: { setupOperationId: 'op_valid', reissue: SECRET_VALUE, [SECRET_KEY]: SECRET_VALUE },
-    }, { name: 'revoke_setup_link' });
+      name: 'cancel_setup_link',
+      arguments: { setupToken: 'op_valid', sendNewLink: SECRET_VALUE, [SECRET_KEY]: SECRET_VALUE },
+    }, { name: 'cancel_setup_link' });
     assert.equal(response.status, 200);
 
     assert.deepEqual(events(metrics, 'tool.call'), [], 'the handler never ran');
     const [refusal, ...extraRefusals] = events(metrics, 'tool.validation_failure');
     assert.deepEqual(extraRefusals, []);
     assert.equal(refusal?.surface, 'mcp');
-    assert.equal(refusal?.tool, 'revoke_setup_link');
+    assert.equal(refusal?.tool, 'cancel_setup_link');
     assert.equal(refusal?.code, 'validation_failed');
-    assert.ok(Array.isArray(refusal?.fields) && refusal.fields.includes('reissue'), JSON.stringify(refusal));
+    assert.ok(Array.isArray(refusal?.fields) && refusal.fields.includes('sendNewLink'), JSON.stringify(refusal));
     assert.ok(Array.isArray(refusal?.validationCodes) && refusal.validationCodes.length > 0);
 
     const [request, ...extraRequests] = requestMetrics(metrics);
     assert.deepEqual(extraRequests, []);
     assert.equal(request?.method, 'tools/call');
-    assert.equal(request?.tool, 'revoke_setup_link');
+    assert.equal(request?.tool, 'cancel_setup_link');
     assert.equal(request?.outcome, 'input_refused');
     assert.equal(typeof request?.durationMs, 'number');
     assertNoValues(metrics, principal);
@@ -121,18 +121,18 @@ for (const protocol of [LEGACY, MODERN]) {
   test(`a valid tools/call emits tool.call and a success request metric (${protocol})`, async (t) => {
     const { fetch, metrics, principal } = await harness(t, `valid-${protocol}`);
 
-    await post(fetch, protocol, 'tools/call', { name: 'inspect_workspace', arguments: {} }, {
-      name: 'inspect_workspace',
+    await post(fetch, protocol, 'tools/call', { name: 'get_workspace', arguments: {} }, {
+      name: 'get_workspace',
     });
 
     const [call] = events(metrics, 'tool.call');
-    assert.equal(call?.tool, 'inspect_workspace');
+    assert.equal(call?.tool, 'get_workspace');
     assert.equal(call?.outcome, 'success');
     assert.deepEqual(events(metrics, 'tool.validation_failure'), []);
     const [request, ...extra] = requestMetrics(metrics);
     assert.deepEqual(extra, []);
     assert.equal(request?.method, 'tools/call');
-    assert.equal(request?.tool, 'inspect_workspace');
+    assert.equal(request?.tool, 'get_workspace');
     assert.equal(request?.outcome, 'success');
     assert.equal(typeof request?.durationMs, 'number');
     assertNoValues(metrics, principal);
@@ -140,43 +140,50 @@ for (const protocol of [LEGACY, MODERN]) {
 }
 
 test('a refused record key is written as *, never as the key itself', async (t) => {
-  const { fetch, metrics, principal } = await harness(t, 'record-key');
+  // No 5.0 input takes a record, so a server of the test's own observes one.
+  const policies = z.strictObject({ policies: z.record(z.string(), z.strictObject({ effect: z.enum(['read', 'write']) })) });
+  class Observed extends McpServer {
+    override connect(transport: Transport): Promise<void> {
+      observeMcpRequests(transport, { record_tool: policies });
+      return super.connect(transport);
+    }
+  }
+  const { fetch } = createMcpHandler(() => {
+    const server = new Observed({ name: 'records', version: '0' });
+    server.registerTool('record_tool', { inputSchema: policies }, async () => ({ content: [] }));
+    return server;
+  }, { legacy: 'stateless' });
+  const metrics: Metric[] = [];
+  t.mock.method(console, 'info', (record: unknown) => {
+    if (record && typeof record === 'object') metrics.push(record as Metric);
+  });
 
   await post(fetch, LEGACY, 'tools/call', {
-    name: 'apply_workspace_changes',
-    arguments: {
-      idempotencyKey: 'idem_record_key',
-      operations: [{
-        kind: 'update_agent',
-        agentId: 'agent_x',
-        expectedRevision: 1,
-        itemId: 'item_x',
-        patch: { mcpServers: [{ toolPolicies: { [SECRET_KEY]: { effect: SECRET_VALUE } } }] },
-      }],
-    },
+    name: 'record_tool',
+    arguments: { policies: { [SECRET_KEY]: { effect: SECRET_VALUE } } },
   });
 
   const [refusal] = events(metrics, 'tool.validation_failure');
   assert.ok(Array.isArray(refusal?.fields), JSON.stringify(refusal));
-  assert.ok(refusal.fields.includes('operations.0.patch.mcpServers.0.toolPolicies.*.effect'));
+  assert.ok(refusal.fields.includes('policies.*.effect'));
   assert.equal(refusal.fields.some((field: string) => field.includes(SECRET_KEY)), false);
   assert.equal(requestMetrics(metrics)[0]?.outcome, 'input_refused');
-  assertNoValues(metrics, principal);
+  assert.equal(JSON.stringify(metrics).includes(SECRET_KEY) || JSON.stringify(metrics).includes(SECRET_VALUE), false);
 });
 
 test('a tools/call whose handler fails is a tool error, not a refusal', async (t) => {
   const { fetch, metrics, principal } = await harness(t, 'tool-error');
 
   await post(fetch, LEGACY, 'tools/call', {
-    name: 'get_operation',
-    arguments: { operationId: 'op_missing' },
+    name: 'get_setup_status',
+    arguments: { setupToken: 'op_missing' },
   });
 
   const [call] = events(metrics, 'tool.call');
   assert.equal(call?.outcome, 'error');
   assert.deepEqual(events(metrics, 'tool.validation_failure'), []);
   const [request] = requestMetrics(metrics);
-  assert.equal(request?.tool, 'get_operation');
+  assert.equal(request?.tool, 'get_setup_status');
   assert.equal(request?.outcome, 'tool_error');
   assertNoValues(metrics, principal);
 });
@@ -194,18 +201,18 @@ test('an unknown tool is a JSON-RPC error and its name is not recorded', async (
   assertNoValues(metrics, principal);
 });
 
-test('resources/read names a static Chickpea guide and nothing else', async (t) => {
+test('resources/read names a static Chickpea guide, or a removed resource, and nothing else', async (t) => {
   const { fetch, metrics, principal } = await harness(t, 'resources');
 
-  await post(fetch, LEGACY, 'resources/read', { uri: WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI });
+  await post(fetch, LEGACY, 'resources/read', { uri: AGENT_AUTHORING_GUIDE_URI });
   await post(fetch, LEGACY, 'resources/read', { uri: DISCOVERY_GUIDE_URI });
   await post(fetch, LEGACY, 'resources/read', { uri: `chickpea://agent/${SECRET_KEY}` });
 
   const [guide, discovery, unknown, ...extra] = requestMetrics(metrics);
   assert.deepEqual(extra, []);
   assert.equal(guide?.method, 'resources/read');
-  assert.equal(guide?.resource, WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI);
-  assert.equal(guide?.outcome, 'success');
+  assert.equal(guide?.resource, AGENT_AUTHORING_GUIDE_URI, 'a read of the removed coding-agent guide still counts by its URI');
+  assert.equal(guide?.outcome, 'jsonrpc_error');
   assert.equal(discovery?.resource, DISCOVERY_GUIDE_URI);
   assert.equal(discovery?.outcome, 'success');
   assert.equal(unknown?.method, 'resources/read');
@@ -249,7 +256,7 @@ test('each message of a JSON-RPC batch gets its own request metric', async (t) =
         jsonrpc: '2.0',
         id: 'req-b',
         method: 'tools/call',
-        params: { name: 'get_operation', arguments: { operationId: SECRET_VALUE.repeat(40) } },
+        params: { name: 'get_setup_status', arguments: { setupToken: SECRET_VALUE.repeat(40) } },
       },
     ]),
   }));
@@ -259,7 +266,7 @@ test('each message of a JSON-RPC batch gets its own request metric', async (t) =
     requestMetrics(metrics).map(({ method, tool, outcome }) => ({ method, tool, outcome }))
       .sort((a, b) => String(a.method).localeCompare(String(b.method))),
     [
-      { method: 'tools/call', tool: 'get_operation', outcome: 'input_refused' },
+      { method: 'tools/call', tool: 'get_setup_status', outcome: 'input_refused' },
       { method: 'tools/list', tool: undefined, outcome: 'success' },
     ],
   );

@@ -71,6 +71,7 @@ import {
   type ChannelConfig,
   type ConnectionAccount,
   type ConnectionAccountApiPolicy,
+  type ConnectionAccountMcpPolicy,
   type ConnectionAccountOwnerKind,
   type ConnectionAccountPolicy,
   agentAppIsLive,
@@ -103,7 +104,11 @@ import { readSlackSkillFiles } from './slack-skill-files.ts';
 import type { SkillReplacementQuestion } from './skill-replacement-judge.ts';
 import { providerPrefix } from '../config/model-access.ts';
 import type { GatewayAttachmentClient } from '../slack/gateway/client.ts';
-import { isValidRepositoryFullName } from '../config/github-app.ts';
+import { isTransientSlackApiError } from '../slack/credentials.ts';
+import { slackPlatformErrorCode } from '../slack/errors.ts';
+import { SlackInstallationUnavailableError } from '../slack/installation-execution.ts';
+import { SlackTransportError } from '../slack/transport/types.ts';
+import { getGithubConnection, isValidRepositoryFullName, type GithubConnection } from '../config/github-app.ts';
 import { newAgentCredentialIncarnation } from '../config/connection-credential-binding.ts';
 import {
   applyConnectionCapabilityCeiling,
@@ -147,6 +152,8 @@ import {
   RoutineAuthorityError,
 } from '../routines/agent-authority.ts';
 import {
+  checkScheduleCreation,
+  deterministicRoutineId,
   executeSlackScheduleCommand,
   SlackScheduleCommandError,
   type SlackScheduleCommand,
@@ -172,6 +179,7 @@ import {
 } from '../slack/agent-access.ts';
 import { agentStillInSlackRefusal, archiveBeforeDeleting } from '../slack/agent-presence/left-slack.ts';
 import { THREAD_TTL_MS } from '../slack/state-limits.ts';
+import { recordDeliveredSlackAgentMessage } from '../slack/public-context.ts';
 import { MAX_SLACK_ATTACHMENTS } from '../slack/attachment-file-ids.ts';
 import { defaultAgentAvatarSeedFor, nextDefaultAgentAvatarSeed } from '../slack/agent-presence/default-avatar-pool.ts';
 import { stripResolvedSlackCommandAddress, type SlackCommandAddress } from '../slack/command-address.ts';
@@ -357,6 +365,14 @@ const PRIVATE_CHANNEL_NOT_JOINED = 'The routine is in a private Channel this mem
 const DM_ROUTINE_RUNS_AS_OWNER = 'A DM routine always runs as the person whose DM it is, so it cannot be taken over.';
 const MCP_DM_ROUTINE_KEEPS_AGENT = "A DM routine keeps its Agent over MCP. To change the Agent, ask Chickpea in that DM.";
 const SLACK_ACCESS_UNCONFIRMED = "Slack could not confirm this member's access. Try again.";
+const SCHEDULE_DM_UNAVAILABLE = 'Slack could not post in your DM, so the schedule was not saved. Try again.';
+const SCHEDULE_SLACK_DISCONNECTED = 'Chickpea\'s Slack connection needs to be reconnected in Admin, so the schedule was not saved. Save it again after that.';
+const SCHEDULE_DM_REFUSED = 'Slack would not let Chickpea post in your DM, so the schedule was not saved. A schedule in a Channel can still post.';
+/** Slack's codes for a bot token it no longer honors, or one without the access it needs. */
+const SLACK_CONNECTION_BROKEN = new Set([
+  'account_inactive', 'invalid_auth', 'missing_scope', 'no_permission', 'not_allowed_token_type', 'not_authed',
+  'team_access_not_granted', 'token_expired', 'token_revoked',
+]);
 
 /**
  * Slack revokes Channel reach from inside Slack, so it rechecks that the
@@ -445,8 +461,29 @@ export interface WorkspaceManagementServiceInput {
     | 'putAgentScheduleReference'
     | 'listConnectionAccounts'
     | 'listAgentConnectionBindings'
-  > & Partial<Pick<ConfigStore, 'deleteAgentWithMemory' | 'getAgentFirstAsk'>>;
+  > & Partial<Pick<
+    ConfigStore,
+    'deleteAgentWithMemory' | 'getAgentFirstAsk' | 'getAgentThreadRoute' | 'putAgentThreadRoute' | 'putSlackPublicContext'
+  >>;
   management: ManagementStore;
+  /**
+   * Slack for a DM schedule made over MCP: the caller's DM with Chickpea's
+   * bot, the same conversation each run checks it still posts to, and the
+   * thread the schedule posts in.
+   */
+  directScheduleThreads?: {
+    /** Opens the DM and returns its conversation. Posts nothing. */
+    open(input: { workspaceId: string; slackUserId: string }): Promise<string>;
+    /** Posts the thread's first message as the Agent; returns its ts. */
+    start(input: {
+      workspaceId: string;
+      conversationId: string;
+      agent: CustomAgentConfig;
+      text: string;
+    }): Promise<string>;
+    /** Deletes that first message when the schedule was not saved. */
+    withdraw(input: { workspaceId: string; conversationId: string; threadTs: string }): Promise<void>;
+  };
   memory?: Pick<
     MemoryStateStore,
     | 'getAgentMemory'
@@ -850,7 +887,7 @@ export class WorkspaceManagementService {
     if (!client) {
       throw new ManagementError(
         'mcp_client_not_found',
-        'None of your connected MCP clients has that clientId. Call list_mcp_clients for the current list.',
+        'None of your connected apps has that appId.',
       );
     }
     await clients.revokeOAuthClientForUser(betterAuthUserId, clientId);
@@ -965,7 +1002,7 @@ export class WorkspaceManagementService {
       return {
         status: 'replacement_confirmation_required',
         instruction: actor.origin.kind === 'mcp'
-          ? `Skill ${skill.name} already exists with different content. If the person wants it replaced, call import_skill again with source ${skill.sourceUrl}, replaceExisting true, and a new idempotencyKey.`
+          ? `Skill ${skill.name} already exists with different content. If the person wants it replaced, import it again from source ${skill.sourceUrl} with replaceExisting true and a new idempotencyKey.`
           : `Skill ${skill.name} already exists with different content. Ask the requester to reply exactly \`replace ${skill.name} from ${skill.sourceUrl}\`. On that new message, call import_skill with that immutable source, replaceExisting true, and a new idempotencyKey. Do not ask for a separate approval after that clarification.`,
         import: { ...metadata, replacedExisting: true },
       };
@@ -2373,7 +2410,7 @@ export class WorkspaceManagementService {
     if (accountIds.size > 1) {
       throw new ManagementError(
         'invalid_request',
-        `More than one connection uses ${connectionId}. Name the one to test by its id from inspect_workspace.`,
+        `More than one connection uses ${connectionId}, so Chickpea could not tell which one to test. Name it by its own connection id.`,
       );
     }
     return this.stores.testConnection({
@@ -3041,7 +3078,7 @@ export class WorkspaceManagementService {
               operationKind: operation.kind,
               disposition: 'failed',
               code: 'confirmation_needs_own_call',
-              instruction: 'This change needs the person\'s confirmation, and a confirmation cannot hold a setup request or a second change to the same object. The other operations in this call were handled without it, so check their outcomes. Resend only this operation, in its own apply_workspace_changes call.',
+              instruction: 'This change needs the person\'s confirmation, and a confirmation cannot hold a setup request or a second change to the same object. The other operations in this call were handled without it, so check their outcomes. Resend only this operation, in a call of its own.',
             });
           }
         } else if (operation.kind === 'request_setup') {
@@ -3349,7 +3386,7 @@ export class WorkspaceManagementService {
       : undefined;
     if (changeSet?.status !== 'pending') return result;
     // An expired confirmation shows nothing to confirm.
-    if (changeSet.expiresAt !== undefined && this.now() >= changeSet.expiresAt) return result;
+    if (this.changeSetExpired(actor, changeSet)) return result;
     const messageTs = actor.origin.kind === 'slack' ? actor.origin.messageTs : undefined;
     const shown = messageTs && changeSet.proposedMessageTs !== messageTs
       ? await this.stores.management.putChangeSetProposal({
@@ -3586,6 +3623,19 @@ export class WorkspaceManagementService {
     throw error;
   }
 
+  /**
+   * Whether a pending set waited past its confirmation. Every 5.0 tool gives
+   * the sets it makes a lifetime, and a Slack set has none by design, so an
+   * MCP set without one was made by a 4.x tool. Contract 5.0.0 removed the
+   * tool that confirmed it, so it expired with them.
+   */
+  private changeSetExpired(
+    actor: LiveManagementActor,
+    changeSet: Pick<ManagementChangeSetProposalRecord, 'expiresAt'>,
+  ): boolean {
+    return changeSet.expiresAt === undefined ? actor.origin.kind === 'mcp' : this.now() >= changeSet.expiresAt;
+  }
+
   private async confirmChangeSetProposal(
     actor: LiveManagementActor,
     existing: ManagementChangeSetProposalRecord,
@@ -3599,7 +3649,7 @@ export class WorkspaceManagementService {
       throw new ManagementError('proposal_stale', 'The confirmation is no longer available.');
     }
     // Only a pending set expires; a completed one replays above.
-    if (existing.status === 'pending' && existing.expiresAt !== undefined && this.now() >= existing.expiresAt) {
+    if (existing.status === 'pending' && this.changeSetExpired(actor, existing)) {
       throw new ManagementError('proposal_expired', 'This confirmation expired, so nothing changed.');
     }
     if (managementOperationDigest(existing.operations) !== existing.digest) {
@@ -4194,6 +4244,17 @@ export class WorkspaceManagementService {
     return { actor, agent: await this.requireEditableAgent(actor, agentId), stores: this.stores };
   }
 
+  /**
+   * For list_agents: the stored GitHub connection, as check_agent reads it,
+   * or undefined where this deployment keeps no settings. A read that fails
+   * counts as no connection, as it does in check_agent.
+   */
+  async githubConnection(context: ManagementActorContext): Promise<GithubConnection | undefined> {
+    await this.requireLiveActor(context, { cleanupRetention: false });
+    if (!this.stores.settings) return undefined;
+    return getGithubConnection(this.stores.settings, this.stores.env).catch((): GithubConnection => ({ mode: 'none' }));
+  }
+
   private async generatedAvatarSeeds(): Promise<string[]> {
     return (await this.stores.config.listUserAgents()).flatMap((agent) => {
       const avatar = agent.slackPresence?.avatar;
@@ -4245,7 +4306,7 @@ export class WorkspaceManagementService {
     this.assertProposalBinding(actor, proposal);
     switch (proposal.status) {
       case 'pending':
-        return proposal.expiresAt !== undefined && this.now() >= proposal.expiresAt ? 'expired' : 'pending';
+        return this.changeSetExpired(actor, proposal) ? 'expired' : 'pending';
       case 'applying':
         return this.now() - proposal.updatedAt < MANAGEMENT_CHANGE_SET_APPLY_LEASE_MS ? 'applied' : 'pending';
       case 'completed':
@@ -4549,8 +4610,10 @@ export class WorkspaceManagementService {
         };
       }
       const policy = account.policy;
-      // A saved optional key, such as Exa's, is replaced on the same key page.
-      if (!nativeCredentialRequired(policy) && !await this.optionalKeySaved(account)) {
+      // A saved optional key, such as Exa's, is replaced on the same key page. One that needs attention, as a failed
+      // removal leaves it, gets the page whether or not that removal already deleted its key.
+      if (!nativeCredentialRequired(policy) &&
+          !(keyOptional(policy) && (account.lifecycle === 'needs_attention' || await this.optionalKeySaved(account)))) {
         throw new ManagementError('invalid_request', 'This MCP connection does not require setup.');
       }
       const oauth = policy.authMode === 'oauth';
@@ -5823,9 +5886,9 @@ export class WorkspaceManagementService {
     ))) {
       throw new ManagementError('invalid_request', 'The routine was not found.');
     }
-    const channelId = this.routineMutationChannelId(actor, operation, existingRoutine);
+    const channelId = await this.routineMutationChannelId(actor, operation, existingRoutine);
     const directRequest = operation.kind === 'save_routine' &&
-      operation.destination?.kind === 'current_dm_thread';
+      (operation.destination?.kind === 'current_dm_thread' || operation.destination?.kind === 'initiator_dm');
     const directRoutine = directRequest || existingRoutine?.destination.kind === 'direct_thread';
     if (!directRoutine) {
       const channel = await this.stores.config.getChannel(operation.workspaceId, channelId);
@@ -5943,11 +6006,17 @@ export class WorkspaceManagementService {
   }
 
   /** An MCP caller names a routine by ID; its stored conversation is the destination. */
-  private routineMutationChannelId(
+  private async routineMutationChannelId(
     actor: LiveManagementActor,
     operation: ManagementRoutineOperation,
     existing: RoutineDefinition | undefined,
-  ): string {
+  ): Promise<string> {
+    if (operation.kind === 'save_routine' && operation.destination?.kind === 'initiator_dm') {
+      if (actor.origin.kind !== 'mcp' || operation.channelId !== undefined || operation.routineId !== undefined) {
+        throw new ManagementError('invalid_request', 'The private DM destination is unavailable.');
+      }
+      return this.initiatorDirectMessage(actor, operation.workspaceId);
+    }
     const directOrigin = slackDirectOrigin(actor);
     if (operation.kind === 'save_routine' && operation.destination?.kind === 'current_channel_thread') {
       const origin = actor.origin;
@@ -5970,6 +6039,137 @@ export class WorkspaceManagementService {
     }
     if (actor.origin.kind === 'mcp' && existing) return existing.channelId;
     throw new ManagementError('invalid_request', 'The routine destination is required.');
+  }
+
+  /**
+   * The signed-in MCP caller's own DM with Chickpea's bot: the only DM an
+   * MCP schedule may post in, as a Slack schedule may post only in the DM
+   * it was made in. Opening it posts nothing.
+   */
+  private async initiatorDirectMessage(actor: LiveManagementActor, workspaceId: string): Promise<string> {
+    const threads = this.stores.directScheduleThreads;
+    const user = await this.stores.identity.getUser(actor.userId);
+    if (!threads || !user || user.slackTeamId !== workspaceId) {
+      throw new ManagementError('invalid_request', 'The private DM destination is unavailable.');
+    }
+    try {
+      return await threads.open({ workspaceId, slackUserId: user.slackUserId });
+    } catch (error) {
+      throw scheduleDmRefusal('schedule DM did not open', error);
+    }
+  }
+
+  /**
+   * A new DM schedule made over MCP posts in a thread of its own in the
+   * caller's DM, which its Agent starts. A retry of the same save finds the
+   * routine it made and keeps that thread. Its timing, text and connections
+   * are checked first, so a request the save would refuse posts nothing.
+   */
+  private async startInitiatorScheduleThread(
+    actor: LiveManagementActor,
+    mutationId: string,
+    operation: Extract<ManagementOperation, { kind: 'save_routine' }>,
+    conversationId: string,
+  ): Promise<{ threadTs: string; posted: boolean }> {
+    const prior = await this.stores.routines!.getRoutine(deterministicRoutineId(mutationId, operation.itemId));
+    if (prior?.destination.kind === 'direct_thread' && prior.destination.conversationId === conversationId) {
+      return { threadTs: prior.destination.threadTs, posted: false };
+    }
+    const command = this.scheduleCommand(actor, mutationId, operation, conversationId);
+    if (command.kind === 'save') {
+      await checkScheduleCreation(command, { config: this.stores.config as ConfigStore, now: this.now });
+    }
+    const agent = await this.stores.config.getAgent(operation.agentId);
+    try {
+      return {
+        threadTs: await this.stores.directScheduleThreads!.start({
+          workspaceId: operation.workspaceId,
+          conversationId,
+          agent,
+          text: scheduleThreadOpening(operation.name),
+        }),
+        posted: true,
+      };
+    } catch (error) {
+      throw scheduleDmRefusal('schedule thread did not start', error);
+    }
+  }
+
+  /** Replies in a DM schedule's thread go to its Agent, as in a thread the person started with it. */
+  private async giveScheduleThread(routine: RoutineDefinition, agentId: string): Promise<void> {
+    const config = this.stores.config;
+    if (routine.destination.kind !== 'direct_thread' || !config.getAgentThreadRoute || !config.putAgentThreadRoute) return;
+    const { conversationId, threadTs } = routine.destination;
+    try {
+      if (await config.getAgentThreadRoute(routine.workspaceId, conversationId, threadTs)) return;
+      const agent = await config.getAgent(agentId);
+      await config.putAgentThreadRoute({
+        workspaceId: routine.workspaceId,
+        channelId: conversationId,
+        threadTs,
+        agentId,
+        agentGeneration: agent.configurationGeneration ?? agent.revision,
+        ownerIncarnation: 1,
+      }, 0);
+    } catch (error) {
+      // The schedule is saved; a reply in its thread then reaches Chickpea.
+      console.warn('[chickpea:management] schedule thread route not saved', JSON.stringify({
+        errorName: error instanceof Error ? error.name : 'unknown',
+      }));
+    }
+  }
+
+  /**
+   * The first message this save posted goes in its thread's record as the
+   * Agent's own, as the Agent's replies do, so a reply turn there reads it
+   * as the Agent's. Slack's events never record a thread's first message,
+   * so only this write puts it there. `posted` is the message this call
+   * posted: a save that kept another thread records nothing.
+   */
+  private async recordScheduleThreadOpening(
+    routine: RoutineDefinition,
+    operation: Extract<ManagementOperation, { kind: 'save_routine' }>,
+    posted: { conversationId: string; threadTs: string },
+  ): Promise<void> {
+    const config = this.stores.config;
+    const { destination } = routine;
+    if (destination.kind !== 'direct_thread' || destination.conversationId !== posted.conversationId ||
+        destination.threadTs !== posted.threadTs || !config.putSlackPublicContext) return;
+    const { conversationId, threadTs } = posted;
+    try {
+      const installation = await config.getWorkspaceInstallation(routine.workspaceId);
+      if (!installation) return;
+      await recordDeliveredSlackAgentMessage(
+        { putSlackPublicContext: config.putSlackPublicContext.bind(config) },
+        { workspaceId: routine.workspaceId, channelId: conversationId, threadTs },
+        { runtimeContract: installation.runtimeContract, agentId: operation.agentId },
+        { messageTs: threadTs, text: scheduleThreadOpening(operation.name) },
+      );
+    } catch (error) {
+      // The message stays: the schedule is saved and runs in its thread, and
+      // a reply turn there then reads the message from Slack.
+      console.warn('[chickpea:management] schedule thread opening not recorded', JSON.stringify({
+        errorName: error instanceof Error ? error.name : 'unknown',
+      }));
+    }
+  }
+
+  /** The first message goes when its save did not make the schedule. */
+  private async withdrawScheduleThread(
+    mutationId: string,
+    operation: Extract<ManagementOperation, { kind: 'save_routine' }>,
+    conversationId: string,
+    threadTs: string,
+  ): Promise<void> {
+    try {
+      if (await this.stores.routines!.getRoutine(deterministicRoutineId(mutationId, operation.itemId))) return;
+      await this.stores.directScheduleThreads!.withdraw({ workspaceId: operation.workspaceId, conversationId, threadTs });
+    } catch (error) {
+      console.warn('[chickpea:management] schedule thread not withdrawn', JSON.stringify({
+        errorName: error instanceof Error ? error.name : 'unknown',
+        reasonCode: scheduleDmFailure(error).reasonCode,
+      }));
+    }
   }
 
   /**
@@ -6240,8 +6440,13 @@ export class WorkspaceManagementService {
     const channelId = await this.requireRoutineMutation(actor, operation, {
       allowIdempotentSaveReplay: operation.kind === 'save_routine',
     });
+    const initiatorDm = operation.kind === 'save_routine' && operation.destination?.kind === 'initiator_dm'
+      ? operation
+      : undefined;
+    let thread: { threadTs: string; posted: boolean } | undefined;
     try {
-      const command = this.scheduleCommand(actor, mutationId, operation, channelId);
+      if (initiatorDm) thread = await this.startInitiatorScheduleThread(actor, mutationId, initiatorDm, channelId);
+      const command = this.scheduleCommand(actor, mutationId, operation, channelId, thread?.threadTs);
       const result = await executeSlackScheduleCommand(command, {
         routines: this.stores.routines!,
         config: this.stores.config as ConfigStore,
@@ -6251,6 +6456,12 @@ export class WorkspaceManagementService {
         schedulingAvailable: () => this.isRoutineSchedulingAvailable(),
         now: this.now,
       });
+      if (initiatorDm && result.effect === 'saved') {
+        await this.giveScheduleThread(result.routine, initiatorDm.agentId);
+        if (thread?.posted) {
+          await this.recordScheduleThreadOpening(result.routine, initiatorDm, { conversationId: channelId, threadTs: thread.threadTs });
+        }
+      }
       if (operation.kind === 'save_routine' && result.effect === 'saved' && result.created) {
         this.stores.productTelemetry?.capture({
           event: 'schedule_created',
@@ -6262,6 +6473,9 @@ export class WorkspaceManagementService {
       }
       return routineMutation(result.routine);
     } catch (error) {
+      if (initiatorDm && thread?.posted) {
+        await this.withdrawScheduleThread(mutationId, initiatorDm, channelId, thread.threadTs);
+      }
       if (error instanceof ManagementError) throw error;
       if (error instanceof SlackScheduleCommandError) {
         if (error.code === 'schedule_command_failed' || error.code === 'schedule_safety_pending') {
@@ -6299,6 +6513,8 @@ export class WorkspaceManagementService {
       kind: 'save_routine' | 'control_routine' | 'run_routine';
     }>,
     channelId: string,
+    /** The thread an `initiator_dm` save posts in, started in the caller's DM. */
+    initiatorThreadTs?: string,
   ): SlackScheduleCommand {
     if (operation.kind === 'control_routine') {
       return {
@@ -6350,7 +6566,15 @@ export class WorkspaceManagementService {
               ownerMembershipId: actor.membershipId,
             },
           }
-        : {}),
+        : operation.destination?.kind === 'initiator_dm' && initiatorThreadTs
+          ? {
+              directDestination: {
+                conversationId: channelId,
+                threadTs: initiatorThreadTs,
+                ownerMembershipId: actor.membershipId,
+              },
+            }
+          : {}),
       ...(operation.routineId ? { routineId: operation.routineId } : {}),
       ...(operation.expectedVersion !== undefined
         ? { expectedVersion: operation.expectedVersion }
@@ -8499,6 +8723,11 @@ export function withoutRevisions<T extends { accountRevision: number; bindingAcc
   return connection;
 }
 
+/** An MCP connection that works without a key and takes one, such as Exa. */
+function keyOptional(policy: ConnectionAccountApiPolicy | ConnectionAccountMcpPolicy): boolean {
+  return policy.kind === 'mcp' && policy.credentialHeaderName !== undefined && !nativeCredentialRequired(policy);
+}
+
 /** How a person reconnects a connection that needs attention in place, when they may manage it. */
 function connectionReconnect(
   principal: AuthPrincipal,
@@ -8514,7 +8743,7 @@ function connectionReconnect(
       ? { tool: 'prepare_connector_setup', connector: connector.id, ownerKind: account.ownerKind }
       : undefined;
   }
-  if (!nativeCredentialRequired(policy)) return undefined;
+  if (!nativeCredentialRequired(policy) && !keyOptional(policy)) return undefined;
   return {
     tool: 'apply_workspace_changes',
     operation: {
@@ -9109,6 +9338,7 @@ function routineOperationPreview(
   channelLabel: string | undefined,
 ): Record<string, unknown> {
   const direct = operation.destination?.kind === 'current_dm_thread' ||
+    operation.destination?.kind === 'initiator_dm' ||
     existing?.destination.kind === 'direct_thread';
   return {
     name: operation.name,
@@ -9123,7 +9353,9 @@ function routineOperationPreview(
         ? `Once, ${operation.schedule.minutes} minute${operation.schedule.minutes === 1 ? '' : 's'} from now`
         : operation.schedule.expression,
     timezone: operation.timezone,
-    destination: direct
+    destination: operation.destination?.kind === 'initiator_dm'
+      ? 'A new thread in your DM'
+      : direct
       ? 'Current DM thread'
       : channelDestination(
           operation.destination?.kind === 'current_channel_thread' || Boolean(existing?.destination.threadTs),
@@ -9131,6 +9363,11 @@ function routineOperationPreview(
         ),
     delivery: operation.outputPolicy === 'post_on_change' ? 'Only when results change' : 'Always post',
   };
+}
+
+/** The first message of a DM schedule's thread, which its Agent posts. */
+function scheduleThreadOpening(name: string): string {
+  return `I'll post *${escapeSlackControlCharacters(name)}* in this thread when it runs.`;
 }
 
 /** Where a Channel routine posts, by the Channel's name; never its Slack ID. */
@@ -9234,7 +9471,6 @@ function publicChangeSetProposal(
       slack: formatSlackChangeSetProposal(preview),
       markdown: formatMarkdownChangeSetProposal(preview),
     },
-    confirmationTool: 'confirm_workspace_change',
   };
 }
 
@@ -10159,7 +10395,7 @@ function skillUploadResult(
       ? {
           instruction: slack
             ? `${conflictNames} ${plan.conflicts.length === 1 ? 'was' : 'were'} left unchanged because the person's message did not ask to replace ${them}. Show presentation.slack, which tells the person how to replace ${them}.`
-            : `${conflictNames} already ${plan.conflicts.length === 1 ? 'exists' : 'exist'} on the Agent with different content. If the person wants ${them} replaced, call upload_skills again with the same files, replaceExisting true, and a new idempotencyKey.`,
+            : `${conflictNames} already ${plan.conflicts.length === 1 ? 'exists' : 'exist'} on the Agent with different content. If the person wants ${them} replaced, upload the same files again with replaceExisting true and a new idempotencyKey.`,
         }
       : {}),
     presentation: {
@@ -10364,6 +10600,36 @@ function membershipRevision(membership: Membership): number {
     hash = Math.imul(hash, 16_777_619);
   }
   return hash >>> 0;
+}
+
+/**
+ * Why Slack did not open or post in a DM schedule's DM, as a content-free
+ * code, and whether trying again can help: only when the cause can pass by
+ * itself. A permanent one is the Slack connection's when Chickpea cannot
+ * use the installation or Slack no longer honors its token.
+ */
+function scheduleDmFailure(error: unknown): { reasonCode: string; retryable: boolean; connectionBroken: boolean } {
+  if (error instanceof SlackInstallationUnavailableError) {
+    return { reasonCode: error.reasonCode, retryable: error.retryable, connectionBroken: !error.retryable };
+  }
+  const code = slackPlatformErrorCode(error);
+  if (!code) return { reasonCode: 'unknown', retryable: true, connectionBroken: false };
+  // The shared gateway says itself whether its failure can pass: unreachable,
+  // rate-limited and 5xx carry codes of its own that Slack's list does not name.
+  const retryable = isTransientSlackApiError(code) || (error instanceof SlackTransportError && error.retryable);
+  return { reasonCode: code, retryable, connectionBroken: !retryable && SLACK_CONNECTION_BROKEN.has(code) };
+}
+
+/** The refusal of a DM schedule Slack would not open or post in: retryable only when a retry can work. */
+function scheduleDmRefusal(warning: string, error: unknown): ManagementError {
+  const failure = scheduleDmFailure(error);
+  console.warn(`[chickpea:management] ${warning}`, JSON.stringify({
+    errorName: error instanceof Error ? error.name : 'unknown',
+    reasonCode: failure.reasonCode,
+    retryable: failure.retryable,
+  }));
+  if (failure.retryable) return new ManagementError('slack_unavailable', SCHEDULE_DM_UNAVAILABLE);
+  return new ManagementError('slack_refused', failure.connectionBroken ? SCHEDULE_SLACK_DISCONNECTED : SCHEDULE_DM_REFUSED);
 }
 
 function isExpectedMutationError(error: unknown): boolean {

@@ -187,7 +187,7 @@ test('the guide names every supported client and proves the connection before cl
   assert.ok(body.includes('"type": "http"'), 'generic JSON block declares HTTP transport');
   assert.ok(body.includes(`"url": "${ORIGIN}/mcp"`), 'generic JSON block carries this deployment URL');
 
-  assert.ok(body.includes('inspect_workspace'), 'read-only proof call');
+  assert.ok(body.includes('Call `get_account`, which changes nothing.'), 'read-only proof call');
   assert.equal(DISCOVERY_GUIDE_URI, DISCOVERY_RESOURCE_URI, 'the guide names the URI the MCP server serves');
   assert.ok(body.includes(`\`${DISCOVERY_GUIDE_URI}\``), 'discovery resource URI');
   // Before Slack setup finishes, /mcp is a 404; the guide must say so instead of
@@ -201,8 +201,7 @@ test('step 6 researches before it proposes, and a new Agent says hello in Slack'
   const step6 = body.slice(body.indexOf('## 6.'), body.indexOf('## Good to know'));
   assert.match(step6, /^## 6\. Find the first teammate$/m);
   assert.ok(step6.includes(`Read the resource \`${DISCOVERY_GUIDE_URI}\` and follow it: research the person's recent work on this machine before you propose an Agent.`));
-  assert.match(step6, /`\/mcp__chickpea__new-agent` does the same/);
-  assert.match(step6, /In Codex, ask for the desired Chickpea change in plain language; MCP prompts do not appear in its `\$` skills picker\./);
+  assert.doesNotMatch(step6, /\/mcp__chickpea__|slash command|MCP prompts/, 'no 4.x prompt: a 5.0 session lists none');
   assert.doesNotMatch(step6, /What should your first teammate do/, 'no opening question ahead of the research');
 
   const goodToKnow = body.slice(body.indexOf('## Good to know'));
@@ -210,7 +209,7 @@ test('step 6 researches before it proposes, and a new Agent says hello in Slack'
   assert.doesNotMatch(goodToKnow, /mention it in Slack by its handle/);
 });
 
-const PROOF_LINE = 'Call Chickpea\'s inspect_workspace and tell me the workspace name and who I am signed in as.';
+const PROOF_LINE = 'Call Chickpea\'s get_account and tell me the workspace name and who I am signed in as.';
 const FIRST_AGENT_ADD_ON = /If they asked for their first Agent and no install guide owns the first teammate, they also add `Then help me create my first Chickpea Agent\.`/;
 
 function client(id: string) {
@@ -315,6 +314,8 @@ test('step 5 warns that the first Chickpea call may ask for approval', async () 
   const step5 = body.slice(body.indexOf('## 5.'), body.indexOf('## 6.'));
   assert.match(step5, /first Chickpea call may show an approval prompt/);
   assert.match(step5, /ask the person to approve it/);
+  assert.match(step5, /3\. Tested: the signed-in person and the workspace from `get_account`/);
+  assert.doesNotMatch(body, /inspect_workspace/, 'the proof uses a 5.0 tool, which every client lists');
 });
 
 const CLAUDE_LINK = 'https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Chickpea&connectorUrl=https%3A%2F%2Fchickpea.example.test%2Fmcp';
@@ -326,7 +327,7 @@ test('the guide hands an agent inside the Claude app the pre-filled connector li
   assert.ok(guide.indexOf('### Claude app') > guide.indexOf('## 2. Add the server'), 'inside step 2');
   assert.ok(claudeApp.includes(CLAUDE_LINK), 'personal link');
   assert.ok(claudeApp.includes(CLAUDE_ORGANIZATION_LINK), 'organization link');
-  assert.ok(claudeApp.includes('`Call Chickpea\'s inspect_workspace and tell me the workspace name and who I am signed in as.`'), 'proof in a new conversation');
+  assert.ok(claudeApp.includes(`\`${PROOF_LINE}\``), 'proof in a new conversation');
   // Claude Code in a terminal keeps its command, after a check for a connector it already has.
   const otherClients = guide.slice(guide.indexOf('### Every other client'));
   assert.ok(otherClients.indexOf('`claude.ai Chickpea`') < otherClients.indexOf('| Client | Where |'), 'connector check comes before the table');

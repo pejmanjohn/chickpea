@@ -17,6 +17,7 @@ import {
   applyChange,
   callOperationId,
   changeResult,
+  CONFIRMATION_LIFETIME_MS,
   requireVersion,
   type ChangeResult,
 } from './changes.ts';
@@ -26,9 +27,9 @@ import type * as schemas from './schemas.ts';
 import { editableAgent } from './writes.ts';
 
 /**
- * Connections and repositories. A catalog service gets the link
- * prepare_connector_setup hands out, from the same service methods; a custom
- * API or MCP connection gets a request_setup link. No tool takes a key.
+ * Connections and repositories. A catalog service gets the connector setup
+ * link Admin hands out, from the same service methods; a custom API or MCP
+ * connection gets a request_setup link. No tool takes a key.
  */
 
 type In<T extends z.ZodType> = z.output<T>;
@@ -92,6 +93,8 @@ async function issueSetup(
     idempotencyKey: `setup:${nonce}`,
     operations: [{ itemId: 'setup', kind: 'request_setup', target }],
     operationId: callOperationId(context, 'request_setup', { target, nonce }),
+    // A setup applies at once today. Were it ever to wait for confirmation, it expires as every 5.0 one does.
+    confirmationLifetimeMs: CONFIRMATION_LIFETIME_MS,
   });
   const outcome = 'outcomes' in result ? result.outcomes[0] : undefined;
   if (outcome?.disposition === 'setup_required' && outcome.setupUrl && outcome.setupOperationId) {
@@ -316,7 +319,7 @@ export async function reconnectService(
   // A catalog connection whose sign-in was left unfinished or needs attention gets the page connect_service gives.
   const catalogPreset = lanePreset && !('managedToolkit' in lanePreset) && row.status !== 'ready' ? lanePreset : undefined;
   if (lane && !catalogPreset) return laneLink();
-  // A catalog sign-in: the same link prepare_connector_setup makes for it.
+  // A catalog sign-in: the same link the service's connector setup makes for it.
   const account = agent.connections?.find(({ id, providerId }) => id === row.connectionId || providerId === row.connectionId);
   const connector = catalogPreset?.id ?? (account?.reconnect?.tool === 'prepare_connector_setup'
     ? account.reconnect.connector
@@ -375,7 +378,7 @@ function changedEntry<T extends object>(
 
 /**
  * The MCP connection with the named tools marked as reads or writes, the
- * tool policy Admin's API and 4.x declare; a tool not named keeps its mark
+ * tool policy Admin's API and the Slack door declare; a tool not named keeps its mark
  * while it stays allowed. A tool this change dis-allows or allows again loses
  * its mark, and every tool keeps its argument limits (keptToolPolicies). Only
  * an allowed tool can be marked, and never as a read when its server says it

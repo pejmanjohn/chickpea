@@ -5,11 +5,7 @@ import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import type { WorkspaceManagementServiceInput } from '../src/management/service.ts';
-import {
-  invokeWorkspaceManagementTool,
-  type WorkspaceManagementToolArguments,
-  type WorkspaceManagementToolName,
-} from '../src/management/tool-adapter.ts';
+import type { WorkspaceManagementToolResult } from '../src/management/tool-adapter.ts';
 import type {
   ManagementActorContext,
   ManagementApplyResult,
@@ -29,6 +25,8 @@ import {
   ownerSlackDmContext,
   type ManagementAdapterFixture,
 } from './helpers/management-adapter-fixture.ts';
+import { confirmThroughService, serviceResult } from './helpers/management-service-result.ts';
+import { CONFIRMATION_LIFETIME_MS } from '../src/management/mcp-v5/changes.ts';
 
 type Person = Pick<ManagementAdapterFixture['owner'], 'user' | 'membership'>;
 
@@ -41,31 +39,27 @@ function mcp(person: Person, clientId = 'client_current'): ManagementActorContex
   };
 }
 
-async function call<TName extends WorkspaceManagementToolName>(
-  f: ManagementAdapterFixture,
-  context: ManagementActorContext,
-  name: TName,
-  args: WorkspaceManagementToolArguments[TName],
-) {
-  return invokeWorkspaceManagementTool({ service: f.service, resolveContext: async () => context }, name, args);
-}
+/** The service calls the 5.0 tools make, each in the `{ ok, result | error }` shape. */
+const undo = (f: ManagementAdapterFixture, context: ManagementActorContext, args: { operationId: string; idempotencyKey: string }) =>
+  serviceResult(() => f.service.undoWorkspaceChange({ context, ...args, confirmationLifetimeMs: CONFIRMATION_LIFETIME_MS }));
+const listClients = (f: ManagementAdapterFixture, context: ManagementActorContext) =>
+  serviceResult(() => f.service.listMcpClients(context));
+const revokeClient = (f: ManagementAdapterFixture, context: ManagementActorContext, clientId: string) =>
+  serviceResult(() => f.service.revokeMcpClient(context, clientId));
 
-async function succeed<T>(
-  f: ManagementAdapterFixture,
-  context: ManagementActorContext,
-  name: WorkspaceManagementToolName,
-  args: Record<string, unknown>,
-): Promise<T> {
-  const response = await call(f, context, name, args as never);
-  assert.equal(response.ok, true, JSON.stringify(response));
-  return (response as { result: T }).result;
+async function succeed<T>(response: Promise<WorkspaceManagementToolResult>): Promise<T> {
+  const settled = await response;
+  assert.equal(settled.ok, true, JSON.stringify(settled));
+  return (settled as { result: T }).result;
 }
 
 const apply = (f: ManagementAdapterFixture, context: ManagementActorContext, key: string, operations: ManagementOperation[]) =>
-  succeed<ManagementApplyResult>(f, context, 'apply_workspace_changes', { idempotencyKey: key, operations });
+  succeed<ManagementApplyResult>(serviceResult(() => f.service.applyWorkspaceChanges({
+    context, idempotencyKey: key, operations, confirmationLifetimeMs: CONFIRMATION_LIFETIME_MS,
+  })));
 
-const inspect = (f: ManagementAdapterFixture, context: ManagementActorContext) =>
-  succeed<ManagementWorkspaceSnapshot>(f, context, 'inspect_workspace', {});
+const inspect = (f: ManagementAdapterFixture, context: ManagementActorContext): Promise<ManagementWorkspaceSnapshot> =>
+  f.service.inspectWorkspace(context);
 
 async function withFixture(
   suffix: string,
@@ -169,22 +163,22 @@ test('a confirmed disable carries the same undo as an immediate edit, by its con
       }]);
       assert.equal(requested.status, 'confirmation_required', JSON.stringify(requested.outcomes));
       const proposalId = requested.outcomes[0]!.proposalId!;
-      const confirmed = await succeed<ManagementApplyResult>(f, mcp(f.owner), 'confirm_workspace_change', { proposalId });
+      const confirmed = await succeed<ManagementApplyResult>(confirmThroughService(f.service, mcp(f.owner), proposalId));
       assert.equal(confirmed.status, 'completed');
       assert.equal(confirmed.outcomes[0]?.undoAvailable, true, 'the confirmed disable offers its undo');
       assert.equal((await f.config.getAgent(agent.id)).enabled, false);
 
-      const undone = await succeed<ManagementApplyResult>(f, mcp(f.owner), 'undo_workspace_change', {
+      const undone = await succeed<ManagementApplyResult>(undo(f, mcp(f.owner), {
         operationId: undoBy === 'confirm' ? confirmed.operationId : requested.operationId,
         idempotencyKey: `undo-${agentId}`,
-      });
+      }));
       assert.equal(undone.status, 'completed', JSON.stringify(undone.outcomes));
       const restored = await f.config.getAgent(agent.id);
       assert.equal(restored.enabled, true, `undo by the ${undoBy} ID turns the Agent back on`);
       assert.equal((await f.config.listAgentChannelGrants(f.owner.binding.slackTeamId))
         .find((row) => row.agentId === agent.id)?.status, 'active', 'its Channel grant was kept throughout');
 
-      const again = await call(f, mcp(f.owner), 'undo_workspace_change', {
+      const again = await undo(f, mcp(f.owner), {
         operationId: confirmed.operationId,
         idempotencyKey: `undo-again-${agentId}`,
       });
@@ -214,14 +208,12 @@ test('a confirmed connection removal carries its undo too', () =>
       patch: { mcpServers: [] },
     }]);
     assert.equal(removal.status, 'confirmation_required');
-    const confirmed = await succeed<ManagementApplyResult>(f, mcp(f.owner), 'confirm_workspace_change', {
-      proposalId: removal.outcomes[0]!.proposalId!,
-    });
+    const confirmed = await succeed<ManagementApplyResult>(confirmThroughService(f.service, mcp(f.owner), removal.outcomes[0]!.proposalId!));
     assert.equal(confirmed.outcomes[0]?.undoAvailable, true);
-    const undone = await succeed<ManagementApplyResult>(f, mcp(f.owner), 'undo_workspace_change', {
+    const undone = await succeed<ManagementApplyResult>(undo(f, mcp(f.owner), {
       operationId: confirmed.operationId,
       idempotencyKey: 'undo-remove',
-    });
+    }));
     assert.equal(undone.status, 'completed', JSON.stringify(undone.outcomes));
     const snapshot = await inspect(f, mcp(f.owner));
     assert.deepEqual(snapshot.agents.find(({ id }) => id === agent.id)?.mcpServers.map(({ id }) => id), ['knowledge']);
@@ -247,14 +239,12 @@ test('a call that changed more than the confirmed item offers no undo, as an imm
     assert.deepEqual(requested.outcomes.map(({ disposition }) => disposition), ['applied', 'confirmation_required']);
     assert.equal(requested.outcomes[0]?.undoAvailable, undefined, 'the edit alone is not undone either');
 
-    const confirmed = await succeed<ManagementApplyResult>(f, mcp(f.owner), 'confirm_workspace_change', {
-      proposalId: requested.outcomes[1]!.proposalId!,
-    });
+    const confirmed = await succeed<ManagementApplyResult>(confirmThroughService(f.service, mcp(f.owner), requested.outcomes[1]!.proposalId!));
     assert.equal(confirmed.status, 'completed');
     assert.equal(confirmed.outcomes[0]?.undoAvailable, undefined, 'an undo of the disable alone would leave the edit');
     for (const operationId of [confirmed.operationId, requested.operationId]) {
-      const undo = await call(f, mcp(f.owner), 'undo_workspace_change', { operationId, idempotencyKey: `undo-${operationId}` });
-      assert.ok(!undo.ok && undo.error.code === 'undo_unavailable', JSON.stringify(undo));
+      const refused = await undo(f, mcp(f.owner), { operationId, idempotencyKey: `undo-${operationId}` });
+      assert.ok(!refused.ok && refused.error.code === 'undo_unavailable', JSON.stringify(refused));
     }
     const after = await f.config.getAgent(agent.id);
     assert.equal(after.enabled, false);
@@ -276,20 +266,20 @@ test('forgetting an Agent\'s memory over MCP can be undone', () =>
     assert.equal(forgotten.outcomes[0]?.undoAvailable, true);
     assert.equal((await f.memory.getAgentMemory(agent.id)).body, '');
 
-    const undone = await succeed<ManagementApplyResult>(f, mcp(f.owner), 'undo_workspace_change', {
+    const undone = await succeed<ManagementApplyResult>(undo(f, mcp(f.owner), {
       operationId: forgotten.operationId,
       idempotencyKey: 'undo-forget',
-    });
+    }));
     assert.equal(undone.status, 'completed', JSON.stringify(undone.outcomes));
     assert.equal((await f.memory.getAgentMemory(agent.id)).body, 'Refunds go to account 99.');
 
-    const again = await call(f, mcp(f.owner), 'undo_workspace_change', {
+    const again = await undo(f, mcp(f.owner), {
       operationId: forgotten.operationId,
       idempotencyKey: 'undo-forget-again',
     });
     assert.ok(!again.ok && again.error.code === 'undo_unavailable', 'the undo is used once');
 
-    const other = await call(f, mcp(f.admin), 'undo_workspace_change', {
+    const other = await undo(f, mcp(f.admin), {
       operationId: forgotten.operationId,
       idempotencyKey: 'undo-forget-admin',
     });
@@ -508,7 +498,7 @@ test('a person lists and revokes only their own connected MCP clients, over MCP 
   try {
     await withFixture('mcp-clients', async (f) => {
       seedMcpClients(f, backend);
-      const listed = await succeed<McpClientList>(f, mcp(f.owner), 'list_mcp_clients', {});
+      const listed = await succeed<McpClientList>(listClients(f, mcp(f.owner)));
       assert.deepEqual(listed.clients, [{
         clientId: 'client_current',
         name: 'Chickpea CLI',
@@ -524,21 +514,21 @@ test('a person lists and revokes only their own connected MCP clients, over MCP 
       }]);
       assert.doesNotMatch(JSON.stringify(listed), /token_|refresh_/, 'no token value leaves Better Auth');
 
-      const theirs = await call(f, mcp(f.owner), 'revoke_mcp_client', { clientId: 'client_admin' });
-      const missing = await call(f, mcp(f.owner), 'revoke_mcp_client', { clientId: 'client_missing' });
+      const theirs = await revokeClient(f, mcp(f.owner), 'client_admin');
+      const missing = await revokeClient(f, mcp(f.owner), 'client_missing');
       assert.ok(!theirs.ok && !missing.ok);
       assert.deepEqual(theirs.error, missing.error, 'another person\'s client reads as one that does not exist');
       assert.equal(theirs.error.code, 'mcp_client_not_found');
-      const adminClients = await succeed<McpClientList>(f, mcp(f.admin, 'client_admin'), 'list_mcp_clients', {});
+      const adminClients = await succeed<McpClientList>(listClients(f, mcp(f.admin, 'client_admin')));
       assert.deepEqual(adminClients.clients.map(({ clientId, current }) => [clientId, current]), [['client_admin', true]],
         'the other person\'s client is untouched');
 
       const other = await succeed<{ clientId: string; current: boolean; message: string }>(
-        f, mcp(f.owner), 'revoke_mcp_client', { clientId: 'client_code' });
+        revokeClient(f, mcp(f.owner), 'client_code'));
       assert.equal(other.current, false);
       assert.match(other.message, /Claude Code/);
       assert.doesNotMatch(other.message, /sign in again/);
-      assert.deepEqual((await succeed<McpClientList>(f, mcp(f.owner), 'list_mcp_clients', {})).clients
+      assert.deepEqual((await succeed<McpClientList>(listClients(f, mcp(f.owner)))).clients
         .map(({ clientId }) => clientId), ['client_current']);
       const remaining = backend.database.prepare(
         'SELECT count(*) AS n FROM oauthRefreshToken WHERE clientId = ?',
@@ -546,12 +536,12 @@ test('a person lists and revokes only their own connected MCP clients, over MCP 
       assert.equal(Number(remaining.n), 0, 'its refresh tokens are gone');
 
       const current = await succeed<{ current: boolean; message: string }>(
-        f, mcp(f.owner), 'revoke_mcp_client', { clientId: 'client_current' });
+        revokeClient(f, mcp(f.owner), 'client_current'));
       assert.equal(current.current, true);
       assert.match(current.message, /sign in to Chickpea again/);
-      assert.deepEqual((await succeed<McpClientList>(f, mcp(f.owner), 'list_mcp_clients', {})).clients, []);
+      assert.deepEqual((await succeed<McpClientList>(listClients(f, mcp(f.owner)))).clients, []);
 
-      const fromSlack = await call(f, ownerSlackDmContext(f), 'list_mcp_clients', {});
+      const fromSlack = await listClients(f, ownerSlackDmContext(f));
       assert.ok(!fromSlack.ok, 'Slack has no MCP clients to manage');
       assert.deepEqual(fromSlack.error, {
         code: 'forbidden',
@@ -569,7 +559,7 @@ test('revoking a client deletes its grants again, so a refresh that raced the fi
     let deletes = 0;
     await withFixture('mcp-revoke-race', async (f) => {
       seedMcpClients(f, backend);
-      await succeed(f, mcp(f.owner), 'revoke_mcp_client', { clientId: 'client_code' });
+      await succeed(revokeClient(f, mcp(f.owner), 'client_code'));
       assert.equal(deletes, 2);
       const remaining = backend.database.prepare(
         'SELECT count(*) AS n FROM oauthRefreshToken WHERE clientId = ?',

@@ -147,8 +147,15 @@ ends before all of its tests report (no test at all, no summary of its own, or
 fewer tests than that summary counts), is rerun once alone; a file that then
 passes is logged as `RETRIED IN ISOLATION`, and a file that fails or comes up
 short twice fails the run. node:test itself passes any file whose process
-exits 0. `verify:regression`'s focused test steps pass `--fail-on-retry`, so a
-file that passes only alone fails the step there, and every step's receipt
+exits 0. A file whose process starts and finishes no test for three minutes, a
+minute past the per-test timeout, is logged as `HUNG` with the test it was
+running and its processes, which the runner kills, so the file fails and
+reruns alone instead of silencing the pass; one that still does not end stops
+the pass. Each file's process runs with `--no-maglev --no-concurrent-sparkplug`,
+because Node 24's `process.exit()` can deadlock while one of those compilers
+runs in the background (nodejs/node#64274). `verify:regression`'s focused
+test steps pass `--fail-on-retry`, so a file that passes only alone fails the
+step there, and every step's receipt
 and the run summary list each file a runner reran (`retries`). Local
 verification servers take loopback ports from `scripts/lib/verification-ports.mjs`:
 a fixed range outside the OS ephemeral range, locked per host under
@@ -224,35 +231,36 @@ static closure (the chunks its entry imports without `import()`) before its
 constructor runs. Two budgets hold it: the source bytes of the repository
 modules Worker startup loads (`tests/worker-startup-imports.test.ts`, in
 `npm test` and `test:mcp`), and the built closure (`scripts/worker-closure.mjs`,
-after a build). `npm run verify:budgets` builds and runs both. Each applies two
-rules:
+after a build). `npm run verify:budgets` builds and runs both.
 
-- **Growth.** A change may add 16 KiB over its merge base. The closure check
-  builds the base in a temporary export with this checkout's dependencies, so
-  a dependency upgrade meets only the ceiling; on a train, that skips each
-  change before the upgrade. A base that does not build fails
-  the check with the build's output; when it cannot build with the checkout's
-  dependencies, `CHICKPEA_BUDGET_UNBUILDABLE_BASE=1` checks the ceiling alone.
+- **Growth.** Both checks apply it: a change may add 16 KiB over its merge
+  base. The closure check builds the base in a temporary export with this
+  checkout's dependencies, so a dependency upgrade's own growth is not
+  counted. A base that does not build fails the check with the build's
+  output; when it cannot build with the checkout's dependencies, as on a
+  train before an upgrade, `CHICKPEA_BUDGET_UNBUILDABLE_BASE=1` skips the
+  changes that cannot be measured and checks the rest.
   A failure lists the modules that grew. When the growth is deliberate, add a
   commit trailer such as
   `Worker-Startup-Growth: 40 KiB, the connect route loads with every Agent` to
   the change; it raises that change's allowance to the size it names, at most
   128 KiB. Both checks print each change's growth and notes, and a PR that
   carries a note lists it in its description.
-- **Ceiling.** A fixed total backstops the growth rule. It carries about
-  64 KiB of headroom, so parallel PRs do not collide on it. When a merge train
-  fills it, set it once to the measured size plus 64 KiB. Lower it when a
-  change shrinks startup.
+- **Startup-source ceiling.** A fixed total backstops the startup-source
+  check; the built closure has no ceiling. It carries about 64 KiB of
+  headroom, so parallel PRs do not collide on it. When a merge train fills
+  it, set it once to the measured size plus 64 KiB. Lower it when a change
+  shrinks startup.
 
 With no CI to name a PR's base, both checks ask Git:
 `git merge-base HEAD origin/main`, using `origin/main` as of the last
 `git fetch origin main`. Both print the base. A branch is one change, measured
 from that base to the working tree. On a train, each PR merged with `--no-ff`
 is its own change, measured from its first parent, and so is each run of plain
-commits between merges, such as the ceiling re-set. So a train of PRs that each
-fit still passes. For a PR stacked on another branch, set
+commits between merges, such as the startup-source ceiling re-set. So a train
+of PRs that each fit still passes. For a PR stacked on another branch, set
 `CHICKPEA_BUDGET_BASE` to that branch; a ref with no merge base fails. A
-checkout with no Git history or no `origin/main` checks the ceilings alone and
+checkout with no Git history or no `origin/main` skips the growth rule and
 says so. `tests/worker-startup-imports.test.ts` also keeps the modules it lists
 off Worker startup. Load code the reply path does not need with `import()`
 where it is used.

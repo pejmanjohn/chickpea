@@ -7,9 +7,11 @@ import { test, type TestContext } from 'node:test';
 import { createMcpConnection, type McpConnectionDefinition } from '@flue/runtime';
 
 import type { RuntimePlanMcpConnectionV2 } from '../src/agents/runtime-plan.ts';
+import { projectMcpToolInputSchema } from '../src/config/mcp-test.ts';
 import { createMcpToolsListFilter } from '../src/config/mcp-tools-list.ts';
 import { resolveRuntimePlanMcpConnections } from '../src/config/profile-mcp.ts';
 import {
+  compileMetaAdsToolAccess,
   META_ADS_ACCOUNT_HELPER,
   META_ADS_APPROVED_ACCOUNT_SCOPE,
   META_ADS_FIELD_HELPER,
@@ -18,6 +20,12 @@ import { META_ADS_ACCOUNT_HELPER_DESCRIPTION } from '../src/config/meta-ads-resp
 import { closeNodeStateStores, getConfigStore } from '../src/config/state-backend.ts';
 import type { McpConnectionConfig } from '../src/config/types.ts';
 import { withEnv } from './helpers/env.ts';
+import {
+  META_ACCOUNT_READ_NAMES,
+  META_ACCOUNT_READS,
+  META_DEFERRED_READS,
+  metaAccountReadSchema,
+} from './helpers/meta-ads-account-reads.ts';
 
 // Synthetic tool names only. `alpha`, `beta`, and `gamma` are granted; the
 // server stops listing `beta` and starts listing `extra`, which nobody granted.
@@ -105,38 +113,72 @@ function pagedServer(wire: Wire, pages: readonly (readonly ListedTool[])[]) {
   return mcpServer((rpc) => reply(wire, { jsonrpc: '2.0', id: rpc.id, result: pageResult(pages, rpc.params?.cursor) }));
 }
 
+const sseMessage = (payload: unknown) => `event: message\ndata: ${JSON.stringify(payload)}\n\n`;
+
+/** The GET event stream a legacy SSE server writes to; text sent while none is open waits for the next. */
+interface LegacyStream {
+  send: (text: string) => void;
+  end: () => void;
+}
+
 /**
  * A legacy SSE server: every answer arrives on the GET event stream, pushed
- * before the POST's 202 returns, as a fast server can.
+ * before the POST's 202 returns, as a fast server can. `answer` writes the
+ * events for one request; by default its plain answer, with tools/list paged.
+ * Each GET stream asks the client to reconnect after 10 ms.
  */
-function legacySseServer(tools: readonly ListedTool[]) {
-  let push: ((text: string) => void) | undefined;
+function legacySseServer(
+  pages: readonly (readonly ListedTool[])[],
+  answer: (rpc: Rpc, plain: string, stream: LegacyStream) => void = (_rpc, plain, stream) => stream.send(plain),
+) {
+  const calls: string[] = [];
+  const gets: Request[] = [];
+  const posts: Array<Record<string, unknown>> = [];
+  const queued: string[] = [];
+  let open: ReadableStreamDefaultController<Uint8Array> | undefined;
+  const stream: LegacyStream = {
+    send: (text) => (open ? open.enqueue(encoder.encode(text)) : queued.push(text)),
+    end: () => {
+      open?.close();
+      open = undefined;
+    },
+  };
   const fetch = (async (input, init) => {
     const request = new Request(input, init);
     if (request.method === 'GET') {
-      const body = new ReadableStream<Uint8Array>({
+      gets.push(request);
+      return new Response(new ReadableStream<Uint8Array>({
         start(controller) {
-          push = (text) => controller.enqueue(encoder.encode(text));
-          push('event: endpoint\ndata: /messages?session=synthetic\n\n');
+          open = controller;
+          controller.enqueue(encoder.encode(`retry: 10\n\nevent: endpoint\ndata: /messages?stream=${gets.length}\n\n`));
+          for (const text of queued.splice(0)) controller.enqueue(encoder.encode(text));
         },
         cancel() {
-          push = undefined;
+          open = undefined;
         },
-      });
-      return new Response(body, { headers: { 'content-type': 'text/event-stream' } });
+      }), { headers: { 'content-type': 'text/event-stream' } });
     }
     const rpc = await request.json() as Rpc;
-    if (rpc.id !== undefined) {
+    posts.push(rpc);
+    if (rpc.id !== undefined && rpc.method !== undefined) {
+      if (rpc.method === 'tools/call') calls.push(String(rpc.params?.name));
       const result = rpc.method === 'initialize'
         ? initializeResult(rpc.params as Record<string, unknown>)
         : rpc.method === 'tools/list'
-          ? { tools: tools.map(listedTool) }
+          ? pageResult(pages, rpc.params?.cursor)
           : { content: [{ type: 'text', text: 'done' }] };
-      push?.(`event: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result })}\n\n`);
+      answer(rpc, sseMessage({ jsonrpc: '2.0', id: rpc.id, result }), stream);
     }
     return new Response('Accepted', { status: 202 });
   }) as typeof globalThis.fetch;
-  return { fetch };
+  return { fetch, calls, gets, posts };
+}
+
+async function until(condition: () => boolean): Promise<void> {
+  for (let waited = 0; !condition(); waited += 10) {
+    if (waited > 2_000) throw new Error('timed out waiting for the condition');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }
 
 function connectionConfig(overrides: Partial<McpConnectionConfig> = {}): McpConnectionConfig {
@@ -651,28 +693,167 @@ test('an answer the MCP client would not read as one is refused', async (t) => {
   assert.deepEqual(logs.refused, malformed.flatMap(() => [refusedLine('json-rpc'), refusedLine('json-rpc')]));
 });
 
-// --- the legacy SSE transport keeps Flue's strict allowlist ----------------
+// --- the legacy SSE transport ----------------------------------------------
+// Every answer arrives on the GET event stream, so that stream is filtered.
 
-test('the legacy SSE transport keeps the strict allowlist and no filter', async (t) => {
+const sseConfig = (overrides: Partial<McpConnectionConfig> = {}) => connectionConfig({ transport: 'sse', ...overrides });
+
+test('on legacy SSE a granted tool the server stopped listing leaves the rest mounted, and an ungranted one stays out', async (t) => {
+  const logs = captureLogs(t);
+  const server = legacySseServer([['gamma', 'extra', 'alpha']]);
+  await withRuntimeConnection(sseConfig(), server.fetch, async (definition) => {
+    assert.equal(definition.tools, undefined, 'Flue mounts the filtered listing, not a strict allowlist');
+    assert.deepEqual(await mountedNames(definition), ['mcp__srv__alpha', 'mcp__srv__gamma']);
+  });
+  assert.deepEqual(logs.missing, [missingLine(['beta'], 3)]);
+  assert.deepEqual(logs.refused, []);
+});
+
+test('a legacy SSE grant split across two pages mounts what each page lists and reports what is missing after the last', async (t) => {
+  const logs = captureLogs(t);
+  const server = legacySseServer([['extra', 'gamma'], ['alpha']]);
+  await withRuntimeConnection(sseConfig(), server.fetch, async (definition) => {
+    assert.deepEqual(await mountedNames(definition), ['mcp__srv__gamma', 'mcp__srv__alpha']);
+  });
+  assert.deepEqual(logs.missing, [missingLine(['beta'], 3)]);
+});
+
+test('a name a legacy SSE listing repeats mounts its first copy once, on one page and across two', async (t) => {
   captureLogs(t);
-  const server = legacySseServer(['extra', 'beta', 'alpha', 'gamma']);
-  await withRuntimeConnection(connectionConfig({ transport: 'sse' }), server.fetch, async (definition) => {
-    assert.deepEqual(definition.tools, GRANT);
-    const accepted = await definition.fetch!(URL_, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'tools/list', params: {} }),
+  const later = { ...listedTool('alpha'), description: 'A later copy.' };
+  for (const pages of [[['alpha', 'gamma', later]], [['alpha'], ['gamma', later]]]) {
+    const server = legacySseServer(pages);
+    await withRuntimeConnection(sseConfig(), server.fetch, async (definition) => {
+      const connection = await createMcpConnection(definition);
+      try {
+        assert.deepEqual(connection.tools.map(({ name, description }) => [name, description]), [
+          ['mcp__srv__alpha', 'The alpha tool.'],
+          ['mcp__srv__gamma', 'The gamma tool.'],
+        ]);
+      } finally {
+        await connection.close();
+      }
     });
-    assert.equal(accepted.status, 202, 'the POST carries no listing on this transport');
-    assert.deepEqual(await mountedNames(definition), ['mcp__srv__alpha', 'mcp__srv__beta', 'mcp__srv__gamma']);
+  }
+});
+
+test('a legacy SSE test run mounts the same intersection', async (t) => {
+  captureLogs(t);
+  const server = legacySseServer([['gamma', 'extra', 'alpha']]);
+  const reads = Object.fromEntries(GRANT.map((name) => [name, { effect: 'read' as const }]));
+  await withRuntimeConnection(sseConfig({ toolPolicies: reads }), server.fetch, async (definition) => {
+    assert.deepEqual(await mountedNames(definition), ['mcp__srv__alpha', 'mcp__srv__gamma']);
+  }, { readOnlyTools: GRANT }, { readsOnly: true });
+});
+
+test('a legacy SSE tool call works after the listing, and an ungranted one never leaves Chickpea', async (t) => {
+  captureLogs(t);
+  const server = legacySseServer([['extra', 'alpha']]);
+  await withRuntimeConnection(sseConfig(), server.fetch, async (definition) => {
+    const connection = await createMcpConnection(definition);
+    try {
+      assert.deepEqual(connection.tools.map(({ name }) => name), ['mcp__srv__alpha']);
+      assert.equal(await preparedMcpExecutor(connection.tools[0]!)({}), 'done');
+    } finally {
+      await connection.close();
+    }
+    await assert.rejects(definition.fetch!(URL_, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'extra', arguments: {} } }),
+    }), /not selected for this Agent/);
+  });
+  assert.deepEqual(server.calls, ['alpha']);
+});
+
+test('a legacy SSE listing pushed ahead of other events is still filtered, and the events after it reach the client', async (t) => {
+  captureLogs(t);
+  const server = legacySseServer([['extra', 'alpha', 'gamma']], (rpc, plain, stream) => stream.send(rpc.method === 'tools/list'
+    ? plain +
+      sseMessage({ jsonrpc: '2.0', method: 'notifications/message', params: { level: 'info', data: 'listed' } }) +
+      sseMessage({ jsonrpc: '2.0', id: 'server-ping', method: 'ping' })
+    : plain));
+  await withRuntimeConnection(sseConfig(), server.fetch, async (definition) => {
+    const connection = await createMcpConnection(definition);
+    try {
+      assert.deepEqual(connection.tools.map(({ name }) => name), ['mcp__srv__alpha', 'mcp__srv__gamma']);
+      await until(() => server.posts.some((rpc) => rpc.id === 'server-ping' && 'result' in rpc));
+    } finally {
+      await connection.close();
+    }
   });
 });
 
-test('on the legacy SSE transport a missing granted tool still fails the connection (residual)', async (t) => {
-  captureLogs(t);
-  const server = legacySseServer(['extra', 'alpha', 'gamma']);
-  await withRuntimeConnection(connectionConfig({ transport: 'sse' }), server.fetch, async (definition) => {
-    await assert.rejects(createMcpConnection(definition), /does not expose "beta"/);
+test('a listing a legacy SSE server pushes while the client waits, before Chickpea sends the request, never mounts', async (t) => {
+  const logs = captureLogs(t);
+  let stream!: LegacyStream;
+  const server = legacySseServer([['extra', 'alpha']], (_rpc, plain, open) => {
+    stream = open;
+    open.send(plain);
   });
+  await withRuntimeConnection(sseConfig(), server.fetch, async (definition) => {
+    // The client holds its tools/list request from before this fetch; a server can guess the id.
+    const pushedFirst = (async (input, init) => {
+      const rpc = typeof init?.body === 'string' ? JSON.parse(init.body) as Rpc : undefined;
+      if (rpc?.method === 'tools/list') {
+        for (const id of [rpc.id, String(rpc.id)]) {
+          stream.send(sseMessage({ jsonrpc: '2.0', id, result: { tools: ['extra', 'alpha', 'gamma'].map(listedTool) } }));
+        }
+        await until(() => logs.refused.length === 2);
+      }
+      return definition.fetch!(input, init);
+    }) as typeof globalThis.fetch;
+    assert.deepEqual(await mountedNames({ ...definition, fetch: pushedFirst }), ['mcp__srv__alpha']);
+  });
+  assert.deepEqual(logs.refused, [refusedLine('response-id'), refusedLine('response-id')]);
+});
+
+test('a legacy SSE listing the filter cannot read fails the connection at once and mounts nothing', { timeout: 10_000 }, async (t) => {
+  const logs = captureLogs(t);
+  const listing = (rpc: Rpc) => ({ jsonrpc: '2.0', id: rpc.id, result: { tools: ['extra', 'alpha'].map(listedTool) } });
+  const cases: Array<[string, (rpc: Rpc) => string]> = [
+    ['batch', (rpc) => `data: [${JSON.stringify(listing(rpc))}]\n\n`],
+    ['invalid-json', () => 'data: {"jsonrpc":\n\n'],
+    ['response-id', (rpc) => sseMessage({ ...listing(rpc), id: Number(rpc.id) + 100 })],
+    ['json-rpc', (rpc) => sseMessage({ jsonrpc: '2.0', id: rpc.id, result: { tools: 'alpha' } })],
+    ['json-rpc', (rpc) => sseMessage({ jsonrpc: '2.0', id: rpc.id, error: 'nope' })],
+    ['json-rpc', (rpc) => sseMessage({ ...listing(rpc), extra: true })],
+    ['tool', (rpc) => sseMessage({ jsonrpc: '2.0', id: rpc.id, result: { tools: [listedTool('alpha'), 'beta'] } })],
+  ];
+  for (const [reason, events] of cases) {
+    const server = legacySseServer([['alpha']], (rpc, plain, stream) => stream.send(rpc.method === 'tools/list' ? events(rpc) : plain));
+    await withRuntimeConnection(sseConfig(), server.fetch, async (definition) => {
+      assert.equal(await mountOutcome(definition), unsupported(reason), reason);
+    });
+  }
+  assert.deepEqual(logs.refused, cases.map(([reason]) => refusedLine(reason)));
+});
+
+test('a legacy SSE connection that lists none of its grant, or declares no tools, fails with a reason a person can act on', async (t) => {
+  const logs = captureLogs(t);
+  await withRuntimeConnection(sseConfig(), legacySseServer([['extra']]).fetch, async (definition) => {
+    assert.equal(await mountOutcome(definition), NO_GRANTED_TOOLS);
+  });
+  const noTools = legacySseServer([['alpha']], (rpc, plain, stream) => stream.send(rpc.method === 'initialize'
+    ? sseMessage({ jsonrpc: '2.0', id: rpc.id, result: {
+      ...initializeResult(rpc.params as Record<string, unknown>), capabilities: { logging: {} },
+    } })
+    : plain));
+  await withRuntimeConnection(sseConfig(), noTools.fetch, async (definition) => {
+    assert.equal(await mountOutcome(definition), NO_GRANTED_TOOLS);
+  });
+  assert.deepEqual(logs.refused, [refusedLine('no-granted-tools'), refusedLine('no-tools-capability')]);
+});
+
+test('a listing a legacy SSE server sends on its stream after a reconnect is filtered the same way', { timeout: 10_000 }, async (t) => {
+  captureLogs(t);
+  const server = legacySseServer([['extra', 'gamma', 'alpha']], (rpc, plain, stream) => {
+    stream.send(plain);
+    if (rpc.method === 'initialize') stream.end();
+  });
+  await withRuntimeConnection(sseConfig(), server.fetch, async (definition) => {
+    assert.deepEqual(await mountedNames(definition), ['mcp__srv__alpha', 'mcp__srv__gamma']);
+  });
+  assert.equal(server.gets.length, 2, 'the listing arrived on the second GET stream');
 });
 
 // --- Meta ------------------------------------------------------------------
@@ -766,7 +947,7 @@ const META_STORED = [
   { name: META_ADS_ACCOUNT_HELPER, inputSchema: { ...metaHelperSchema,
     propertyNames: ['advertiser_request', 'client_conversation_id', 'cursor', 'limit'] } },
   { name: META_REPORT, inputSchema: reportSchema(
-    ['ad_account_id', 'client_conversation_id', 'date_preset', 'entity_ids'], 'd'.repeat(64)) },
+    ['ad_account_id', 'analysis_metric', 'client_conversation_id', 'entity_ids'], 'd'.repeat(64)) },
   { name: META_ENTITIES, inputSchema: reportSchema(
     ['ad_account_id', 'client_conversation_id', 'fields', 'object_ids'], 'e'.repeat(64)) },
 ];
@@ -811,7 +992,7 @@ const liveHelper = {
   outputSchema: { type: 'object', properties: { accounts: { type: 'array' } }, required: ['accounts'] },
 };
 const liveReport = (required = ['ad_account_id']) => liveMetaTool(META_REPORT, {
-  ad_account_id: text, client_conversation_id: text, date_preset: text, entity_ids: list,
+  ad_account_id: text, client_conversation_id: text, analysis_metric: text, entity_ids: list,
 }, required);
 const liveEntities = liveMetaTool(META_ENTITIES, {
   ad_account_id: text, client_conversation_id: text, fields: list, object_ids: list,
@@ -836,7 +1017,7 @@ test('each mounted Meta tool shows the model only its reviewed arguments, never 
       assert.deepEqual(connection.tools.map(({ name }) => name), META_GRANT.map((name) => `mcp__meta__${name}`));
       assert.deepEqual(shownSchema(mounted(connection, META_REPORT)), {
         type: 'object',
-        properties: { ad_account_id: text, client_conversation_id: text, date_preset: text },
+        properties: { ad_account_id: text, client_conversation_id: text, analysis_metric: text },
         required: ['ad_account_id'],
         additionalProperties: false,
       });
@@ -881,8 +1062,112 @@ test('a Meta call built from every argument the model is shown passes the key ch
   }, metaDeclaration());
   assert.deepEqual(server.calls, [META_REPORT]);
   assert.deepEqual(server.callArguments, [{
-    ad_account_id: '123450001', client_conversation_id: 'synthetic', date_preset: 'synthetic',
+    ad_account_id: '123450001', client_conversation_id: 'synthetic', analysis_metric: 'synthetic',
   }]);
+});
+
+test("after a fresh discovery stores Meta's added helper arguments, the helpers mount with only reviewed ones", async (t) => {
+  const logs = captureLogs(t);
+  const liveFields = liveMetaTool(META_ADS_FIELD_HELPER, {
+    advertiser_request: text, client_conversation_id: text, field_names: list,
+  }, ['field_names']);
+  const grant = [META_ADS_ACCOUNT_HELPER, META_ADS_FIELD_HELPER];
+  // What a reconnect or a new Meta connection stores from today's listing.
+  const fresh = [liveHelper, liveFields].map(({ name, inputSchema }) =>
+    ({ name, inputSchema: projectMcpToolInputSchema(inputSchema, name) }));
+  const meta = metaConnection({
+    allowedTools: grant, discoveredTools: fresh,
+    toolPolicies: Object.fromEntries(grant.map((name) => [name, { effect: 'read' as const, argumentConstraints: metaScope }])),
+  });
+  const listed = { ad_accounts: [
+    { ad_account_id: 'act_123450001', is_ads_mcp_enabled: true, is_queryable: true, ad_account_name: 'Synthetic Advertiser' },
+    { ad_account_id: 'act_999000999', is_ads_mcp_enabled: true, is_queryable: true, ad_account_name: 'Not Approved' },
+  ] };
+  const server = mcpServer(
+    (rpc) => Response.json({ jsonrpc: '2.0', id: rpc.id, result: { tools: [liveHelper, liveFields] } }),
+    (rpc) => Response.json({ jsonrpc: '2.0', id: rpc.id, result: rpc.params?.name === META_ADS_ACCOUNT_HELPER
+      ? { content: [{ type: 'text', text: JSON.stringify(listed) }], structuredContent: listed }
+      : { content: [{ type: 'text', text: 'done' }] } }),
+  );
+  await withRuntimeConnection(meta, server.fetch, async (definition) => {
+    const connection = await createMcpConnection(definition);
+    try {
+      assert.deepEqual(connection.tools.map(({ name }) => name), grant.map((name) => `mcp__meta__${name}`));
+      // The account answer is still rebuilt from the approved accounts only.
+      const accounts = preparedMcpExecutor(mounted(connection, META_ADS_ACCOUNT_HELPER));
+      const answer = await accounts({ advertiser_request: 'Synthetic request.' });
+      assert.match(answer, /"ad_account_id": "123450001"/);
+      assert.doesNotMatch(answer, /999000999|Not Approved/);
+      for (const unsent of ['cursor', 'limit', 'advertiser_job', 'scheduled_task_run']) {
+        await assert.rejects(accounts({ [unsent]: 'synthetic' }), new RegExp(`does not permit the argument ${unsent}`));
+      }
+      assert.deepEqual(Object.keys(shownSchema(mounted(connection, META_ADS_ACCOUNT_HELPER)).properties),
+        ['advertiser_request', 'client_conversation_id']);
+      const fields = mounted(connection, META_ADS_FIELD_HELPER);
+      assert.deepEqual(shownSchema(fields), {
+        type: 'object',
+        properties: { advertiser_request: text, client_conversation_id: text, field_names: list },
+        required: ['field_names'],
+        additionalProperties: false,
+      });
+      assert.equal(await preparedMcpExecutor(fields)({ field_names: ['spend'] }), 'done');
+      await assert.rejects(preparedMcpExecutor(fields)({ field_names: ['spend'], advertiser_job: 'synthetic' }),
+        /does not permit the argument advertiser_job/);
+    } finally {
+      await connection.close();
+    }
+  }, {
+    readOnlyTools: grant,
+    toolArgumentConstraints: Object.fromEntries(grant.map((name) => [name, metaScope])),
+  });
+  assert.deepEqual(server.calls, [META_ADS_ACCOUNT_HELPER, META_ADS_FIELD_HELPER]);
+  assert.deepEqual(server.callArguments, [{ advertiser_request: 'Synthetic request.' }, { field_names: ['spend'] }]);
+  assert.deepEqual(logs.missing, []);
+});
+
+test("Meta's account-wide reads mount from their live schemas with their filters hidden and refused", async (t) => {
+  const logs = captureLogs(t);
+  const listed = [...META_ACCOUNT_READS, ...META_DEFERRED_READS].map(({ name }) =>
+    ({ name, description: `Synthetic ${name}.`, inputSchema: metaAccountReadSchema(name) }));
+  const discoveredTools = listed.map(({ name, inputSchema }) =>
+    ({ name, inputSchema: projectMcpToolInputSchema(inputSchema, name) }));
+  const access = compileMetaAdsToolAccess({
+    discoveredTools, requestedTools: META_ACCOUNT_READ_NAMES, approvedAccountIds: ['123450001'],
+  });
+  const stored = access.allowedTools;
+  const meta = metaConnection({ discoveredTools, allowedTools: stored, toolPolicies: access.toolPolicies });
+  const server = pagedServer('json', [[...listed, 'ads_synthetic_unreviewed']]);
+  await withRuntimeConnection(meta, server.fetch, async (definition) => {
+    const connection = await createMcpConnection(definition);
+    try {
+      // Creatives and errors are listed and discovered, but never mount.
+      assert.deepEqual(connection.tools.map(({ name }) => name), META_ACCOUNT_READ_NAMES.map((name) => `mcp__meta__${name}`));
+      for (const { name, properties, filters } of META_ACCOUNT_READS) {
+        const tool = mounted(connection, name);
+        const shown = shownSchema(tool);
+        assert.deepEqual(Object.keys(shown.properties).sort(),
+          Object.keys(properties).filter((property) => !filters.includes(property)).sort(), name);
+        assert.deepEqual(shown.required, ['ad_account_id'], name);
+        assert.equal(/^Start with 50\. /.test(String((shown.properties.limit as { description?: unknown })?.description)),
+          name === 'ads_account_get_activity_logs', name);
+        const call = preparedMcpExecutor(tool);
+        for (const filter of filters) {
+          await assert.rejects(call({ ad_account_id: '123450001', [filter]: '1' }),
+            new RegExp(`does not permit the argument ${filter}`));
+        }
+        await assert.rejects(call({ ad_account_id: '999000999' }), /permits ad_account_id only with an approved value/);
+        assert.equal(await call({ ad_account_id: '123450001' }), 'done');
+      }
+    } finally {
+      await connection.close();
+    }
+  }, {
+    readOnlyTools: stored,
+    toolArgumentConstraints: Object.fromEntries(stored.map((name) => [name, metaAccount])),
+  });
+  assert.deepEqual(server.calls, META_ACCOUNT_READ_NAMES);
+  assert.deepEqual(server.callArguments, META_ACCOUNT_READ_NAMES.map(() => ({ ad_account_id: '123450001' })));
+  assert.deepEqual(logs.missing, []);
 });
 
 test('a Meta tool whose live schema requires an unreviewed argument is not mounted, and the rest are', async (t) => {
@@ -1021,10 +1306,88 @@ test('an account answer that signals more pages is still refused, whatever new k
 
 // --- the filter on its own ------------------------------------------------
 
-const filter = () => createMcpToolsListFilter({ connectionId: 'srv', grant: ['alpha', 'gamma'] });
+const filter = () => createMcpToolsListFilter({ connectionId: 'srv', grant: ['alpha', 'gamma'], transport: 'streamable-http' });
 /** One tools/list answer through a fresh filter. */
-const readListing = (response: Response) => filter().request({ id: 3, method: 'tools/list' })!(response, 'Example Tools');
+const readListing = (response: Response) => filter().request({ id: 3, method: 'tools/list' }, 'Example Tools')!(response);
 const answer = (id: number, tools: unknown) => JSON.stringify({ jsonrpc: '2.0', id, result: { tools } });
+
+/** A legacy SSE filter's view of one GET stream: `push` writes upstream, `read` takes what the client gets next. */
+async function legacyStream() {
+  const sse = createMcpToolsListFilter({ connectionId: 'srv', grant: ['alpha', 'gamma'], transport: 'sse' });
+  let upstream!: ReadableStreamDefaultController<Uint8Array>;
+  let upstreamCancelled = false;
+  const get = sse.guardGets((async () => new Response(new ReadableStream<Uint8Array>({
+    start(controller) {
+      upstream = controller;
+    },
+    cancel() {
+      upstreamCancelled = true;
+    },
+  }), { headers: { 'content-type': 'text/event-stream' } })) as typeof globalThis.fetch);
+  const reader = (await get(URL_, { method: 'GET' })).body!.getReader();
+  const decoder = new TextDecoder();
+  return {
+    sse,
+    push: (text: string) => upstream.enqueue(encoder.encode(text)),
+    read: async () => decoder.decode((await reader.read()).value),
+    close: () => reader.cancel(),
+    upstreamCancelled: () => upstreamCancelled,
+  };
+}
+const note = 'data: {"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"x"}}\n\n';
+
+test('on a legacy SSE stream an answer that comes before its request is dropped, and the one after is filtered', async (t) => {
+  const logs = captureLogs(t);
+  const stream = await legacyStream();
+  stream.push(`event: endpoint\ndata: /messages\n\ndata: ${answer(3, [{ name: 'extra' }, { name: 'alpha' }])}\n\n${note}`);
+  assert.equal(await stream.read(), `event: endpoint\ndata: /messages\n\n${note}`);
+  assert.equal(stream.sse.request({ id: 3, method: 'tools/list' }, 'Example Tools'), undefined,
+    'the POST carries no answer on this transport');
+  stream.push(`data: ${answer(3, [{ name: 'extra' }, { name: 'alpha' }, { name: 'gamma' }])}\n\n`);
+  assert.equal(await stream.read(), `data: ${answer(3, [{ name: 'alpha' }, { name: 'gamma' }])}\n\n`);
+  assert.deepEqual(logs.refused, [refusedLine('response-id')]);
+  await stream.close();
+});
+
+test('a refused legacy SSE answer reaches the client as an error for every request the stream still owes', async (t) => {
+  captureLogs(t);
+  const stream = await legacyStream();
+  stream.sse.request({ id: 3, method: 'tools/list' }, 'Example Tools');
+  stream.push(`data: [${answer(3, [{ name: 'alpha' }])}]\n\n`);
+  assert.equal(await stream.read(), `data: ${JSON.stringify({
+    jsonrpc: '2.0', id: 3, error: { code: -32603, message: unsupported('batch') },
+  })}\n\n`);
+  stream.push(`data: ${answer(3, [{ name: 'alpha' }])}\n\n${note}`);
+  assert.equal(await stream.read(), note, 'an answer it no longer owes is dropped while the listing is open');
+  await stream.close();
+});
+
+test('after the last legacy SSE page, the stream passes answers without reading them', async (t) => {
+  captureLogs(t);
+  const stream = await legacyStream();
+  stream.sse.request({ id: 3, method: 'tools/list' }, 'Example Tools');
+  stream.push(`data: ${answer(3, [{ name: 'alpha' }, { name: 'gamma' }])}\n\n`);
+  await stream.read();
+  assert.equal(stream.sse.request({ id: 4, method: 'tools/call' }, 'Example Tools'), undefined);
+  const call = 'data: {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"done"}]}}\n\n';
+  stream.push(`${call}data: not json\n\n`);
+  assert.equal(await stream.read(), `${call}data: not json\n\n`);
+  await stream.close();
+  assert.ok(stream.upstreamCancelled(), "letting go of the client's stream lets go of the server's");
+});
+
+test('a legacy SSE listing still owed when another closes the window is filtered, and other answers pass', async (t) => {
+  captureLogs(t);
+  const stream = await legacyStream();
+  stream.sse.request({ id: 3, method: 'tools/list' }, 'Example Tools');
+  stream.sse.request({ id: 5, method: 'tools/list' }, 'Example Tools');
+  stream.push(`data: ${answer(3, [{ name: 'alpha' }, { name: 'gamma' }])}\n\n`);
+  await stream.read();
+  const call = 'data: {"jsonrpc":"2.0","id":4,"result":{"content":[]}}\n\n';
+  stream.push(`${call}data: ${answer(5, [{ name: 'extra' }, { name: 'gamma' }])}\n\n`);
+  assert.equal(await stream.read(), `${call}data: ${answer(5, [{ name: 'gamma' }])}\n\n`);
+  await stream.close();
+});
 
 test('an event stream is split the way the MCP client splits it, loses its event ids, and ends at the answer', async (t) => {
   captureLogs(t);

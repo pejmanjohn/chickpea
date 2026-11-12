@@ -38,7 +38,7 @@ const LAZY_MODULES: Record<string, string> = {
   'src/auth/better-auth-routes.ts': "Better Auth's public routes (auth/better-auth-runtime.ts)",
   'src/auth/mcp-oauth-routes.ts': 'the MCP resource and its sign-in pages (app.ts)',
   'src/management/mcp.ts': 'the management MCP server (auth/mcp-oauth-routes.ts)',
-  'src/management/agent-authoring/discovery-guide.ts': 'the discovery guide resource (management/mcp.ts)',
+  'src/management/playbook': 'get_guide and the discovery guide resource (management/mcp-v5/tools.ts, management/mcp.ts)',
   'src/management/recipes.ts': 'a workspace recipe export or preview (management/service.ts)',
   'src/management/setup-return-app.ts': "a finished MCP setup link's success page (management/setup-routes.ts)",
   'src/slack/group-dm/runtime.ts': "start_slack_group_dm's first call (slack/group-dm/tools.ts)",
@@ -54,6 +54,9 @@ const LAZY_MODULES: Record<string, string> = {
   'src/slack/answer-release.ts': "a turn's shadow of the host answer release, with its latency log (slack/run-turn.ts), or the host release itself",
   'src/slack/host-release-relay.ts': "a reply's relay while host answer release is on (slack/agent-view-presentation.ts)",
   'src/routines/pause-notice.ts': "a routine's out-of-usage pause, or the good run after it (routines/execution.ts)",
+  'src/review/record.ts': "a run's Help improve Chickpea copy being built, after its reply (review/capture.ts)",
+  'src/review/website-logins.ts': "a run's Help improve Chickpea copy being built, after its reply (review/record.ts, from review/capture.ts)",
+  'src/review/html-references.ts': "a run's Help improve Chickpea copy being built, after its reply (review/website-logins.ts)",
   'src/connections/service-error-text.ts': "a Composio-reported failure's reason (connections/providers/composio.ts)",
   'src/admin/usage-report.ts': "a hosted Usage report or activity page (admin/usage-api.ts)",
   'src/admin/routes.ts': "Admin's first request (app.ts)",
@@ -81,9 +84,9 @@ const LAZY_MODULES: Record<string, string> = {
  * (scripts/lib/budget-growth.mjs); this ceiling backstops the total. Once per
  * merge train it may be set to the measured size plus 64 KiB, and it comes
  * down when a change moves modules behind import(). scripts/worker-closure.mjs
- * holds the built artifact to the same two rules.
+ * holds the built artifact to the growth rule alone.
  */
-const STARTUP_SOURCE_CEILING_BYTES = 9_938_645 + 64 * 1024;
+const STARTUP_SOURCE_CEILING_BYTES = 10_010_020 + 64 * 1024;
 
 function isModule(node: string, module: string): boolean {
   return node === module || node.startsWith(module + '/');

@@ -10,14 +10,11 @@ import {
 } from '../src/config/provider-keys.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { storedCredentialMetadata } from '../src/config/model-credential-refs.ts';
-import { deprecatedToolDescription } from '../src/management/mcp.ts';
 import { FIVE_ZERO_TOOLS } from '../src/management/mcp-v5/tools.ts';
-import { prepareProviderSetupZodSchema } from '../src/management/schemas.ts';
+import { connectModelProviderInput } from '../src/management/mcp-v5/schemas.ts';
+import { serviceResult } from './helpers/management-service-result.ts';
 import { createManagementSetupRoutes } from '../src/management/setup-routes.ts';
-import {
-  invokeWorkspaceManagementTool,
-  workspaceManagementToolDescription,
-} from '../src/management/tool-adapter.ts';
+import { invokeWorkspaceManagementTool } from '../src/management/tool-adapter.ts';
 import type {
   ManagementActorContext,
   ManagementApplyResult,
@@ -123,10 +120,11 @@ test('an Owner gets a 24-hour provider key handoff over MCP and the key never en
   const receipts: unknown[] = [];
   try {
     const context = mcpContext(f.owner);
+    // The service methods connect_model_provider, cancel_setup_link and the 5.0 writes reach, with an MCP origin.
     const adapter = toolAdapter(f, context);
-    const prepared = await invokeWorkspaceManagementTool(adapter, 'prepare_provider_setup', {
+    const prepared = await serviceResult(() => f.service.prepareProviderSetup(context, {
       providerId: 'openai',
-    });
+    }));
     observed.push(prepared);
     assert.ok(prepared.ok, JSON.stringify(prepared));
     const result = prepared.result as PrepareProviderSetupResult;
@@ -198,9 +196,9 @@ test('an Owner gets a 24-hour provider key handoff over MCP and the key never en
     assert.equal((await f.management.getSetup(result.setupOperationId, NOW))?.status, 'completed');
 
     // A second link now replaces the stored key and needs the explicit flag.
-    const refused = await invokeWorkspaceManagementTool(adapter, 'prepare_provider_setup', {
+    const refused = await serviceResult(() => f.service.prepareProviderSetup(context, {
       providerId: 'openai',
-    });
+    }));
     observed.push(refused);
     assert.ok(!refused.ok);
     assert.equal(refused.error.code, 'invalid_request');
@@ -208,10 +206,10 @@ test('an Owner gets a 24-hour provider key handoff over MCP and the key never en
     assert.match(refused.error.message, /replaceExisting/);
     assert.deepEqual(refused.error.links, { admin: PROVIDERS_SETTINGS_URL });
 
-    const replacing = await invokeWorkspaceManagementTool(adapter, 'prepare_provider_setup', {
+    const replacing = await serviceResult(() => f.service.prepareProviderSetup(context, {
       providerId: 'openai',
       replaceExisting: true,
-    });
+    }));
     observed.push(replacing);
     assert.ok(replacing.ok, JSON.stringify(replacing));
     const replacement = replacing.result as PrepareProviderSetupResult;
@@ -281,11 +279,7 @@ test('a member is refused with the Model providers link and no setup record is c
   const f = await providerFixture('provider-handoff-member');
   try {
     const member = await createMember(f, 'provider-handoff-member');
-    const result = await invokeWorkspaceManagementTool(
-      toolAdapter(f, mcpContext(member)),
-      'prepare_provider_setup',
-      { providerId: 'anthropic' },
-    );
+    const result = await serviceResult(() => f.service.prepareProviderSetup(mcpContext(member), { providerId: 'anthropic' }));
     assert.ok(!result.ok);
     assert.equal(result.error.code, 'forbidden');
     assert.match(result.error.message, /Owner or Admin/);
@@ -295,11 +289,7 @@ test('a member is refused with the Model providers link and no setup record is c
     assert.equal(await f.management.getSetup('setup_provider-handoff-member_1', NOW), undefined);
 
     // An Admin is gated exactly like Admin Settings → Model providers: allowed.
-    const admin = await invokeWorkspaceManagementTool(
-      toolAdapter(f, mcpContext(f.admin)),
-      'prepare_provider_setup',
-      { providerId: 'anthropic' },
-    );
+    const admin = await serviceResult(() => f.service.prepareProviderSetup(mcpContext(f.admin), { providerId: 'anthropic' }));
     assert.ok(admin.ok, JSON.stringify(admin));
     assert.equal((admin.result as PrepareProviderSetupResult).provider.name, 'Anthropic');
   } finally {
@@ -312,11 +302,7 @@ test('a deployment-provided key is read-only and says so with the Settings link'
     providerCredentialSource: async () => 'env',
   });
   try {
-    const result = await invokeWorkspaceManagementTool(
-      toolAdapter(f, mcpContext(f.owner)),
-      'prepare_provider_setup',
-      { providerId: 'openrouter', replaceExisting: true },
-    );
+    const result = await serviceResult(() => f.service.prepareProviderSetup(mcpContext(f.owner), { providerId: 'openrouter', replaceExisting: true }));
     assert.ok(!result.ok);
     assert.equal(result.error.code, 'invalid_request');
     assert.match(result.error.message, /read-only/);
@@ -449,19 +435,15 @@ test('provider and member outcomes from apply_workspace_changes carry Settings l
 });
 
 test('the MCP description tells a coding agent how to hand off a provider key without touching it', async () => {
-  // 4.5 deprecates prepare_provider_setup; its 5.0 replacement carries the guidance.
-  assert.equal(deprecatedToolDescription('prepare_provider_setup'), 'Deprecated 2026-11-09: use connect_model_provider.');
   const mcp = FIVE_ZERO_TOOLS.connect_model_provider.description;
   for (const required of ['Owners and Admins only', 'replaceExisting', '24 hours', 'for this person only', 'Never ask for the key']) {
     assert.ok(mcp.includes(required), `MCP description must mention ${required}`);
   }
   assert.doesNotMatch(mcp, /presentation\.slack|\bDM\b|anyone holding it/);
-  const slack = workspaceManagementToolDescription('prepare_provider_setup');
-  assert.match(slack, /Owner or Admin only/);
 
   // The tool takes no key field and is an MCP-door tool only; Chickpea in
   // Slack keeps the typed request_setup path and its replacement proposal.
-  assert.deepEqual(Object.keys(prepareProviderSetupZodSchema.shape).sort(), ['providerId', 'replaceExisting']);
+  assert.deepEqual(Object.keys(connectModelProviderInput.shape).sort(), ['provider', 'replaceExisting']);
   const slackTools = await readFile(new URL('../src/management/slack-tools.ts', import.meta.url), 'utf8');
-  assert.doesNotMatch(slackTools, /prepare_provider_setup/);
+  assert.doesNotMatch(slackTools, /prepare_provider_setup|connect_model_provider/);
 });

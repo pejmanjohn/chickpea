@@ -173,7 +173,7 @@ export function firstAgentPrompt(origin: string): string {
  * before it stops. Shared by the Claude app path and step 4, because the old
  * conversation never sees step 5.
  */
-const HAND_OFF_PASTE = 'paste `Call Chickpea\'s inspect_workspace and tell me the workspace name and who I am signed in as.` That call is the step 5 proof. If they asked for their first Agent and no install guide owns the first teammate, they also add `Then help me create my first Chickpea Agent.`';
+const HAND_OFF_PASTE = 'paste `Call Chickpea\'s get_account and tell me the workspace name and who I am signed in as.` That call is the step 5 proof. If they asked for their first Agent and no install guide owns the first teammate, they also add `Then help me create my first Chickpea Agent.`';
 const HAND_OFF_REPORT = 'Report the three step 5 lines now, with Tested as pending';
 
 function fence(language: string, body: string): string {
@@ -280,19 +280,19 @@ export function connectMarkdown(origin: string, env?: Record<string, unknown>): 
     '',
     '## 5. Prove the connection',
     '',
-    'Call `inspect_workspace` with no changes. The first Chickpea call may show an approval prompt in your client. If it does, ask the person to approve it. Then report three separate lines:',
+    'Call `get_account`, which changes nothing. The first Chickpea call may show an approval prompt in your client. If it does, ask the person to approve it. Then report three separate lines:',
     '',
     '1. Configured: which client and where the configuration was written.',
     '2. Signed in: whether the browser sign-in and consent completed.',
-    '3. Tested: the workspace name and the signed-in person from `inspect_workspace`.',
+    '3. Tested: the signed-in person and the workspace from `get_account`: its `name`, and its `nickname`, which names the Slack workspace and the person\'s role.',
     '',
     'A saved configuration is not a tested connection. If a step remains blocked after following the guidance above, say which one, keep the first error, and stop.',
     '',
     '## 6. Find the first teammate',
     '',
-    `Read the resource \`${DISCOVERY_GUIDE_URI}\` and follow it: research the person's recent work on this machine before you propose an Agent. \`/mcp__${MCP_SERVER_NAME}__new-agent\` does the same in clients that show Chickpea's prompts as slash commands. Nothing is created until the person says yes to a proposal.`,
+    `Read the resource \`${DISCOVERY_GUIDE_URI}\` and follow it: research the person's recent work on this machine before you propose an Agent. Nothing is created until the person says yes to a proposal.`,
     '',
-    'No separate local skills are required. In Codex, ask for the desired Chickpea change in plain language; MCP prompts do not appear in its `$` skills picker.',
+    'No separate local skills are required.',
     '',
     '## Good to know',
     '',

@@ -8,20 +8,9 @@ import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
 import { createBetterAuthPublicHandler } from '../src/auth/better-auth-routes.ts';
 import type { McpAuthenticatedPrincipal } from '../src/auth/mcp-oauth-routes.ts';
 import { DISCOVERY_GUIDE_URI } from '../src/management/agent-authoring/index.ts';
-import { DISCOVERY_GUIDE, DISCOVERY_GUIDE_FIVE_ZERO } from '../src/management/agent-authoring/discovery-guide.ts';
-import { codingAgentAuthoringGuideResource } from '../src/management/agent-authoring/mcp-guide.ts';
-import {
-  V4_TOOL_REPLACEMENTS,
-  WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI,
-  WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI,
-  workspaceManagementMcpFetch,
-} from '../src/management/mcp.ts';
-import {
-  WORKSPACE_MANAGEMENT_PROMPT_NAMES,
-  WORKSPACE_MANAGEMENT_PROMPTS,
-  workspaceManagementPromptText,
-  type WorkspaceManagementPromptName,
-} from '../src/management/prompts.ts';
+import { playbookSection } from '../src/management/playbook/index.ts';
+import { workspaceManagementMcpFetch } from '../src/management/mcp.ts';
+import { REMOVED_RESOURCE_URIS, REMOVED_TOOL_NAMES, removedToolResult, type RemovedToolName } from '../src/management/mcp-v5/removed-v4.ts';
 import { CARD_SHOWS_IT, forCardHost } from '../src/management/mcp-v5/card-host.ts';
 import { writeHints } from '../src/management/mcp-v5/conventions.ts';
 import type { FiveZeroDeps } from '../src/management/mcp-v5/reads.ts';
@@ -460,7 +449,7 @@ test('a set whose applier is gone and whose digest no longer matches is retired,
   assert.equal(read.call(f.management, confirmToken)?.status, 'stale');
 });
 
-const V4_TOOLS = Object.keys(V4_TOOL_REPLACEMENTS);
+const V4_TOOLS: readonly string[] = REMOVED_TOOL_NAMES;
 const V4_OFF = {
   idempotencyKey: 'v4-off',
   operations: [{ itemId: 'off', kind: 'update_agent', agentId: 'agent_support', expectedRevision: 1, patch: { enabled: false } }],
@@ -471,7 +460,7 @@ function refusedCall(message: { result?: any; error?: unknown }): boolean {
   return message.error !== undefined || message.result?.isError === true;
 }
 
-test('a client that draws cards gets no 4.x tool: none is listed, and a call to one is refused', async (t) => {
+test('no client gets a 4.x tool: none is listed, and a call to one changes nothing', async (t) => {
   const { f, connect, modernRequest } = await harness(t, 'card-v4');
   const names = (message: { result?: any }) => (message.result.tools as Array<{ name: string }>).map(({ name }) => name);
 
@@ -487,15 +476,13 @@ test('a client that draws cards gets no 4.x tool: none is listed, and a call to 
   assert.ok(refusedCall((await modernRequest(CARDS, 'tools/call', { name: 'apply_workspace_changes', arguments: V4_OFF })).message));
   assert.equal((await f.config.getAgent('agent_support')).enabled, true, 'nothing changed');
 
-  // A client without cards keeps every 4.x tool, as before.
+  // Since 5.0.0 a client without cards gets the same: the 4.x tools are gone for everyone.
   const plain = await connect({});
-  const plainListed = names((await plain.request('tools/list')).message);
-  assert.deepEqual(V4_TOOLS.filter((name) => !plainListed.includes(name)), []);
-  const modernPlainListed = names((await modernRequest({}, 'tools/list')).message);
-  assert.deepEqual(V4_TOOLS.filter((name) => !modernPlainListed.includes(name)), []);
+  assert.deepEqual(names((await plain.request('tools/list')).message), listed);
+  assert.deepEqual(names((await modernRequest({}, 'tools/list')).message), modernListed);
   const applied = (await plain.request('tools/call', { name: 'apply_workspace_changes', arguments: V4_OFF })).message;
-  assert.equal(refusedCall(applied), false, JSON.stringify(applied));
-  assert.match(JSON.stringify(applied.result.structuredContent), /"proposalId":"changeset_/, 'its model gets the confirmation, as before');
+  assert.equal(applied.result.structuredContent.error.code, 'tool_removed', JSON.stringify(applied));
+  assert.equal((await f.config.getAgent('agent_support')).enabled, true, 'still nothing changed');
 });
 
 /** A later tool no card draws, which returns `result`. */
@@ -550,17 +537,12 @@ test('any tool\'s confirmation keeps its token from a card host\'s model, even o
 
 /** The 4.x tools a text names, each as a whole word: `import_skill` is not `import_skill_from_github`. */
 const v4Named = (text: string) => V4_TOOLS.filter((name) => new RegExp(`\\b${name}\\b`).test(text));
-const PROMPT_ARGUMENTS: Record<string, string> = {
-  purpose: 'chase overdue invoices', handle: 'support', change: 'answer in French', service: 'gmail',
-  what: 'post a Monday summary', url: 'octo/skills',
-};
-const promptArguments = (name: WorkspaceManagementPromptName) =>
-  Object.fromEntries(WORKSPACE_MANAGEMENT_PROMPTS[name].arguments.map(({ name: arg }) => [arg, PROMPT_ARGUMENTS[arg]!]));
-const promptText = (message: { result?: any }) =>
-  (message.result.messages as Array<{ content: { text: string } }>).map(({ content }) => content.text).join('\n');
 const resourceText = (message: { result?: any }) =>
   (message.result.contents as Array<{ text?: string }>).map(({ text }) => text ?? '').join('\n');
-const V4_GUIDES = [WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI, WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI];
+const V4_GUIDES: readonly string[] = REMOVED_RESOURCE_URIS;
+/** What the discovery guide URI serves a client without cards, and one that draws them (a chat app: ruling D6). */
+const RESEARCH = playbookSection('research').guide;
+const RESEARCH_CHAT_APP = playbookSection('research', 'chat-app').guide;
 
 function withoutCardSignals(
   h: Awaited<ReturnType<typeof harness>>,
@@ -616,17 +598,13 @@ for (const [app, clientId] of [
     assert.equal((await h.f.config.getAgent('agent_support')).enabled, false);
   });
 
-  test(`${app} on ${protocol} hides 4.x tools, prompts and guides without session headers or card capabilities`, async (t) => {
+  test(`${app} on ${protocol} gets no 4.x tool or guide, and the removal answers, without session headers or card capabilities`, async (t) => {
     const h = await harness(t, `oauth-${app}-${protocol}-v4`);
     const { request } = withoutCardSignals(h, clientId, protocol);
     const tools = (await request('tools/list')).message.result.tools as Array<{ name: string }>;
     const names = tools.map(({ name }) => name);
     assert.deepEqual(V4_TOOLS.filter((name) => names.includes(name)), []);
     assert.ok(names.includes('update_agent') && names.includes('confirm_change'));
-    assert.deepEqual((await request('prompts/list')).message.result.prompts, []);
-    for (const name of WORKSPACE_MANAGEMENT_PROMPT_NAMES) {
-      assert.ok(refusedCall((await request('prompts/get', { name, arguments: promptArguments(name) })).message));
-    }
     const resources = (await request('resources/list')).message.result.resources as Array<{ uri: string }>;
     assert.deepEqual(V4_GUIDES.filter((uri) => resources.some((resource) => resource.uri === uri)), []);
     for (const uri of V4_GUIDES) {
@@ -635,17 +613,16 @@ for (const [app, clientId] of [
     for (const { uri } of resources) {
       assert.deepEqual(v4Named(resourceText((await request('resources/read', { uri })).message)), [], uri);
     }
-    assert.equal(resourceText((await request('resources/read', { uri: DISCOVERY_GUIDE_URI })).message), DISCOVERY_GUIDE_FIVE_ZERO);
+    assert.equal(resourceText((await request('resources/read', { uri: DISCOVERY_GUIDE_URI })).message), RESEARCH_CHAT_APP);
+    assert.equal((await request('tools/call', { name: 'get_guide', arguments: { topic: 'research' } })).message.result.structuredContent.guide, RESEARCH_CHAT_APP);
+    assert.notEqual(RESEARCH_CHAT_APP, RESEARCH);
     const read = (await request('tools/call', { name: 'get_workspace', arguments: {} })).message.result;
     for (const name of V4_TOOLS) {
       const message = (await request('tools/call', { name, arguments: name === 'apply_workspace_changes' ? V4_OFF : {} })).message;
-      assert.equal(message.result?.isError, true, name);
-      assert.equal(message.result.structuredContent.error.code, 'not_found', name);
-      assert.equal(message.result.structuredContent.error.retryable, false);
-      const error = message.result.structuredContent.error;
-      assert.equal(message.result.content[0].text, `${error.message}\n${error.nextStep}`);
-      assert.equal(message.error, undefined, 'the refusal uses the 5.0 result shape');
-      assert.equal(message.result.resultType, read.resultType, 'stamped as the SDK stamps every result on this revision');
+      assert.equal(message.error, undefined, 'the removal answer is a result, never a card refusal');
+      const { resultType, ...answer } = message.result;
+      assert.deepEqual(answer, removedToolResult(name as RemovedToolName), name);
+      assert.equal(resultType, read.resultType, 'stamped as the SDK stamps every result on this revision');
     }
     assert.equal(read.resultType, protocol === MODERN ? 'complete' : undefined);
     assert.equal((await h.f.config.getAgent('agent_support')).enabled, true);
@@ -680,12 +657,10 @@ for (const [app, initialClientId] of [
     for (const protocol of [LEGACY, MODERN]) {
       const { request, call } = withoutCardSignals(h, clientId, protocol, 'ChatGPT');
       const names = ((await request('tools/list')).message.result.tools as Array<{ name: string }>).map(({ name }) => name);
-      assert.deepEqual(V4_TOOLS.filter((name) => !names.includes(name)), []);
-      assert.deepEqual(((await request('prompts/list')).message.result.prompts as Array<{ name: string }>).map(({ name }) => name),
-        [...WORKSPACE_MANAGEMENT_PROMPT_NAMES]);
+      assert.deepEqual(V4_TOOLS.filter((name) => names.includes(name)), []);
       const resources = (await request('resources/list')).message.result.resources as Array<{ uri: string }>;
-      assert.ok(V4_GUIDES.every((uri) => resources.some((resource) => resource.uri === uri)));
-      assert.equal(resourceText((await request('resources/read', { uri: DISCOVERY_GUIDE_URI })).message), DISCOVERY_GUIDE);
+      assert.deepEqual(V4_GUIDES.filter((uri) => resources.some((resource) => resource.uri === uri)), []);
+      assert.equal(resourceText((await request('resources/read', { uri: DISCOVERY_GUIDE_URI })).message), RESEARCH);
       const off = await call('update_agent', {
         agentId: 'agent_support', version: await version(call, 'agent_support'), on: false, idempotencyKey: `off-${protocol}`,
       });
@@ -707,7 +682,7 @@ for (const [app, clientId] of [
   ['ChatGPT', 'https://chatgpt.com/oauth/client.json'],
   ['claude.ai', 'https://claude.ai/oauth/mcp-oauth-client-metadata'],
 ] as const) for (const protocol of [LEGACY, MODERN]) {
-  test(`${app} on ${protocol} with only its client ID gets refusals as results, no 4.x tool, and tokens only in _meta`, async (t) => {
+  test(`${app} on ${protocol} with only its client ID gets refusals as results, the removal answer, and tokens only in _meta`, async (t) => {
     const h = await harness(t, `oauth-${app}-${protocol}-refusals`);
     const { request, call } = withoutCardSignals(h, clientId, protocol);
     const stamp = protocol === MODERN ? 'complete' : undefined;
@@ -733,13 +708,13 @@ for (const [app, clientId] of [
     assert.equal(archive.isError, true, 'a tool no card receives keeps isError');
     assert.deepEqual(counted().map(({ outcome }) => outcome), ['tool_error', 'input_refused', 'tool_error']);
 
-    for (const name of ['confirm_workspace_change', 'apply_workspace_changes']) {
+    for (const name of ['confirm_workspace_change', 'apply_workspace_changes'] as const) {
       const hidden = (await request('tools/call', { name, arguments: name === 'apply_workspace_changes' ? V4_OFF : { confirmToken: 'changeset_unknown' } })).message;
       assert.equal(hidden.error, undefined, name);
       assert.deepEqual(
         [hidden.result.isError, hidden.result.structuredContent.error.code, hidden.result.content[0].text, hidden.result.resultType],
-        [true, 'not_found', 'That tool is not available.\nCall tools/list to see the available tools.', stamp],
-        `${name}: a hidden 4.x tool is not found, never a card refusal, and stamped as every result on this revision`,
+        [true, 'tool_removed', removedToolResult(name).content[0]!.text, stamp],
+        `${name}: a removed 4.x tool gets the removal answer, never a card refusal, and stamped as every result on this revision`,
       );
       assert.deepEqual(counted(), [{ tool: name, outcome: 'jsonrpc_error' }], 'counted as the SDK answered it');
     }
@@ -786,11 +761,10 @@ for (const [app, clientId] of [
 }
 
 // Every byte a plain client gets: the same for Codex, an unknown client, and the client the harness signs in as.
-test('Codex and an unknown client get the same bytes as any plain client, refusals and 4.x tools included', async (t) => {
+test('Codex and an unknown client get the same bytes as any plain client, refusals and removal answers included', async (t) => {
   const h = await harness(t, 'oauth-plain-bytes');
   const script: Array<[string, Record<string, unknown>]> = [
     ['tools/list', {}],
-    ['prompts/list', {}],
     ['resources/list', {}],
     ['resources/read', { uri: DISCOVERY_GUIDE_URI }],
     ['tools/call', { name: 'confirm_change', arguments: { confirmToken: 'changeset_unknown' } }],
@@ -812,18 +786,18 @@ test('Codex and an unknown client get the same bytes as any plain client, refusa
     assert.deepEqual(await bytes('client_unknown', protocol), plain, `an unknown client on ${protocol}`);
     assert.notDeepEqual(await bytes('https://chatgpt.com/oauth/client.json', protocol), plain, 'the control: ChatGPT\'s ID changes them');
     if (protocol === LEGACY) {
-      assert.equal(plain[4], '{"result":{"content":[{"type":"text","text":"That confirmation isn\'t one of yours, so nothing changed.\\nUse the confirmToken from the needs_confirmation result in this conversation."}],' +
+      assert.equal(plain[3], '{"result":{"content":[{"type":"text","text":"That confirmation isn\'t one of yours, so nothing changed.\\nUse the confirmToken from the needs_confirmation result in this conversation."}],' +
         '"structuredContent":{"error":{"code":"not_found","message":"That confirmation isn\'t one of yours, so nothing changed.","retryable":false,' +
         '"nextStep":"Use the confirmToken from the needs_confirmation result in this conversation."}},"isError":true},"jsonrpc":"2.0","id":1}',
         'a plain client\'s refusal, byte for byte as before');
       const listed = JSON.parse(plain[0]!).result.tools as Array<{ name: string; outputSchema?: Record<string, unknown> }>;
       assert.deepEqual(listed.filter(({ outputSchema }) => outputSchema && 'anyOf' in outputSchema).map(({ name }) => name), []);
-      assert.deepEqual(V4_TOOLS.filter((name) => !listed.some((tool) => tool.name === name)), []);
+      assert.deepEqual(V4_TOOLS.filter((name) => listed.some((tool) => tool.name === name)), []);
     }
   }
 });
 
-test('a client that draws cards gets no prompt or guide that tells its model to call a 4.x tool', async (t) => {
+test('a client that draws cards gets no guide that tells its model to call a 4.x tool', async (t) => {
   const { connect, modernRequest } = await harness(t, 'card-v4-briefs');
   type Request = (method: string, params?: Record<string, unknown>) => Promise<{ message: { result?: any; error?: unknown } }>;
   const legs: Array<[string, Request]> = [
@@ -831,15 +805,6 @@ test('a client that draws cards gets no prompt or guide that tells its model to 
     ['2026-07-28', (method, params = {}) => modernRequest(CARDS, method, params)],
   ];
   for (const [leg, request] of legs) {
-    const listed = (await request('prompts/list')).message.result.prompts as Array<{ name: string }>;
-    for (const { name } of listed) {
-      assert.deepEqual(v4Named(promptText((await request('prompts/get', { name, arguments: promptArguments(name as WorkspaceManagementPromptName) })).message)), [], `${leg}: ${name}`);
-    }
-    for (const name of WORKSPACE_MANAGEMENT_PROMPT_NAMES) {
-      const got = (await request('prompts/get', { name, arguments: promptArguments(name) })).message;
-      assert.ok(refusedCall(got) || v4Named(promptText(got)).length === 0, `${leg}: prompts/get ${name} names no 4.x tool`);
-    }
-
     const resources = (await request('resources/list')).message.result.resources as Array<{ uri: string }>;
     const uris = resources.map(({ uri }) => uri);
     assert.deepEqual(V4_GUIDES.filter((uri) => uris.includes(uri)), [], `${leg}: no 4.x guide is listed`);
@@ -847,12 +812,12 @@ test('a client that draws cards gets no prompt or guide that tells its model to 
     for (const { uri } of resources) {
       assert.deepEqual(v4Named(resourceText((await request('resources/read', { uri })).message)), [], `${leg}: ${uri}`);
     }
-    assert.equal(resourceText((await request('resources/read', { uri: DISCOVERY_GUIDE_URI })).message), DISCOVERY_GUIDE_FIVE_ZERO,
-      `${leg}: the discovery guide stays, in 5.0 terms`);
+    assert.equal(resourceText((await request('resources/read', { uri: DISCOVERY_GUIDE_URI })).message), RESEARCH_CHAT_APP,
+      `${leg}: the discovery guide stays, as the playbook's research section`);
   }
 });
 
-test('a client without cards keeps every prompt and guide as before', async (t) => {
+test('a client without cards lists the same resources, and reads the research section with its coding-agent rules', async (t) => {
   const { connect, modernRequest } = await harness(t, 'card-none-briefs');
   type Request = (method: string, params?: Record<string, unknown>) => Promise<{ message: { result?: any } }>;
   const legs: Array<[string, Request]> = [
@@ -860,18 +825,9 @@ test('a client without cards keeps every prompt and guide as before', async (t) 
     ['2026-07-28', (method, params = {}) => modernRequest({}, method, params)],
   ];
   for (const [leg, request] of legs) {
-    const listed = ((await request('prompts/list')).message.result.prompts as Array<{ name: string }>).map(({ name }) => name);
-    assert.deepEqual(listed, [...WORKSPACE_MANAGEMENT_PROMPT_NAMES], leg);
-    for (const name of WORKSPACE_MANAGEMENT_PROMPT_NAMES) {
-      const args = promptArguments(name);
-      assert.equal(promptText((await request('prompts/get', { name, arguments: args })).message),
-        workspaceManagementPromptText(name, args, BASE_URL), `${leg}: ${name}`);
-    }
     const uris = ((await request('resources/list')).message.result.resources as Array<{ uri: string }>).map(({ uri }) => uri);
-    assert.deepEqual(V4_GUIDES.filter((uri) => !uris.includes(uri)), [], leg);
-    assert.equal(resourceText((await request('resources/read', { uri: DISCOVERY_GUIDE_URI })).message), DISCOVERY_GUIDE, leg);
-    assert.equal(resourceText((await request('resources/read', { uri: WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI })).message),
-      JSON.stringify(codingAgentAuthoringGuideResource()), leg);
+    assert.deepEqual(uris.filter((uri) => !uri.startsWith('ui://chickpea/')), [DISCOVERY_GUIDE_URI], leg);
+    assert.equal(resourceText((await request('resources/read', { uri: DISCOVERY_GUIDE_URI })).message), RESEARCH, leg);
   }
 });
 
