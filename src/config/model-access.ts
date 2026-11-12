@@ -887,7 +887,6 @@ interface RequestPayload {
   sharedPrefix(): SharedPrefixId | null | undefined;
 }
 
-/** `clearing`, last: the shared prefix is chosen on the request as pi-ai built it. */
 function requestPayload(
   callerHook: StreamOptions['onPayload'],
   mode: PayloadMode,

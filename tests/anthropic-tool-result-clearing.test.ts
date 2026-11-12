@@ -124,6 +124,8 @@ function proxied(t: TestContext) {
   registerBuiltinPiProvider('anthropic');
   registerBuiltinPiProvider('openai');
   configureModelAccessResolver({ resolve: async () => ({ apiKey: 'sk-tool-result-clearing-test' }) });
+  // As at runtime, where the recorder is always configured: each request settles and reports to its step.
+  configureModelRequestRecorder(async () => undefined);
   t.after(resetModelAccessForTests);
 }
 

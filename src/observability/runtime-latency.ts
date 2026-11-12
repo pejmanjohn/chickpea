@@ -1245,7 +1245,7 @@ export class ModelStepMarks {
         };
       },
       toolResultsCleared: (cleared) => {
-        open.cleared = { toolUses: cleared.toolUses, inputTokens: cleared.inputTokens };
+        open.cleared = cleared;
       },
     }, next);
   }
