@@ -41,7 +41,7 @@ const INCLUDE = /^<!-- include: ([a-z-]+) -->$/gm;
 
 /** One section as a client reads it, its partials in place, and its title from its heading. */
 export function playbookSection(topic: PlaybookTopic, reader: PlaybookReader = 'any'): { title: string; guide: string } {
-  const guide = forReader(SECTIONS[topic]
+  const guide = playbookForReader(SECTIONS[topic]
     .replace(INCLUDE, (line, name: string) => PARTIALS[name]?.trimEnd() ?? line), reader)
     .trimEnd();
   return { title: guide.slice('# '.length, guide.indexOf('\n')), guide };
@@ -55,11 +55,16 @@ export function playbookSection(topic: PlaybookTopic, reader: PlaybookReader = '
  * block, without the fence lines.
  */
 export type PlaybookReader = 'chat-app' | 'any';
-const CODING_AGENT_BLOCK = /^<!-- coding-agent -->\n[\s\S]*?^<!-- \/coding-agent -->\n\n?/gm;
-const CODING_AGENT_FENCE = /^<!-- \/?coding-agent -->\n/gm;
+const LINE_END = String.raw`[ \t]*(?:\r?\n|(?![\s\S]))`;
+/** An open fence through its close and one blank line after it. A fence nobody closed runs to the end, so its block is dropped, never served. */
+const CODING_AGENT_BLOCK = new RegExp(
+  String.raw`^<!-- coding-agent -->${LINE_END}[\s\S]*?(?:^<!-- \/coding-agent -->${LINE_END}(?:\r?\n)?|(?![\s\S]))`,
+  'gm',
+);
+const CODING_AGENT_FENCE = new RegExp(String.raw`^<!-- \/?coding-agent -->${LINE_END}`, 'gm');
 
-function forReader(text: string, reader: PlaybookReader): string {
-  return text.replace(reader === 'chat-app' ? CODING_AGENT_BLOCK : CODING_AGENT_FENCE, '');
+export function playbookForReader(text: string, reader: PlaybookReader): string {
+  return (reader === 'chat-app' ? text.replace(CODING_AGENT_BLOCK, '') : text).replace(CODING_AGENT_FENCE, '');
 }
 
 /** The topic a client meant, in any case and with spaces or underscores for hyphens. */

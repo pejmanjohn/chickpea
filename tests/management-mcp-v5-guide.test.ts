@@ -11,7 +11,7 @@ import { MCP_ERROR_CODES } from '../src/management/mcp-v5/conventions.ts';
 import { GUIDE_RESULT_MAX_CHARACTERS, getGuideOutput } from '../src/management/mcp-v5/guide.ts';
 import { MCP_MANAGEMENT_OPERATION_KINDS } from '../src/management/schemas.ts';
 import PLAYBOOK from '../src/management/playbook/playbook.json' with { type: 'json' };
-import { PLAYBOOK_TOPICS, playbookSection, type PlaybookTopic } from '../src/management/playbook/index.ts';
+import { PLAYBOOK_TOPICS, playbookForReader, playbookSection, type PlaybookTopic } from '../src/management/playbook/index.ts';
 // @ts-expect-error Build tooling JavaScript helper.
 import { readPlaybook } from '../scripts/build-playbook.mjs';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
@@ -168,6 +168,37 @@ test('a client that draws cards (a chat app) gets research without the coding-ag
   }
   const full = playbookSection('research').guide;
   assert.ok(full.includes('**As a coding agent on the person\'s computer, such as Codex:**') && !/<!--|\n\n\n/.test(full), 'any other client gets every block, unfenced');
+});
+
+test('every coding-agent fence in the Markdown is a whole line and closed, and no reader is served one', () => {
+  for (const [name, text] of [...Object.entries(PLAYBOOK.sections), ...Object.entries(PLAYBOOK.partials)]) {
+    assert.ok(!text.includes('\r'), `${name}.md has a carriage return`);
+    let open = false;
+    for (const line of text.split('\n').filter((each) => /coding-agent\s*-->/.test(each))) {
+      assert.equal(line, open ? '<!-- /coding-agent -->' : '<!-- coding-agent -->', `${name}.md: fences open and close in turn, each alone on its line`);
+      open = !open;
+    }
+    assert.equal(open, false, `${name}.md leaves a coding-agent fence open`);
+  }
+  for (const topic of PLAYBOOK_TOPICS) for (const reader of ['chat-app', 'any'] as const) {
+    assert.doesNotMatch(playbookSection(topic, reader).guide, /<!--|\n\n\n/, `${topic} for ${reader}: no comment line or doubled blank line`);
+  }
+});
+
+test('a chat app never gets a fenced block, however the fence is written', () => {
+  const cases: Array<[string, string, string, string]> = [
+    ['at the start', '<!-- coding-agent -->\nlocal\n<!-- /coding-agent -->\n\nrest\n', 'rest\n', 'local\n\nrest\n'],
+    ['back to back', 'a\n\n<!-- coding-agent -->\nlocal\n<!-- /coding-agent -->\n<!-- coding-agent -->\nfiles\n<!-- /coding-agent -->\n\nrest\n', 'a\n\nrest\n', 'a\n\nlocal\nfiles\n\nrest\n'],
+    ['with carriage returns', 'a\r\n\r\n<!-- coding-agent -->\r\nlocal\r\n<!-- /coding-agent -->\r\n\r\nrest\r\n', 'a\r\n\r\nrest\r\n', 'a\r\n\r\nlocal\r\n\r\nrest\r\n'],
+    ['with spaces after the fence', 'a\n\n<!-- coding-agent --> \nlocal\n<!-- /coding-agent -->\t\n\nrest\n', 'a\n\nrest\n', 'a\n\nlocal\n\nrest\n'],
+    ['closed on the last line, with no newline', 'a\n\n<!-- coding-agent -->\nlocal\n<!-- /coding-agent -->', 'a\n\n', 'a\n\nlocal\n'],
+    ['never closed: the rest is dropped, not served', 'a\n\n<!-- coding-agent -->\nlocal\n\nrest\n', 'a\n\n', 'a\n\nlocal\n\nrest\n'],
+    ['closed but never opened', 'a\n<!-- /coding-agent -->\nrest\n', 'a\nrest\n', 'a\nrest\n'],
+  ];
+  for (const [name, text, chatApp, any] of cases) {
+    assert.equal(playbookForReader(text, 'chat-app'), chatApp, `a chat app, ${name}`);
+    assert.equal(playbookForReader(text, 'any'), any, `any other client, ${name}`);
+  }
 });
 
 test('the server instructions end by sending a client without a skill to get_guide, within 512 characters', async (t) => {

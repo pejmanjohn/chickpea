@@ -639,6 +639,8 @@ for (const [app, clientId] of [
       assert.deepEqual(v4Named(resourceText((await request('resources/read', { uri })).message)), [], uri);
     }
     assert.equal(resourceText((await request('resources/read', { uri: DISCOVERY_GUIDE_URI })).message), RESEARCH_CHAT_APP);
+    assert.equal((await request('tools/call', { name: 'get_guide', arguments: { topic: 'research' } })).message.result.structuredContent.guide, RESEARCH_CHAT_APP);
+    assert.notEqual(RESEARCH_CHAT_APP, RESEARCH);
     const read = (await request('tools/call', { name: 'get_workspace', arguments: {} })).message.result;
     for (const name of V4_TOOLS) {
       const message = (await request('tools/call', { name, arguments: name === 'apply_workspace_changes' ? V4_OFF : {} })).message;
