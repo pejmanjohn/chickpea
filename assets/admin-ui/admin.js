@@ -9137,7 +9137,6 @@
     var controls = (review ? '<p class="hint">Choose the tools this Agent can use for the selected ad accounts.</p>' : '') +
       (tools.length ? toolSelectionControlsHtml("custom-mcp-tools", tools.filter(function (tool) { return selected.indexOf(tool.name) >= 0; }).length, tools.length, busy) : '');
     var descriptions = {
-      ads_account_get_activity_logs: "View the account's change history.",
       ads_get_ad_account_custom_audiences: "View the account's custom and lookalike audiences.",
       ads_get_ad_accounts: "Verify which approved ad accounts are available.",
       ads_get_ad_entities: "View campaigns, ad sets, ads, and their performance.",

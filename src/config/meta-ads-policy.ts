@@ -22,7 +22,6 @@ export const META_ADS_WRITE_TOOL_EFFECTS = {
 
 /** Tools reviewed against Meta's official Ads MCP documentation. */
 export const META_ADS_REVIEWED_TOOL_EFFECTS = {
-  ads_account_get_activity_logs: 'read',
   ads_get_ad_account_custom_audiences: 'read',
   ads_get_ad_accounts: 'read',
   ads_get_ad_entities: 'read',
@@ -154,7 +153,6 @@ const META_ADS_HELPER_RUNTIME_ARGUMENTS: Readonly<Record<string, readonly string
  * as `entities`, stays sendable.
  */
 const META_ADS_NON_ACCOUNT_ID_ARGUMENTS = {
-  ads_account_get_activity_logs: ['client_conversation_id', 'object_id', 'user_id'],
   ads_get_ad_account_custom_audiences: ['client_conversation_id'],
   ads_get_ad_accounts: [],
   ads_get_ad_entities: ['client_conversation_id', 'object_ids'],

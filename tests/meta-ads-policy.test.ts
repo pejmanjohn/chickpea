@@ -27,6 +27,7 @@ import {
   META_ACCOUNT_READ_NAMES,
   META_ACCOUNT_READS,
   META_DEFERRED_READS,
+  META_HELD_READ,
   metaAccountReadSchema,
 } from './helpers/meta-ads-account-reads.ts';
 
@@ -336,6 +337,27 @@ test("Meta's creatives and errors reads are refused as their live schemas stand"
       toolPolicies: { [name]: { effect: 'read', argumentConstraints: { ad_account_id: ['123450001'] } } },
     }), [], name);
   }
+});
+
+test("Meta's activity log is refused, and a stored grant for it never runs", () => {
+  const { name } = META_HELD_READ;
+  const held = accountRead(name);
+  assert.equal(metaAdsToolEffect(name), undefined);
+  assert.equal(metaAdsToolSchemaSupported(held), false);
+  assert.throws(() => compileMetaAdsToolAccess({
+    discoveredTools: [held], requestedTools: [name], approvedAccountIds: ['123450001'],
+  }), /is not in the reviewed access contract/);
+  const discoveredTools = [held, ...META_ACCOUNT_READ_NAMES.map((read) => accountRead(read))];
+  const compiled = compileMetaAdsToolAccess({
+    discoveredTools, requestedTools: META_ACCOUNT_READ_NAMES, approvedAccountIds: ['123450001'],
+  });
+  const stored = {
+    discoveredTools,
+    allowedTools: [name, ...compiled.allowedTools],
+    toolPolicies: { ...compiled.toolPolicies, [name]: { effect: 'read' as const, argumentConstraints: { ad_account_id: ['123450001'] } } },
+  };
+  assert.equal(metaAdsRuntimeConstraint(stored, name), undefined);
+  assert.deepEqual(metaAdsRuntimeAllowedTools(stored), META_ACCOUNT_READ_NAMES);
 });
 
 test('compiler rejects tools without one required scalar account field', () => {

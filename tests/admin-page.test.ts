@@ -19876,11 +19876,10 @@ test('Meta tool review shows only available reporting and write tools, and Selec
 
 test("Meta tool review describes the account-wide reads in Chickpea's words, as reports", async () => {
   const reads: Array<[string, string]> = [
-    ['ads_account_get_activity_logs', "View the account&#39;s change history."],
     ['ads_get_ad_account_custom_audiences', "View the account&#39;s custom and lookalike audiences."],
     ['ads_get_customconversions', "View the account&#39;s custom conversions."],
   ];
-  const deferred = ['ads_get_creatives', 'ads_get_errors'];
+  const unavailable = ['ads_account_get_activity_logs', 'ads_get_creatives', 'ads_get_errors'];
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
     connectionAccounts: { attached: [ownedConnection({
@@ -19894,7 +19893,7 @@ test("Meta tool review describes the account-wide reads in Chickpea's words, as 
           ...reads.map(([name]) => ({
             name, description: 'Synthetic provider description.', available: true, effect: 'read',
           })),
-          ...deferred.map((name) => ({
+          ...unavailable.map((name) => ({
             name, description: 'Synthetic provider description.', available: false, effect: 'write',
           })),
         ],
@@ -19913,9 +19912,9 @@ test("Meta tool review describes the account-wide reads in Chickpea's words, as 
   for (const [name, description] of reads) {
     assert.match(harness.app.innerHTML, new RegExp(`${name} · Reporting</span><span class="tool-desc">${description}<`));
   }
-  for (const name of deferred) assert.doesNotMatch(harness.app.innerHTML, new RegExp(name));
-  assert.doesNotMatch(harness.app.innerHTML, /Synthetic provider description/);
-  assert.match(harness.app.innerHTML, /0 of 3 selected/);
+  for (const name of unavailable) assert.doesNotMatch(harness.app.innerHTML, new RegExp(name));
+  assert.doesNotMatch(harness.app.innerHTML, /Synthetic provider description|change history/);
+  assert.match(harness.app.innerHTML, /0 of 2 selected/);
 });
 
 test('background connection refresh keeps a same-Agent tool editor visible and in place', async () => {
