@@ -1,17 +1,17 @@
 // Meta's account-wide reads with the property names its live tools/list gave
 // on 2026-11-11. Discovery stores the names and the account field's flags, not
 // definitions, so the other types and required lists are stand-ins. `filters`
-// are each read's ID-shaped filters, which Chickpea never lets a call send.
+// are the arguments Chickpea never lets a call send: each read's ID-shaped
+// filters and, on a reviewed read, Meta's November correlation fields.
 const text = { type: 'string' };
 const count = { type: 'integer' };
 const list = { type: 'array', items: text };
 
+const novemberCorrelation = { advertiser_job: text, after_answer_offer_report: text, scheduled_task_run: text };
 const correlation = {
-  advertiser_job: text,
+  ...novemberCorrelation,
   advertiser_request: text,
-  after_answer_offer_report: text,
   client_conversation_id: { type: ['string', 'null'] },
-  scheduled_task_run: text,
 };
 
 export interface MetaLiveRead {
@@ -26,13 +26,13 @@ export const META_ACCOUNT_READS: readonly MetaLiveRead[] = [
     name: 'ads_get_ad_account_custom_audiences',
     properties: { ad_account_id: text, ...correlation, cursor: text, limit: count, subtype_filter: text },
     required: ['ad_account_id'],
-    filters: [],
+    filters: Object.keys(novemberCorrelation),
   },
   {
     name: 'ads_get_customconversions',
     properties: { ad_account_id: text, ...correlation, cursor: text, dataset_id: text, limit: count },
     required: ['ad_account_id'],
-    filters: ['dataset_id'],
+    filters: ['dataset_id', ...Object.keys(novemberCorrelation)],
   },
 ];
 

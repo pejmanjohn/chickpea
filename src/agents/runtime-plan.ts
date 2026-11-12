@@ -58,6 +58,7 @@ import {
 } from '../config/runtime-model.ts';
 import { isCompiledModelProfileId } from '../model-catalog/profiles.ts';
 import { mcpToolEffect } from '../config/mcp-tool-policy.ts';
+import { isMetaAdsMcpConnection, metaAdsRuntimeAllowedTools } from '../config/meta-ads-policy.ts';
 import { AGENT_AUTHORING_SKILL_NAME } from '../management/agent-authoring/index.ts';
 import { GITHUB_OWNER_PATTERN } from '../config/github-app.ts';
 import { CONNECTION_GUIDE_MAX_LENGTH } from '../config/agent-write-rules.ts';
@@ -1422,9 +1423,10 @@ function compileMcpConnections(
       ...(connection.presetId ? { presetId: connection.presetId } : {}),
       readOnlyTools: sortedUnique(connection.allowedTools.filter((tool) => mcpToolEffect(connection, tool) === true)),
       writeTools: sortedUnique(connection.allowedTools.filter((tool) => mcpToolEffect(connection, tool) === false)),
-      ...(connection.toolPolicies ? { toolArgumentConstraints: parseMcpArgumentConstraints(Object.fromEntries(connection.allowedTools
-        .filter((tool) => connection.toolPolicies?.[tool]?.argumentConstraints)
-        .map((tool) => [tool, connection.toolPolicies![tool]!.argumentConstraints!])), connection.allowedTools) } : {}),
+      ...(connection.toolPolicies ? { toolArgumentConstraints: parseMcpArgumentConstraints(Object.fromEntries(
+        constrainableMcpTools(connection)
+          .filter((tool) => connection.toolPolicies?.[tool]?.argumentConstraints)
+          .map((tool) => [tool, connection.toolPolicies![tool]!.argumentConstraints!])), connection.allowedTools) } : {}),
       url: connection.url,
       transport: connection.transport,
       authMode: connection.authMode,
@@ -1437,6 +1439,14 @@ function compileMcpConnections(
       ...(connection.guide ? { guide: connection.guide } : {}),
     }))
     .sort(compareBy('id'));
+}
+
+/**
+ * The granted tools whose restrictions the model is told. A Meta tool the
+ * reviewed contract no longer admits never mounts, so the text leaves it out.
+ */
+function constrainableMcpTools(connection: McpConnectionConfig): string[] {
+  return isMetaAdsMcpConnection(connection) ? metaAdsRuntimeAllowedTools(connection) : connection.allowedTools;
 }
 
 function compileApiConnections(
