@@ -18,7 +18,9 @@ Ask nothing else before the proposal unless the answer would change what you bui
 
 **What you build from.** Build the proposal from what the person says in this conversation, and from what you already know about their work, so it fits them. Say in a short phrase what you based it on ("from what you said about your invoices") so they can correct you. Ask them for nothing but the chore. Chickpea's tools receive only the Agent setup the person approves.
 
+<!-- coding-agent -->
 If you are a coding agent on the person's computer and they would rather you look at their projects than answer, research first (`get_guide` topic `research`).
+<!-- /coding-agent -->
 
 ## 3. Propose one teammate
 

@@ -185,6 +185,22 @@ test('every coding-agent fence in the Markdown is a whole line and closed, and n
   }
 });
 
+test('no section tells a chat app what only a coding agent can do, and a coding agent still reads it (ruling D6)', () => {
+  const codingAgentOnly = /coding agent|\bCodex\b|on the person's computer|working directory|current folder|write files/i;
+  for (const topic of PLAYBOOK_TOPICS) {
+    const served = playbookSection(topic, 'chat-app').guide;
+    assert.doesNotMatch(served, codingAgentOnly, `${topic}: a chat app is told only what it can do`);
+  }
+  for (const [topic, sentence] of [
+    ['start', 'If you are a coding agent on the person\'s computer and they would rather you look at their projects than answer, research first'],
+    ['scope', 'If you can write files in the current folder, offer to save them in `chickpea/<agent handle>-tests.md` there'],
+    ['research', '**As a coding agent on the person\'s computer, such as Codex:**'],
+  ] as const) {
+    assert.ok(playbookSection(topic).guide.includes(sentence), `${topic}: any other client still reads: ${sentence}`);
+  }
+  assert.match(playbookSection('scope', 'chat-app').guide, /judged on\.\n\nUnless you saved them, tell the person that a new chat won't have them/);
+});
+
 test('a chat app never gets a fenced block, however the fence is written', () => {
   const cases: Array<[string, string, string, string]> = [
     ['at the start', '<!-- coding-agent -->\nlocal\n<!-- /coding-agent -->\n\nrest\n', 'rest\n', 'local\n\nrest\n'],
