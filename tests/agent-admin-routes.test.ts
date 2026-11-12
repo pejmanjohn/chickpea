@@ -50,6 +50,7 @@ import {
   resolveConnectorCredential,
 } from '../src/config/connector-secrets.ts';
 import type { ConnectionAccount, ConnectionAccountPolicy } from '../src/config/types.ts';
+import { projectMcpToolInputSchema } from '../src/config/mcp-test.ts';
 import { getConnectorPreset } from '../src/config/presets.ts';
 import {
   agentCredentialConfigurationBinding,
@@ -8371,6 +8372,58 @@ test('Meta Ads installation config and account review reject forged grants', asy
     assert.deepEqual(paused?.connectionPauseAccountIds, [id]);
     assert.equal((await request(configPath, 'DELETE', {})).status, 200);
     assert.equal((await (await request(configPath, 'GET')).json() as Record<string, any>).configured, false);
+  } finally { fixture.store.close(); fixture.settings.close(); }
+});
+
+test("Admin offers Meta's helpers after a fresh discovery shows Meta's added optional arguments", async () => {
+  const fixture = harness();
+  const request = (path: string, method: string, body?: unknown) => fixture.app.request(`http://localhost${path}`, {
+    method, headers: auth(), ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  });
+  try {
+    await createAgent(fixture.app);
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct', defaultAgentId: 'agent_support',
+    });
+    assert.equal((await request('/admin/api/settings/connectors/meta-ads', 'PUT', { clientId: '123456' })).status, 200);
+    const created = await request('/admin/api/agents/agent_support/connections', 'POST', {
+      workspaceId: 'T_TEST', ownerKind: 'team', providerId: 'meta-ads', label: 'Meta Ads', allowedCapabilities: [],
+      mcp: { id: 'meta-ads', displayName: 'Meta Ads', url: 'https://mcp.facebook.com/ads',
+        transport: 'streamable-http', authMode: 'oauth', headerNames: [], enabled: true,
+        lifecycleStatus: 'pending', statusText: '', discoveredTools: [], allowedTools: [], presetId: 'meta-ads' },
+    });
+    assert.equal(created.status, 201, await created.clone().text());
+    const id = ((await created.json()) as Record<string, any>).account.id as string;
+    // Synthetic schemas shaped like Meta's live helper listings.
+    const added = { advertiser_job: { type: 'string' }, scheduled_task_run: { type: 'string' } };
+    const shared = { advertiser_request: { type: 'string' }, client_conversation_id: { type: ['string', 'null'] } };
+    const discoveredTools = [
+      { name: 'ads_get_ad_accounts', inputSchema: projectMcpToolInputSchema({ type: 'object', properties: {
+        ...shared, cursor: { type: ['string', 'null'] }, limit: { type: 'integer' }, ...added,
+      } }, 'ads_get_ad_accounts') },
+      { name: 'ads_get_field_context', inputSchema: projectMcpToolInputSchema({ type: 'object', required: ['field_names'],
+        properties: { ...shared, field_names: { type: 'array', items: { type: 'string' } }, ...added },
+      }, 'ads_get_field_context') },
+    ];
+    const pending = (await fixture.store.listConnectionAccounts('T_TEST')).find((account) => account.id === id)!;
+    if (pending.policy.kind !== 'mcp') throw new Error('expected MCP');
+    const ready = await fixture.store.putConnectionAccount({
+      ...pending, lifecycle: 'ready', policy: { ...pending.policy, discoveredTools },
+    }, pending.revision);
+    const inventory = await request('/admin/api/agents/agent_support/connections?workspaceId=T_TEST', 'GET');
+    assert.equal(inventory.status, 200, await inventory.clone().text());
+    assert.deepEqual((await inventory.json() as Record<string, any>).attached[0].mcpToolAccess, [
+      { name: 'ads_get_ad_accounts', available: true, effect: 'read' },
+      { name: 'ads_get_field_context', available: true, effect: 'read' },
+    ]);
+    const saved = await request(`/admin/api/agents/agent_support/connections/${id}/mcp/tools`, 'PUT', {
+      expectedRevision: ready.revision,
+      allowedTools: ['ads_get_ad_accounts', 'ads_get_field_context'],
+      approvedAccountIds: ['123'],
+    });
+    assert.equal(saved.status, 200, await saved.clone().text());
+    assert.deepEqual((await saved.json() as Record<string, any>).account.policy.allowedTools,
+      ['ads_get_ad_accounts', 'ads_get_field_context']);
   } finally { fixture.store.close(); fixture.settings.close(); }
 });
 

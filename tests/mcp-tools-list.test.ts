@@ -7,6 +7,7 @@ import { test, type TestContext } from 'node:test';
 import { createMcpConnection, type McpConnectionDefinition } from '@flue/runtime';
 
 import type { RuntimePlanMcpConnectionV2 } from '../src/agents/runtime-plan.ts';
+import { projectMcpToolInputSchema } from '../src/config/mcp-test.ts';
 import { createMcpToolsListFilter } from '../src/config/mcp-tools-list.ts';
 import { resolveRuntimePlanMcpConnections } from '../src/config/profile-mcp.ts';
 import {
@@ -883,6 +884,65 @@ test('a Meta call built from every argument the model is shown passes the key ch
   assert.deepEqual(server.callArguments, [{
     ad_account_id: '123450001', client_conversation_id: 'synthetic', date_preset: 'synthetic',
   }]);
+});
+
+test("after a fresh discovery stores Meta's added helper arguments, the helpers mount with only reviewed ones", async (t) => {
+  const logs = captureLogs(t);
+  const liveFields = liveMetaTool(META_ADS_FIELD_HELPER, {
+    advertiser_request: text, client_conversation_id: text, field_names: list,
+  }, ['field_names']);
+  const grant = [META_ADS_ACCOUNT_HELPER, META_ADS_FIELD_HELPER];
+  // What a reconnect or a new Meta connection stores from today's listing.
+  const fresh = [liveHelper, liveFields].map(({ name, inputSchema }) =>
+    ({ name, inputSchema: projectMcpToolInputSchema(inputSchema, name) }));
+  const meta = metaConnection({
+    allowedTools: grant, discoveredTools: fresh,
+    toolPolicies: Object.fromEntries(grant.map((name) => [name, { effect: 'read' as const, argumentConstraints: metaScope }])),
+  });
+  const listed = { ad_accounts: [
+    { ad_account_id: 'act_123450001', is_ads_mcp_enabled: true, is_queryable: true, ad_account_name: 'Synthetic Advertiser' },
+    { ad_account_id: 'act_999000999', is_ads_mcp_enabled: true, is_queryable: true, ad_account_name: 'Not Approved' },
+  ] };
+  const server = mcpServer(
+    (rpc) => Response.json({ jsonrpc: '2.0', id: rpc.id, result: { tools: [liveHelper, liveFields] } }),
+    (rpc) => Response.json({ jsonrpc: '2.0', id: rpc.id, result: rpc.params?.name === META_ADS_ACCOUNT_HELPER
+      ? { content: [{ type: 'text', text: JSON.stringify(listed) }], structuredContent: listed }
+      : { content: [{ type: 'text', text: 'done' }] } }),
+  );
+  await withRuntimeConnection(meta, server.fetch, async (definition) => {
+    const connection = await createMcpConnection(definition);
+    try {
+      assert.deepEqual(connection.tools.map(({ name }) => name), grant.map((name) => `mcp__meta__${name}`));
+      // The account answer is still rebuilt from the approved accounts only.
+      const accounts = preparedMcpExecutor(mounted(connection, META_ADS_ACCOUNT_HELPER));
+      const answer = await accounts({ advertiser_request: 'Synthetic request.' });
+      assert.match(answer, /"ad_account_id": "123450001"/);
+      assert.doesNotMatch(answer, /999000999|Not Approved/);
+      for (const unsent of ['cursor', 'limit', 'advertiser_job', 'scheduled_task_run']) {
+        await assert.rejects(accounts({ [unsent]: 'synthetic' }), new RegExp(`does not permit the argument ${unsent}`));
+      }
+      assert.deepEqual(Object.keys(shownSchema(mounted(connection, META_ADS_ACCOUNT_HELPER)).properties),
+        ['advertiser_request', 'client_conversation_id']);
+      const fields = mounted(connection, META_ADS_FIELD_HELPER);
+      assert.deepEqual(shownSchema(fields), {
+        type: 'object',
+        properties: { advertiser_request: text, client_conversation_id: text, field_names: list },
+        required: ['field_names'],
+        additionalProperties: false,
+      });
+      assert.equal(await preparedMcpExecutor(fields)({ field_names: ['spend'] }), 'done');
+      await assert.rejects(preparedMcpExecutor(fields)({ field_names: ['spend'], advertiser_job: 'synthetic' }),
+        /does not permit the argument advertiser_job/);
+    } finally {
+      await connection.close();
+    }
+  }, {
+    readOnlyTools: grant,
+    toolArgumentConstraints: Object.fromEntries(grant.map((name) => [name, metaScope])),
+  });
+  assert.deepEqual(server.calls, [META_ADS_ACCOUNT_HELPER, META_ADS_FIELD_HELPER]);
+  assert.deepEqual(server.callArguments, [{ advertiser_request: 'Synthetic request.' }, { field_names: ['spend'] }]);
+  assert.deepEqual(logs.missing, []);
 });
 
 test('a Meta tool whose live schema requires an unreviewed argument is not mounted, and the rest are', async (t) => {
