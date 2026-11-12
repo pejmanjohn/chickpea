@@ -174,6 +174,7 @@ import {
 } from '../slack/agent-access.ts';
 import { agentStillInSlackRefusal, archiveBeforeDeleting } from '../slack/agent-presence/left-slack.ts';
 import { THREAD_TTL_MS } from '../slack/state-limits.ts';
+import { recordDeliveredSlackAgentMessage } from '../slack/public-context.ts';
 import { MAX_SLACK_ATTACHMENTS } from '../slack/attachment-file-ids.ts';
 import { defaultAgentAvatarSeedFor, nextDefaultAgentAvatarSeed } from '../slack/agent-presence/default-avatar-pool.ts';
 import { stripResolvedSlackCommandAddress, type SlackCommandAddress } from '../slack/command-address.ts';
@@ -448,7 +449,10 @@ export interface WorkspaceManagementServiceInput {
     | 'putAgentScheduleReference'
     | 'listConnectionAccounts'
     | 'listAgentConnectionBindings'
-  > & Partial<Pick<ConfigStore, 'deleteAgentWithMemory' | 'getAgentFirstAsk' | 'getAgentThreadRoute' | 'putAgentThreadRoute'>>;
+  > & Partial<Pick<
+    ConfigStore,
+    'deleteAgentWithMemory' | 'getAgentFirstAsk' | 'getAgentThreadRoute' | 'putAgentThreadRoute' | 'putSlackPublicContext'
+  >>;
   management: ManagementStore;
   /**
    * Slack for a DM schedule made over MCP: the caller's DM with Chickpea's
@@ -6083,6 +6087,37 @@ export class WorkspaceManagementService {
     }
   }
 
+  /**
+   * The first message this save posted goes in its thread's record as the
+   * Agent's own, as the Agent's replies do, so a reply turn there reads it
+   * as the Agent's. Slack's events never record a thread's first message,
+   * so only this write puts it there.
+   */
+  private async recordScheduleThreadOpening(
+    routine: RoutineDefinition,
+    operation: Extract<ManagementOperation, { kind: 'save_routine' }>,
+  ): Promise<void> {
+    const config = this.stores.config;
+    if (routine.destination.kind !== 'direct_thread' || !config.putSlackPublicContext) return;
+    const { conversationId, threadTs } = routine.destination;
+    try {
+      const installation = await config.getWorkspaceInstallation(routine.workspaceId);
+      if (!installation) return;
+      await recordDeliveredSlackAgentMessage(
+        { putSlackPublicContext: config.putSlackPublicContext.bind(config) },
+        { workspaceId: routine.workspaceId, channelId: conversationId, threadTs },
+        { runtimeContract: installation.runtimeContract, agentId: operation.agentId },
+        { messageTs: threadTs, text: scheduleThreadOpening(operation.name) },
+      );
+    } catch (error) {
+      // The message stays: the schedule is saved and runs in its thread, and
+      // a reply turn there then reads the message from Slack.
+      console.warn('[chickpea:management] schedule thread opening not recorded', JSON.stringify({
+        errorName: error instanceof Error ? error.name : 'unknown',
+      }));
+    }
+  }
+
   /** The first message goes when its save did not make the schedule. */
   private async withdrawScheduleThread(
     mutationId: string,
@@ -6384,7 +6419,10 @@ export class WorkspaceManagementService {
         schedulingAvailable: () => this.isRoutineSchedulingAvailable(),
         now: this.now,
       });
-      if (initiatorDm && result.effect === 'saved') await this.giveScheduleThread(result.routine, initiatorDm.agentId);
+      if (initiatorDm && result.effect === 'saved') {
+        await this.giveScheduleThread(result.routine, initiatorDm.agentId);
+        if (thread?.posted) await this.recordScheduleThreadOpening(result.routine, initiatorDm);
+      }
       if (operation.kind === 'save_routine' && result.effect === 'saved' && result.created) {
         this.stores.productTelemetry?.capture({
           event: 'schedule_created',
