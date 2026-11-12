@@ -291,15 +291,12 @@ function withheldBrowserStep(step: Extract<RunReviewStep, { kind: 'tool' }>): Ru
 
 /** A browser tool returns its own failures and refusals as output: an `error`, `refused: true` or `attached: false` (browser/tools.ts). */
 function browserOutputFailed(output: string): boolean {
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(output);
+    const result = JSON.parse(output) as { error?: unknown; refused?: unknown; attached?: unknown } | null;
+    return result?.error !== undefined || result?.refused === true || result?.attached === false;
   } catch {
     return false;
   }
-  if (typeof parsed !== 'object' || parsed === null) return false;
-  const result = parsed as { error?: unknown; refused?: unknown; attached?: unknown };
-  return result.error !== undefined || result.refused === true || result.attached === false;
 }
 
 /**

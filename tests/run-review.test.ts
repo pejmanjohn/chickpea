@@ -3,6 +3,7 @@ import { test, type TestContext } from 'node:test';
 
 import type { ConversationStreamChunk } from '@flue/runtime';
 
+import { BROWSER_TOOL_NAMES } from '../src/browser/tools.ts';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import type { SettingsPatch, SettingsStore } from '../src/config/settings-store.ts';
 import {
@@ -217,6 +218,16 @@ test('a copy of a run that grants a website login keeps only each browser step\'
 
   const every = buildRunReviewRecord(input({ steps: SIGNED_IN_STEPS, browserStepsWithheld: false }), runReviewPseudonymizer(KEY));
   assert.match(JSON.stringify(every.steps), /Invoice INV-2041 is due/, 'a run that grants no login keeps its browser steps');
+});
+
+test('every browser tool\'s step is withheld, whichever tool it is', () => {
+  const steps: RunReviewInput['steps'] = BROWSER_TOOL_NAMES.map((name) => ({
+    kind: 'tool', name, input: '{"note":"Invoice INV-2041"}', output: '{"note":"Invoice INV-2041"}',
+  }));
+  const record = buildRunReviewRecord(input({ steps, browserStepsWithheld: true }), runReviewPseudonymizer(KEY));
+  assert.deepEqual(record.steps, BROWSER_TOOL_NAMES.map((name) => (
+    { kind: 'tool', name, input: BROWSER_STEP_OMITTED, output: BROWSER_STEP_OMITTED }
+  )));
 });
 
 test('a saved username that is a word of the marker or a browser tool\'s name leaves a withheld step as it is', () => {
