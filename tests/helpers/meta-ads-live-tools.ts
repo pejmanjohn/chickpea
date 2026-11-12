@@ -124,6 +124,10 @@ export const META_PRE_NOVEMBER_NAMES: Readonly<Record<string, readonly string[]>
 };
 
 export const META_LIVE_NAMES: Readonly<Record<string, readonly string[]>> = {
+  ads_account_get_activity_logs: [
+    'ad_account_id', 'advertiser_job', 'advertiser_request', 'after_answer_offer_report', 'client_conversation_id',
+    'end_time', 'event_category', 'limit', 'object_id', 'scheduled_task_run', 'start_time', 'user_id',
+  ],
   ads_get_ad_account_custom_audiences: [
     'ad_account_id', 'advertiser_job', 'advertiser_request', 'after_answer_offer_report', 'client_conversation_id',
     'cursor', 'limit', 'scheduled_task_run', 'subtype_filter',

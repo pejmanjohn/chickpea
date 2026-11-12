@@ -224,17 +224,17 @@ test("a Meta grant's restriction text names only the tools the reviewed contract
     discoveredTools: [
       metaDiscoveredTool('ads_get_ad_entities'),
       metaDiscoveredTool(META_HELPER),
-      // Granted while it was reviewed, and held back since.
-      metaDiscoveredTool('ads_account_get_activity_logs', [
-        'ad_account_id', 'advertiser_request', 'client_conversation_id', 'end_time', 'limit', 'start_time',
+      // Granted by a build that admitted it; the reviewed contract doesn't.
+      metaDiscoveredTool('ads_get_creatives', [
+        'ad_account_id', 'advertiser_request', 'client_conversation_id', 'creative_ids', 'cursor', 'limit',
       ]),
     ],
     // ads_update_custom_audience_users is granted, and Meta no longer lists it.
-    allowedTools: ['ads_get_ad_entities', META_HELPER, 'ads_account_get_activity_logs', 'ads_update_custom_audience_users'],
+    allowedTools: ['ads_get_ad_entities', META_HELPER, 'ads_get_creatives', 'ads_update_custom_audience_users'],
     toolPolicies: {
       ads_get_ad_entities: { effect: 'read' as const, argumentConstraints: account },
       [META_HELPER]: { effect: 'read' as const, argumentConstraints: scope },
-      ads_account_get_activity_logs: { effect: 'read' as const, argumentConstraints: account },
+      ads_get_creatives: { effect: 'read' as const, argumentConstraints: account },
       ads_update_custom_audience_users: { effect: 'write' as const, argumentConstraints: scope },
     },
   };
@@ -252,7 +252,7 @@ test("a Meta grant's restriction text names only the tools the reviewed contract
     { connection: 'meta', tool: META_HELPER, approvedAccountIds: ['123450001'] },
   ]);
   assert.deepEqual(instructions.metaWriteScopes, []);
-  assert.doesNotMatch(JSON.stringify(instructions), /activity_logs|custom_audience_users/);
+  assert.doesNotMatch(JSON.stringify(instructions), /get_creatives|custom_audience_users/);
 });
 
 test('the sandbox conversation key stays a Slack coordinate instead of a Flue instance id', () => {

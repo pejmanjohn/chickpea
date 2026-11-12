@@ -27,7 +27,6 @@ import {
   META_ACCOUNT_READ_NAMES,
   META_ACCOUNT_READS,
   META_DEFERRED_READS,
-  META_HELD_READ,
   metaAccountReadSchema,
 } from './helpers/meta-ads-account-reads.ts';
 
@@ -272,7 +271,6 @@ test("Meta's account-wide reads are admitted from their live schemas and never s
   for (const { name, properties, filters } of META_ACCOUNT_READS) {
     const runtime = metaAdsRuntimePropertyNames(connection, name)!;
     assert.deepEqual(runtime, Object.keys(properties).filter((property) => !filters.includes(property)).sort(), name);
-    assert.ok(runtime.includes('client_conversation_id'), name);
     for (const filter of filters) {
       assert.throws(() => assertMcpToolArgumentKeys(name, { ad_account_id: '123450001', [filter]: '1' }, runtime),
         new RegExp(`does not permit the argument ${filter}`));
@@ -347,25 +345,29 @@ test("Meta's creatives and errors reads are refused as their live schemas stand"
   }
 });
 
-test("Meta's activity log is refused, and a stored grant for it never runs", () => {
-  const { name } = META_HELD_READ;
-  const held = accountRead(name);
-  assert.equal(metaAdsToolEffect(name), undefined);
-  assert.equal(metaAdsToolSchemaSupported(held), false);
-  assert.throws(() => compileMetaAdsToolAccess({
-    discoveredTools: [held], requestedTools: [name], approvedAccountIds: ['123450001'],
-  }), /is not in the reviewed access contract/);
-  const discoveredTools = [held, ...META_ACCOUNT_READ_NAMES.map((read) => accountRead(read))];
-  const compiled = compileMetaAdsToolAccess({
-    discoveredTools, requestedTools: META_ACCOUNT_READ_NAMES, approvedAccountIds: ['123450001'],
-  });
+test("Meta's activity log sends only its time window, category and limit, and a grant stored for it runs", () => {
+  const name = 'ads_account_get_activity_logs';
+  const tool = accountRead(name);
+  assert.deepEqual(metaAdsRuntimePropertyNames({ discoveredTools: [tool] }, name),
+    ['ad_account_id', 'end_time', 'event_category', 'limit', 'start_time']);
+  const runtime = metaAdsRuntimePropertyNames({ discoveredTools: [tool] }, name)!;
+  for (const hidden of ['object_id', 'user_id', 'advertiser_request', 'client_conversation_id', 'advertiser_job',
+    'after_answer_offer_report', 'scheduled_task_run']) {
+    assert.throws(() => assertMcpToolArgumentKeys(name, { ad_account_id: '123450001', [hidden]: '1' }, runtime),
+      new RegExp(`does not permit the argument ${hidden}`), hidden);
+  }
+  assert.doesNotThrow(() => assertMcpToolArgumentKeys(name, {
+    ad_account_id: '123450001', start_time: '2026-11-05', end_time: '2026-11-12', event_category: 'BUDGET', limit: 50,
+  }, runtime));
+  // A grant saved while the read was reviewed under #775 mounts again.
+  const discoveredTools = META_ACCOUNT_READ_NAMES.map((read) => accountRead(read));
   const stored = {
     discoveredTools,
-    allowedTools: [name, ...compiled.allowedTools],
-    toolPolicies: { ...compiled.toolPolicies, [name]: { effect: 'read' as const, argumentConstraints: { ad_account_id: ['123450001'] } } },
+    allowedTools: [name],
+    toolPolicies: { [name]: { effect: 'read' as const, argumentConstraints: { ad_account_id: ['123450001'] } } },
   };
-  assert.equal(metaAdsRuntimeConstraint(stored, name), undefined);
-  assert.deepEqual(metaAdsRuntimeAllowedTools(stored), META_ACCOUNT_READ_NAMES);
+  assert.deepEqual(metaAdsRuntimeConstraint(stored, name), { ad_account_id: ['123450001'] });
+  assert.deepEqual(metaAdsRuntimeAllowedTools(stored), [name]);
 });
 
 test('compiler rejects tools without one required scalar account field', () => {
