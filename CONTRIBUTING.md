@@ -114,7 +114,9 @@ DO_NOT_TRACK=1 npm run verify:cf-smoke
 DO_NOT_TRACK=1 npm run verify:cf-smoke:alarm
 ```
 
-Each PR runs a fast check, typecheck, hygiene and the budgets
+Each PR runs a fast check, typecheck, hygiene, the
+[RPC contract](docs/runbooks/releasing.md#rpc-contract)
+(`npm run verify:rpc-contract`) and the budgets
 (`npm run verify:host -- --wait-ms 600000 npm run verify:budgets`, below). On a PR that touches
 the management MCP program, the fast check is `npm run test:mcp`. In about 25
 seconds it runs the program's tests: the management service and its MCP tools,
@@ -134,9 +136,10 @@ tree gets the one full regression:
 npm run verify:host -- --wait-ms 3600000 npm run verify:train
 ```
 
-`verify:train` builds, checks both budgets for each merge, and runs the full
-suite, so the tests that read a build (`tests/public-assets.test.ts`,
-`tests/flue-v2-migration-contract.test.ts`) check this one. Each skips a
+`verify:train` judges the RPC contract, builds, checks both budgets for each
+merge, and runs the full suite, so the tests that read a build
+(`tests/public-assets.test.ts`, `tests/flue-v2-migration-contract.test.ts`)
+check this one. Each skips a
 `dist-cf` built from another commit and says so.
 
 The root test suite runs through `scripts/run-tests.mjs` under 8-way

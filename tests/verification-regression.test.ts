@@ -325,10 +325,11 @@ const assertNotGate = (stderr: string) => {
   assert.ok(stderr.includes(`origin/main: ${MERGE_GATE}`), 'names the gate and where to run it');
 };
 
-test('the merge gate builds and checks both budgets before the full suite', () => {
+test('the merge gate judges the RPC contract, then builds and checks both budgets before the full suite', () => {
   // npm test alone builds nothing, so the closure budget and the tests that read a build would not check the train.
   const { scripts } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { scripts: Record<string, string> };
-  assert.equal(scripts['verify:train'], 'npm run verify:budgets && npm test');
+  assert.equal(scripts['verify:train'], 'npm run verify:rpc-contract && npm run verify:budgets && npm test');
+  assert.equal(scripts['verify:rpc-contract'], 'node scripts/verify-rpc-contract.mjs');
   assert.match(scripts['verify:budgets'] ?? '', /^npm run build && npm run verify:worker-closure && .*tests\/worker-startup-imports\.test\.ts$/);
 });
 
