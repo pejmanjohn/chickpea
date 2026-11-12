@@ -313,7 +313,8 @@ nothing for a refused `CHICKPEA_RESIDENCY_HOLD_MS`, and gives the store the
 
 Before you turn it on, check these five points:
 
-- **The thread's objects need a compatibility date of 2026-10-01 or later.**
+- **The thread's objects, and a store window over 10 minutes, need a
+  compatibility date of 2026-10-01 or later.**
   The hold is a pending timer. A pending timer always stops an object from
   hibernating. It stops Cloudflare from evicting the object only from
   compatibility date `2026-10-01`, or with the
@@ -355,12 +356,19 @@ Before you turn it on, check these five points:
   in the last window, can exercise the previous release's state store, runner
   and Agent object. Wait 5 minutes before such a check, or run it in a
   workspace that has been quiet for longer than the window.
-- **A held object's last records reach Workers Logs when its hold ends.**
-  Cloudflare writes an invocation's logs when it ends, and the hold's timer
-  keeps the object's latest request open. On staging, a held runner's
-  end-of-turn records arrived about 10 minutes after its turn. Read an
-  object's records at least its window plus a minute after the last turn: an
-  hour and a minute for a store held an hour.
+- **A held object's last records reach Workers Logs late.** Cloudflare
+  writes an invocation's logs when it ends. The hold's timer keeps the
+  object's latest request open until the hold ends or the object receives
+  another request.
+  - Nothing calls a runner or an Agent object after its turn. On staging,
+    their end-of-turn records arrived about 10 minutes after the turn. Read
+    them at least the `CHICKPEA_RESIDENCY_HOLD_MS` window plus a minute after
+    the last turn.
+  - The state store receives another request soon: its 20-second alarm for
+    10 minutes after a turn, and the scheduled tick's maintenance call every
+    minute. On staging, with a 10-minute hold, no store request stayed open
+    for more than 42 seconds in two days. Only a store that nothing calls
+    keeps its last request open for its whole window, up to an hour.
 
 ### Admit Slack messages in the state store
 

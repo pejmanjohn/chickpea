@@ -831,8 +831,10 @@ const RELAY_BATCH_WINDOW_MS = 250;
  * for its first state read (production, 2026-11-10). Where the deployment
  * sets a residency hold (ResidencyHold), the store holds itself for its
  * window (hold()), which may outlast this one, and a store that restarted
- * inside it holds itself again at its next alarm (drainRelayAlarm). Constants,
- * not settings; Node has no alarms.
+ * inside it holds itself again at its next alarm (drainRelayAlarm). The tick
+ * is that alarm only inside this window: a store that restarts later in a
+ * longer hold stays unheld until another alarm or the next person's turn.
+ * Constants, not settings; Node has no alarms.
  */
 const KEEP_WARM_WINDOW_MS = 10 * 60_000;
 const KEEP_WARM_TICK_MS = 20_000;
