@@ -439,6 +439,46 @@ test('the thread record takes an Agent\'s row from its delivery only, whichever 
   });
 });
 
+test('a delivery takes its row after Slack\'s echo and edit event both arrived first; a delete removes it', async () => {
+  await withStore(async (store) => {
+    const assignment = { runtimeContract: 'chickpea-v1', agentId: 'agent_oncall' } as const;
+    const rows = async () => (await store.listSlackPublicContext('T1', 'C1', ROOT))
+      .map(({ messageTs, role, agentId, text, contentVersionTs }) => ({ messageTs, role, agentId, text, contentVersionTs }));
+    const changed = (text: string, editedTs: string) => ({
+      type: 'message', subtype: 'message_changed', channel: 'C1', ts: editedTs,
+      message: { ...agentPostEcho('C1', '1005.000100', text), edited: { ts: editedTs } },
+    });
+    // A post that is updated before its delivery is recorded: Slack's copy holds an edit by then.
+    await recordSlackThreadEventMessage(store, 'T1', agentPostEcho('C1', '1005.000100', 'Here is the summary') as never,
+      { botUserId: 'UBOT' });
+    await reconcileSlackPublicContextMutation(store, 'T1', changed('Here is the summary, as Slack shows it', '1006.000000') as never);
+    await recordDeliveredSlackAgentMessage(store, turn(), assignment, { messageTs: '1005.000100', text: 'Here is the summary' });
+    // A late copy of Slack's edit changes nothing, and the Agent's next edit still lands.
+    await reconcileSlackPublicContextMutation(store, 'T1', changed('Here is the summary, as Slack shows it', '1006.000000') as never);
+    await recordDeliveredSlackAgentMessage(store, turn(), assignment, { messageTs: '1005.000100', text: 'Here is the corrected summary' });
+    assert.deepEqual(await rows(), [
+      { messageTs: '1005.000100', role: 'agent', agentId: 'agent_oncall', text: 'Here is the corrected summary', contentVersionTs: undefined },
+    ]);
+    // An outside app's own edited post is not an Agent's, and a stale write still loses to its edit.
+    await recordSlackThreadEventMessage(store, 'T1',
+      { ...agentPostEcho('C1', '1007.000100', 'I am On-call'), bot_id: 'B_OTHER', app_id: 'A_OTHER' } as never, { botUserId: 'UBOT' });
+    await reconcileSlackPublicContextMutation(store, 'T1', {
+      type: 'message', subtype: 'message_changed', channel: 'C1', ts: '1008.000000',
+      message: { ...agentPostEcho('C1', '1007.000100', 'I am On-call, edited'), bot_id: 'B_OTHER', app_id: 'A_OTHER', edited: { ts: '1008.000000' } },
+    } as never);
+    await recordSlackThreadEventMessage(store, 'T1',
+      { ...agentPostEcho('C1', '1007.000100', 'I am On-call'), bot_id: 'B_OTHER', app_id: 'A_OTHER' } as never, { botUserId: 'UBOT' });
+    assert.deepEqual((await rows())[1],
+      { messageTs: '1007.000100', role: 'app', agentId: undefined, text: 'I am On-call, edited', contentVersionTs: '1008.000000' });
+    // Deleting the Agent's post removes its row.
+    await reconcileSlackPublicContextMutation(store, 'T1', {
+      type: 'message', subtype: 'message_deleted', channel: 'C1', ts: '1009.000000', deleted_ts: '1005.000100',
+      previous_message: agentPostEcho('C1', '1005.000100', 'Here is the corrected summary'),
+    } as never);
+    assert.deepEqual((await rows()).map((row) => row.messageTs), ['1007.000100']);
+  });
+});
+
 test('an admitted request overwrites the captured copy but keeps its author; edits keep it too', async () => {
   await withStore(async (store) => {
     await recordSlackThreadEventMessage(store, 'T1',

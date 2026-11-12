@@ -1853,6 +1853,8 @@ export class ConfigStoreLogic {
     // install's own app each post it made under an Agent's name back as a bot
     // message with no author user, which reads as an app's; that copy must not
     // relabel the message. The Agent's own edits come through the delivery path.
+    // A delivery takes the row even from a copy that already carries Slack's
+    // edit: Slack's events for a post can all land before its delivery's write.
     this.db.run(
       `INSERT INTO config_slack_public_context (
         workspace_id, channel_id, root_ts, message_ts, role, text, agent_id, content_version_ts,
@@ -1872,7 +1874,7 @@ export class ConfigStoreLogic {
         gap_before_ts = COALESCE(config_slack_public_context.gap_before_ts, excluded.gap_before_ts),
         updated_at = excluded.updated_at
       WHERE (config_slack_public_context.role <> 'agent' OR excluded.role = 'agent') AND
-        (config_slack_public_context.content_version_ts IS NULL OR
+        (excluded.role = 'agent' OR config_slack_public_context.content_version_ts IS NULL OR
          (excluded.content_version_ts IS NOT NULL AND
           CAST(excluded.content_version_ts AS REAL) >= CAST(config_slack_public_context.content_version_ts AS REAL)))`,
       ...slackPublicContextValues(input, row),
