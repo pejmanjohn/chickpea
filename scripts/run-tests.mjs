@@ -28,6 +28,10 @@
  * reports still queued for the pipe, so each file's process writes its reports
  * with blocking writes (scripts/lib/test-report-pipe.mjs).
  *
+ * Every file's process also loads the 4.x leak net
+ * (scripts/lib/test-mcp-leak-net.mjs), which fails a test whose management
+ * MCP result names a tool 5.0.0 removes.
+ *
  * `--fail-on-retry` still reruns each failed file alone, so the log says
  * whether it is flaky or broken, but fails the run even when every rerun
  * passes. verify:regression's focused test steps use it: that command never
@@ -58,6 +62,7 @@ import { hostChecksLiveness } from './lib/verification-host.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const REPORT_PIPE = new URL('./lib/test-report-pipe.mjs', import.meta.url).href;
+const LEAK_NET = new URL('./lib/test-mcp-leak-net.mjs', import.meta.url).href;
 const VERIFY_HOST = fileURLToPath(new URL('./verify-host.mjs', import.meta.url));
 
 const CONCURRENCY = 8;
@@ -155,7 +160,7 @@ async function runFiles(list, concurrency, signal) {
   // so the runner also works when a test launches it.
   delete process.env.NODE_TEST_CONTEXT;
   const stream = run({
-    files: list, concurrency, execArgv: ['--import', 'tsx', '--import', REPORT_PIPE],
+    files: list, concurrency, execArgv: ['--import', 'tsx', '--import', REPORT_PIPE, '--import', LEAK_NET],
     timeout: runnerTestTimeoutMs(list), forceExit: true, ...(signal ? { signal } : {}),
   });
   // Every failure event names its file, including a file whose process exited
