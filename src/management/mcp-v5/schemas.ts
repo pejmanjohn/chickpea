@@ -50,7 +50,15 @@ export const listAgentsInput = z.strictObject({
   cursor: z.string().min(1).max(256).optional()
     .describe('The nextCursor of the previous page, with the same include and includeArchived.'),
 });
-export const getAgentInput = z.strictObject({ agentId: zAgentId });
+const zSkillName = z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(64);
+export const getAgentInput = z.strictObject({
+  agentId: zAgentId,
+  includeSkillText: z.boolean().optional()
+    .describe('true adds each skill\'s text, its instructions, while the result has room; one that does not fit says so.'),
+  skill: zSkillName.optional().describe('Only this skill\'s text, from offset: how to read a long one in parts.'),
+  offset: z.number().int().min(0).max(1_000_000).optional()
+    .describe('With skill, where to start in its text: the nextOffset of the last read. 0 by default.'),
+});
 export const listServicesInput = z.strictObject({
   search: z.string().max(120).optional().describe('Words to match in a service\'s name or description.'),
 });
@@ -202,7 +210,9 @@ export const setAgentSkillInput = z.strictObject({
 });
 export const saveScheduleInput = z.strictObject({
   agentId: zAgentId,
-  channelId: zChannelId.optional().describe('Where it posts: a Channel the Agent answers in. Required for a new schedule.'),
+  channelId: zChannelId.optional().describe('Where it posts: a Channel the Agent answers in. A new schedule needs channelId or dm.'),
+  dm: z.literal('me').optional()
+    .describe('"me" posts in your own direct messages with the Agent, in a new thread it starts there, instead of a Channel. Only for a new schedule.'),
   scheduleId: zScheduleId.optional().describe('Omit to create a schedule; set to change one.'),
   version: zScheduleVersion.optional().describe('Required with scheduleId: the version list_schedules returned.'),
   name: zText(200),
@@ -415,6 +425,11 @@ export const getAgentOutput = z.strictObject({
     description: z.string(),
     enabled: z.boolean(),
     from: z.enum(['github', 'suggested', 'custom']),
+    text: z.string().nullable().optional()
+      .describe('With includeSkillText: its text, or the part from offset; null when it did not fit in this result.'),
+    size: z.number().int().optional().describe('With includeSkillText: the length of its whole text, in characters.'),
+    truncated: z.literal(true).optional().describe('text is not all of it; nextStep says how to read the rest.'),
+    nextOffset: z.number().int().optional().describe('Send it as offset, with this skill, for the next part.'),
   })),
   connections: z.array(z.strictObject({
     connectionId: z.string(),
@@ -444,6 +459,7 @@ export const getAgentOutput = z.strictObject({
   channels: z.array(z.strictObject({ channelId: z.string(), name: z.string().optional() }))
     .describe('The Slack Channels it answers in, besides direct messages.'),
   links: zLinks.optional(),
+  nextStep: z.string().optional().describe('With includeSkillText, when a skill\'s text is cut or left out: how to read the rest.'),
 });
 
 export const listServicesOutput = z.strictObject({

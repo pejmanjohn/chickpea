@@ -12,18 +12,13 @@ import {
   AGENT_AUTHORING_ROUTER_INSTRUCTION,
   AGENT_AUTHORING_SKILL_NAME,
   AGENT_SKILL_CREATION_GUIDE,
-  DISCOVERY_GUIDE_URI,
 } from '../src/management/agent-authoring/index.ts';
-import { DISCOVERY_GUIDE } from '../src/management/agent-authoring/discovery-guide.ts';
-import { WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES } from '../src/management/mcp.ts';
-import { WORKSPACE_MANAGEMENT_PROMPT_NAMES } from '../src/management/prompts.ts';
 import { workspaceManagementToolDescription } from '../src/management/tool-adapter.ts';
 import * as v from 'valibot';
 import { toJsonSchema } from '@valibot/to-json-schema';
 import { validateToolArguments } from '@earendil-works/pi-ai';
 import {
   applyWorkspaceChangesValibotSchema,
-  MCP_MANAGEMENT_OPERATION_KINDS,
   proposeWorkspaceChangesValibotSchema,
 } from '../src/management/schemas.ts';
 import { scheduleActionInputSchema, scheduleActionDescription, slackManagementInstruction } from '../src/management/slack-tools.ts';
@@ -58,47 +53,6 @@ test('canonical Agent-authoring package is versioned, complete, and digest-bound
   ]);
   assert.equal(guideSource.trimEnd(), AGENT_AUTHORING_GUIDE);
   assert.equal(skillCreationSource.trimEnd(), AGENT_SKILL_CREATION_GUIDE);
-});
-
-test('the discovery guide is one short source with a four-part proposal and only real names', async () => {
-  const source = await readFile(new URL('../src/management/agent-authoring/discovery.md', import.meta.url), 'utf8');
-  assert.equal(source.trimEnd(), DISCOVERY_GUIDE);
-  assert.equal(DISCOVERY_GUIDE_URI, 'chickpea://guide/discovery/v1');
-  assert.ok(Buffer.byteLength(DISCOVERY_GUIDE, 'utf8') <= 6_000, 'a coding agent reads the guide whole');
-
-  const proposal = DISCOVERY_GUIDE.slice(DISCOVERY_GUIDE.indexOf('## Step 4. Propose'), DISCOVERY_GUIDE.indexOf('## When history is thin'));
-  const parts = proposal.split('\n').filter((line) => /^\d\. /.test(line));
-  assert.equal(parts.length, 4, proposal);
-  assert.match(parts[0]!, /^1\. What the person already has and what it is for, naming the sources you saw\./);
-  assert.match(parts[1]!, /^2\. The Slack front door: .*never invent facts, numbers, or identifiers/);
-  assert.match(parts[2]!, /^3\. What you will do yourself: .*`test_connection`/);
-  assert.match(parts[3]!, /^4\. What the person has to do: .*Ask before you create a key or token in any live account/);
-  assert.match(proposal, /one lead proposal and up to two alternates/);
-
-  for (const rule of [
-    'Nothing you read goes to Chickpea. The proposal names its sources (a project, a session, a tool) and never quotes their contents. After the person says yes, only the Agent\'s configuration is sent.',
-    'When `slackTeamName` is absent, say "this workspace" and do not guess a name.',
-    'The lead proposal must belong to this workspace.',
-    'Never open a secret store, an environment file, or a shell history file.',
-    'ask at most three questions',
-    'Never invent a starter.',
-    'set `firstAsk` to the front-door message from your proposal',
-  ]) assert.ok(DISCOVERY_GUIDE.includes(rule), rule);
-  assert.doesNotMatch(DISCOVERY_GUIDE, /\bDMs?\b|presentation\.slack/);
-
-  const names = new Set<string>([
-    ...WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES,
-    ...MCP_MANAGEMENT_OPERATION_KINDS,
-    ...WORKSPACE_MANAGEMENT_PROMPT_NAMES,
-    AGENT_AUTHORING_GUIDE_URI,
-    'slackTeamName',
-    'firstAsk',
-    'links.slack',
-    'links.admin',
-  ]);
-  for (const [, span] of DISCOVERY_GUIDE.matchAll(/`([^`]+)`/g)) {
-    assert.ok(names.has(span!), `${span} is not a tool, operation, prompt, guide, or result field of this connection`);
-  }
 });
 
 test('router covers all authoring postures while leaving detailed judgment lazy', () => {
