@@ -223,6 +223,14 @@ export class StateStoreUnavailable extends AgentPromptFailure {
   }
 }
 
+/** The dispatched reply's read failed before it settled: the receipt stays, and the runner reattaches. */
+export class AgentReplyReadInterrupted extends AgentPromptFailure {
+  constructor(cause: unknown) {
+    super('agent', 503, false, true, cause);
+    this.name = 'AgentReplyReadInterrupted';
+  }
+}
+
 export function agentFailureText(error: unknown): string {
   if (!(error instanceof AgentPromptFailure)) return AGENT_FAILURE_TEXT;
   if (error.kind === 'provider') return PROVIDER_FAILURE_TEXT;
@@ -296,6 +304,8 @@ interface PromptSlackAgentInput {
    * after each chunk that changes it. Must not throw.
    */
   onTurnWork?: (work: TurnWork) => void;
+  /** A read of the reply had not answered in time, and a fresh one joined it. Must not throw. */
+  onStalledRead?: () => void;
   /** Images already in this Slack conversation, collected by the host fetch. */
   threadImages?: readonly ThreadImageRecord[];
   threadFileIds?: readonly string[];
@@ -616,6 +626,7 @@ export async function promptSlackThreadAgent(
           ...(signal ? { signal } : {}),
           ...(milestones ? { isIdleCandidate: milestones.isIdleCandidate } : {}),
           ...(input.codingTaskStarted ? { initialIdleCandidate: true } : {}),
+          ...(input.onStalledRead ? { onStalledRead: input.onStalledRead } : {}),
         })
       : await handle.read(receipt as DispatchReceipt, { onEvent });
   } catch (error) {
@@ -651,7 +662,7 @@ export async function promptSlackThreadAgent(
       // Transport/isolate interruptions are not settlement evidence. Keep the
       // receipt and let the durable relay reattach instead of freezing a paid,
       // possibly completed turn as a permanent failure.
-      throw new AgentPromptFailure('agent', 503, false, true, error);
+      throw new AgentReplyReadInterrupted(error);
     }
     const kind = classifyFlueRunFailure(error);
     logDispatchFailure('settlement_failed', receipt.submissionId, undefined, error);

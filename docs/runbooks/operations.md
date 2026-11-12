@@ -336,6 +336,106 @@ Before you turn it on, check these four points:
   and Agent object. Wait 5 minutes before such a check, or run it in a
   workspace that has been quiet for longer than the window.
 
+### Admit Slack messages in the state store
+
+On Cloudflare, the Worker admits a direct installation's Slack message itself.
+It verifies the request, then makes 20 or more calls to the installation's
+state store before the turn is admitted, each one a round trip. That is about
+a second before the first status shows. With the deployment variable
+`CHICKPEA_SLACK_ADMISSION` set to `store`, the Worker sends a verified
+`message` or `app_mention` to the state store in one call. The store admits it
+on its own stores, as it admits the shared gateway's deliveries, and shows the
+first status from there.
+
+```sh
+npm run deploy -- --var CHICKPEA_SLACK_ADMISSION:store
+```
+
+Unset, or any other value, keeps the Worker's own admission. That is the
+default. Every other Slack event (reactions, joins, App Home, the Stop button,
+installation events) takes the Worker's path either way. To turn it off,
+deploy with `--var CHICKPEA_SLACK_ADMISSION:worker`. Upgrades keep the
+variable.
+
+Before you turn it on, know these four points:
+
+- **The store reads Slack.** Admission reads the sender, and for a Channel the
+  conversation, with the installation's bot token from the state store
+  instead of the Worker. The reads count against the same read budget.
+- **A thread's new messages keep their order.** The store admits one
+  thread's messages in the order they reached it, and different threads side
+  by side. A message checks the recovery gate and the installation, and
+  reads the bot's credentials, when its turn in the thread comes. A Slack
+  call that hangs holds that thread's later messages for up to 10 seconds,
+  the Slack client's timeout. A Slack rate limit does not hold them: the
+  store does not wait out Slack's `Retry-After`, and the rate-limited
+  message fails as it does on the Worker's path once that wait ends.
+  `slack_store_admission` counts it in `rateLimited`. Edits and deletes are
+  not ordered with their message's thread, as on the Worker's path.
+- **A store on the previous code falls back.** After a deploy that brings the
+  store's new method, a store still in memory runs the previous code for up
+  to 5 minutes, and the Worker's call to it fails. The Worker then admits that
+  message itself, once, and logs `state_rpc_fallback`. With the residency
+  hold on, every conversation active in the last window meets this. A deploy
+  that only turns the variable on, on a release that already has the method,
+  has no such window.
+- **A failure after Slack's acknowledgement is not retried,** as before.
+  Slack is acknowledged before the message is admitted.
+
+To check it, read the `state_rpc_summary` records of scope `slack_delivery`:
+`path` says who admitted each delivery (`store`, `worker`, `fallback`), and
+`calls` is 1 on the store's path. A `fallback` with `reason: store_failed`
+is a delivery the store's admission failed on. The Worker does not admit it
+again, so it is lost unless the store committed a turn before it failed:
+`turns` on its `slack_store_admission` record (`outcome: failed`) says. The
+store logs `slack_store_admission` for each delivery it admits, with
+`rpcCalls` 0. See [runtime observability](runtime-observability.md).
+
+### Stream answers by host release
+
+An Agent's answer streams into Slack today only when the model calls
+`stream_answer` before it, and models rarely do. With the deployment variable
+`CHICKPEA_SLACK_ANSWER_RELEASE` set to `host`, the host streams a model step's
+text itself once the step holds `CHICKPEA_SLACK_ANSWER_RELEASE_CHARS` settled
+characters (400 when unset) and has made no tool call. A shorter answer posts
+whole, as before.
+
+```sh
+npm run deploy -- --var CHICKPEA_SLACK_ANSWER_RELEASE:host
+```
+
+Unset, or any other value, keeps the model's declaration as the only way an
+answer streams. That is the default. A hold that is not a whole number from
+100 to 4000 also turns host release off; the deploy does not refuse it. Each
+isolate that reads such a hold logs one warning, `answer_release_hold_refused`
+with `component: "slack"` and `reason` (`not_whole_number` or
+`out_of_range`), and never the value. After you set a hold, check that
+`answer_release` shows it in `holdChars`.
+`SLACK_TAG_PROGRESSIVE_STREAMING=false` turns all streaming off either way.
+Upgrades keep both variables.
+
+Before you turn it on, know these points:
+
+- **Text can appear and then disappear.** A model may write past the hold and
+  then call a tool. The host then stops and deletes the streamed message, the
+  tool runs, and the final answer posts fresh, with no correction marker. This
+  happens in DMs and Channel threads alike. A stream that carries the native
+  task card keeps its text instead, and the final corrects it, so the card
+  stays.
+- **Some replies still post whole.** A reply that changes workspace settings,
+  hands off to another Agent, creates an Agent, uploads files, asks a question,
+  or shows cards or the Add key card stays terminal-only.
+- **A message sent during the answer waits.** Once the final step passes the
+  hold, a message the person sends meanwhile gets its own turn instead of
+  joining this reply.
+- **The hold is a measured choice.** A lower hold streams sooner and deletes
+  more often. Read `answer_release` before you change it: `hostRelease` says
+  what the release did, and `preToolTextN` how often a model writes N
+  characters before a tool call. See
+  [runtime observability](runtime-observability.md).
+- **`stream_answer` stays mounted.** A model that declares still locks its
+  later tools, as before; the host release does not wait for the declaration.
+
 ## Upgrade and compatibility policy
 
 For routine Cloudflare updates, follow the

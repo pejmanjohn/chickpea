@@ -38,7 +38,7 @@ const LAZY_MODULES: Record<string, string> = {
   'src/auth/better-auth-routes.ts': "Better Auth's public routes (auth/better-auth-runtime.ts)",
   'src/auth/mcp-oauth-routes.ts': 'the MCP resource and its sign-in pages (app.ts)',
   'src/management/mcp.ts': 'the management MCP server (auth/mcp-oauth-routes.ts)',
-  'src/management/agent-authoring/discovery-guide.ts': 'the discovery guide resource (management/mcp.ts)',
+  'src/management/playbook': 'get_guide and the discovery guide resource (management/mcp-v5/tools.ts, management/mcp.ts)',
   'src/management/recipes.ts': 'a workspace recipe export or preview (management/service.ts)',
   'src/management/setup-return-app.ts': "a finished MCP setup link's success page (management/setup-routes.ts)",
   'src/slack/group-dm/runtime.ts': "start_slack_group_dm's first call (slack/group-dm/tools.ts)",
@@ -51,20 +51,31 @@ const LAZY_MODULES: Record<string, string> = {
   'src/slack/ui/card-set-message.ts': 'a card click redraw or an update_card call (channels/slack.ts, slack/ui/agent-card-redraw.ts)',
   'src/slack/ui/agent-card-redraw.ts': "update_card's first call (agents/slack-thread.ts)",
   'src/slack/funding-refusal-reply.ts': 'an out-of-usage reply or an Ask an Owner click (slack/run-turn.ts, channels/slack.ts)',
-  'src/slack/answer-release.ts': "a turn's shadow of the host answer release, with its latency log (slack/run-turn.ts)",
+  'src/slack/answer-release.ts': "a turn's shadow of the host answer release, with its latency log (slack/run-turn.ts), or the host release itself",
+  'src/slack/host-release-relay.ts': "a reply's relay while host answer release is on (slack/agent-view-presentation.ts)",
   'src/routines/pause-notice.ts': "a routine's out-of-usage pause, or the good run after it (routines/execution.ts)",
   'src/review/record.ts': "a run's Help improve Chickpea copy being built, after its reply (review/capture.ts)",
   'src/review/website-logins.ts': "a run's Help improve Chickpea copy being built, after its reply (review/record.ts, from review/capture.ts)",
   'src/review/html-references.ts': "a run's Help improve Chickpea copy being built, after its reply (review/website-logins.ts)",
   'src/connections/service-error-text.ts': "a Composio-reported failure's reason (connections/providers/composio.ts)",
   'src/admin/usage-report.ts': "a hosted Usage report or activity page (admin/usage-api.ts)",
+  'src/admin/routes.ts': "Admin's first request (app.ts)",
+  'src/management/setup-routes.ts': "a setup link's or Admin's first request (app.ts, admin/routes.ts)",
+  'src/management/connect-routes.ts': "a connect page's first request (app.ts)",
+  'src/slack/agent-apps/admin-routes.ts': "an Agent app's token page, in Admin (admin/routes.ts)",
+  'src/admin/page.ts': "an Admin page's first render (admin/routes.ts, slack/agent-apps/admin-routes.ts)",
+  'src/management/connector-landing-page.ts': 'a connect page or a setup link (management/connect-routes.ts, management/setup-routes.ts)',
+  'src/config/connector-logos.ts': 'an Admin page or a connect page (admin/page.ts, management/connector-landing-page.ts)',
+  'src/config/suggested-skills.ts': "an Admin page's first render (admin/page.ts)",
   'src/admin/billing-api.ts': "the Plan page's API, on its first request (admin/routes.ts)",
   'src/state/test-run-lifecycle.ts': "a state store's first test run, test-run alarm pass or cancellation pass (cloudflare.ts)",
   'src/state/test-run-instance.ts': "a test run's first dispatch or step (cloudflare.ts)",
   'src/usage/test-run-usage.ts': 'the test-run lifecycle or tools (state/test-run-lifecycle.ts, management/mcp-v5/test-runs.ts)',
   'src/agents/test-run-plan.ts': 'the test-run instance port or tools (state/test-run-instance.ts, management/mcp-v5/test-runs.ts)',
-  'src/management/mcp-v5/test-runs.ts': "try_agent_once's or get_test_run's first call (management/mcp-v5/tools.ts)",
+  'src/management/mcp-v5/test-runs.ts': "a practice tool's first call (management/mcp-v5/tools.ts)",
   'src/browser/approval.ts': "browser_open's or browser_act's first call (browser/tools.ts)",
+  'src/slack/turn-plan-reads.ts': "a thread runner's first turn (slack/thread-runner.ts)",
+  'src/config/turn-read-batch.ts': "a thread runner's first turn, or a state store's first read batch (cloudflare.ts)",
 };
 
 /**
@@ -73,9 +84,9 @@ const LAZY_MODULES: Record<string, string> = {
  * (scripts/lib/budget-growth.mjs); this ceiling backstops the total. Once per
  * merge train it may be set to the measured size plus 64 KiB, and it comes
  * down when a change moves modules behind import(). scripts/worker-closure.mjs
- * holds the built artifact to the same two rules.
+ * holds the built artifact to the growth rule alone.
  */
-const STARTUP_SOURCE_CEILING_BYTES = Math.round(10.7 * 2 ** 20);
+const STARTUP_SOURCE_CEILING_BYTES = 10_010_020 + 64 * 1024;
 
 function isModule(node: string, module: string): boolean {
   return node === module || node.startsWith(module + '/');

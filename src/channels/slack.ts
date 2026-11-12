@@ -181,6 +181,7 @@ import {
 import { slackSemanticActivityStatusEnabled } from '../slack/semantic-status-flag.ts';
 import { hydrateSlackPublicHandoffFallback } from '../slack/web-client-context.ts';
 import { type AgentAppBot, listAgentAppBots } from '../slack/agent-app-bots.ts';
+import { slackAdmissionInStore } from '../slack/admission-path.ts';
 import { hydrateTurnSlackContext } from '../slack/turn-context-reads.ts';
 import type { SlackContextSelf } from '../slack/thread-context.ts';
 import { createSlackReadGate, sharesSlackAppReadBudget } from '../slack/read-budget.ts';
@@ -899,102 +900,124 @@ function handleDirectSlackEvents(
     if (hosted && (payload.api_app_id !== hostedSlackAppOf(platformEnv)?.appId ||
         hostedSlackEventRoute(payload).route !== 'installation')) return;
     const stores = resolveStores(platformEnv);
-    const early = verifiedDeliveries.get(c)?.installation;
-    const installation = await (early?.teamId === payload.team_id
-      ? early.read
-      : stores.config.getWorkspaceInstallation(payload.team_id));
-    if (
-      !installation || installation.transportMode !== 'direct' ||
-      installation.health === 'revoked' ||
-      (installation.appId && installation.appId !== payload.api_app_id) ||
-      (hosted && !installation.appId)
-    ) return;
-
     const verifiedEventType = payload.type === 'event_callback' &&
         payload.event && typeof payload.event === 'object'
       ? (payload.event as { type?: unknown }).type
       : undefined;
-    // A person's message: the state store wakes its runner and verifies the
-    // identity while the chain below admits it.
-    if ((verifiedEventType === 'message' || verifiedEventType === 'app_mention') && isCloudflareTarget()) {
-      noteDirectDelivery(c, stores.slackState, payload as unknown as SlackEventFixture, receivedAt);
-    }
-    if (verifiedEventType === 'app_uninstalled' || verifiedEventType === 'tokens_revoked') {
-      // Hosted, only the installation's own bot token ends it, and an event
-      // from before this installation is about an earlier one. The host acts
-      // on these first (and ends the installation); this is the record's half.
-      if (hosted && hostedSlackLifecycleOutcome(payload, {
-        installedAt: installation.createdAt,
-        botUserId: installation.botUserId,
-      }) !== 'end') return;
-      await markSlackInstallationEnded(stores.config, installation.workspaceId, verifiedEventType);
-      return;
-    }
-    if (hosted && payload.type === 'event_callback') {
-      await recordFirstHostedSlackDelivery(stores.config, installation);
-    }
-    if (verifiedEventType === 'user_change') {
-      detach(
-        c,
-        processSlackUserChange(
-          payload as unknown as SlackEventFixture,
-          stores,
-          platformEnv,
-          credentialRevision,
-        ).catch((error) => {
-          console.error('[chickpea] Slack membership event failed:', sanitizeError(error));
-        }),
-      );
-      return;
-    }
-    if (payload.type !== 'event_callback') return;
+    const message = (verifiedEventType === 'message' || verifiedEventType === 'app_mention') && isCloudflareTarget();
+    // Today's chain: this Worker admits the delivery over the state store's RPCs.
+    const admitOnWorker = async (summary: { path: 'worker' | 'fallback'; reason?: string }) => {
+      const early = verifiedDeliveries.get(c)?.installation;
+      const installation = await (early?.teamId === payload.team_id
+        ? early.read
+        : stores.config.getWorkspaceInstallation(payload.team_id));
+      if (
+        !installation || installation.transportMode !== 'direct' ||
+        installation.health === 'revoked' ||
+        (installation.appId && installation.appId !== payload.api_app_id) ||
+        (hosted && !installation.appId)
+      ) return;
 
-    const credentials = await directSlackCredentials(c, platformEnv);
-    if (credentials instanceof Response) return credentials;
-    const eventType = payload.event.type;
-    if (eventType === 'app_home_opened') {
-      const event = payload.event as { user?: unknown; channel?: unknown; tab?: unknown };
-      if (typeof event.user === 'string') {
-        const botUserId = await resolveInstallationBotUserId(
-          installation.botUserId,
-          credentials,
-          platformEnv,
-        );
+      // A person's message: the state store wakes its runner and verifies the
+      // identity while the chain below admits it.
+      if (message) {
+        noteDirectDelivery(c, stores.slackState, payload as unknown as SlackEventFixture, receivedAt);
+      }
+      if (verifiedEventType === 'app_uninstalled' || verifiedEventType === 'tokens_revoked') {
+        // Hosted, only the installation's own bot token ends it, and an event
+        // from before this installation is about an earlier one. The host acts
+        // on these first (and ends the installation); this is the record's half.
+        if (hosted && hostedSlackLifecycleOutcome(payload, {
+          installedAt: installation.createdAt,
+          botUserId: installation.botUserId,
+        }) !== 'end') return;
+        await markSlackInstallationEnded(stores.config, installation.workspaceId, verifiedEventType);
+        return;
+      }
+      if (hosted && payload.type === 'event_callback') {
+        await recordFirstHostedSlackDelivery(stores.config, installation);
+      }
+      if (verifiedEventType === 'user_change') {
         detach(
           c,
-          openAgentAppHome({
-            workspaceId: payload.team_id,
-            event: { user: event.user, channel: event.channel, tab: event.tab },
+          processSlackUserChange(
+            payload as unknown as SlackEventFixture,
             stores,
-            transport: createDirectSlackTransport(credentials.botToken ?? '', ownerUserGroupToken(credentials, stores.settings)),
-            client: createSlackWebClient(credentials.botToken ?? ''),
-            ...(botUserId ? { botUserId } : {}),
             platformEnv,
-          }).catch((error) => {
-            console.error('[chickpea] App Home publish failed:', sanitizeError(error));
+            credentialRevision,
+          ).catch((error) => {
+            console.error('[chickpea] Slack membership event failed:', sanitizeError(error));
           }),
         );
+        return;
       }
-      return;
-    }
-    if (eventType === 'app_context_changed') return;
-    // Slack's Stop button; the SDK's event union predates it.
-    if (verifiedEventType === 'agent_session_stopped') {
+      if (payload.type !== 'event_callback') return;
+
+      const credentials = await directSlackCredentials(c, platformEnv);
+      if (credentials instanceof Response) return credentials;
+      const eventType = payload.event.type;
+      if (eventType === 'app_home_opened') {
+        const event = payload.event as { user?: unknown; channel?: unknown; tab?: unknown };
+        if (typeof event.user === 'string') {
+          const botUserId = await resolveInstallationBotUserId(
+            installation.botUserId,
+            credentials,
+            platformEnv,
+          );
+          detach(
+            c,
+            openAgentAppHome({
+              workspaceId: payload.team_id,
+              event: { user: event.user, channel: event.channel, tab: event.tab },
+              stores,
+              transport: createDirectSlackTransport(credentials.botToken ?? '', ownerUserGroupToken(credentials, stores.settings)),
+              client: createSlackWebClient(credentials.botToken ?? ''),
+              ...(botUserId ? { botUserId } : {}),
+              platformEnv,
+            }).catch((error) => {
+              console.error('[chickpea] App Home publish failed:', sanitizeError(error));
+            }),
+          );
+        }
+        return;
+      }
+      if (eventType === 'app_context_changed') return;
+      // Slack's Stop button; the SDK's event union predates it.
+      if (verifiedEventType === 'agent_session_stopped') {
+        detach(
+          c,
+          processSlackStopButton(payload as unknown as SlackEventFixture, platformEnv).catch((error) => {
+            console.error('[chickpea] Slack Stop button intake failed:', sanitizeError(error));
+          }),
+        );
+        return;
+      }
+      const known = hosted && installation.health !== 'healthy' ? undefined : { installation, credentials };
       detach(
         c,
-        processSlackStopButton(payload as unknown as SlackEventFixture, platformEnv).catch((error) => {
-          console.error('[chickpea] Slack Stop button intake failed:', sanitizeError(error));
-        }),
+        processSlackEvent(payload as unknown as SlackEventFixture, platformEnv, undefined, undefined, undefined, known).catch((error) => {
+          console.error('[chickpea] Slack event intake failed:', sanitizeError(error));
+        }).finally(() => stateRpcs.emit({ receivedAt, ...summary })),
       );
+    };
+    if (message && slackAdmissionInStore(platformEnv) && stores.slackState.admitDelivery) {
+      // One call: the state store admits it. A store that cannot take the
+      // call (older code, replaced mid-call) is served as before, once.
+      const { team_id: workspaceId, event_id: eventId, event_time: eventTime, event } = payload as unknown as SlackEventFixture;
+      let fallback: { path: 'fallback'; reason: string } | undefined;
+      detach(c, stores.slackState.admitDelivery({
+        workspaceId, eventId, eventTime, event, appId: payload.api_app_id ?? '', receivedAt,
+      }).then(async (admission) => {
+        if (admission.outcome !== 'fallback') return stateRpcs.emit({ receivedAt, path: 'store' });
+        await admitOnWorker(fallback = { path: 'fallback', reason: admission.reason });
+      }).catch((error) => {
+        console.error('[chickpea] Slack event intake failed:', sanitizeError(error));
+        // Before a fallback, the Worker admits nothing: the store's admission failed, or the call was never sent.
+        stateRpcs.emit({ receivedAt, ...fallback ?? { path: 'fallback', reason: 'store_failed' } });
+      }));
       return;
     }
-    const known = hosted && installation.health !== 'healthy' ? undefined : { installation, credentials };
-    detach(
-      c,
-      processSlackEvent(payload as unknown as SlackEventFixture, platformEnv, undefined, undefined, undefined, known).catch((error) => {
-        console.error('[chickpea] Slack event intake failed:', sanitizeError(error));
-      }).finally(() => stateRpcs.emit({ receivedAt })),
-    );
+    return admitOnWorker({ path: 'worker' });
   };
   return (delivery) => {
     const stateRpcs = new StateRpcSummary('slack_delivery');
@@ -1612,6 +1635,7 @@ async function resolveInstallationBotUserId(
 ): Promise<string | undefined> {
   return credentials.botUserId ?? installedBotUserId ?? resolveBotUserId(platformEnv);
 }
+/** The gateway's execution, unless it names an Agent app or a direct installation's own bot. */
 export interface SlackEventExecution {
   transport: SlackTransport;
   client: ReturnType<typeof createSlackWebClient>;
@@ -1619,6 +1643,8 @@ export interface SlackEventExecution {
   stores?: AppStores;
   /** The Agent whose own Slack app received this delivery: it runs as that bot on a direct installation. */
   agentApp?: { agentId: string };
+  /** A direct installation's own bot, with the credentials its transport was made from. */
+  direct?: { credentials: ResolvedSlackInstallationCredentials };
   /** Chickpea's own bot, beside an Agent app's `transport`. */
   installationBot?: SlackTransport;
   /** Where Agents' private-use placements are read when not through `transport` (agentAppPlacementFacts). */
@@ -1722,6 +1748,41 @@ export async function processGatewaySlackEnvelope(
     ...(providedExecution?.durableIngress ? { durableIngress: true } : {}),
   }, undefined, undefined, { installation });
   return 'accepted';
+}
+
+/**
+ * A store admits a direct event on its own ports, in its thread's order: a
+ * rate-limited call fails at once, as its wait would end. No bot: record only.
+ */
+export async function processDirectSlackEvent(
+  payload: SlackEventFixture,
+  platformEnv: PlatformEnv | undefined,
+  ports: {
+    stores: AppStores;
+    credentials: ResolvedSlackInstallationCredentials;
+    botUserId: string | undefined;
+    enqueueTurn(job: TurnJob): Promise<StateRpcResult<null>>;
+    onRateLimited?(): void;
+  },
+  installation: WorkspaceInstallation,
+): Promise<void> {
+  const { stores, credentials, botUserId, enqueueTurn, onRateLimited } = ports;
+  const clients = { rejectRateLimitedCalls: true, ...(onRateLimited ? { onRateLimited } : {}) };
+  if (!credentials.botToken || !botUserId) {
+    const client = credentials.botToken ? { client: createSlackWebClient(credentials.botToken, clients) } : {};
+    await processSlackEvent(payload, platformEnv, undefined, undefined, undefined, {
+      installation, credentials, recordOnly: { stores, enqueueTurn, ...client },
+    });
+    return;
+  }
+  await processSlackEvent(payload, platformEnv, {
+    transport: createDirectSlackTransport(credentials.botToken, ownerUserGroupToken(credentials, stores.settings), clients),
+    client: createSlackWebClient(credentials.botToken, clients),
+    botUserId,
+    stores,
+    enqueueTurn,
+    direct: { credentials },
+  }, undefined, undefined, { installation });
 }
 
 // The Node relay runs turns in this process and admits their asks and hand-offs here.
@@ -3289,7 +3350,7 @@ async function answerPrivateChannelSetupClick(
 async function steerWithSlackEdit(input: {
   edit: SlackMessageEdit;
   state: SlackStateStore;
-  execution: SlackEventExecution | undefined;
+  execution: Pick<SlackEventExecution, 'enqueueTurn' | 'durableIngress'> | undefined;
   platformEnv: PlatformEnv | undefined;
 }): Promise<void> {
   const { execution, platformEnv } = input;
@@ -3346,18 +3407,25 @@ async function processSlackEvent(
   execution?: SlackEventExecution,
   ui?: SlackUiAdmission,
   ask?: SlackHostAddressedAdmission,
-  known?: { installation: WorkspaceInstallation; credentials?: ResolvedSlackInstallationCredentials },
+  known?: {
+    installation: WorkspaceInstallation;
+    credentials?: ResolvedSlackInstallationCredentials;
+    /** A store's own ports with no bot (processDirectSlackEvent): the record follows the event, nothing more. */
+    recordOnly?: Pick<SlackEventExecution, 'stores' | 'enqueueTurn'> & { client?: SlackUiClient };
+  },
 ): Promise<void> {
   // A click is admitted like a message; every early return below is a refusal
   // (its outcome starts at `unavailable`, a takeover's at `refused`).
-  const stores = execution?.stores ?? resolveStores(platformEnv);
+  const recordOnly = known?.recordOnly;
+  const stores = execution?.stores ?? recordOnly?.stores ?? resolveStores(platformEnv);
   const installation = known?.installation ?? await stores.config.getWorkspaceInstallation(payload.team_id);
   if (!installation || installation.health === 'revoked') return;
-  if (execution && !execution.agentApp && installation.transportMode !== 'gateway') return;
-  if (!execution && installation.transportMode !== 'direct') return;
+  // An Agent app's caller checks its installation.
+  const transportMode = !execution || execution.direct ? 'direct' : 'gateway';
+  if (!execution?.agentApp && installation.transportMode !== transportMode) return;
   // An edit steers its message's turn, then the public record below takes the new text too.
   const edit = ask ? undefined : parseSlackMessageEdit(payload);
-  if (edit) await steerWithSlackEdit({ edit, state: stores.slackState, execution, platformEnv });
+  if (edit) await steerWithSlackEdit({ edit, state: stores.slackState, execution: execution ?? recordOnly, platformEnv });
   // The front desk's card holds a copy of the message it offers: an edit or a
   // delete closes it, so a pick never sends words the person took back.
   const takenBack = edit ?? (ask ? undefined : parseSlackMessageDelete(payload));
@@ -3368,7 +3436,8 @@ async function processSlackEvent(
     return undefined;
   });
   if (closedChoice?.messageTs) {
-    const client = execution?.client ?? await directSlackClient(platformEnv).catch(() => undefined);
+    const client = execution?.client ??
+      (recordOnly ? recordOnly.client : await directSlackClient(platformEnv).catch(() => undefined));
     if (client) await redrawUiSurface(surfaceMessenger(client, closedChoice.channelId), closedChoice);
   }
   if (
@@ -3398,8 +3467,9 @@ async function processSlackEvent(
       siblingBotUserIds: tenantBots,
     }, threadRoute);
   }
+  if (recordOnly) return;
   const credentials = execution
-    ? ({ connectionRevision: null } as ResolvedSlackInstallationCredentials)
+    ? execution.direct?.credentials ?? ({ connectionRevision: null } as ResolvedSlackInstallationCredentials)
     : known?.credentials ??
       await resolveSlackInstallationCredentials(slackInstallationCredentialId(platformEnv), platformEnv);
 

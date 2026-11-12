@@ -97,6 +97,7 @@ import { canonicalMcpServerUrl, sameMcpServerUrl } from './mcp-url.ts';
 import { MemoryStoreLogic } from '../memory/store.ts';
 import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import { normalizeAgentAppPresence } from '../slack/agent-apps/index.ts';
+import { type AgentAppBot, agentAppBots } from '../slack/agent-app-bots.ts';
 import {
   isDefaultAgentAvatarSeed,
   nextDefaultAgentAvatarSeed,
@@ -446,6 +447,8 @@ export interface ConfigStore {
   /** Internal inventory. User-facing callers must use listUserAgents. */
   listAgents(): Promise<CustomAgentConfig[]>;
   listUserAgents(): Promise<CustomAgentConfig[]>;
+  /** The bots of this installation's Agent apps (agentAppBots), without reading each Agent's whole config. */
+  listAgentAppBots(): Promise<AgentAppBot[]>;
   getAgent(agentId: string): Promise<CustomAgentConfig>;
   /**
    * What the person was to ask the Agent first, as its creation carried it.
@@ -2456,6 +2459,15 @@ export class ConfigStoreLogic {
     return this.db
       .all('SELECT * FROM config_agents ORDER BY id')
       .map((row) => rowToAgent(row as unknown as AgentRow));
+  }
+
+  listAgentAppBots(): AgentAppBot[] {
+    return agentAppBots(this.db
+      .all("SELECT id, name, slack_presence_json FROM config_agents WHERE agent_kind = 'user' ORDER BY id")
+      .map((row) => {
+        const { id, name, slack_presence_json } = row as unknown as Pick<AgentRow, 'id' | 'name' | 'slack_presence_json'>;
+        return { id, slackPresence: parseAgentSlackPresence(slack_presence_json, id, name) };
+      }));
   }
 
   listUserAgents(): CustomAgentConfig[] {

@@ -49,6 +49,8 @@ import {
   type SlackProgressiveReadRelay,
 } from './progressive-relay.ts';
 import type { ProgressiveEligibilityDecision } from './progressive-eligibility.ts';
+import { DEFAULT_ANSWER_RELEASE_CHARS, type AnswerReleaseSetting } from './answer-release-setting.ts';
+import type { HostReleaseLate, HostReleaseRecord } from './host-release-relay.ts';
 import { SlackTransportError } from './transport/types.ts';
 import { slackClientMessageId } from './transport/message-id.ts';
 import { isGatewaySlackWebClient, setAgentSessionStatus } from './gateway/web-client.ts';
@@ -62,6 +64,7 @@ import type { SlackStateStore } from './claim-store.ts';
 import {
   MAX_SLACK_CONTINUATION_PARTS,
   MAX_SLACK_CONTINUATION_RESPLITS,
+  HOST_RELEASE_INTENT_ID,
   presentationHasTerminalOutcome,
   presentationAllowsProgressive,
   presentationUsesNativeTasks,
@@ -175,11 +178,27 @@ interface AgentViewPresentationOptions {
    */
   onAnswerTextStreamed?: () => void;
   /**
+   * Observability only: Slack acknowledged the terminal call that completes
+   * the reply's text: the stream start carrying it, the stop adding its rest,
+   * or the update that replaces it.
+   */
+  onAnswerVisible?: () => void;
+  /**
    * Observability only: Slack acknowledged native task card rows on this
    * run's stream before its terminal, as the card's stream start or as rows a
    * milestone appended to an open stream.
    */
   onTaskCardStreamed?: () => void;
+  /** Observability only: Slack answered the thread title's call after `ms`, set or failed. */
+  onTitle?: (ms: number) => void;
+  /**
+   * The host releases answer text by its own rule instead of waiting for the
+   * model's declaration (CHICKPEA_SLACK_ANSWER_RELEASE). A receipt whose
+   * intent is already requested by the host keeps that relay without it.
+   */
+  answerRelease?: AnswerReleaseSetting;
+  /** Observability only: what the host release did, the latest replacing the last. */
+  onHostRelease?: (record: HostReleaseRecord) => void;
   onFinalized?: (record: SlackPresentationFinalizationRecord) => MaybePromise<void>;
   /**
    * The workspace's shared Slack read budget. Without one, a shared-app
@@ -274,12 +293,20 @@ const CONTINUATION_INTENT_GRACE_MS = 60_000;
  */
 const CONTINUATION_DELIVERY_STEPS = 16;
 
+/** A thread title whose Slack call `sendTitle` already made, for `setTitle` to record. */
+export interface SentTitle {
+  readonly title: string;
+  readonly outcome: Promise<'set' | 'failed'>;
+}
+
 /**
  * One recoverable Agent View artifact for a canonical Slack Run. Flue owns
  * generation; the app-owned presentation projection owns every Slack effect.
  */
 export class SlackAgentViewPresentation {
   private rawText = '';
+  /** When Slack first acknowledged this attempt's streamed answer text. */
+  private answerShownAt: number | undefined;
   /**
    * Once the stream reaches its cap: the most it can ever show (canonical
    * text). The rest of the answer reaches Slack only in the terminal.
@@ -600,7 +627,7 @@ export class SlackAgentViewPresentation {
   async prepareDeferredTerminalDelivery(result: 'answer' | 'failure'): Promise<boolean> {
     let presentation = await this.requirePresentation();
     if (presentation.stream.priorStreamMessageTs) {
-      presentation = await this.retireInterimStreamForFileShare(presentation);
+      presentation = await this.retireInterimStream(presentation);
     }
     if (presentation.schemaVersion !== 3) return false;
     const terminal = await this.prepareTerminalDelivery(result);
@@ -948,7 +975,21 @@ export class SlackAgentViewPresentation {
     };
   }
 
-  async setTitle(candidate: string): Promise<void> {
+  /**
+   * Send the thread's title to Slack now, from the presentation as the turn
+   * read it, when `setTitle` would send that title. Only the Slack call moves:
+   * `setTitle` still records the intent and the outcome where it runs, so no
+   * write to the presentation races the turn's others. Never rejects.
+   */
+  sendTitle(candidate: string, presentation: SlackRunPresentation): SentTitle | undefined {
+    const title = deriveSlackThreadTitle(candidate, presentation.plan?.tasks[0]?.title);
+    const state = presentation.title;
+    if (state && (state.valueHash !== hash(title) || state.outcome !== 'pending')) return undefined;
+    return { title, outcome: this.callSetTitle(presentation, title) };
+  }
+
+  /** Record the thread's title and set it, through `sent` when that call already went with this title. */
+  async setTitle(candidate: string, sent?: SentTitle): Promise<void> {
     let presentation = await this.requirePresentation();
     const title = deriveSlackThreadTitle(candidate, presentation.plan?.tasks[0]?.title);
     const valueHash = hash(title);
@@ -962,6 +1003,12 @@ export class SlackAgentViewPresentation {
     if (!titleState || titleState.valueHash !== valueHash || titleState.outcome !== 'pending') {
       return;
     }
+    const outcome = sent?.title === title ? await sent.outcome : await this.callSetTitle(presentation, title);
+    await this.transition(presentation, { kind: 'record_title_outcome', outcome });
+  }
+
+  private async callSetTitle(presentation: SlackRunPresentation, title: string): Promise<'set' | 'failed'> {
+    const startedAt = Date.now();
     let outcome: 'set' | 'failed' = 'set';
     try {
       await this.options.client.assistant.threads.setTitle({
@@ -972,7 +1019,8 @@ export class SlackAgentViewPresentation {
     } catch {
       outcome = 'failed';
     }
-    await this.transition(presentation, { kind: 'record_title_outcome', outcome });
+    this.options.onTitle?.(Date.now() - startedAt);
+    return outcome;
   }
 
   async prepareReceipt(input: {
@@ -1041,32 +1089,48 @@ export class SlackAgentViewPresentation {
           presentation.progressiveIntent.status === 'denied')) {
       return undefined;
     }
-    return new ReceiptScopedTextRelay({
+    const sink = {
       submissionId: input.receipt.submissionId,
-      mode: progressiveStreamingModeForReason(frozenEligibility.reason),
-      prepareAppend: (control) => this.prepareProgressiveAppend(control),
-      append: (chunk, control) => this.appendProgressiveText(
+      prepareAppend: (control: ProgressiveAppendControl) => this.prepareProgressiveAppend(control),
+      append: (chunk: ProgressiveTextChunk, control: ProgressiveAppendControl) => this.appendProgressiveText(
         input.instanceId,
         input.receipt.submissionId,
         chunk,
         control,
       ),
-      invalidate: (reason, error) => this.invalidate(reason, error),
+      invalidate: (reason: ProgressiveRelayInvalidationReason, error?: unknown) => this.invalidate(reason, error),
       streamedPrefixBound: () => this.streamCapBound,
       // The bound above renders with this reply's live handles; what is
       // compared against it must render the same way.
-      canonicalStreamText: (text) =>
+      canonicalStreamText: (text: string) =>
         streamableSlackMarkdownPrefix(text, this.options.liveAgentHandles) ||
         canonicalSlackReplyText(text, 'markdown', this.options.liveAgentHandles),
-      ...(presentation.schemaVersion !== 1
-        ? {
-            modelIntent: {
-              initial: presentation.progressiveIntent,
-              transition: (intent: ProgressiveIntentTransition) =>
-                this.recordProgressiveIntent(intent),
-            },
-          }
-        : {}),
+    };
+    if (presentation.schemaVersion === 1) return new ReceiptScopedTextRelay(sink);
+    const intent = presentation.progressiveIntent;
+    const modelIntent = {
+      initial: intent,
+      transition: (transition: ProgressiveIntentTransition) => this.recordProgressiveIntent(transition),
+    };
+    // The durable intent decides once anything was requested; the setting
+    // decides only while nothing was.
+    if (intent.status === 'requested'
+      ? intent.toolCallId === HOST_RELEASE_INTENT_ID
+      : intent.status === 'unresolved' && this.options.answerRelease) {
+      const { HostReleaseRelay } = await import('./host-release-relay.ts');
+      return new HostReleaseRelay({
+        ...sink,
+        modelIntent,
+        initial: intent,
+        holdChars: this.options.answerRelease?.holdChars ?? DEFAULT_ANSWER_RELEASE_CHARS,
+        retire: (late) => this.retireReleasedAnswer(late),
+        report: (report) => this.observeHostRelease(report),
+      });
+    }
+    return new ReceiptScopedTextRelay({
+      ...sink,
+      mode: progressiveStreamingModeForReason(frozenEligibility.reason),
+      modelIntent,
     });
   }
 
@@ -1121,7 +1185,7 @@ export class SlackAgentViewPresentation {
     }
     if (presentation.stream.priorStreamMessageTs ||
         artifacts.length > 0 && presentation.stream.state === 'streaming') {
-      presentation = await this.retireInterimStreamForFileShare(presentation);
+      presentation = await this.retireInterimStream(presentation);
     }
     if (artifacts.length > 0 &&
         presentation.stream.state !== 'absent' && presentation.stream.state !== 'fallback') {
@@ -1279,6 +1343,7 @@ export class SlackAgentViewPresentation {
         });
         throw error;
       }
+      if (first) this.observeAnswerVisible();
       const messageTs = requireSlackTs(started.ts);
       presentation = await this.recordStreamStarted(
         presentation,
@@ -1668,11 +1733,15 @@ export class SlackAgentViewPresentation {
     );
   }
 
-  /** Retire only the exact saved interim stream, before any terminal write. */
-  private async retireInterimStreamForFileShare(
+  /**
+   * Retire only the exact saved interim stream, before any terminal write: a
+   * stream a file reply cannot close, or released answer text a tool call
+   * followed. Status and milestone writes may move the row meanwhile.
+   */
+  private async retireInterimStream(
     presentation: SlackRunPresentation,
   ): Promise<SlackRunPresentation> {
-    presentation = await this.transition(presentation, { kind: 'retire_stream_for_file_share' });
+    presentation = await this.transitionStream(presentation, { kind: 'retire_stream_for_file_share' });
     const messageTs = presentation.stream.priorStreamMessageTs!;
     const coordinate = { channel: presentation.root.channelId, ts: messageTs };
     try {
@@ -1692,7 +1761,51 @@ export class SlackAgentViewPresentation {
     }
     // A crash before this receipt repeats only stop/delete at this coordinate.
     // It cannot repeat completion because terminal intent has not begun.
-    return this.transition(presentation, { kind: 'file_share_stream_retired', messageTs });
+    return this.transitionStream(presentation, { kind: 'file_share_stream_retired', messageTs });
+  }
+
+  /**
+   * Host-released text that a tool call, another step or a blocking data
+   * part followed was not the final answer. Delete it at once, as a file
+   * reply retires its stream, so the final posts fresh with no correction
+   * marker. A stream that carries the native task card would lose the card,
+   * so it stays on its prefix and the final corrects it. A retirement that
+   * fails leaves the terminal to finish it (a recorded coordinate) or to
+   * correct the stream.
+   */
+  private async retireReleasedAnswer(late: HostReleaseLate): Promise<void> {
+    let presentation = await this.requirePresentation();
+    const shownAt = this.answerShownAt;
+    if (presentation.stream.state !== 'streaming' || !presentation.stream.messageTs) {
+      // The text never reached Slack, or the stream already closed.
+      this.observeHostRelease({ outcome: 'retired', late });
+      return;
+    }
+    if ((presentation.plan && presentationUsesNativeTasks(presentation)) || presentation.stream.pendingAppend) {
+      this.degradedReason = 'unsafe_incomplete_block';
+      this.observeHostRelease({ outcome: 'corrected', late });
+      return;
+    }
+    let deleted = true;
+    try {
+      await this.retireInterimStream(presentation);
+    } catch (error) {
+      console.warn(`[chickpea] released answer retirement failed ${safeSlackErrorCode(error)}`);
+      presentation = await this.requirePresentation();
+      if (!presentation.stream.priorStreamMessageTs) {
+        this.degradedReason = 'unsafe_incomplete_block';
+        this.observeHostRelease({ outcome: 'corrected', late });
+        return;
+      }
+      // Slack still shows the text until the terminal deletes it: no visible time to report.
+      deleted = false;
+    }
+    this.answerShownAt = undefined;
+    this.observeHostRelease({
+      outcome: 'retired',
+      late,
+      ...(deleted && shownAt !== undefined ? { retiredVisibleMs: this.now() - shownAt } : {}),
+    });
   }
 
   /** Whether this Run still has its durable presentation to drive. */
@@ -2202,6 +2315,7 @@ export class SlackAgentViewPresentation {
         ...(chunks.length > 0 ? { chunks } : {}),
         ...(blocks.length > 0 ? { blocks } : {}),
       });
+      this.observeAnswerVisible();
     } catch (error) {
       console.warn(
         `[chickpea] Slack Agent View stream finalization ${slackEffectOutcome(error)}: ` +
@@ -2325,6 +2439,7 @@ export class SlackAgentViewPresentation {
         if (rejectedContent) await this.replanFreshFinal(approved, format, tablePresentation);
         return freshFinalResult(await this.requirePresentation());
       }
+      this.observeAnswerVisible();
       presentation = await this.transition(presentation, {
         kind: 'mark_artifact_delivered', outcome: presentation.stream.presentationOutcome ?? 'terminal_only',
       });
@@ -2450,6 +2565,7 @@ export class SlackAgentViewPresentation {
         await this.transition(presentation, { kind: 'stream_message_lost', messageTs });
         return freshFinalResult(await this.requirePresentation());
       }
+      this.observeAnswerVisible();
     } catch (error) {
       await this.markUnknown(presentation, 'unknown_effect');
       await this.recordTerminalDeliveryReceipt('unknown');
@@ -2737,10 +2853,27 @@ export class SlackAgentViewPresentation {
   }
 
   private observeAnswerTextStreamed(): void {
+    this.answerShownAt ??= this.now();
     try {
       this.options.onAnswerTextStreamed?.();
     } catch {
       // Latency observation cannot affect text Slack already accepted.
+    }
+  }
+
+  private observeAnswerVisible(): void {
+    try {
+      this.options.onAnswerVisible?.();
+    } catch {
+      // Latency observation cannot affect a reply Slack already accepted.
+    }
+  }
+
+  private observeHostRelease(record: HostReleaseRecord): void {
+    try {
+      this.options.onHostRelease?.(record);
+    } catch {
+      // Observation cannot affect the release.
     }
   }
 

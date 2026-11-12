@@ -843,6 +843,49 @@ test('only a confirmed public final enters the handoff delivery callback', async
   }]);
 });
 
+// Defect caught: a latency observer that throws after Slack accepted the
+// final leaves its stream open, or records the posted final as failed, and
+// the retry posts it again.
+test('a latency observer that throws cannot fail a final Slack accepted', async () => {
+  for (const streams of [true, false]) {
+    const calls: string[] = [];
+    const outcomes: unknown[] = [];
+    const presenter = new WebClientPresenter(
+      {
+        chat: {
+          async startStream() {
+            calls.push('startStream');
+            if (!streams) throw new Error('confirmed start rejection');
+            return { ok: true, ts: '1782770400.000360' };
+          },
+          async stopStream() {
+            calls.push('stopStream');
+            return { ok: true };
+          },
+          async postMessage() {
+            calls.push('postMessage');
+            return { ok: true, ts: '1782770400.000361' };
+          },
+        },
+      } as unknown as WebClient,
+      {
+        channelId: 'C_BOUND', threadTs: '1782770400.000100',
+        userId: 'U_REQUESTER', workspaceId: 'T_WORKSPACE',
+        agentName: 'Test agent', agentId: 'agent_test',
+      },
+      {
+        async beforeDelivery() { return 'attempt'; },
+        async afterDelivery(input) { outcomes.push(input.outcome); },
+      },
+      { onAnswerVisible: () => { throw new Error('observer failed'); } },
+    );
+
+    await presenter.deliverFinal('Visible answer.', 'markdown');
+    assert.deepEqual(calls, streams ? ['startStream', 'stopStream'] : ['startStream', 'postMessage']);
+    assert.equal(outcomes.at(-1), 'delivered');
+  }
+});
+
 test('the public handoff callback receives the credential-safe Slack rendering', async () => {
   const delivered: Array<{ messageTs: string; text: string }> = [];
   const presenter = new WebClientPresenter(

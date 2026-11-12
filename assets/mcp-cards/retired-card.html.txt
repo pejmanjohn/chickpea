@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Chickpea card</title>
+<style>
+:root{color-scheme:light dark}
+body{margin:0;padding:16px 20px;font:15px/1.4 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;color:light-dark(#0d0d0d,#ededed);background:transparent}
+p{margin:0}
+</style></head>
+<body><p>This card is from an older version of Chickpea. Ask again to see it.</p></body>
+</html>

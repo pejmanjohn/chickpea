@@ -14,6 +14,7 @@ import * as healthCard from '../src/mcp-cards/health-card/model.ts';
 import { GATEWAY_TIMEOUT, GATEWAY_TIMEOUT_IP, RESOURCE_NOT_FOUND } from './helpers/chatgpt-delivery.ts';
 import { createFixtureAgent } from './helpers/management-adapter-fixture.ts';
 import { asChatGpt, BASE_URL, cardHost, cardServer, jsonRequest, type CardModelUnderTest, type ServerCall } from './helpers/mcp-card-host.ts';
+import { slackMember } from './helpers/slack-members.ts';
 import { StubTestRuns } from './helpers/stub-test-runs.ts';
 
 /**
@@ -28,9 +29,9 @@ const AGENT_CARD: CardModelUnderTest<agentCard.View, agentCard.Action> = {
   initial: agentCard.INITIAL,
   step: agentCard.step,
   present: agentCard.present,
-  reads: new Set(['get_creation_status', 'get_agent', 'get_confirmation', 'get_test_run']),
+  reads: new Set(['get_creation_status', 'get_agent', 'get_confirmation', 'get_practice_run']),
   followsPress: ({ view }) => (view.kind === 'creating' && view.byPress === true) || view.kind === 'first_answer',
-  replays: new Set(['try_agent_once']),
+  replays: new Set(['practice_agent']),
 };
 const CONNECT_CARD: CardModelUnderTest<connectCard.View, connectCard.Action> = {
   initial: connectCard.INITIAL,
@@ -52,7 +53,12 @@ const NOT_YOURS_NEXT = 'Use the confirmToken from the needs_confirmation result 
 /** A workspace with an Agent that answers in #support, so turning it off asks first. */
 async function world(t: TestContext, suffix: string, options: { cards?: boolean } = { cards: true }) {
   const runs = new StubTestRuns({ status: 'answered', failure: null, result: { reply: 'Two are overdue.', read: [] } });
-  const server = await cardServer(t, suffix, { testRuns: runs, modelReadiness: async () => async () => undefined }, options);
+  const server = await cardServer(t, suffix, {
+    testRuns: runs,
+    modelReadiness: async () => async () => undefined,
+    // Slack's record of the caller: a guest, whom a first answer refuses as a DM would.
+    slackMember: async (id) => slackMember(id, 'T_ACME', { restricted: true }),
+  }, options);
   const { f, call, clock, teamId } = server;
   runs.now = () => clock.now;
   await createFixtureAgent(f, 'agent_support', {
@@ -95,9 +101,9 @@ test('on a card session the tools a card receives send a refusal as a result, wh
   const { call } = await world(t, 'refusal-card-session');
   assert.deepEqual([...CARD_REFUSAL_TOOL_NAMES].sort(), [
     'check_agent', 'confirm_change', 'connect_model_provider', 'connect_service', 'create_agent', 'decline_change',
-    'delete_agent', 'delete_schedule', 'get_agent', 'get_confirmation', 'get_creation_status', 'get_setup_status',
-    'get_test_run', 'propose_agent', 'propose_agent_change', 'reconnect_service', 'remove_connection',
-    'remove_model_provider_key', 'remove_website_login', 'try_agent_once', 'undo_change', 'update_agent', 'update_member',
+    'delete_agent', 'delete_schedule', 'get_agent', 'get_confirmation', 'get_creation_status', 'get_practice_run', 'get_setup_status',
+    'practice_agent', 'propose_agent', 'propose_agent_change', 'reconnect_service', 'remove_connection',
+    'remove_model_provider_key', 'remove_website_login', 'undo_change', 'update_agent', 'update_member',
   ], 'a card draws it, only a card calls it, only a card\'s press calls it, or a card also calls it');
 
   assert.deepEqual(await call('confirm_change', { confirmToken: 'changeset_unknown' }), {
@@ -207,7 +213,7 @@ test('a card session lists each such tool\'s output with the refusal beside it, 
 
 // Mutation proof (item 2): refusalOf that ignores a result without isError shows the host's failure on every card.
 test('every card\'s refusal state shows its own sentence as ChatGPT delivers it', async (t) => {
-  const { f, call, clock, turnOff, version, runs } = await world(t, 'refusal-chatgpt');
+  const { f, call, clock, turnOff, version } = await world(t, 'refusal-chatgpt');
   const chatgpt = asChatGpt(call);
 
   // The Agent card: Turn off after the token was kept on another card.
@@ -229,7 +235,7 @@ test('every card\'s refusal state shows its own sentence as ChatGPT delivers it'
   assert.match(change.shown.error ?? '', /changed since you read it, so nothing changed\.$/);
   assert.deepEqual(change.labels(), ['Cancel (secondary)'], 'no Save on a stale preview');
 
-  // Its first answer, refused for today's limit.
+  // Its first answer, refused: Slack would not let a guest message the Agent.
   const ready = cardHost(AGENT_CARD, chatgpt, clock);
   await ready.result(await call('propose_agent', {
     name: 'Invoice Chaser', handle: 'invoices', job: 'Chases overdue invoices.', instructions: '# Job\nChase invoices.',
@@ -239,10 +245,9 @@ test('every card\'s refusal state shows its own sentence as ChatGPT delivers it'
   await sayHello(f, clock, 'agent_invoice_chaser');
   await ready.dispatch({ type: 'tick', now: clock.now });
   assert.deepEqual(ready.labels(), ['Open in Slack (primary)', 'See its first answer (secondary)']);
-  runs.refuse = { kind: 'daily_limit', resumesAt: Date.now() + 3 * 3_600_000 - 60_000 };
   await ready.press('try_once');
   assert.deepEqual(ready.shown.blocks.filter(({ kind }) => kind === 'text'),
-    [{ kind: 'text', text: 'Test runs for this workspace have reached today\'s limit. They start again in about 3 hours.' }]);
+    [{ kind: 'text', text: 'You can\'t message Invoice Chaser in Slack yet, so you can\'t practice with it.' }]);
 
   // The health card: a fix whose connection is gone since the check.
   const checked = await call('check_agent', { agentId: 'agent_support' });

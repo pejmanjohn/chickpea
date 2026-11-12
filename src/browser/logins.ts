@@ -213,7 +213,7 @@ export function normalizeWebsiteLoginHost(raw: string): string {
 export async function listWebsiteLogins(store: Pick<SettingsStore, 'getSetting' | 'getSettings'>): Promise<WebsiteLogin[]> {
   const logins = parseLogins(await store.getSetting(WEBSITE_LOGINS_SETTING));
   if (!logins.length) return logins;
-  const states = await store.getSettings(logins.map((login) => stateKey(login.id)));
+  const states = await store.getSettings(logins.map((login) => websiteLoginStateKey(login.id)));
   return logins.map((login, index) => withState(login, states[index]));
 }
 
@@ -240,7 +240,7 @@ export async function getWebsiteLogin(
   id: string,
 ): Promise<WebsiteLogin | undefined> {
   if (!LOGIN_ID_PATTERN.test(id)) return undefined;
-  const [catalog, state] = await store.getSettings([WEBSITE_LOGINS_SETTING, stateKey(id)]);
+  const [catalog, state] = await store.getSettings([WEBSITE_LOGINS_SETTING, websiteLoginStateKey(id)]);
   const login = parseLogins(catalog).find((entry) => entry.id === id);
   return login && withState(login, state);
 }
@@ -472,7 +472,7 @@ async function removeLogin(
 ): Promise<{ queued?: PendingContextDeletion } | undefined> {
   for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
     const [catalog, state, pending] = await store.getSettings([
-      WEBSITE_LOGINS_SETTING, stateKey(id), PENDING_CONTEXT_DELETIONS_SETTING,
+      WEBSITE_LOGINS_SETTING, websiteLoginStateKey(id), PENDING_CONTEXT_DELETIONS_SETTING,
     ]);
     const logins = parseLogins(catalog);
     const login = logins.find((entry) => entry.id === id);
@@ -484,7 +484,7 @@ async function removeLogin(
     const applied = await store.applySettingsPatch({
       expected: { key: WEBSITE_LOGINS_SETTING, value: catalog ?? null },
       expectedAll: [
-        { key: stateKey(id), value: state ?? null },
+        { key: websiteLoginStateKey(id), value: state ?? null },
         ...(queued ? [{ key: PENDING_CONTEXT_DELETIONS_SETTING, value: pending ?? null }] : []),
       ],
       set: [
@@ -493,7 +493,7 @@ async function removeLogin(
           ? [{ key: PENDING_CONTEXT_DELETIONS_SETTING, value: withPendingContextDeletions(pending, [queued]) }]
           : []),
       ],
-      delete: [stateKey(id)],
+      delete: [websiteLoginStateKey(id)],
     });
     if (applied) return queued ? { queued } : {};
   }
@@ -698,7 +698,8 @@ function credentialContext(
   });
 }
 
-function stateKey(id: string): string {
+/** The settings key of a login's state. */
+export function websiteLoginStateKey(id: string): string {
   return `${STATE_KEY_PREFIX}${id}`;
 }
 
@@ -728,15 +729,15 @@ async function patchLoginState(
 ): Promise<boolean> {
   if (!LOGIN_ID_PATTERN.test(id)) return false;
   for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
-    const [catalog, raw] = await store.getSettings([WEBSITE_LOGINS_SETTING, stateKey(id)]);
+    const [catalog, raw] = await store.getSettings([WEBSITE_LOGINS_SETTING, websiteLoginStateKey(id)]);
     const login = parseLogins(catalog).find((entry) => entry.id === id);
     if (!login) return false;
     const next = change((raw === undefined ? undefined : parseState(raw)) ?? stateOf(login));
     if (!next) return true;
     const written = await store.applySettingsPatch({
-      expected: { key: stateKey(id), value: raw ?? null },
+      expected: { key: websiteLoginStateKey(id), value: raw ?? null },
       expectedAll: [{ key: WEBSITE_LOGINS_SETTING, value: catalog ?? null }],
-      set: [{ key: stateKey(id), value: JSON.stringify(next) }],
+      set: [{ key: websiteLoginStateKey(id), value: JSON.stringify(next) }],
     });
     if (written) return true;
   }

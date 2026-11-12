@@ -1,4 +1,5 @@
 import { openStateDb, type NodeStateDb } from '../state/node-state-db.ts';
+import type { StoreFallbackReason } from '../config/store-fallback.ts';
 import { addColumnIfMissing } from '../state/schema-links.ts';
 import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
 import { WorkStoreLogic } from '../work/store.ts';
@@ -245,6 +246,25 @@ export interface SlackDeliveryNote extends SlackInboundEnvelope {
   receivedAt: number;
 }
 
+/** A direct installation's verified delivery, for its state store to admit (TagStateStore.admitSlackDelivery). */
+export interface SlackDirectDelivery extends SlackInboundEnvelope {
+  /** The Slack app whose signing secret verified it. Never the secret. */
+  appId: string;
+  /** When the host received Slack's request (slackReceiptAt). */
+  receivedAt: number;
+}
+
+export type SlackDirectDeliveryResult =
+  /** Admission ran to its end: a turn, a duplicate, an ignored message, or a refusal said in Slack. */
+  | { outcome: 'processed' }
+  /** The installation serves nothing now: recovery only, or no direct installation of this app. */
+  | { outcome: 'refused'; reason: 'recovery_only' | 'installation' };
+
+/** What the Worker learns: the store's answer, or that it could not take the call and the Worker admits it. */
+export type SlackDirectDeliveryAdmission =
+  | SlackDirectDeliveryResult
+  | { outcome: 'fallback'; reason: StoreFallbackReason };
+
 /**
  * A front desk hand-off decided inside Chickpea's run, as its thread runner
  * tells the state store of it (SlackStateStore.noteFrontDeskHandoff): the
@@ -272,6 +292,8 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
    * on the request path; nothing here changes what the Worker admits.
    */
   noteDelivery?(note: SlackDeliveryNote): Promise<void>;
+  /** CHICKPEA_SLACK_ADMISSION=store: the store admits it (admitSlackDelivery); on `fallback` the Worker does. */
+  admitDelivery?(delivery: SlackDirectDelivery): Promise<SlackDirectDeliveryAdmission>;
   /**
    * Cloudflare, a thread runner: Chickpea's run decided to hand its root DM
    * to an Agent, about two seconds before that Agent's takeover turn is

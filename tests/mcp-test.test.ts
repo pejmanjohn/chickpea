@@ -107,8 +107,10 @@ function scopedMetaSchema(): Record<string, unknown> {
 }
 
 const reviewedMetaToolNames = [
+  'ads_get_ad_account_custom_audiences',
   'ads_get_ad_accounts',
   'ads_get_ad_entities',
+  'ads_get_customconversions',
   'ads_get_field_context',
   'ads_get_opportunity_score',
   'ads_insights_advertiser_context',
@@ -546,13 +548,13 @@ test('Meta projection admits only bounded accountless helper input contracts', (
   ]);
   for (const [name, schema] of [
     ['required pagination', { type: 'object', required: ['cursor'], properties: { cursor: { type: 'string' } } }],
-    ['unknown input', { type: 'object', properties: { fields: { type: 'array' } } }],
+    ['required unknown input', { type: 'object', required: ['fields'], properties: { fields: { type: 'array' } } }],
     ['account selector', { type: 'object', properties: { ad_account_id: { type: 'string' } } }],
-    ['nested selector', { type: 'object', properties: { filter: { type: 'object', properties: { campaign_id: { type: 'string' } } } } }],
+    ['nested selector', { type: 'object', properties: { filter: { type: 'object', properties: { account_id: { type: 'string' } } } } }],
   ] as const) {
     assert.equal(projectMcpToolInputSchema(schema, 'ads_get_ad_accounts').ambiguous, true, name);
   }
-  assert.equal(projectMcpToolInputSchema({ type: 'object', properties: { field: { type: 'string' } } },
+  assert.equal(projectMcpToolInputSchema({ type: 'object', required: ['field'], properties: { field: { type: 'string' } } },
     'ads_get_field_context').ambiguous, true);
   assert.equal(projectMcpToolInputSchema({ type: 'object', properties: {
     field_names: { type: 'string' },
@@ -566,6 +568,96 @@ test('Meta projection admits only bounded accountless helper input contracts', (
   assert.equal(projectMcpToolInputSchema({ type: 'object', properties: {
     field_names: { type: 'array', items: { $ref: '#/$defs/field' } },
   } }, 'ads_get_field_context').ambiguous, true, 'field name item references remain unsupported');
+});
+
+// Synthetic schemas shaped like Meta's live helper listings: Meta added the
+// optional `advertiser_job` and `scheduled_task_run` next to the reviewed ones.
+const metaHelperAdditions = {
+  advertiser_job: { type: 'string', description: 'Synthetic job reference.' },
+  scheduled_task_run: { type: 'string' },
+};
+
+function liveAccountHelper(extra: Record<string, unknown>, required: string[] = []) {
+  return projectMcpToolInputSchema({
+    type: 'object', additionalProperties: false, required, properties: {
+      advertiser_request: { type: 'string' },
+      client_conversation_id: { type: ['string', 'null'] },
+      cursor: { type: ['string', 'null'] },
+      limit: { type: 'integer' },
+      ...extra,
+    },
+  }, 'ads_get_ad_accounts');
+}
+
+function liveFieldHelper(extra: Record<string, unknown>, required: string[] = ['field_names']) {
+  return projectMcpToolInputSchema({
+    type: 'object', additionalProperties: false, required, properties: {
+      advertiser_request: { type: 'string' },
+      client_conversation_id: { type: ['string', 'null'] },
+      field_names: { type: 'array', items: { type: 'string' } },
+      ...extra,
+    },
+  }, 'ads_get_field_context');
+}
+
+test('Meta helper projection admits optional arguments Meta adds', () => {
+  const accounts = liveAccountHelper(metaHelperAdditions, ['advertiser_request']);
+  const fields = liveFieldHelper(metaHelperAdditions, ['advertiser_request', 'client_conversation_id', 'field_names']);
+  for (const projection of [accounts, fields]) {
+    assert.equal(projection.ambiguous, false);
+    assert.deepEqual(projection.accountFields, []);
+  }
+  assert.deepEqual(accounts.propertyNames, [
+    'advertiser_job', 'advertiser_request', 'client_conversation_id', 'cursor', 'limit', 'scheduled_task_run',
+  ]);
+  assert.deepEqual(fields.propertyNames, [
+    'advertiser_job', 'advertiser_request', 'client_conversation_id', 'field_names', 'scheduled_task_run',
+  ]);
+  // The model never sees an added argument and a call never sends one, so its
+  // shape doesn't matter unless it names an account.
+  for (const [name, extra] of [
+    ['ID-shaped addition', { business_id: { type: 'string' } }],
+    ['nested addition', { scheduled_task_run: { type: 'object', properties: { run_id: { type: 'string' } } } }],
+  ] as const) {
+    assert.equal(liveAccountHelper(extra).ambiguous, false, name);
+    assert.equal(liveFieldHelper(extra).ambiguous, false, name);
+  }
+  // Only the account helper reviews pagination; on the field helper it is an addition.
+  assert.equal(liveFieldHelper({ cursor: { type: 'object' } }).ambiguous, false);
+});
+
+test('Meta helper projection refuses an added argument that is required or names an account', () => {
+  for (const [name, projection] of [
+    ['required addition', liveAccountHelper(metaHelperAdditions, ['advertiser_job'])],
+    ['required addition on the field helper', liveFieldHelper(metaHelperAdditions, ['field_names', 'scheduled_task_run'])],
+    ['required name with no property', liveAccountHelper({}, ['advertiser_job'])],
+    ['required reviewed name with no property', projectMcpToolInputSchema({
+      type: 'object', required: ['advertiser_request'], properties: { client_conversation_id: { type: 'string' } },
+    }, 'ads_get_ad_accounts')],
+    ['required reviewed name with no properties at all', projectMcpToolInputSchema({
+      type: 'object', required: ['advertiser_request'],
+    }, 'ads_get_ad_accounts')],
+    ['optional account field', liveAccountHelper({ ad_account_id: { type: 'string' } })],
+    ['optional account field on the field helper', liveFieldHelper({ account_id: { type: 'string' } })],
+    ['account-like name', liveAccountHelper({ ad_account: { type: 'string' } })],
+    ['nested account field', liveFieldHelper({
+      scheduled_task_run: { type: 'object', properties: { ad_account_id: { type: 'string' } } },
+    })],
+    ['nested account-like name in an array', liveAccountHelper({
+      advertiser_job: { type: 'array', items: { type: 'object', properties: { business_account: { type: 'string' } } } },
+    })],
+    ['unsupported reviewed shape beside additions', liveAccountHelper({
+      ...metaHelperAdditions, limit: { type: 'string' },
+    })],
+    ['required argument another helper reviews', liveAccountHelper({
+      field_names: { type: 'array', items: { type: 'string' } },
+    }, ['field_names'])],
+    ['selector inside a reviewed argument', liveFieldHelper({
+      field_names: { type: 'array', items: { type: 'string', properties: { campaign_id: { type: 'string' } } } },
+    })],
+  ] as const) {
+    assert.equal(projection.ambiguous, true, name);
+  }
 });
 
 test('Meta write projection requires exact account and ownership routing fields', () => {
@@ -731,7 +823,7 @@ test('Meta write projection retains bounded large schemas and closes blocked or 
   }, 'ads_create_ad_set').ambiguous, true, 'known payloads cannot introduce a nested account route');
 });
 
-test('Meta projection keeps entity filters optional and unknown or nested selectors closed', () => {
+test('Meta projection keeps entity filters optional, hides unreviewed selectors, and closes nested ones', () => {
   const schema = (required: string[], properties: Record<string, unknown>) => ({
     type: 'object', required, properties: { ad_account_id: { type: 'string' }, ...properties },
   });
@@ -741,12 +833,26 @@ test('Meta projection keeps entity filters optional and unknown or nested select
   assert.equal(projectMcpToolInputSchema(schema(['ad_account_id', 'object_ids'], {
     object_ids: { type: 'array', items: { type: 'string' } },
   }), 'ads_get_ad_entities').ambiguous, true, 'required entity targets remain unsupported');
+  // A read never shows or sends an argument outside its contract, so an
+  // optional one only matters when it names an account.
   assert.equal(projectMcpToolInputSchema(schema(['ad_account_id'], {
     object_ids: { type: 'array', items: { type: 'string' } },
-  }), 'ads_get_opportunity_score').ambiguous, true, 'exceptions are tool-specific');
+  }), 'ads_get_opportunity_score').ambiguous, false, 'a filter outside the contract is hidden');
   assert.equal(projectMcpToolInputSchema(schema(['ad_account_id'], {
     campaign_id: { type: 'string' },
-  }), 'ads_get_ad_entities').ambiguous, true, 'unknown target selectors remain unsupported');
+  }), 'ads_get_ad_entities').ambiguous, false, 'an unknown optional selector is hidden');
+  assert.equal(projectMcpToolInputSchema(schema(['ad_account_id'], {
+    reporting_purpose: { type: 'object', properties: { campaign_id: { type: 'string' } } },
+  }), 'ads_get_ad_entities').ambiguous, false, 'IDs nested in a hidden argument are hidden with it');
+  assert.equal(projectMcpToolInputSchema(schema(['ad_account_id', 'campaign_id'], {
+    campaign_id: { type: 'string' },
+  }), 'ads_get_ad_entities').ambiguous, true, 'an unknown required selector cannot be withheld');
+  for (const [label, extra] of [
+    ['account-like name', { business_account: { type: 'string' } }],
+    ['nested account', { reporting_purpose: { type: 'object', properties: { ad_account_id: { type: 'string' } } } }],
+  ] as const) {
+    assert.equal(projectMcpToolInputSchema(schema(['ad_account_id'], extra), 'ads_get_ad_entities').ambiguous, true, label);
+  }
   assert.equal(projectMcpToolInputSchema(schema(['ad_account_id'], {
     filtering: { type: 'array', items: {
       type: 'object', properties: { campaign_id: { type: 'string' } },

@@ -1,17 +1,13 @@
 import assert from 'node:assert/strict';
-import { createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { test, type TestContext } from 'node:test';
+import { test } from 'node:test';
 import vm from 'node:vm';
 
-import { Hono, type ExecutionContext } from 'hono';
 import ts from 'typescript';
 
 import { wakeSlackAgentObject } from '../src/agents/turn-input.ts';
-import { channel as slackChannel } from '../src/channels/slack.ts';
 import { installationOwnershipOf } from '../src/config/installation-scope.ts';
 import { SettingsStoreLogic } from '../src/config/settings-store.ts';
-import type { PlatformEnv } from '../src/config/state-backend.ts';
 import type { ConfigStoreLogic } from '../src/config/store.ts';
 import { WORKSPACE_SLACK_INSTALLATION_ID } from '../src/config/types.ts';
 import { IdentityStoreLogic } from '../src/identity/store.ts';
@@ -19,6 +15,7 @@ import type { IdentityStore } from '../src/identity/types.ts';
 import { admissionStatusPresentation, showAdmissionStatus } from '../src/slack/admission-activity.ts';
 import { admissionAgentInstance } from '../src/slack/admission-agent-wake.ts';
 import { withAgentAppExecution } from '../src/slack/agent-apps/live.ts';
+import { configureAgentSlackApps } from '../src/slack/agent-apps/host.ts';
 import { CHICKPEA_SLACK_AGENT_BINDING } from '../src/slack/bounded-agent-observation.ts';
 import type { SlackCanonicalAdmissionInput, SlackDeliveryNote } from '../src/slack/claim-store.ts';
 import { generateCredentialKeyring, workerCredentialKeySlot } from '../src/slack/credential-keyring.ts';
@@ -41,19 +38,14 @@ import { SlackRunPresentationStoreLogic } from '../src/slack/run-presentations.t
 import type { CredentialKeyring } from '../src/slack/secret-envelope.ts';
 import type { ThreadRunnerJob } from '../src/slack/thread-runner-jobs.ts';
 import { threadRunnerStub } from '../src/slack/thread-runner-rpc.ts';
-import { withSlackArrival } from '../src/slack/slack-arrival.ts';
 import { slackTurnExecutor } from '../src/slack/turn-executor-flag.ts';
 import type { TurnJob } from '../src/slack/turn-job-types.ts';
 import { TurnJobStoreLogic, type PendingTurnJob } from '../src/slack/turn-jobs.ts';
 import type { SlackEvent } from '../src/slack/types.ts';
-import { DoSqlStateDb } from '../src/state/do-state-db.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { ResidencyHold, residencyHoldMs } from '../src/state/residency-hold.ts';
-import { buildTagStateStores } from '../src/state/tag-state-stores.ts';
-import { withCloudflareUserAgent } from './helpers/cloudflare-target.ts';
+import { DM, settled, withDirectWorker, WORKER_MENTION } from './helpers/direct-worker.ts';
 import { AGENT_MENTION, delivery, message, withLane, type Lane } from './helpers/gateway-admission-lane.ts';
-import { FakeObjectStorage } from './helpers/installation-objects.ts';
-import { createSlackOwner } from './helpers/slack-owner.ts';
 
 /**
  * On Chickpea Cloud, Slack reaches Core's direct path: the Worker verifies a
@@ -92,7 +84,7 @@ const ReceiptProbe = vm.runInNewContext(
   ts.transpileModule(
     `${['RELAY_BATCH_WINDOW_MS', 'KEEP_WARM_WINDOW_MS', 'KEEP_WARM_TICK_MS', 'localSlackPresentationState'].map(moduleStatement).join('\n')}
 class ReceiptProbe { ${[
-      'noteSlackDelivery', 'wakeRunnerAtReceipt', 'sendRunnerWake', 'createAlarmIdentityResolver', 'admitSlackTurn', 'admitToRunner',
+      'noteSlackDelivery', 'wakeRunnerAtReceipt', 'sendRunnerWake', 'createAlarmIdentityResolver', 'admitSlackTurn', 'afterSlackAdmission', 'admitToRunner',
       'wakeAgentAtHandoff', 'showStatusAtHandoff', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode', 'keepWarmTickAt', 'hold',
     ].map(stateMethod).join('\n')} }\nReceiptProbe`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
@@ -132,14 +124,6 @@ function plain<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
-/** Resolves once `until` holds, polling for up to two seconds. */
-async function settled(until: () => boolean): Promise<void> {
-  for (let tries = 0; tries < 200; tries += 1) {
-    if (until()) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  assert.fail('the detached work did not settle');
-}
 
 /** Settles within a second, or fails: the note never waits for the wake or the identity. */
 function promptly<T>(promise: Promise<T>): Promise<T> {
@@ -461,189 +445,6 @@ test("the note verifies the installation's identity for the admission status wri
   assert.deepEqual(logged.filter((line) => /xoxb-|UBOT/.test(line)), [], 'neither the token nor the identity is logged');
 });
 
-// ---------------------------------------------------------------------------
-// The Worker's direct path on the Cloudflare target.
-
-const SIGNING_SECRET = 'direct-wake-signing-secret';
-
-interface DirectWorker {
-  /** Every state RPC and Slack call, in order: `rpc:<method>` and `slack:<method>`. */
-  log: string[];
-  /** What the Worker told the state store of, in order. */
-  notes: SlackDeliveryNote[];
-  /** The failures the Worker logged. */
-  failures: string[];
-  stores: ReturnType<typeof buildTagStateStores>;
-  /** `arrivedAt`: the host's arrival time for the request (withSlackArrival). */
-  deliver(body: Record<string, unknown>, ctx?: ExecutionContext, arrivedAt?: number): Promise<Response>;
-  event(event: Record<string, unknown>): Record<string, unknown>;
-}
-
-/**
- * A standalone direct installation served by the Worker on the Cloudflare
- * target: its state store is an object the Worker reaches over RPC (here the
- * state store's own logic behind a stub that answers the RPCs the Worker's
- * admission makes), its credentials are encrypted under the deployment's
- * keyring, and Slack's Web API answers from a table. `note` is what the
- * state store answers the note with.
- */
-async function withDirectWorker(
-  t: TestContext,
-  run: (worker: DirectWorker) => Promise<void>,
-  options: { note?: () => Promise<unknown> } = {},
-): Promise<void> {
-  const keyring = generateCredentialKeyring('key_v1');
-  const log: string[] = [];
-  const notes: SlackDeliveryNote[] = [];
-  const failures: string[] = [];
-  const platform: Record<string, unknown> = {
-    CHICKPEA_CREDENTIAL_KEY_CURRENT_ID: keyring.currentKeyId,
-    [workerCredentialKeySlot(keyring.currentKeyId)]: keyring.keys[keyring.currentKeyId],
-  };
-  const storage = new FakeObjectStorage();
-  const stores = buildTagStateStores(new DoSqlStateDb(storage.asDurableObjectStorage()), platform as PlatformEnv, { gatewayLeaseOwner: 'test' });
-  const call = <T>(fn: () => T) => {
-    try {
-      return Promise.resolve({ ok: true as const, value: fn() });
-    } catch (error) {
-      return Promise.resolve({ ok: false as const, error: { code: 'internal' as const, message: (error as Error).message } });
-    }
-  };
-  // The RPCs as TagStateStore answers them, over the same stores.
-  const answers: Record<string, (...args: never[]) => Promise<unknown>> = {
-    identityExecute: (request: Parameters<typeof stores.identity.execute>[0]) => call(() => stores.identity.execute(request)),
-    settingGet: (key: string) => call(() => stores.settings.getSetting(key) ?? null),
-    settingGetMany: (keys: readonly string[]) => call(() => stores.settings.getSettings(keys).map((value) => value ?? null)),
-    settingSet: (key: string, value: string) => call(() => { stores.settings.setSetting(key, value); return null; }),
-    claim: (key: string) => call(() => stores.slack.claim(key)),
-    release: (key: string) => call(() => { stores.slack.release(key); return null; }),
-    threadStart: (key: string) => call(() => { stores.slack.start(key); return null; }),
-    threadHas: (key: string) => call(() => stores.slack.has(key)),
-    threadActiveWorkGet: (key: string) => call(() => stores.slack.isActiveWork(key)),
-    snapshotGet: (key: string) => call(() => stores.snapshots.get(key) ?? null),
-    snapshotPutIfAbsent: (key: string, snapshot: Parameters<typeof stores.snapshots.putIfAbsent>[1]) =>
-      call(() => stores.snapshots.putIfAbsent(key, snapshot)),
-    snapshotReplace: (key: string, snapshot: Parameters<typeof stores.snapshots.replace>[1]) =>
-      call(() => stores.snapshots.replace(key, snapshot)),
-    admitSlackTurn: (input: SlackCanonicalAdmissionInput) =>
-      call(() => stores.slack.admitCanonical(input, stores.work, stores.turnJobs, stores.presentations, stores.uiSurfaces)),
-    enqueueTurn: (job: TurnJob) => call(() => { stores.turnJobs.enqueue(job); return null; }),
-    managementExecute: (request: Parameters<typeof stores.management.execute>[0]) => call(() => stores.management.execute(request)),
-    usageExecute: (request: Parameters<typeof stores.usage.execute>[0]) => call(() => stores.usage.execute(request)),
-    noteSlackDelivery: (received: SlackDeliveryNote) => {
-      notes.push(received);
-      return options.note ? options.note() : Promise.resolve({ ok: true, value: null });
-    },
-  };
-  const configRpc = (name: string) => (...args: unknown[]) => call(() => {
-    const method = name.slice('config'.length);
-    const logic = stores.config as unknown as Record<string, (...input: unknown[]) => unknown>;
-    const fn = logic[method[0]!.toLowerCase() + method.slice(1)];
-    if (typeof fn !== 'function') throw new Error(`rpc ${name} is not in this test`);
-    return fn.apply(stores.config, args) ?? null;
-  });
-  const stub = new Proxy({}, {
-    get: (_target, name) => typeof name !== 'string' ? undefined : (...args: never[]) => {
-      log.push(`rpc:${name}`);
-      const answer = answers[name] ?? (name.startsWith('config') ? configRpc(name) : undefined);
-      return answer
-        ? answer(...args)
-        : Promise.resolve({ ok: false, error: { code: 'internal', message: `rpc ${name} is not in this test` } });
-    },
-  });
-  platform.TAG_STATE = { getByName: () => stub };
-  const env = platform as PlatformEnv;
-
-  const identity = stores.identity as unknown as IdentityStore;
-  const owner = await createSlackOwner(identity, { teamId: 'T1', userId: 'U1' });
-  stores.config.ensureWorkspaceInstallation({ workspaceId: 'T1', transportMode: 'direct', appId: 'A1', botUserId: 'UBOT', teamId: 'T1' });
-  stores.config.materializeChickpeaAgent();
-  stores.config.putChannel({ workspaceId: 'T1', channelId: 'C1', label: 'team', lifecycle: 'active' }, 0);
-  // The built-in Agent answers with the workspace's model, so admission is canonical (admitSlackTurn).
-  stores.config.putWorkspaceModelDefault({
-    workspaceId: 'T1', modelId: 'local-stub/chickpea', provenance: 'admin_selected',
-    lastChangedByMembershipId: owner.membership.id,
-  }, stores.config.getWorkspaceModelDefault('T1')?.revision ?? 0);
-  const dependencies = { state: identity, keyring };
-  const staged = await stageSlackCredentialBundle(dependencies, {
-    identityId: WORKSPACE_SLACK_INSTALLATION_ID, identityClass: 'workspace_installation',
-    purpose: 'connected_credentials', expectedActiveRevision: null, appId: 'A1', teamId: 'T1', botUserId: 'UBOT',
-    grantedScopes: ['chat:write'], validatedAt: Date.now(),
-    secrets: { botToken: 'xoxb-direct-worker', signingSecret: SIGNING_SECRET },
-  });
-  await promoteSlackCredentialBundle(dependencies, {
-    identityId: WORKSPACE_SLACK_INSTALLATION_ID, candidateRevision: staged.revision, expectedActiveRevision: null,
-  });
-
-  const previousFetch = globalThis.fetch;
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const request = input instanceof Request ? input : new Request(String(input), init);
-    const url = new URL(request.url);
-    const method = url.pathname.split('/').at(-1)!;
-    log.push(`slack:${method}`);
-    const body = new URLSearchParams(await request.clone().text().catch(() => ''));
-    const user = body.get('user') ?? 'U1';
-    const answer = method === 'auth.test'
-      ? { ok: true, team_id: 'T1', user_id: 'UBOT', bot_id: 'BBOT', app_id: 'A1', team: 'Team' }
-      : method === 'users.info'
-        ? { ok: true, user: {
-            id: user, team_id: 'T1', name: user, deleted: false, is_bot: false, is_app_user: false,
-            is_restricted: false, is_ultra_restricted: false, is_stranger: false,
-          } }
-        : method === 'conversations.info'
-          ? { ok: true, channel: body.get('channel')?.startsWith('C')
-              ? { id: body.get('channel'), name: 'team', is_channel: true, is_private: false, is_member: true, is_archived: false }
-              : { id: body.get('channel'), is_im: true, user: 'U1' } }
-          : method === 'conversations.members'
-            ? { ok: true, members: ['U1', 'UBOT'], response_metadata: { next_cursor: '' } }
-            : method.startsWith('chat.')
-              ? { ok: true, ts: '1900000000.000100', channel: body.get('channel') ?? 'D1' }
-              : { ok: true };
-    return Response.json(answer, { headers: { 'x-oauth-scopes': 'chat:write,users:read' } });
-  }) as typeof fetch;
-  t.mock.method(console, 'error', (...parts: unknown[]) => { failures.push(parts.map(String).join(' ')); });
-  invalidateSlackInstallationCredentialCache();
-  const ingress = new Hono();
-  ingress.route('/channels/slack', slackChannel.route());
-  let events = 0;
-  try {
-    await withCloudflareUserAgent(() => run({
-      log,
-      notes,
-      failures,
-      stores,
-      async deliver(body, ctx, arrivedAt) {
-        const raw = JSON.stringify(body);
-        const timestamp = String(Math.floor(Date.now() / 1_000));
-        const signature = createHmac('sha256', SIGNING_SECRET).update(`v0:${timestamp}:${raw}`).digest('hex');
-        return ingress.request('/channels/slack/events', {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            'x-slack-request-timestamp': timestamp,
-            'x-slack-signature': `v0=${signature}`,
-          },
-          body: raw,
-        }, arrivedAt === undefined ? env : withSlackArrival(env, arrivedAt), ctx);
-      },
-      event(event) {
-        events += 1;
-        return {
-          token: '', team_id: 'T1', api_app_id: 'A1', type: 'event_callback',
-          event_id: `EvWorker${events}`, event_time: 1_700_000_000 + events,
-          authorizations: [{ team_id: 'T1', user_id: 'UBOT', is_bot: true, is_enterprise_install: false }],
-          event,
-        };
-      },
-    }));
-  } finally {
-    globalThis.fetch = previousFetch;
-    invalidateSlackInstallationCredentialCache();
-  }
-}
-
-const DM = { type: 'message', channel: 'D1', channel_type: 'im', user: 'U1', ts: '6000.000100', text: 'hello' };
-const WORKER_MENTION = { type: 'app_mention', channel: 'C1', user: 'U1', ts: '5000.000100', text: '<@UBOT> what changed?' };
 
 // Defects caught: no note from the Worker (no_rpc), a note awaited before the
 // Worker's own chain, a note sent after a Slack read, a note for a delivery
@@ -746,4 +547,33 @@ test('a note the state store never answers or refuses neither delays nor fails t
       await new Promise((resolve) => setImmediate(resolve));
     }, { note: answer });
   }
+});
+
+// Defect caught: the direct path learning the Agent apps' bots by loading
+// every Agent's config (configListAgents) on every delivery.
+test("the Worker's direct path reads the Agent apps' bots without loading any Agent's config", async (t) => {
+  const calls = async (withAgentApps: boolean) => {
+    configureAgentSlackApps(withAgentApps ? {
+      requestUrls: () => ({ events: 'https://cloud.test/e', interactions: 'https://cloud.test/i' }),
+      redirectUri: 'https://cloud.test/slack/agent-apps/callback',
+      allowUrl: (agentId) => `https://cloud.test/slack/agent-apps/allow/${agentId}`,
+    } : undefined);
+    let log: string[] = [];
+    try {
+      await withDirectWorker(t, async (worker) => {
+        assert.equal((await worker.deliver(worker.event(DM))).status, 200);
+        await settled(() => worker.log.includes('rpc:admitSlackTurn') || worker.failures.length > 0);
+        assert.deepEqual(worker.failures, []);
+        log = worker.log.filter((entry) => entry.startsWith('rpc:config'));
+      });
+    } finally {
+      configureAgentSlackApps(undefined);
+    }
+    const count = (method: string) => log.filter((entry) => entry === `rpc:${method}`).length;
+    return { agents: count('configListAgents'), bots: count('configListAgentAppBots') };
+  };
+  const without = await calls(false);
+  const withApps = await calls(true);
+  assert.equal(without.bots, 0, 'without the Agent-app port no bot is read');
+  assert.deepEqual(withApps, { agents: without.agents, bots: 1 }, 'the port adds one bot read and no Agent list');
 });

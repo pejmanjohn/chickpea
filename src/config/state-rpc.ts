@@ -1,8 +1,12 @@
 import type {
+  PracticeRunListing,
+  PracticeRunsQuery,
   TestRunQuery,
   TestRunReplayQuery,
   TestRunStartRequest,
   TestRunStartResult,
+  TestRunStepQuery,
+  TestRunStepResult,
   TestRunView,
 } from '../management/test-run-types.ts';
 import type {
@@ -105,8 +109,11 @@ import type {
   SlackDeliveryNote,
   SlackEditAdmission,
   SlackFrontDeskHandoffNote,
+  SlackDirectDelivery,
+  SlackDirectDeliveryResult,
 } from '../slack/claim-store.ts';
 import type { SlackMessageEdit } from '../slack/edits.ts';
+import type { AgentAppBot } from '../slack/agent-app-bots.ts';
 import type {
   FlueDispatchEnvelopeV1,
   FlueDispatchReceiptV1,
@@ -142,6 +149,7 @@ import type {
 } from '../slack/run-presentations.ts';
 import type { TypedActivityStatus } from '../activity/status.ts';
 import { deploymentTenancy, installationObjectName } from './installation-scope.ts';
+import type { StateRead } from './turn-reads.ts';
 import type { InstallationIdentity } from '../identity/installation-binding.ts';
 
 export type { TurnJob } from '../slack/turn-job-types.ts';
@@ -339,6 +347,8 @@ export interface TagStateRpc {
   // -- config: agents ------------------------------------------------------
   configListAgents(): Promise<StateRpcResult<CustomAgentConfig[]>>;
   configListUserAgents(): Promise<StateRpcResult<CustomAgentConfig[]>>;
+  /** Added after configListAgents: a store on older code lacks it (CfConfigStore.listAgentAppBots). */
+  configListAgentAppBots(): Promise<StateRpcResult<AgentAppBot[]>>;
   configGetAgent(agentId: string): Promise<StateRpcResult<CustomAgentConfig>>;
   configGetAgentFirstAsk(agentId: string): Promise<StateRpcResult<string | null>>;
   configMaterializeChickpeaAgent(): Promise<StateRpcResult<CustomAgentConfig>>;
@@ -631,6 +641,10 @@ export interface TagStateRpc {
   testRunStart(request: TestRunStartRequest): Promise<StateRpcResult<TestRunStartResult>>;
   testRunReplay(query: TestRunReplayQuery): Promise<StateRpcResult<TestRunView | null>>;
   testRunObserve(query: TestRunQuery): Promise<StateRpcResult<TestRunView | null>>;
+  /** The caller's practice runs of one Agent from the last hour, read only (TestRunStoreLogic.list). */
+  testRunList(query: PracticeRunsQuery): Promise<StateRpcResult<PracticeRunListing[]>>;
+  /** What the store kept of one step's cut result, read only (TestRunStoreLogic.stepResult). */
+  testRunStepResult(query: TestRunStepQuery): Promise<StateRpcResult<TestRunStepResult | null>>;
   slackTurnRecoveryRequired(id: string, reason: string): Promise<StateRpcResult<null>>;
   slackTurnRecoveryList(limit: number): Promise<StateRpcResult<SlackTurnRecoveryItem[]>>;
   slackInstallationRecoveryRetry(workspaceId: string): Promise<StateRpcResult<number>>;
@@ -792,6 +806,12 @@ export interface TagStateRpc {
    */
   noteSlackDelivery(note: SlackDeliveryNote): Promise<StateRpcResult<null>>;
   /**
+   * The direct path's admission in one call (CHICKPEA_SLACK_ADMISSION=store):
+   * the store admits a verified delivery on its own stores. A store on older
+   * code lacks it; the Worker then admits as before (CfSlackStateStore.admitDelivery).
+   */
+  admitSlackDelivery(delivery: SlackDirectDelivery): Promise<StateRpcResult<SlackDirectDeliveryResult>>;
+  /**
    * A thread runner's note that Chickpea's run decided a front desk hand-off
    * (SlackStateStore.noteFrontDeskHandoff): wake the runner the takeover turn
    * will be handed to and keep the decision time as that turn's receipt.
@@ -823,6 +843,8 @@ export interface TagStateRpc {
   threadRunnerTurn<K extends ThreadRunnerTurnKind>(
     op: ThreadRunnerTurnOp<K>,
   ): Promise<StateRpcResult<ThreadRunnerTurnResult<K>>>;
+  /** Reads in one round trip, each answered as its own RPC would (null: not batched). */
+  stateReadBatch(reads: readonly StateRead[]): Promise<Array<StateRpcResult<unknown> | null>>;
   /** Provisioning on a multi-installation host (installation-binding.ts). */
   bindInstallation(identity: InstallationIdentity): Promise<StateRpcResult<InstallationIdentity>>;
 }

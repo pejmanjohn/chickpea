@@ -1,6 +1,6 @@
 import { normalizeContext } from '@earendil-works/pi-ai';
 import type { AssistantMessage, Context, Provider } from '@earendil-works/pi-ai';
-import { setProvider } from '@flue/runtime';
+import { setProvider, type LlmMessage } from '@flue/runtime';
 
 import { modelAccessRequest } from './model-access.ts';
 
@@ -157,9 +157,12 @@ function withContinuationInstruction(messages: Context['messages']): Context['me
   return copy;
 }
 
-/** Flue renders a signal into model context as `<signal type="...">` user text. */
-function recoverySignalType(
-  message: Context['messages'][number] | undefined,
+/**
+ * Flue renders a signal into model context as `<signal type="...">` user
+ * text, in the provider's request and in its own `turn_request` observation.
+ */
+export function recoverySignalType(
+  message: Context['messages'][number] | LlmMessage | undefined,
 ): 'stream_interrupted' | 'stream_continued' | undefined {
   if (message?.role !== 'user') return undefined;
   const first = typeof message.content === 'string' ? message.content : message.content[0];

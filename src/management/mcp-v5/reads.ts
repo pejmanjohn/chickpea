@@ -1,9 +1,12 @@
 import type { z } from 'zod';
 
-import { CHICKPEA_AGENT_ID } from '../../config/agent-id.ts';
+import { AGENT_ID_PATTERN, CHICKPEA_AGENT_ID } from '../../config/agent-id.ts';
+import { isMcpToolReviewRequired } from '../../config/mcp-access.ts';
+import { mcpToolDeclaredRead } from '../../config/mcp-tool-policy.ts';
 import { resolveConnectorCatalogPreset } from '../../config/presets.ts';
 import type { PlatformEnv } from '../../config/state-backend.ts';
-import type { CustomAgentConfig } from '../../config/types.ts';
+import type { CustomAgentConfig, McpConnectionConfig } from '../../config/types.ts';
+import { decodeBase64Url, encodeBase64Url } from '../../security/base64url.ts';
 import { agentAvatarInstallation, sameOriginAgentAvatarUrl } from '../../slack/agent-presence/avatar-assets.ts';
 import {
   ADMIN_PATH,
@@ -33,6 +36,7 @@ import {
 } from '../types.ts';
 import { accountProfileId, fail, versionToken } from './conventions.ts';
 import type * as schemas from './schemas.ts';
+import { withSkillText } from './skill-text.ts';
 
 /** What every 5.0 tool reads with: the service, the caller, and this deployment. */
 export interface FiveZeroDeps {
@@ -82,7 +86,7 @@ export async function getWorkspace(deps: FiveZeroDeps): Promise<Out<typeof schem
   return {
     ...(snapshot.slackTeamName ? { name: snapshot.slackTeamName } : {}),
     you: { ...(name ? { name } : {}), role: snapshot.caller.role },
-    agentCount: agentRows(snapshot, deps.baseUrl, undefined).length,
+    agentCount: agentRows(snapshot).length,
     ...withAdminUrl(adminUrl),
     adminOnly: [
       { what: 'Agent pictures', ...withUrl(adminUrl) },
@@ -92,35 +96,90 @@ export async function getWorkspace(deps: FiveZeroDeps): Promise<Out<typeof schem
   };
 }
 
+/** list_agents' result, its text block and `structuredContent` together, in characters at most. */
+export const LIST_AGENTS_BUDGET_CHARS = 20_000;
+/** A listed Agent's description, on one line, at most. */
+const LISTED_DESCRIPTION_CHARS = 100;
+
+/**
+ * The Agents the caller can use, archived ones only when asked, each as a
+ * list needs it: get_agent has the rest. One page stays inside the budget.
+ * The ones the caller can edit come first, then shared ones, each group in
+ * agentId order, and `nextCursor` names the last one listed, so an Agent
+ * created or archived between pages never moves another one.
+ */
 export async function listAgents(
   deps: FiveZeroDeps,
   input: Out<typeof schemas.listAgentsInput>,
 ): Promise<Out<typeof schemas.listAgentsOutput>> {
-  const { context, snapshot } = await readWorkspace(deps);
-  const rows = agentRows(snapshot, deps.baseUrl, await deps.service.slackAppLink(context));
+  const after = input.cursor === undefined ? undefined : cursorPlace(input.cursor);
+  const { snapshot } = await readWorkspace(deps);
   const mine = new Set(snapshot.agents
     .filter(({ creatorMembershipId }) => creatorMembershipId === snapshot.caller.membershipId)
     .map(({ id }) => id));
-  return {
-    agents: input.include === 'mine' ? rows.filter(({ agentId }) => mine.has(agentId)) : rows,
+  const rows = agentRows(snapshot)
+    .filter((row) => (after === undefined || listOrder(row, after) > 0) &&
+      (input.include !== 'mine' || mine.has(row.agentId)) && (input.includeArchived === true || row.status !== 'archived'))
+    .sort(listOrder);
+  const page = (count: number): Out<typeof schemas.listAgentsOutput> => ({
+    agents: rows.slice(0, count),
     canCreate: true,
-  };
+    ...(count < rows.length ? { nextCursor: agentsCursor(rows[count - 1]!) } : {}),
+  });
+  // The text block is the same JSON, so a page counts twice.
+  const fits = (count: number) => 2 * JSON.stringify(page(count)).length <= LIST_AGENTS_BUDGET_CHARS;
+  let count = Math.min(1, rows.length);
+  while (count < rows.length && fits(count + 1)) count += 1;
+  return page(count);
+}
+
+/** Where an Agent stands in the list: its group, then its ID. */
+type ListPlace = Pick<AgentRow, 'agentId' | 'canEdit'>;
+
+function listOrder(left: ListPlace, right: ListPlace): number {
+  if (left.canEdit !== right.canEdit) return left.canEdit ? -1 : 1;
+  return left.agentId < right.agentId ? -1 : left.agentId > right.agentId ? 1 : 0;
+}
+
+const AGENTS_CURSOR_PREFIX = 'after1_';
+
+function agentsCursor({ agentId, canEdit }: ListPlace): string {
+  return `${AGENTS_CURSOR_PREFIX}${encodeBase64Url(new TextEncoder().encode(`${canEdit ? 'e' : 's'}:${agentId}`))}`;
+}
+
+/** The place a cursor names. Anything else, such as an offset an earlier Chickpea gave, is refused. */
+function cursorPlace(cursor: string): ListPlace {
+  let place: string | undefined;
+  if (cursor.startsWith(AGENTS_CURSOR_PREFIX)) {
+    try {
+      place = new TextDecoder('utf-8', { fatal: true }).decode(decodeBase64Url(cursor.slice(AGENTS_CURSOR_PREFIX.length)));
+    } catch {
+      place = undefined;
+    }
+  }
+  const group = place?.slice(0, 2);
+  const agentId = place?.slice(2);
+  if ((group === 'e:' || group === 's:') && agentId !== undefined && AGENT_ID_PATTERN.test(agentId)) {
+    return { agentId, canEdit: group === 'e:' };
+  }
+  return fail('invalid_input', 'Chickpea can\'t continue the list from that cursor.', {
+    nextStep: 'Call list_agents without a cursor to start again from the first page.',
+  });
 }
 
 /** Every Agent the caller can use: the ones they can edit, then shared ones they cannot. */
-function agentRows(snapshot: ManagementWorkspaceSnapshot, baseUrl: string | undefined, slack: string | undefined): AgentRow[] {
+function agentRows(snapshot: ManagementWorkspaceSnapshot): AgentRow[] {
   const editable = snapshot.agents.map((agent): AgentRow => {
     const handle = agentHandle(agent);
-    const links = agentLinks(baseUrl, agent.id, slack);
+    const description = agent.description?.replace(/\s+/g, ' ').trim();
     return {
       agentId: agent.id,
       name: agent.name,
       ...(handle ? { handle } : {}),
-      ...(agent.description ? { description: agent.description } : {}),
+      ...(description ? { description: shortDescription(description) } : {}),
       status: agentStatus(agent),
       canEdit: true,
       needsAttention: needsAttention(agent),
-      ...(links ? { links } : {}),
     };
   });
   const listed = new Set(editable.map(({ agentId }) => agentId));
@@ -133,6 +192,10 @@ function agentRows(snapshot: ManagementWorkspaceSnapshot, baseUrl: string | unde
     needsAttention: [],
   }));
   return [...editable, ...shared];
+}
+
+function shortDescription(description: string): string {
+  return description.length > LISTED_DESCRIPTION_CHARS ? `${description.slice(0, LISTED_DESCRIPTION_CHARS - 1)}…` : description;
 }
 
 function agentHandle(agent: SnapshotAgent): string | undefined {
@@ -196,6 +259,7 @@ type ConnectionRow = Out<typeof schemas.getAgentOutput>['connections'][number];
  */
 export function connectionRows(agent: AgentConnectionView): ConnectionRow[] {
   const status = new Map(agent.connectionStatus.map((entry) => [`${entry.kind}:${entry.id}`, entry.lifecycleStatus]));
+  const discovered = (id: string) => agent.connectionStatus.find((entry) => entry.kind === 'mcp' && entry.id === id)?.discoveredTools ?? [];
   const laneStatus = (kind: 'mcp' | 'api', id: string, enabled: boolean): ConnectionRow['status'] => {
     if (!enabled) return 'off';
     const lifecycle = status.get(`${kind}:${id}`);
@@ -234,10 +298,14 @@ export function connectionRows(agent: AgentConnectionView): ConnectionRow[] {
         custom: {
           url: mcp.url,
           allowedTools: [...mcp.allowedTools],
-          ...toolMarks(mcp),
+          ...toolMarks(mcp, discovered(mcp.id)),
           ...(mcp.guide ? { guide: mcp.guide } : {}),
         },
       }),
+      // A reviewed connector's tools are chosen in Admin, and update_connection marks none of them.
+      ...(mcp.presetId && !isMcpToolReviewRequired(mcp)
+        ? { tools: { allowedTools: [...mcp.allowedTools], ...toolMarks(mcp, discovered(mcp.id)) } }
+        : {}),
     })),
   ];
   const shown = new Set(lanes.map(({ connectionId }) => connectionId));
@@ -255,10 +323,18 @@ export function connectionRows(agent: AgentConnectionView): ConnectionRow[] {
   return [...lanes, ...signIns];
 }
 
-/** The allowed tools an Admin marked as reads or writes; a tool with no mark is in neither. */
-function toolMarks(mcp: AgentConnectionView['mcpServers'][number]): { readTools?: string[]; writeTools?: string[] } {
-  const marked = (effect: 'read' | 'write') => mcp.allowedTools.filter((tool) => mcp.toolPolicies?.[tool]?.effect === effect);
-  const [readTools, writeTools] = [marked('read'), marked('write')];
+/**
+ * The allowed tools marked as reads or writes; a tool with no mark is in
+ * neither. A read is one a practice run calls (mcpToolDeclaredRead), so a read
+ * mark its server now says writes is in neither too.
+ */
+function toolMarks(
+  mcp: AgentConnectionView['mcpServers'][number],
+  discoveredTools: McpConnectionConfig['discoveredTools'],
+): { readTools?: string[]; writeTools?: string[] } {
+  const connection = { ...mcp, discoveredTools };
+  const readTools = mcp.allowedTools.filter((tool) => mcpToolDeclaredRead(connection, tool));
+  const writeTools = mcp.allowedTools.filter((tool) => mcp.toolPolicies?.[tool]?.effect === 'write');
   return { ...(readTools.length ? { readTools } : {}), ...(writeTools.length ? { writeTools } : {}) };
 }
 
@@ -283,7 +359,7 @@ export async function getAgent(
   const handle = agentHandle(agent);
   const presence = agent.slackPresence;
   const links = agentLinks(deps.baseUrl, agent.id, await deps.service.slackAppLink(context));
-  return {
+  const output: Out<typeof schemas.getAgentOutput> = {
     agentId: agent.id,
     name: agent.name,
     ...(handle ? { handle } : {}),
@@ -324,6 +400,9 @@ export async function getAgent(
       .map(({ channelId, label }) => ({ channelId, ...(label ? { name: label } : {}) })),
     ...(links ? { links } : {}),
   };
+  return input.includeSkillText || input.skill !== undefined || input.offset !== undefined
+    ? withSkillText(output, agent.skills, input)
+    : output;
 }
 
 /** A member sees only the Agents they may edit, so any other ID reads as missing. */
@@ -366,7 +445,11 @@ export async function listServices(
       return words.every((word) => text.includes(word));
     })
     .map(({ id, name, description }) => ({ service: id, name, description }));
-  return { services, count: services.length };
+  return {
+    services,
+    count: services.length,
+    nextStep: 'get_service with a service says how it signs in and what it can read and write before it is connected; connect_service connects it to an Agent.',
+  };
 }
 
 export async function listModels(deps: FiveZeroDeps): Promise<Out<typeof schemas.listModelsOutput>> {
@@ -781,7 +864,7 @@ function displayDate(iso: string): string {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
 }
 
-function when(at: number): { display: string; isoUtc: string } {
+export function when(at: number): { display: string; isoUtc: string } {
   const date = new Date(at);
   return {
     display: `${date.toLocaleString('en-US', {

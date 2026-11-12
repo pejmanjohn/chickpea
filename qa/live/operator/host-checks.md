@@ -23,7 +23,8 @@ output or CPU long enough to time out another task's fixtures:
   of these, so it stays reserved.
 
 Typecheck, plain unit tests and mutation passes that start none of those do
-not take it. Run them directly, before or while waiting for the reservation.
+not take it. They take a [shared CPU slot](#shared-cpu-slots) instead and can
+run while waiting for the reservation.
 When unsure whether a test file starts a fixture, read it or reserve it; a
 fixture that binds a port keeps taking its port from the shared port lock
 either way.
@@ -110,3 +111,63 @@ Preserve the first log before the isolated retry. Use injected clocks and explic
 synchronization for logical timeout tests. Keep real watchdogs for process startup,
 network/workerd readiness and observation windows. Do not inflate every timeout
 or remove watchdogs to obtain a pass.
+
+## Shared CPU slots
+
+CPU-heavy work that needs no reservation still competes for cores, so it takes
+one of the host's shared CPU slots,
+`~/.chickpea/verification-host/shared/slot-N.json`:
+
+- every `scripts/run-tests.mjs` pass, such as `test:mcp`, a focused pass or the
+  CLI package's tests, and `npm run typecheck` take one themselves;
+- wrap anything else CPU-heavy, such as a mutation pass or
+  `npm run mcp-cards:harness`, as
+  `npm run verify:host -- --shared -- COMMAND [ARG ...]`.
+
+There is one slot per six cores, at least one; `CHICKPEA_SHARED_SLOTS` sets
+another count. A live exclusive owner counts as one taken slot, so two
+reserved groups leave one shared slot on an 18-core host. The reservation never
+waits for shared slots. A command under the reservation (its
+`CHICKPEA_CHECK_OWNER`) or under a shared slot (its
+`CHICKPEA_SHARED_CHECK_OWNER`) takes no second slot, so a full suite's nested
+test passes and typechecks never wait on their parent.
+
+A caller waits for a free slot, up to two hours unless `--wait-ms` says
+otherwise, and prints a JSON status line whenever the owners change. A shared
+slot guards only CPU, not ports, databases or build output. Unlike the
+reservation, it is released however its command ends, and the next caller
+removes a slot whose PID has exited and reports it as `"status":"reclaimed"`.
+
+## Stall stop
+
+A `--shared` command, and so every `run-tests.mjs` pass and `npm run
+typecheck`, runs in its own process group. When it prints nothing on stdout or
+stderr for 10 minutes, the wrapper stops that group (SIGTERM, then SIGKILL
+after 5 seconds), prints one `[verify:host] Stalled:` line naming the command
+and its last output line, and exits 124. It stops the group the same way when
+its caller exits, so a killed caller leaves no pass running on. The stop
+reaches only that command's own group, never another owner's processes.
+SIGINT, SIGTERM and SIGHUP sent to the wrapper also reach the group.
+
+Inside a test pass, `run-tests.mjs` stops a single hung test file first: a
+file that starts and finishes no test for three minutes gets a `[run-tests]
+HUNG:` line with its name, the test it was running and its processes, which
+are killed so the file fails and reruns alone. A stall stop on a test pass
+therefore means the runner itself stopped, not one test file.
+
+A reserved command is watched only when `--stall-ms MS` or `CHICKPEA_STALL_MS`
+sets a window, because builds and lane deploys run under the reservation and
+some print nothing for long stretches. Without one it runs as before, in the
+wrapper's own process group. A reserved full suite is still watched: each
+`run-tests.mjs` pass inside it restarts under `--shared`, inherits the
+reservation and gets the stop. A stalled reserved command releases the
+reservation the normal way once no process of its group is left; if one
+survives, the reservation is retained for reconciliation. A command nested
+under a watching `verify:host` stays in that group, so the outer stop and the
+outer window apply to it; a `--stall-ms` it passes is reported and ignored.
+
+`--stall-ms MS` or `CHICKPEA_STALL_MS` sets another window, and 0 turns the
+stall stop off; a `--shared` command still runs in its own group and stops
+when its caller exits. A command that prints only at the end needs a longer
+window, such as the cards harness:
+`npm run verify:host -- --shared --stall-ms 1800000 -- npm run mcp-cards:harness`.

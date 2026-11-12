@@ -98,6 +98,8 @@ export function createLiveWorkspaceManagementService(
   const identity = options.identity ?? getIdentityStore(env);
   const config = overrides.config ?? getConfigStore(env);
   const slackCredentials = options.slackCredentials ?? getSlackCredentialDependencies(env);
+  const scheduleThreads = async () =>
+    (await import('./schedule-threads-live.ts')).liveScheduleThreads(env, config as ConfigStore, settings);
   const slackTransport = async (workspaceId: string): Promise<SlackTransport> => {
     const installation = await config.getWorkspaceInstallation(workspaceId);
     if (!installation || installation.health === 'revoked') {
@@ -288,14 +290,10 @@ export function createLiveWorkspaceManagementService(
     },
     typedSlackMessage: async (query) => getSlackStateStore(env).typedSlackMessage?.(query),
     ...(testRuns ? { testRuns } : {}),
-    slackMemberTimezone: async (slackUserId) => {
+    slackMember: async (slackUserId) => {
       const organization = await identity.getOrganization();
-      if (!organization?.slackTeamId) return undefined;
-      try {
-        return (await (await slackTransport(organization.slackTeamId)).lookupMember(slackUserId)).timezone || undefined;
-      } catch {
-        return undefined;
-      }
+      if (!organization?.slackTeamId) throw new Error('The workspace is not connected to Slack.');
+      return await (await slackTransport(organization.slackTeamId)).lookupMember(slackUserId);
     },
     managedConnectorAvailable: async ({ toolkit, accessLane }) => {
       const provider = (await managedProviders()).get('composio');
@@ -485,6 +483,19 @@ export function createLiveWorkspaceManagementService(
     mcpOAuthClients: async () => {
       const control = await identity.getAuthControl();
       return control ? (await resolveBetterAuthEnvironment({ control, platformEnv: env }))?.backend : undefined;
+    },
+    runHistory: async () => (await import('./run-history-live.ts')).liveRunHistorySources({
+      env,
+      identity,
+      config: config as ConfigStore,
+      usage: () => options.usage ?? getUsageStore(env),
+      work: () => getWorkStore(env),
+      routines: () => getRoutineStore(env),
+    }),
+    directScheduleThreads: {
+      open: async (input) => (await scheduleThreads()).open(input),
+      start: async (input) => (await scheduleThreads()).start(input),
+      withdraw: async (input) => (await scheduleThreads()).withdraw(input),
     },
     ...agentAvatarInstallationField(env),
     ...overrides,

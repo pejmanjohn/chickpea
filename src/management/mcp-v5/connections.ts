@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import type { z } from 'zod';
 
+import { isMcpToolReviewRequired } from '../../config/mcp-access.ts';
 import { keptToolPolicies } from '../../config/mcp-tool-policy.ts';
 import { CONNECTION_CATALOG_PRESETS, resolveConnectorCatalogPreset } from '../../config/presets.ts';
 import { ADMIN_PATH, adminOrigin } from '../admin-links.ts';
@@ -377,14 +378,23 @@ function changedEntry<T extends object>(
  * tool policy Admin's API and 4.x declare; a tool not named keeps its mark
  * while it stays allowed. A tool this change dis-allows or allows again loses
  * its mark, and every tool keeps its argument limits (keptToolPolicies). Only
- * an allowed tool can be marked. A test run calls only the tools marked as reads.
+ * an allowed tool can be marked, and never as a read when its server says it
+ * writes. A practice run calls only the tools marked as reads.
  */
 function markedTools(
   stored: SnapshotAgent['mcpServers'][number],
   entry: SnapshotAgent['mcpServers'][number],
   changes: CustomChanges,
+  discovered: ReadonlyArray<{ name: string; readOnlyHint?: boolean }> = [],
 ) {
   const { readTools = [], writeTools = [] } = changes;
+  // The server's own word that a tool writes stands: a practice run must never call it.
+  const writes = readTools.filter((tool) => discovered.some(({ name, readOnlyHint }) => name === tool && readOnlyHint === false));
+  if (writes.length) {
+    fail('invalid_input', `${writes.join(', ')} ${writes.length === 1 ? 'says it changes' : 'say they change'} things, so ${writes.length === 1 ? 'it' : 'they'} can't be marked as a read.`, {
+      nextStep: `Leave ${writes.length === 1 ? 'it' : 'them'} out of readTools. A practice run never calls a tool that is not marked as a read.`,
+    });
+  }
   if ((changes.readTools || changes.writeTools) && readTools.length + writeTools.length === 0) {
     fail('invalid_input', 'An empty readTools or writeTools marks nothing, so nothing changed.', {
       nextStep: 'Name at least one of its allowedTools from get_agent in readTools or writeTools, or leave both out.',
@@ -409,10 +419,26 @@ function markedTools(
 }
 
 /**
- * Changes a custom connection's settings. A change to where or how the key is
- * sent (hosts, paths, methods, header, prefix, or an MCP server's URL) makes
- * the service delete the saved key, so the result carries a link to enter it
- * again.
+ * A catalog MCP service with its tools marked, the one change update_connection
+ * makes to it: its server, key and tool list are Chickpea's. It takes the
+ * custom connection's marks, check and write. A reviewed connector (Bugsnag,
+ * Meta Ads) is not one: Chickpea's review marks its tools.
+ */
+function catalogMarks(agent: SnapshotAgent, entry: SnapshotAgent['mcpServers'][number], changes: CustomChanges) {
+  const others = Object.keys(changes).filter((field) => !MCP_MARKS.includes(field));
+  if (others.length) {
+    fail('invalid_input', `${entry.displayName} is a catalog service, so update_connection changes only its readTools and writeTools.`, {
+      nextStep: `Leave out ${others.join(' and ')}. reconnect_service signs it in again.`,
+    });
+  }
+  return markedTools(entry, entry, changes, agent.connectionStatus.find(({ kind, id }) => kind === 'mcp' && id === entry.id)?.discoveredTools);
+}
+
+/**
+ * Changes a custom connection's settings, or a catalog MCP service's marks.
+ * A change to where or how the key is sent (hosts, paths, methods, header,
+ * prefix, or an MCP server's URL) makes the service delete the saved key, so
+ * the result carries a link to enter it again.
  */
 export async function updateConnection(
   deps: FiveZeroDeps,
@@ -426,23 +452,37 @@ export async function updateConnection(
       const { agent } = await readAgent(deps, context, input.agentId, input.version);
       const api = agent.apiConnections.find(({ id }) => id === input.connectionId);
       const mcp = agent.mcpServers.find(({ id }) => id === input.connectionId);
-      if ((!api && !mcp) || (api ?? mcp)!.presetId) {
-        fail('invalid_input', `${agent.name} has no custom connection with that connectionId.`, {
-          nextStep: 'Send a custom_api or custom_mcp connectionId from get_agent. A catalog service\'s settings are Chickpea\'s; reconnect_service signs it in again.',
+      if (mcp?.presetId && !isMcpToolReviewRequired(mcp)) {
+        const patch = { mcpServers: agent.mcpServers.map((entry) => entry === mcp ? catalogMarks(agent, entry, input.changes) : entry) };
+        return [{ itemId: 'update_connection', kind: 'update_agent', agentId: agent.id, expectedRevision: agent.revision, patch }];
+      }
+      if (mcp?.presetId) {
+        const origin = adminOrigin(deps.baseUrl);
+        fail('invalid_input', `${mcp.displayName}'s tools are chosen on the Agent's page in Admin, so update_connection doesn't mark them.`, {
+          nextStep: 'Its tools are chosen on the Agent\'s page in Admin, where Chickpea marks the ones that only read.',
+          ...(origin ? { fix: { label: 'Open the Agent in Admin', url: `${origin}${ADMIN_PATH}/agents/${encodeURIComponent(agent.id)}` } } : {}),
+        });
+      }
+      if ((!api && !mcp) || api?.presetId) {
+        fail('invalid_input', `${agent.name} has no custom connection or catalog MCP service with that connectionId.`, {
+          nextStep: 'Send a custom_api or custom_mcp connectionId from get_agent, or a service\'s that lists tools. Another catalog service\'s settings are Chickpea\'s; reconnect_service signs it in again.',
         });
       }
       const patch = api
         ? { apiConnections: agent.apiConnections.map((entry) => entry === api ? changedEntry(entry, input.changes, API_CHANGES, 'API') : entry) }
         : {
             mcpServers: agent.mcpServers.map((entry) => entry === mcp
-              ? markedTools(entry, changedEntry(entry, input.changes, MCP_CHANGES, 'MCP', MCP_MARKS), input.changes)
+              ? markedTools(entry, changedEntry(entry, input.changes, MCP_CHANGES, 'MCP', MCP_MARKS), input.changes,
+                agent.connectionStatus.find(({ kind, id }) => kind === 'mcp' && id === entry.id)?.discoveredTools)
               : entry),
           };
       return [{ itemId: 'update_connection', kind: 'update_agent', agentId: agent.id, expectedRevision: agent.revision, patch }];
     },
   });
   const result = await changeResult(deps, context, saved, { agentId: input.agentId, summary: 'Saved the connection.' });
-  return withSetup(deps, context, result, input.agentId, ({ connectionId }) => connectionId === input.connectionId, input.checkPath);
+  // A catalog service's sign-in is reconnect_service's, never a custom key link.
+  return withSetup(deps, context, result, input.agentId,
+    ({ connectionId, kind }) => connectionId === input.connectionId && kind !== 'service', input.checkPath);
 }
 
 export async function removeConnection(

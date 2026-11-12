@@ -32,7 +32,6 @@ import {
   undoWorkspaceChangeZodSchema,
 } from './schemas.ts';
 import { AGENT_AUTHORING_GUIDE_URI, DISCOVERY_GUIDE_URI } from './agent-authoring/index.ts';
-import { DISCOVERY_GUIDE, DISCOVERY_GUIDE_FIVE_ZERO } from './agent-authoring/discovery-guide.ts';
 import { codingAgentAuthoringGuideResource } from './agent-authoring/mcp-guide.ts';
 import { WorkspaceManagementService } from './service.ts';
 import { WORKSPACE_MANAGEMENT_INSTRUCTIONS } from './instructions.ts';
@@ -41,6 +40,7 @@ import {
   WORKSPACE_MANAGEMENT_PROMPT_NAMES,
 } from './prompts.ts';
 import { createLiveWorkspaceManagementService } from './live-service.ts';
+import { playbookSection } from './playbook/index.ts';
 import { observeMcpRequests } from './mcp-request-telemetry.ts';
 import {
   CARD_REFUSAL_TOOL_NAMES,
@@ -62,7 +62,7 @@ import type { ManagementActorContext, ManagementOperation } from './types.ts';
 
 export const WORKSPACE_MANAGEMENT_SERVER_INFO = {
   name: 'chickpea-workspace',
-  version: '4.5.0',
+  version: '4.6.0',
 } as const;
 /**
  * The 4.x tools, backed by the shared tool adapter. The coding-agent door has
@@ -567,12 +567,13 @@ export function createWorkspaceManagementMcpServer(
     }),
   ));
 
+  // The playbook's research section, under the URI /connect.md and the docs name.
   server.registerResource('discovery-guide', DISCOVERY_GUIDE_URI, {
     title: 'Find the first Chickpea Agent',
-    description: 'Read before you propose an Agent whose job the person has not named: how to research their recent work on this machine and propose one specific Agent.',
+    description: 'Read before you propose an Agent whose job the person has not named: how to find one in their own work and propose one specific Agent. The same text as get_guide with topic research.',
     mimeType: 'text/markdown',
   }, async (uri) => ({
-    contents: [{ uri: uri.href, mimeType: 'text/markdown', text: server.cardHost() ? DISCOVERY_GUIDE_FIVE_ZERO : DISCOVERY_GUIDE }],
+    contents: [{ uri: uri.href, mimeType: 'text/markdown', text: playbookSection('research', server.cardHost() ? 'chat-app' : 'any').guide }],
   }));
 
   server.v4Only.push(...registerWorkspaceManagementPrompts(server, input.baseUrl, input.env));

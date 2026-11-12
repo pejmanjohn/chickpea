@@ -16,9 +16,11 @@ import {
 } from './errors.ts';
 import type { UiSurfaceRpcRequest } from '../slack/ui/surface-store.ts';
 import type {
+  PracticeRunsQuery,
   TestRunQuery,
   TestRunReplayQuery,
   TestRunStartRequest,
+  TestRunStepQuery,
   TestRunStore,
 } from '../management/test-run-types.ts';
 import type {
@@ -106,7 +108,10 @@ import type {
 } from './types.ts';
 import { IdentityStateError } from '../identity/errors.ts';
 import { timedStateRpc } from '../observability/runtime-latency.ts';
+import { turnReads } from './turn-reads.ts';
 import { isSandboxDisconnect } from '../sandbox/reconnect.ts';
+import { type AgentAppBot, agentAppBots } from '../slack/agent-app-bots.ts';
+import { withStoreFallback } from './store-fallback.ts';
 import {
   ManagementError,
   type ManagementRpcRequest,
@@ -178,6 +183,8 @@ import type {
 import type {
   SlackCanonicalAdmissionInput,
   SlackDeliveryNote,
+  SlackDirectDelivery,
+  SlackDirectDeliveryAdmission,
   SlackFrontDeskHandoffNote,
   SlackStateStore,
 } from '../slack/claim-store.ts';
@@ -322,7 +329,16 @@ async function rpc<T>(
   pending: Promise<StateRpcResult<T>>,
   op?: string,
 ): Promise<T> {
-  return unwrap(await timedStateRpc(method, pending, op));
+  return unwrap(await sentRpc(method, pending, op));
+}
+
+function sentRpc<T>(
+  method: string,
+  pending: Promise<StateRpcResult<T>>,
+  op?: string,
+): Promise<StateRpcResult<T>> {
+  turnReads()?.sent(method, op);
+  return timedStateRpc(method, pending, op);
 }
 
 /**
@@ -351,7 +367,7 @@ const REPLAY_SAFE_STATE_METHODS = new Set([
   'configGetAgentReferences', 'configGetAgentScheduleReference', 'configGetAgentThreadRoute',
   'configGetChannel', 'configGetWorkspaceInstallation', 'configGetWorkspaceModelDefault',
   'configGetWorkspaceModelRole', 'configListAgentChannelGrants', 'configListAgentConnectionBindings',
-  'configListAgentScheduleReferences', 'configListAgents', 'configListChannels',
+  'configListAgentAppBots', 'configListAgentScheduleReferences', 'configListAgents', 'configListChannels',
   'configListConnectionAccounts', 'configListRecentSlackAgentReplies', 'configListRecentSlackPublicContext',
   'configListSlackPublicContext',
   'configListUserAgents', 'configListWorkspaceInstallations', 'configPreflightChickpeaCutover',
@@ -376,6 +392,7 @@ const REPLAY_SAFE_STATE_METHODS = new Set([
   'slackPresentationTransition', // compare-and-swap on the projection version
   // A keyed admission returns the stored run on a repeat; a read runs at most one idempotent settle step.
   'testRunStart', 'testRunReplay', 'testRunObserve',
+  'testRunList', 'testRunStepResult', // reads
   // The same instance and submission get the same answer: a repeat finds the submission it bound.
   'testRunModelAccessBind',
   // Version-fenced; a replay finds exactly what the committed call wrote and succeeds.
@@ -418,19 +435,41 @@ async function rpcVia<T>(
   call: (stub: TagStateRpc) => Promise<StateRpcResult<T>>,
   op?: string,
 ): Promise<T> {
-  if (!(source instanceof FreshTagStateStubs)) return rpc(method, call(source), op);
+  return unwrap(await rpcResultVia(source, method, call, op));
+}
+
+async function rpcResultVia<T>(
+  source: TagStateStubSource,
+  method: string,
+  call: (stub: TagStateRpc) => Promise<StateRpcResult<T>>,
+  op?: string,
+): Promise<StateRpcResult<T>> {
+  if (!(source instanceof FreshTagStateStubs)) return sentRpc(method, call(source), op);
   try {
-    return await rpc(method, call(source.mint()), op);
+    return await sentRpc(method, call(source.mint()), op);
   } catch (error) {
     if (!isSandboxDisconnect(error)) throw error;
     if (!replaySafeStateRpc(method, op)) throw new StateStoreDisconnectedError(error);
   }
   try {
-    return await rpc(method, call(source.mint()), op);
+    return await sentRpc(method, call(source.mint()), op);
   } catch (error) {
     if (isSandboxDisconnect(error)) throw new StateStoreDisconnectedError(error);
     throw error;
   }
+}
+
+/** A read the turn's batch may answer; `args` are the stub call's own. */
+async function readVia<T>(
+  source: TagStateStubSource,
+  method: string,
+  args: readonly unknown[],
+  call: (stub: TagStateRpc) => Promise<StateRpcResult<T>>,
+  op?: string,
+): Promise<T> {
+  const send = () => rpcResultVia(source, method, call, op);
+  const reads = turnReads();
+  return unwrap(await (reads ? reads.read(method, args, send) : send()));
 }
 
 /**
@@ -1463,8 +1502,17 @@ export class CfConfigStore implements ConfigStore {
     return rpcVia(this.stub,'configListUserAgents', (stub) => stub.configListUserAgents());
   }
 
+  /** A store on code from before configListAgentAppBots answers from its whole Agent list. */
+  async listAgentAppBots(): Promise<AgentAppBot[]> {
+    return rpcVia(this.stub, 'configListAgentAppBots', (stub) => withStoreFallback(
+      'configListAgentAppBots',
+      () => stub.configListAgentAppBots(),
+      async () => ({ ok: true, value: agentAppBots(await this.listAgents()) }),
+    ));
+  }
+
   async getAgent(agentId: string): Promise<CustomAgentConfig> {
-    return rpcVia(this.stub,'configGetAgent', (stub) => stub.configGetAgent(agentId));
+    return readVia(this.stub, 'configGetAgent', [agentId], (stub) => stub.configGetAgent(agentId));
   }
 
   async getAgentFirstAsk(agentId: string): Promise<string | null> {
@@ -1578,8 +1626,9 @@ export class CfConfigStore implements ConfigStore {
   }
 
   async getWorkspaceInstallation(workspaceId: string): Promise<WorkspaceInstallation | undefined> {
-    return orUndefined(await rpcVia(this.stub,
+    return orUndefined(await readVia(this.stub,
       'configGetWorkspaceInstallation',
+      [workspaceId],
       (stub) => stub.configGetWorkspaceInstallation(workspaceId),
     ));
   }
@@ -1636,8 +1685,9 @@ export class CfConfigStore implements ConfigStore {
     workspaceId: string,
     role: NonChatModelRole,
   ): Promise<WorkspaceModelRole | undefined> {
-    return orUndefined(await rpcVia(this.stub,
+    return orUndefined(await readVia(this.stub,
       'configGetWorkspaceModelRole',
+      [workspaceId, role],
       (stub) => stub.configGetWorkspaceModelRole(workspaceId, role),
     ));
   }
@@ -1656,8 +1706,9 @@ export class CfConfigStore implements ConfigStore {
     agentId: string,
     role: NonChatModelRole,
   ): Promise<AgentModelRole | undefined> {
-    return orUndefined(await rpcVia(this.stub,
+    return orUndefined(await readVia(this.stub,
       'configGetAgentModelRole',
+      [agentId, role],
       (stub) => stub.configGetAgentModelRole(agentId, role),
     ));
   }
@@ -1719,8 +1770,9 @@ export class CfConfigStore implements ConfigStore {
     workspaceId?: string,
     channelId?: string,
   ): Promise<AgentChannelGrant[]> {
-    return rpcVia(this.stub,
+    return readVia(this.stub,
       'configListAgentChannelGrants',
+      [workspaceId, channelId],
       (stub) => stub.configListAgentChannelGrants(workspaceId, channelId),
     );
   }
@@ -1785,8 +1837,9 @@ export class CfConfigStore implements ConfigStore {
     channelId: string,
     rootTs: string,
   ): Promise<SlackPublicContextEntry[]> {
-    return rpcVia(this.stub,
+    return readVia(this.stub,
       'configListSlackPublicContext',
+      [workspaceId, channelId, rootTs],
       (stub) => stub.configListSlackPublicContext(workspaceId, channelId, rootTs),
     );
   }
@@ -1843,8 +1896,9 @@ export class CfConfigStore implements ConfigStore {
   }
 
   async listConnectionAccounts(workspaceId: string): Promise<ConnectionAccount[]> {
-    return rpcVia(this.stub,
+    return readVia(this.stub,
       'configListConnectionAccounts',
+      [workspaceId],
       (stub) => stub.configListConnectionAccounts(workspaceId),
     );
   }
@@ -1886,8 +1940,9 @@ export class CfConfigStore implements ConfigStore {
   }
 
   async listAgentConnectionBindings(agentId: string): Promise<AgentConnectionBinding[]> {
-    return rpcVia(this.stub,
+    return readVia(this.stub,
       'configListAgentConnectionBindings',
+      [agentId],
       (stub) => stub.configListAgentConnectionBindings(agentId),
     );
   }
@@ -2045,6 +2100,15 @@ export class CfSlackStateStore implements SlackStateStore {
 
   async noteDelivery(note: SlackDeliveryNote) {
     await rpcVia(this.stub, 'noteSlackDelivery', (stub) => stub.noteSlackDelivery(note));
+  }
+
+  /** Never replayed: on a store that cannot take the call, the Worker's own admission is the replay. */
+  async admitDelivery(delivery: SlackDirectDelivery): Promise<SlackDirectDeliveryAdmission> {
+    return rpcVia(this.stub, 'admitSlackDelivery', (stub) => withStoreFallback<StateRpcResult<SlackDirectDeliveryAdmission>>(
+      'admitSlackDelivery',
+      () => stub.admitSlackDelivery(delivery),
+      async (reason) => ({ ok: true, value: { outcome: 'fallback', reason } }),
+    ));
   }
 
   async noteFrontDeskHandoff(note: SlackFrontDeskHandoffNote) {
@@ -2397,6 +2461,14 @@ export class CfTurnJobsForRunner implements RunnerTurnJobsPort {
     return this.call((stub) => rpc('threadRunnerTurn', stub.threadRunnerTurn(input), input.kind));
   }
 
+  /** A read the turn's batch may answer (turn-read-batch.ts). */
+  private async read<K extends ThreadRunnerTurnKind>(input: ThreadRunnerTurnOp<K>): Promise<ThreadRunnerTurnResult<K>> {
+    const reads = turnReads();
+    if (!reads) return this.op(input);
+    return unwrap(await reads.read('threadRunnerTurn', [input], () =>
+      this.call((stub) => sentRpc('threadRunnerTurn', stub.threadRunnerTurn(input), input.kind))));
+  }
+
   view(id: string) {
     return this.op({ kind: 'view', id });
   }
@@ -2451,7 +2523,7 @@ export class CfTurnJobsForRunner implements RunnerTurnJobsPort {
     actorMembershipId: string,
     agentId: string,
   ) {
-    return orUndefined(await this.op({
+    return orUndefined(await this.read({
       kind: 'getBoundRuntimePlan',
       continuityKey,
       beforeMessageTs,
@@ -2573,11 +2645,11 @@ implements SettingsStore, EncryptedCredentialListingStore, EncryptedCredentialCe
   constructor(private readonly stub: TagStateStubSource) {}
 
   async getSetting(key: string): Promise<string | undefined> {
-    return orUndefined(await rpcVia(this.stub,'settingGet', (stub) => stub.settingGet(key)));
+    return orUndefined(await readVia(this.stub, 'settingGet', [key], (stub) => stub.settingGet(key)));
   }
 
   async getSettings(keys: readonly string[]): Promise<(string | undefined)[]> {
-    return (await rpcVia(this.stub,'settingGetMany', (stub) => stub.settingGetMany(keys))).map(orUndefined);
+    return (await readVia(this.stub, 'settingGetMany', [keys], (stub) => stub.settingGetMany(keys))).map(orUndefined);
   }
 
   async setSetting(key: string, value: string): Promise<void> {
@@ -2623,7 +2695,7 @@ implements SettingsStore, EncryptedCredentialListingStore, EncryptedCredentialCe
   }
 
   async readModelCredential(providerId: string) {
-    return orUndefined(await rpcVia(this.stub, 'modelCredentialRead', (stub) => stub.modelCredentialRead(providerId)));
+    return orUndefined(await readVia(this.stub, 'modelCredentialRead', [providerId], (stub) => stub.modelCredentialRead(providerId)));
   }
 
   async publishModelCredential(input: PublishModelCredentialInput) {
@@ -2639,7 +2711,8 @@ export class CfMemoryStateStore implements MemoryStateStore {
   constructor(private readonly stub: TagStateStubSource) {}
 
   async getAgentMemory(agentId: string): Promise<AgentMemory> {
-    const response = await this.execute({ kind: 'get_agent_memory', agentId });
+    const request: MemoryRpcRequest = { kind: 'get_agent_memory', agentId };
+    const response = await readVia(this.stub, 'memoryExecute', [request], (stub) => stub.memoryExecute(request), request.kind);
     return response.memory;
   }
 
@@ -3148,13 +3221,15 @@ export class CfWorkStore implements WorkStore {
   }
 
   async getBinding(bindingId: BindingId) {
-    const response = await this.execute({ kind: 'get_binding', bindingId });
+    const request: WorkRpcRequest = { kind: 'get_binding', bindingId };
+    const response = await readVia(this.stub, 'workExecute', [request], (stub) => stub.workExecute(request), request.kind);
     if (response.kind !== 'binding') throw unexpectedWorkResponse();
     return orUndefined(response.binding);
   }
 
   async getRun(runId: RunId) {
-    const response = await this.execute({ kind: 'get_run', runId });
+    const request: WorkRpcRequest = { kind: 'get_run', runId };
+    const response = await readVia(this.stub, 'workExecute', [request], (stub) => stub.workExecute(request), request.kind);
     if (response.kind !== 'run') throw unexpectedWorkResponse();
     return orUndefined(response.run);
   }
@@ -3372,5 +3447,13 @@ export class CfTestRunStore implements TestRunStore {
 
   async observe(query: TestRunQuery) {
     return orUndefined(await rpcVia(this.stub, 'testRunObserve', (stub) => stub.testRunObserve(query)));
+  }
+
+  list(query: PracticeRunsQuery) {
+    return rpcVia(this.stub, 'testRunList', (stub) => stub.testRunList(query));
+  }
+
+  async stepResult(query: TestRunStepQuery) {
+    return orUndefined(await rpcVia(this.stub, 'testRunStepResult', (stub) => stub.testRunStepResult(query)));
   }
 }

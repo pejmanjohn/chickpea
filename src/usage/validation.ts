@@ -14,6 +14,7 @@ import {
   type RecordUsageTerminalInput,
   type UsageFilters,
   type UsageQuery,
+  type UsageRunHistoryScope,
   type UsageTerminalStatus,
 } from './types.ts';
 import { UsageStateError } from './store-error.ts';
@@ -260,11 +261,29 @@ export function normalizeUsageQuery(input: UsageQuery): NormalizedUsageQuery {
     from,
     to,
     excludePrivateRoutines: input.excludePrivateRoutines === true,
+    runHistory: input.runHistory === undefined ? null : normalizeRunHistoryScope(input.runHistory),
     filters,
     groupBy,
     currency,
     limit,
     cursor,
+  };
+}
+
+const MAX_RUN_HISTORY_CHANNELS = 2_000;
+
+function normalizeRunHistoryScope(scope: UsageRunHistoryScope): UsageRunHistoryScope {
+  const rows = enumValue(scope.rows, ['visible', 'hidden'] as const, 'run history rows', true);
+  if (scope.channelIds !== undefined &&
+      (!Array.isArray(scope.channelIds) || scope.channelIds.length > MAX_RUN_HISTORY_CHANNELS)) {
+    queryInvalid(`Run history Channels must be a list of at most ${MAX_RUN_HISTORY_CHANNELS}.`);
+  }
+  return {
+    membershipId: opaqueId(scope.membershipId, 'run history member', true),
+    ...(scope.channelIds === undefined
+      ? {}
+      : { channelIds: [...new Set(scope.channelIds.map((id) => opaqueId(id, 'run history Channel', true)))] }),
+    rows,
   };
 }
 

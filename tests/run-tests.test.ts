@@ -10,7 +10,7 @@ import { recordFileReports } from '../scripts/lib/test-file-reports.mjs';
 // @ts-expect-error Executable helpers are JavaScript, shared with the runners.
 import { readRunResults } from '../scripts/lib/test-run-results.mjs';
 // @ts-expect-error Executable helpers are JavaScript, shared with the runners.
-import { PER_TEST_TIMEOUT_MS, runnerTestTimeoutMs } from '../scripts/lib/test-timeout.mjs';
+import { FILE_STALL_MS, PER_TEST_TIMEOUT_MS, runnerFileStallMs, runnerTestTimeoutMs } from '../scripts/lib/test-timeout.mjs';
 // @ts-expect-error Executable helpers are JavaScript, shared with the runners.
 import { testStepArgs } from '../scripts/verify-regression.mjs';
 
@@ -253,6 +253,72 @@ test('a hung test that holds a live handle fails at the per-test timeout instead
   assert.ok(Date.now() - started < 60_000, 'both passes end within seconds of the timeout');
 });
 
+test('each file runs without the V8 background compilers that can deadlock its exit', () => {
+  const result = runRunner(['v8-flags.test.ts']);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+});
+
+// The stall window for fixtures: long enough for a fixture to load on a busy host.
+const STALL = { RUN_TESTS_FIXTURE_STALL_MS: '6000' };
+
+test('a file whose process never ends after its tests pass is named within the stall window, stopped, and rerun alone', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-run-tests-'));
+  try {
+    const started = Date.now();
+    const result = runRunner(['exit-hang.test.ts'], { ...STALL, RUN_TESTS_FIXTURE_EXIT_HANG_MARKER: join(directory, 'exit-hang') });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stderr, /HUNG: \S*exit-hang\.test\.ts started and finished no test for \d+ s \(limit 6 s\)\. No test was running: the last test it finished was "passes before its process hangs at exit"/);
+    assert.match(result.stderr, /Its processes \(pid, state, elapsed, CPU, command\):\n {4}\d+ \S+ [\d:.-]+ [\d:.]+ node … \S*exit-hang\.test\.ts\n[\s\S]*Stopping them; the file fails/);
+    assert.match(result.stdout, /RETRIED IN ISOLATION: 1 file\(s\)[\s\S]*exit-hang\.test\.ts/);
+    assert.ok(Date.now() - started < 60_000, 'named and stopped within seconds of the window');
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a file that blocks its event loop is named with the test it was running, and fails when it blocks alone too', () => {
+  const result = runRunner(['blocked.test.ts'], STALL);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /HUNG: \S*blocked\.test\.ts started and finished no test for \d+ s \(limit 6 s\)\. It was running "blocks its event loop" \(started \d+ s ago\); the last test it finished was "finishes first"\./);
+  assert.equal(result.stderr.match(/HUNG: /g)?.length, 2, 'once in the pass and once alone');
+  assert.match(result.stderr, /still failing alone:\n {2}\S*blocked\.test\.ts/);
+});
+
+test('a file held open by a process outside its own stops the pass, named, instead of holding it', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-run-tests-'));
+  const pidFile = join(directory, 'orphan.pid');
+  try {
+    const started = Date.now();
+    const result = runRunner(['orphan.test.ts'], { ...STALL, RUN_TESTS_FIXTURE_ORPHAN_PID_FILE: pidFile });
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stderr, /HUNG: \S*orphan\.test\.ts [\s\S]*none found\n {2}None to stop; the file fails, and the pass stops if it has not ended in 6 s\./);
+    assert.match(result.stderr, /\S*orphan\.test\.ts has still not ended after its processes were stopped: something outside them holds its output\. Stopping the pass\./);
+    assert.doesNotMatch(result.stdout, /rerunning each alone/);
+    assert.ok(Date.now() - started < 60_000, 'the pass stops within seconds of the window');
+  } finally {
+    try { process.kill(Number(readFileSync(pidFile, 'utf8')), 'SIGKILL'); } catch {}
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a file held open by a process outside its own in the rerun alone ends the runner too, instead of leaving it waiting on that process', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-run-tests-'));
+  const pidFile = join(directory, 'orphan.pid');
+  try {
+    const started = Date.now();
+    const result = runRunner(['orphan.test.ts'], { ...STALL, RUN_TESTS_FIXTURE_ORPHAN_PID_FILE: pidFile, RUN_TESTS_FIXTURE_ORPHAN_FAIL_FIRST_MARKER: join(directory, 'failed-first') });
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout, /rerunning each alone once:\n {2}\S*orphan\.test\.ts/);
+    assert.match(result.stderr, /\S*orphan\.test\.ts has still not ended after its processes were stopped: something outside them holds its output\. Stopping the pass\./);
+    assert.match(result.stderr, /still failing alone:\n {2}\S*orphan\.test\.ts/);
+    // The process left behind lives for a minute; the runner must not wait for it.
+    assert.ok(Date.now() - started < 45_000, 'the runner exits within seconds of the window');
+  } finally {
+    try { process.kill(Number(readFileSync(pidFile, 'utf8')), 'SIGKILL'); } catch {}
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('the fixture timeout override shortens only a pass over the runner\'s own fixtures', () => {
   const hang = join(FIXTURES, 'hang.test.ts');
   const real = resolve(FIXTURES, '../../run-tests.test.ts');
@@ -265,6 +331,11 @@ test('the fixture timeout override shortens only a pass over the runner\'s own f
   assert.equal(runnerTestTimeoutMs([hang], {}), PER_TEST_TIMEOUT_MS);
   for (const value of ['-1', '0', '1.5', 'soon']) assert.equal(runnerTestTimeoutMs([hang], { RUN_TESTS_FIXTURE_TIMEOUT_MS: value }), PER_TEST_TIMEOUT_MS, value);
   assert.equal(runnerTestTimeoutMs([], short), PER_TEST_TIMEOUT_MS);
+  // The stall window has the same guard, and runs a minute past the per-test timeout.
+  assert.equal(runnerFileStallMs([hang], { RUN_TESTS_FIXTURE_STALL_MS: '1000' }), 1000);
+  assert.equal(runnerFileStallMs([hang, real], { RUN_TESTS_FIXTURE_STALL_MS: '1000' }), FILE_STALL_MS);
+  assert.equal(runnerFileStallMs([hang], short), FILE_STALL_MS, 'the timeout override leaves the window alone');
+  assert.equal(FILE_STALL_MS, PER_TEST_TIMEOUT_MS + 60_000);
 });
 
 test('every test run goes through the runner, with its two-minute per-test timeout and its report checks', () => {

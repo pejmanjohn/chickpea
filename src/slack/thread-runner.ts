@@ -16,6 +16,7 @@ import {
 import type { SlackPublicContextEntryInput } from '../config/types.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import { tagStateStub, type StateRpcResult } from '../config/state-rpc.ts';
+import { withTurnReads } from '../config/turn-reads.ts';
 import {
   cloudflareCodingWorkerStopClient,
   stopCodingTasks,
@@ -54,7 +55,7 @@ import {
   type SlackPresentationTransitionResult,
   type SlackRunPresentation,
 } from './run-presentations.ts';
-import { repairSlackInteractionProgress, runTurn, sanitizeError } from './run-turn.ts';
+import { repairSlackInteractionProgress, runTurn, sanitizeError, startEarlyJudgment } from './run-turn.ts';
 import { SlackStatusRegistry, type SlackRunFactsView } from './status-registry.ts';
 import {
   quiesceThreadRunnerForRestore,
@@ -561,6 +562,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
       dispatchAgentAsks: (request) => processSlackAgentAsks(request, env),
       dispatchFrontDeskHandoff: (request) => processSlackFrontDeskHandoff(request, env),
       runTurn,
+      startJudgment: startEarlyJudgment,
     };
     const result = await runThreadRunnerAlarm({
       jobs,
@@ -575,7 +577,12 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
           prefetchedSettings(getSettingsStore(env), start.settings),
         ).then((value) => value ?? null, () => undefined);
         const handoff = this.takeHandoff(job.id);
-        return executeTurnJob(job, ports, {
+        // The turn's first reads, in one round beside its fold claim.
+        const reads = await import('./turn-plan-reads.ts').then(
+          ({ prefetchTurnReads }) => prefetchTurnReads(env, job, job.runId ? runBindingId(local, job.runId) : undefined),
+          () => undefined,
+        );
+        return withTurnReads(reads, () => executeTurnJob(job, ports, {
           latency: { lane: 'cloudflare', executor: 'runner', ...handoff.latency },
           ...(handoff.agentWake ? { agentWake: handoff.agentWake } : {}),
           observationRoute: { executor: 'runner', runnerKey: threadKey },
@@ -587,7 +594,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
           codingStopReport: () => this.stops().codingReport(job.id),
           // R22: a stop this runner took, else one its notice has not brought yet.
           stopRecorded: () => runnerStopRecorded(jobs, rows, job.id),
-        });
+        }));
       },
       repairInteraction: async (job) => {
         const progress = job.progress.slackInteraction;
@@ -641,6 +648,14 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
       },
     });
     return result;
+  }
+}
+
+function runBindingId(store: SlackRunPresentationStoreLogic, runId: string): string | undefined {
+  try {
+    return store.get(runId)?.bindingId;
+  } catch {
+    return undefined;
   }
 }
 

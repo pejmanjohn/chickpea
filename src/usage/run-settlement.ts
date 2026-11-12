@@ -85,8 +85,8 @@ export function creditBackReason(kind: FailureKind, run: FailedRun): CreditBackR
   return owner.ours === 'provider' && run.funding !== 'platform' ? null : owner.ours;
 }
 
-/** A given-up run that settled failed keeps its own failure's owner; any other give-up is ours. */
-function givenUpReason(
+/** A given-up run that settled failed keeps its own failure's owner; any other give-up, a lost run's included, is ours. */
+export function givenUpReason(
   settlement: FlueSettlementCheckpointV1 | undefined,
   funding: ModelRequestFundingSource,
 ): CreditBackReason | null {

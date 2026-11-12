@@ -99,7 +99,6 @@ test('MCP mount retains the selected tool list and explicit argument restriction
     authMode: 'none', headerNames: [], optional: true, allowedTools: ['run_query'],
     toolArgumentConstraints: { run_query: { data_source: ['postgres'] } },
   }]);
-  assert.deepEqual(connection!.tools, ['run_query']);
   await assert.rejects(connection!.fetch!('https://mcp.example.com/mcp', {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: {

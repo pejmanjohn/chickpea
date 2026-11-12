@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { normalizeContext, type AssistantMessageEvent, type Model } from '@earendil-works/pi-ai';
 import type { FlueObservation } from '@flue/runtime';
 import { agentFailureDiagnosticsInterceptor, observeAgentResultDiagnostics, settlementFailureFacts } from '../src/slack/agent-failure-diagnostics.ts';
 import { CHICKPEA_SLACK_AGENT_NAME } from '../src/agents/names.ts';
@@ -9,6 +10,9 @@ import { AgentPromptFailure, StateStoreUnavailable } from '../src/slack/flue-dis
 import { SlackTransportError } from '../src/slack/transport/types.ts';
 import { PersistedSlackDeliveryError } from '../src/slack/web-client-presenter.ts';
 import { WorkStateError } from '../src/work/types.ts';
+import { catalogModelForLane } from '../src/model-catalog/index.ts';
+import { createModelCompatibilityStream } from '../src/model-compat/provider.ts';
+import { providerStreamErrorTurnInterceptor } from '../src/model-compat/provider-stream-errors.ts';
 
 const operation = { type: 'agent', operationId: 'private-submission', operationKind: 'prompt' } as const;
 const context = { agentName: CHICKPEA_SLACK_AGENT_NAME, submissionId: 'private-submission' };
@@ -185,6 +189,95 @@ test('an HTTP provider failure keeps only the fixed error type and code from its
   }
   assert.deepEqual(facts('503 '), { providerFailureKind: 'http', providerHttpStatus: 503, providerBodyKind: 'none' });
   assert.doesNotMatch(JSON.stringify(logs), /private|prose|edge page|html|trailer/);
+});
+
+// Defects caught: only three stream codes recognized, so a policy code read
+// as `errorCode other` with no provider fact (#775's activity log).
+test('a failed response keeps any provider code token, never its message', (t) => {
+  const logs: unknown[][] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => { logs.push(args); });
+  const facts = (message: string) => {
+    observeAgentResultDiagnostics(terminalEvent({ isError: true, response: {
+      finishReason: 'error', error: { type: '_OTHER', message },
+    } }), context);
+    const record = logs.at(-1)![1] as Record<string, unknown>;
+    return [record.providerFailureKind, record.providerErrorCode, record.errorCode];
+  };
+  for (const code of ['invalid_prompt', 'misalignment_policy_violation', 'bio_policy', 'context_length_exceeded']) {
+    assert.deepEqual(facts(`${code}: private policy prose`), ['provider_stream_error', code, 'other'], code);
+    assert.deepEqual(facts(`Error Code ${code}: private`), ['provider_stream_error', code, 'other'], code);
+  }
+  assert.deepEqual(facts('Error Code overloaded: private'), ['provider_stream_error', 'overloaded', 'other'],
+    'after pi-ai\'s prefix, a one-word code too');
+  for (const prose of [
+    'private: prose', 'Private prose: x', 'two words: private', `a_${'x'.repeat(39)}: private`,
+    'invalid_prompt private', '_leading: private', 'trailing_: private',
+  ]) {
+    assert.deepEqual(facts(prose), [undefined, undefined, 'other'], prose);
+  }
+  assert.deepEqual(settlementFailureFacts({ type: 'operation_failed', meta: { reason: 'invalid_prompt: private' } }),
+    [{ kind: 'operation_failed', providerFailureKind: 'provider_stream_error', providerErrorCode: 'invalid_prompt' }]);
+  assert.doesNotMatch(JSON.stringify(logs), /private|prose/);
+});
+
+// Defects caught: the code of an error OpenAI sends inside the stream lost
+// between the SDK and the failure line, the stream changed by reading it, a
+// code kept for one turn read by another.
+test('an error OpenAI sends inside the stream reaches the failure line with its code, through pi-ai and the OpenAI SDK', async (t) => {
+  const logs: unknown[][] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => { logs.push(args); });
+  const created = JSON.stringify({ type: 'response.created', sequence_number: 0,
+    response: { id: 'resp_1', object: 'response', status: 'in_progress', output: [], error: null } });
+  const failure = JSON.stringify({ type: 'error', code: 'misalignment_policy_violation',
+    message: 'private policy prose', param: null, sequence_number: 1 });
+  // One event split across chunks, as a network delivers it.
+  const body = `event: response.created\ndata: ${created}\n\nevent: error\ndata: ${failure}\n\n`;
+  const encoder = new TextEncoder();
+  let requests = 0;
+  const provider: typeof fetch = async () => {
+    requests += 1;
+    return new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (let at = 0; at < body.length; at += 37) controller.enqueue(encoder.encode(body.slice(at, at + 37)));
+        controller.close();
+      },
+    }), { headers: { 'content-type': 'text/event-stream' } });
+  };
+  const incoming: Model<string> = {
+    id: 'gpt-5.6-sol', name: 'synthetic', api: 'chickpea-openai-platform-responses-r1-deadbeef',
+    provider: 'chickpea-openai-platform-r1-deadbeef', baseUrl: 'https://api.openai.com/v1', reasoning: false,
+    input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 272_000, maxTokens: 128_000,
+  };
+  const step = async (): Promise<string | undefined> => {
+    const stream = createModelCompatibilityStream(incoming, normalizeContext({ systemPrompt: 'x', messages: [
+      { role: 'user', content: 'private request', timestamp: 1 },
+    ] }), { apiKey: 'sk-test', fetch: provider }, true, {
+      route: { provider: 'openai', lane: 'openai_api_key' },
+      resolveModel: (model, lane) => catalogModelForLane(model, lane, { nativeFirst: false }),
+    });
+    let last: AssistantMessageEvent | undefined;
+    for await (const event of stream) last = event;
+    assert.equal(last?.type, 'error');
+    return last?.type === 'error' ? last.error.errorMessage : undefined;
+  };
+  const failed = (turnId: string, message: string | undefined) => {
+    observeAgentResultDiagnostics(terminalEvent({ turnId, isError: true, response: {
+      finishReason: 'error', error: { type: '_OTHER', ...(message === undefined ? {} : { message }) },
+    } }), context);
+    const record = logs.at(-1)![1] as Record<string, unknown>;
+    return [record.providerFailureKind, record.providerErrorCode];
+  };
+
+  const message = await providerStreamErrorTurnInterceptor({ type: 'model', turnId: 'turn_in_stream' }, {}, step);
+  assert.equal(message, 'private policy prose', 'pi-ai keeps only the message: the code is not in it');
+  assert.deepEqual(failed('turn_other', message), [undefined, undefined], 'another turn reads no code');
+  assert.deepEqual(failed('turn_in_stream', message), ['provider_stream_error', 'misalignment_policy_violation']);
+  assert.deepEqual(failed('turn_in_stream', message), [undefined, undefined], 'a code is read once');
+
+  // Outside a model turn, the stream is left alone and nothing is kept.
+  assert.equal(await step(), 'private policy prose');
+  assert.equal(requests, 2);
+  assert.doesNotMatch(JSON.stringify(logs), /private/);
 });
 
 test('model diagnostics bound arbitrary provider facts and cannot interrupt execution', (t) => {

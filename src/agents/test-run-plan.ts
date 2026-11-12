@@ -6,12 +6,9 @@
 import { compileRuntimePlan, RUNTIME_PLAN_SCHEMA_VERSION, type RuntimePlanV2 } from './runtime-plan.ts';
 import type { AgentRunPlanParts } from './run-plan-resolution.ts';
 import type { InstallationOwnership } from '../config/installation-scope.ts';
-import { matchesEgressPrefix } from '../config/egress.ts';
 import { mcpToolDeclaredRead } from '../config/mcp-tool-policy.ts';
 import { MANAGED_CONNECTOR_CATALOG } from '../connections/catalog/index.ts';
-import { CONNECTION_REQUEST_TOOL_NAME } from '../connections/request-tool.ts';
 import type { EffectiveConnectionAccount } from '../connections/types.ts';
-import { READ_WEB_PAGE_TOOL_NAME, WEB_SEARCH_TOOL_NAME } from '../web/names.ts';
 import { opaqueId } from '../work/admission.ts';
 
 export interface TestRunConversation {
@@ -53,7 +50,7 @@ export function compileTestRunPlan(parts: AgentRunPlanParts, test: TestRunConver
   });
 }
 
-/** The caller's connections a test run cannot read through at all; a run with any is refused. */
+/** The caller's connections a test run cannot read through at all; a run leaves each out and lists it with its fix. */
 export function untestableConnections(connections: readonly EffectiveConnectionAccount[]): EffectiveConnectionAccount[] {
   return connections.filter((connection) => readsOnly(connection).length === 0);
 }
@@ -76,48 +73,4 @@ function readsOnly(connection: EffectiveConnectionAccount): EffectiveConnectionA
     return allowedCapabilities.length > 0 ? [{ ...connection, policy: { ...policy, allowedCapabilities } }] : [];
   }
   return [connection];
-}
-
-/** A tool call that returned, as the settled history holds it. */
-export interface TestRunToolCall {
-  toolName: string;
-  input: unknown;
-}
-
-/**
- * The services a test run read, by the names an Admin gave them, in the
- * order it first read each: a managed connector's, a custom MCP or API
- * connection's, or the web. Skills, the shell and calls to nothing named
- * leave none. Nothing else of a step leaves the run.
- */
-export function testRunReadServices(plan: RuntimePlanV2, calls: readonly TestRunToolCall[]): string[] {
-  const services = new Set<string>();
-  for (const { toolName, input } of calls) {
-    const service = toolService(plan, toolName, input);
-    if (service) services.add(service);
-  }
-  return [...services];
-}
-
-function toolService(plan: RuntimePlanV2, toolName: string, input: unknown): string | undefined {
-  if (toolName === WEB_SEARCH_TOOL_NAME || toolName === READ_WEB_PAGE_TOOL_NAME) return 'the web';
-  if (toolName.startsWith('mcp__')) {
-    // Flue names an MCP tool `mcp__<server>__<tool>`, the server's ID sanitized.
-    return plan.mcpConnections.find(({ id }) => toolName.startsWith(`mcp__${mcpToolNamePart(id)}__`))?.displayName;
-  }
-  if (toolName === CONNECTION_REQUEST_TOOL_NAME) {
-    const url = typeof input === 'object' && input !== null ? (input as { url?: unknown }).url : undefined;
-    if (typeof url !== 'string') return undefined;
-    return plan.apiConnections.find((connection) => connection.allowedHosts.some((host) =>
-      (connection.pathPrefixes.length > 0 ? connection.pathPrefixes : ['']).some((prefix) =>
-        matchesEgressPrefix(url, `https://${host}${prefix}`))))?.displayName;
-  }
-  const capability = MANAGED_CONNECTOR_CATALOG.capabilityForToolName(toolName);
-  if (!capability || !plan.managedConnections?.some(({ toolkit, allowedCapabilities }) =>
-    toolkit === capability.connectorToolkit && allowedCapabilities.includes(capability.id))) return undefined;
-  return MANAGED_CONNECTOR_CATALOG.connector(capability.connectorToolkit)?.label;
-}
-
-function mcpToolNamePart(value: string): string {
-  return value.replace(/[^A-Za-z0-9_-]/g, '_').replace(/^_+|_+$/g, '') || 'unnamed';
 }

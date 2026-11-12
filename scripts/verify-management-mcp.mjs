@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 const REQUEST_TIMEOUT_MS = 15_000;
 const AGENT_AUTHORING_GUIDE_URI = 'chickpea://guide/agent-authoring/v1';
 const AGENT_AUTHORING_GUIDE_VERSION = '1.0.49';
-const MANAGEMENT_MCP_SERVER_VERSION = '4.5.0';
+const MANAGEMENT_MCP_SERVER_VERSION = '4.6.0';
 const MANAGEMENT_MCP_TOOL_NAMES = [
   'inspect_workspace',
   'prepare_connector_setup',
@@ -29,9 +29,11 @@ const MANAGEMENT_MCP_TOOL_NAMES = [
   'revoke_mcp_client',
   'get_account',
   'get_workspace',
+  'get_guide',
   'list_agents',
   'get_agent',
   'list_services',
+  'get_service',
   'list_models',
   'list_members',
   'list_slack_channels',
@@ -40,11 +42,14 @@ const MANAGEMENT_MCP_TOOL_NAMES = [
   'get_setup_status',
   'export_agents',
   'list_connected_apps',
+  'list_agent_runs',
+  'get_agent_run',
   'propose_agent',
   'propose_agent_change',
   'get_creation_status',
-  'try_agent_once',
-  'get_test_run',
+  'practice_agent',
+  'get_practice_run',
+  'list_practice_runs',
   'explain_agent',
   'check_agent',
   'create_agent',

@@ -38,6 +38,23 @@ export type TextChange =
   | Excerpt & { kind: 'section'; action: 'adds' | 'removes'; heading: string }
   | Excerpt & { kind: 'text'; action: 'adds' | 'removes' | 'changes'; place: TextChangePlace };
 
+/**
+ * Every changed word, with up to `QUOTE_CONTEXT_WORDS` unchanged words on
+ * each side, whitespace collapsed: what a surface with room shows instead
+ * of the quote, which may cut the change itself.
+ */
+export interface ChangeWindow {
+  lead: string;
+  changed: string;
+  trail: string;
+  /** More of the edited lines comes before `lead`, or after `trail`. */
+  moreBefore: boolean;
+  moreAfter: boolean;
+}
+
+/** A change with its window. A removed section has none: its heading names it. */
+export type WindowedTextChange = TextChange & { window?: ChangeWindow };
+
 /** Old lines [oldStart, oldEnd) became new lines [newStart, newEnd). */
 export interface LineHunk {
   oldStart: number;
@@ -82,6 +99,11 @@ const FENCE = /^(`{3,}|~{3,})/;
  * out, so an empty result for two different texts means only those differ.
  */
 export function summarizeTextChange(before: string, after: string): TextChange[] {
+  return textChangeWindows(before, after).map(({ window: _window, ...change }) => change);
+}
+
+/** `summarizeTextChange`, each change with its window. */
+export function textChangeWindows(before: string, after: string): WindowedTextChange[] {
   const old = readLines(before);
   const next = readLines(after);
   const located = old.length > 0 && next.length > 0;
@@ -187,7 +209,7 @@ function wholeSection(lines: readonly TextLine[], start: number, end: number, le
 }
 
 /** The part of a hunk before its first section: a word diff of its old and new lines. */
-function describeEdit(old: LineSpan, next: LineSpan, located: boolean): TextChange | undefined {
+function describeEdit(old: LineSpan, next: LineSpan, located: boolean): WindowedTextChange | undefined {
   const oldTokens = tokens(old);
   const newTokens = tokens(next);
   let prefix = 0;
@@ -214,15 +236,15 @@ function describeEdit(old: LineSpan, next: LineSpan, located: boolean): TextChan
       span.end === span.lines.length && changeEnd === side.length,
     )
     : { kind: 'none' as const };
-  return { kind: 'text', action, place, ...excerpt(side, prefix, changeEnd) };
+  return { kind: 'text', action, place, ...excerpt(side, prefix, changeEnd), window: windowOf(side, prefix, changeEnd) };
 }
 
 /** A section runs from its heading line at `start` to `end`. */
-function describeSection(action: 'adds' | 'removes', section: LineSpan): TextChange {
+function describeSection(action: 'adds' | 'removes', section: LineSpan): WindowedTextChange {
   const heading = shorten(section.lines[section.start]!.heading!.text, HEADING_MAX_CHARACTERS);
   const body = tokens({ ...section, start: section.start + 1 });
   return action === 'adds'
-    ? { kind: 'section', action, heading, ...excerpt(body, 0, body.length) }
+    ? { kind: 'section', action, heading, ...excerpt(body, 0, body.length), window: windowOf(body, 0, body.length) }
     : { kind: 'section', action, heading, quote: '', words: countWords(body), quotedWhole: false };
 }
 
@@ -272,6 +294,20 @@ function excerpt(side: readonly Token[], from: number, to: number): Excerpt {
     quote: `${lead}${shown.slice(start, end).join(' ')}${end < side.length ? '…' : ''}`,
     words,
     quotedWhole: end >= to,
+  };
+}
+
+/** Tokens [from, to) whole, between the unchanged words beside them. */
+function windowOf(side: readonly Token[], from: number, to: number): ChangeWindow {
+  const words = (start: number, end: number) => side.slice(start, end).map((token) => token.shown).join(' ');
+  const leadStart = Math.max(0, from - QUOTE_CONTEXT_WORDS);
+  const trailEnd = Math.min(side.length, to + QUOTE_CONTEXT_WORDS);
+  return {
+    lead: words(leadStart, from),
+    changed: words(from, to),
+    trail: words(to, trailEnd),
+    moreBefore: leadStart > 0,
+    moreAfter: trailEnd < side.length,
   };
 }
 

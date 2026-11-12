@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
 
+import { z } from 'zod';
+
 import { collectEnvelopeHints, parseToolEnvelope, renderEnvelopeHints } from '../src/tools.ts';
 import { FakeDeployment, fakeBrowser } from './helpers/fake-deployment.ts';
 import { runCli, temporaryStore, type CliRun } from './helpers/run-cli.ts';
@@ -119,6 +121,104 @@ test('workspace inspect combines 5.0 reads and prints workspace, role and Agent 
   assert.equal(json.code, 0, json.stderr);
   assert.equal(JSON.parse(json.stdout).workspace.you.role, 'owner');
   assert.equal(JSON.parse(json.stdout).agents[0].agentId, 'agent_support');
+  assert.equal(JSON.parse(json.stdout).archivedLeftOut, undefined);
+});
+
+test('workspace inspect against a Core without includeArchived sends no new argument, with or without the flag', async () => {
+  for (const flags of [[], ['--include-archived']]) {
+    const result = await runCli(['workspace', 'inspect', deployment.url, ...flags], { store });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /^Agents \(1\)$/m);
+    assert.deepEqual(deployment.toolCalls.at(-1), { name: 'list_agents', args: {} });
+  }
+});
+
+// list_agents as Core #761 serves it: strict input, archived Agents only on request, two Agents a page.
+const pagedAgents = [
+  ...['a', 'b', 'c', 'd'].map((id) => ({ agentId: `agent_${id}`, name: id.toUpperCase(), status: 'on', canEdit: true, needsAttention: [] })),
+  { agentId: 'agent_old', name: 'Old', status: 'archived', canEdit: true, needsAttention: [] },
+];
+let endlessPages = false;
+const paged = new FakeDeployment({
+  toolInputs: {
+    list_agents: z.strictObject({
+      include: z.enum(['all', 'mine']).optional(),
+      includeArchived: z.boolean().optional(),
+      cursor: z.string().regex(/^[1-9]\d{0,5}$/).optional(),
+    }),
+  },
+  tools: {
+    get_workspace: () => ({ name: 'Paged', you: { role: 'owner' }, agentCount: 5, adminOnly: [] }),
+    list_agents: (args) => {
+      const rows = pagedAgents.filter(({ status }) => args.includeArchived === true || status !== 'archived');
+      const from = Number(args.cursor ?? 0);
+      const more = endlessPages || from + 2 < rows.length;
+      return { agents: rows.slice(from, from + 2), canCreate: true, ...(more ? { nextCursor: String(from + 2) } : {}) };
+    },
+  },
+});
+const pagedStore = temporaryStore();
+
+before(async () => {
+  await paged.start();
+  const login = await runCli(['login', paged.url], { store: pagedStore, openBrowser: fakeBrowser, loginTimeoutMs: 10_000 });
+  assert.equal(login.code, 0, login.stderr);
+});
+after(() => paged.stop());
+
+test('workspace inspect follows nextCursor through every page and says archived Agents are left out', async () => {
+  const listCalls = () => paged.toolCalls.filter(({ name }) => name === 'list_agents').map(({ args }) => args);
+
+  const result = await runCli(['workspace', 'inspect', paged.url], { store: pagedStore });
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stdout, [
+    'Workspace Paged', 'You: owner', '',
+    'Agents (4 shown; archived Agents are left out, --include-archived lists them)',
+    '  A  no handle  id=agent_a  on  can edit',
+    '  B  no handle  id=agent_b  on  can edit',
+    '  C  no handle  id=agent_c  on  can edit',
+    '  D  no handle  id=agent_d  on  can edit',
+    '', 'Can create Agents: yes', '',
+  ].join('\n'));
+  assert.deepEqual(listCalls(), [{}, { cursor: '2' }]);
+
+  const json = await runCli(['workspace', 'inspect', paged.url, '--json'], { store: pagedStore });
+  assert.equal(json.code, 0, json.stderr);
+  const parsed = JSON.parse(json.stdout);
+  assert.deepEqual(parsed.agents.map(({ agentId }: { agentId: string }) => agentId), ['agent_a', 'agent_b', 'agent_c', 'agent_d']);
+  assert.equal(parsed.archivedLeftOut, true);
+  assert.equal(parsed.canCreate, true);
+  assert.equal('nextCursor' in parsed, false);
+});
+
+test('workspace inspect --include-archived asks every page for archived Agents', async () => {
+  const before = paged.toolCalls.length;
+  const result = await runCli(['workspace', 'inspect', paged.url, '--include-archived'], { store: pagedStore });
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /^Agents \(5\)$/m);
+  assert.match(result.stdout, /^ {2}Old {2}no handle {2}id=agent_old {2}archived {2}can edit$/m);
+  assert.deepEqual(
+    paged.toolCalls.slice(before).filter(({ name }) => name === 'list_agents').map(({ args }) => args),
+    [{ includeArchived: true }, { includeArchived: true, cursor: '2' }, { includeArchived: true, cursor: '4' }],
+  );
+});
+
+test('workspace inspect stops after 50 pages with an error instead of printing part of the list', async (t) => {
+  endlessPages = true;
+  t.after(() => { endlessPages = false; });
+  const before = paged.toolCalls.length;
+  const result = await runCli(['workspace', 'inspect', paged.url], { store: pagedStore });
+  assert.equal(result.code, 1);
+  assert.equal(result.stdout, '');
+  assert.match(result.stderr, /^chickpea: TOO_MANY_PAGES: list_agents had more than 50 pages/);
+  assert.ok(result.stderr.includes(`list_agents --args '{"cursor":"<nextCursor>"}'`), result.stderr);
+  assert.equal(paged.toolCalls.slice(before).filter(({ name }) => name === 'list_agents').length, 50);
+
+  // The hint pages the same list the person asked for.
+  const archived = await runCli(['workspace', 'inspect', paged.url, '--include-archived'], { store: pagedStore });
+  assert.equal(archived.code, 1);
+  assert.equal(archived.stdout, '');
+  assert.ok(archived.stderr.includes(`list_agents --args '{"includeArchived":true,"cursor":"<nextCursor>"}'`), archived.stderr);
 });
 
 test('recipe export uses export_agents and prints the recipe unchanged', async () => {

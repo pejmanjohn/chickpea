@@ -7,6 +7,7 @@ import { BUGSNAG_MCP_SERVER_URL } from '../src/config/bugsnag-policy.ts';
 import { apiOAuthSettingKeys, connectionAccountOAuthRef } from '../src/config/api-oauth.ts';
 import { agentCredentialConfigurationBinding } from '../src/config/connection-credential-binding.ts';
 import { mcpOAuthSettingKeys } from '../src/config/mcp-oauth.ts';
+import { mcpToolDeclaredRead } from '../src/config/mcp-tool-policy.ts';
 import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import type { AuthPrincipal } from '../src/auth/types.ts';
 import {
@@ -15,7 +16,7 @@ import {
 } from '../src/config/connector-secrets.ts';
 import type { AgentSnapshotStore } from '../src/config/snapshot-store.ts';
 import type { ConnectionAccount, CustomAgentConfig } from '../src/config/types.ts';
-import { resolveEffectiveConnectionAccounts } from '../src/connections/runtime.ts';
+import { projectEffectiveMcpConnections, resolveEffectiveConnectionAccounts } from '../src/connections/runtime.ts';
 import type { ManagementApiConnection, ManagementMcpConnection } from '../src/management/agent-connections.ts';
 import { SqliteManagementStore } from '../src/management/store.ts';
 import {
@@ -695,6 +696,42 @@ test('a 4.x write that leaves out a reviewed connector\'s toolPolicies keeps the
       assert.equal(refused.outcomes[0]?.disposition, 'failed', JSON.stringify(refused.outcomes));
       assert.deepEqual(await bugsnag(), stored, `${key}: tools change only through Admin's review`);
     }
+  }));
+
+test('a 4.x write marks a catalog MCP service\'s tools, and a read mark its server says writes is no read to a test run', () =>
+  withFixture('write-rules-catalog-marks', async (f) => {
+    const agent = await seedAgent(f);
+    await f.config.createAgentOwnedConnection({
+      account: {
+        id: 'connection_linear', workspaceId: TEAM, ownerKind: 'team', createdByMembershipId: f.owner.membership.id,
+        providerId: 'linear', label: 'Linear', secretRefId: 'secret_linear', lifecycle: 'ready',
+        policy: {
+          kind: 'mcp', url: 'https://mcp.linear.app/mcp', transport: 'streamable-http', authMode: 'oauth', headerNames: [],
+          oauthScope: 'read', presetId: 'linear', allowedTools: ['list_issues', 'save_issue'],
+          discoveredTools: [{ name: 'list_issues' }, { name: 'save_issue', readOnlyHint: false }],
+        },
+      },
+      binding: { agentId: agent.id, connectionAccountId: 'connection_linear', providerId: 'linear', allowedCapabilities: [], enabled: true },
+    });
+    const current = await inspectAgent(f, agent.id);
+    // This door has no write-time check on the server's hint, so it stores both marks.
+    const marked = await apply(f, 'mark', [{
+      itemId: 'mark', kind: 'update_agent', agentId: agent.id, expectedRevision: current.revision,
+      patch: {
+        mcpServers: current.mcpServers.map((connection) => connection.id === 'linear'
+          ? { ...connection, toolPolicies: { list_issues: { effect: 'read' }, save_issue: { effect: 'read' } } }
+          : connection),
+      },
+    }]);
+    assert.deepEqual(marked.outcomes.map(({ disposition }) => disposition), ['applied'], JSON.stringify(marked.outcomes));
+    const linear = await accountFor(f, agent.id, 'linear');
+    assert.deepEqual(linear.policy.kind === 'mcp' ? linear.policy.toolPolicies : undefined,
+      { list_issues: { effect: 'read' }, save_issue: { effect: 'read' } });
+    const [connection] = projectEffectiveMcpConnections(await resolveEffectiveConnectionAccounts({
+      config: f.config, workspaceId: TEAM, agentId: agent.id, actorMembershipId: f.owner.membership.id,
+    }));
+    assert.deepEqual(['list_issues', 'save_issue'].filter((tool) => mcpToolDeclaredRead(connection!, tool)), ['list_issues'],
+      'the server\'s word outranks the stored mark');
   }));
 
 const OAUTH_TOKENS = '{"refreshToken":"rt-secret"}';

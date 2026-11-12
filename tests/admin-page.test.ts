@@ -17943,10 +17943,10 @@ test('Usage names the built-in Chickpea Agent on a redacted operation', async ()
   assert.doesNotMatch(harness.app.innerHTML, /agent_chickpea<\/td>/);
 });
 
-test('Usage names a test run "Test run"', async () => {
+test('Usage names a practice run "Practice run"', async () => {
   const harness = runAdminPageHarness({ usageAdminUi: true, initialPath: '/admin/usage', usageTestRun: true });
   await flushAsync();
-  assert.match(harness.app.innerHTML, /<strong class="usage-work-label">Test run<\/strong>/);
+  assert.match(harness.app.innerHTML, /<strong class="usage-work-label">Practice run<\/strong>/);
 });
 
 test('Usage names a redacted scheduled run from the readable scheduled-work list', async () => {
@@ -19872,6 +19872,91 @@ test('Meta tool review shows only available reporting and write tools, and Selec
     ],
     approvedAccountIds: ['123', '456'],
   });
+});
+
+test('a plain Save in Meta tool review drops a granted tool the picker cannot show', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: { attached: [ownedConnection({
+      id: 'connection_meta', workspaceId: 'T_DESIGN', revision: 4,
+      ownerKind: 'member', providerId: 'meta-ads', label: 'Meta Ads',
+      lifecycle: 'ready', credentialConfigured: true,
+      policy: {
+        kind: 'mcp', url: 'https://mcp.facebook.com/ads', transport: 'streamable-http',
+        authMode: 'oauth', headerNames: [], presetId: 'meta-ads', toolAccessMode: 'review',
+        discoveredTools: [
+          { name: 'ads_get_ad_entities', description: 'Synthetic provider description.', available: true, effect: 'read' },
+          // Granted while it was reviewed, and held back since.
+          { name: 'ads_account_get_activity_logs', description: 'Synthetic provider description.', available: false, effect: 'write' },
+        ],
+        // Granted, and no longer listed by Meta.
+        allowedTools: ['ads_get_ad_entities', 'ads_account_get_activity_logs', 'ads_update_custom_audience_users'],
+        toolPolicies: {
+          ads_get_ad_entities: { effect: 'read', argumentConstraints: { ad_account_id: ['123'] } },
+          ads_account_get_activity_logs: { effect: 'read', argumentConstraints: { ad_account_id: ['123'] } },
+          ads_update_custom_audience_users: { effect: 'write', argumentConstraints: { $meta_ads_approved_account_id: ['123'] } },
+        },
+      },
+    })] },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'custom-mcp-tools-open', 'data-connection-id': 'connection_meta' }) });
+  assert.match(harness.app.innerHTML, /1 of 1 selected/);
+  assert.doesNotMatch(harness.app.innerHTML, /ads_account_get_activity_logs|ads_update_custom_audience_users/);
+  click({ target: actionTarget({ 'data-action': 'custom-mcp-tools-save' }) });
+  await flushAsync();
+  assert.deepEqual(harness.connectionToolsPuts[0]?.body, {
+    expectedRevision: 4, allowedTools: ['ads_get_ad_entities'], approvedAccountIds: ['123'],
+  });
+});
+
+test("Meta tool review describes the account-wide reads in Chickpea's words, as reports", async () => {
+  const reads: Array<[string, string]> = [
+    ['ads_get_ad_account_custom_audiences', "View the account&#39;s custom and lookalike audiences."],
+    ['ads_get_customconversions', "View the account&#39;s custom conversions."],
+  ];
+  const unavailable = ['ads_account_get_activity_logs', 'ads_get_creatives', 'ads_get_errors'];
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: { attached: [ownedConnection({
+      id: 'connection_meta', workspaceId: 'T_DESIGN', revision: 3,
+      ownerKind: 'member', providerId: 'meta-ads', label: 'Meta Ads',
+      lifecycle: 'ready', credentialConfigured: true,
+      policy: {
+        kind: 'mcp', url: 'https://mcp.facebook.com/ads', transport: 'streamable-http',
+        authMode: 'oauth', headerNames: [], presetId: 'meta-ads', toolAccessMode: 'review',
+        discoveredTools: [
+          ...reads.map(([name]) => ({
+            name, description: 'Synthetic provider description.', available: true, effect: 'read',
+          })),
+          ...unavailable.map((name) => ({
+            name, description: 'Synthetic provider description.', available: false, effect: 'write',
+          })),
+        ],
+        allowedTools: [], toolPolicies: {},
+      },
+    })] },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'custom-mcp-tools-open', 'data-connection-id': 'connection_meta' }) });
+  for (const [name, description] of reads) {
+    assert.match(harness.app.innerHTML, new RegExp(`${name} · Reporting</span><span class="tool-desc">${description}<`));
+  }
+  for (const name of unavailable) assert.doesNotMatch(harness.app.innerHTML, new RegExp(name));
+  assert.doesNotMatch(harness.app.innerHTML, /Synthetic provider description|change history/);
+  assert.match(harness.app.innerHTML, /0 of 2 selected/);
 });
 
 test('background connection refresh keeps a same-Agent tool editor visible and in place', async () => {

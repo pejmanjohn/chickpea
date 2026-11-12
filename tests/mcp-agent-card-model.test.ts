@@ -191,6 +191,45 @@ test('Save sends propose_agent_change\'s update_agent arguments, and Undo hides 
   assert.deepEqual(saved.labels(), []);
 });
 
+// Mutation proof: a card that cuts the changed words, or keeps "nothing is saved" and its buttons while saving, fails here.
+test('the change card quotes every changed word of the instructions, and says Saving… until the save answers', async (t) => {
+  const { f, call, card: agentCard, clock } = await harness(t, 'card-change-whole');
+  const before = 'You answer questions about colours accurately and concisely. Answer in one or two sentences, and name the colour first.';
+  const after = 'You answer questions about colours accurately and concisely. Every answer must consist of exactly one full sentence that ends with the words "Colour check done." and nothing else.';
+  await createFixtureAgent(f, 'agent_colours', { name: 'Colours', instructions: before });
+  const read = (await call('get_agent', { agentId: 'agent_colours' })).structuredContent!;
+  const preview = await call('propose_agent_change', { agentId: 'agent_colours', version: read.version, change: { instructions: after } });
+  const quoted = (preview.structuredContent!.changes as Array<{ quotes: Array<{ quote: string }> }>)[0]!.quotes[0]!.quote;
+  assert.equal(quoted.includes('Colour check done.'), false, 'the preview\'s short quote cuts the requested ending');
+
+  await agentCard.result(preview);
+  assert.deepEqual(agentCard.calls('get_agent').length, 1, 'the card reads the saved instructions once, as it mounts');
+  assert.deepEqual(agentCard.shown.blocks, [
+    { kind: 'section', label: 'Instructions' },
+    {
+      kind: 'quote',
+      text: 'At the end, changes wording to: “…colours accurately and concisely. Every answer must consist of exactly one full sentence that ends with the words "Colour check done." and nothing else.”',
+    },
+  ], 'every changed word, with the unchanged words before it that fit');
+
+  // A change longer than the card fits keeps every changed word and drops the words around it.
+  const long = `${before} ${'Always check the shade twice before you answer. '.repeat(8).trim()}`;
+  const card2 = card(call, clock);
+  await card2.result(await call('propose_agent_change', { agentId: 'agent_colours', version: read.version, change: { instructions: long } }));
+  const text = (card2.shown.blocks[1] as { text: string }).text;
+  assert.equal(text, `At the end, adds: “…${'Always check the shade twice before you answer. '.repeat(8).trim()}”`);
+
+  agentCard.hold = ({ tool }) => tool === 'update_agent';
+  await agentCard.press('save');
+  assert.equal(agentCard.shown.subtitle, undefined, 'no "nothing is saved" while it saves');
+  assert.equal(agentCard.shown.announce, 'Change Colours. Saving…', 'the heading stays, so the live region says the step');
+  assert.deepEqual(agentCard.shown.blocks.at(-1), { kind: 'steps', steps: [{ label: 'Saving…', state: 'now' }] });
+  assert.deepEqual(agentCard.labels(), []);
+  await agentCard.answer();
+  assert.equal(agentCard.shown.title, 'Saved Colours');
+  assert.equal((await call('get_agent', { agentId: 'agent_colours' })).structuredContent!.instructions, after);
+});
+
 test('a destructive confirmation waits for the click: no mount, focus or timer confirms it', async (t) => {
   const { f, call, card: agentCard, clock, teamId } = await harness(t, 'card-confirm');
   await createFixtureAgent(f, 'agent_support');

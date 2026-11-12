@@ -1,108 +1,43 @@
 {
   "agent-card": [
     {
-      "version": 1,
-      "sha256": "4b02bae6de7649730b0f32ce94960e777512ea36fafc014a37bc8c4875d8194e"
+      "version": 12,
+      "sha256": "396ab119574e3841f2ecdbc3e3197f5bc193629ec5f9f2a1faec4d88035075b3",
+      "released": true
     },
     {
-      "version": 2,
-      "sha256": "f9178bb20a7bba003a0f2a596ad614a97205e66fc9b252c36cceeef7c80d104d"
+      "version": 13,
+      "sha256": "6a678aca6624a671a4cb8434cabbbfbf577d48b34e7617916efdfda5d6248ce1",
+      "released": true
     },
     {
-      "version": 3,
-      "sha256": "2fe839ea9f96bebae5abddaa88419cb2c213cedfeb468052d0b1d5d5d467c84a"
-    },
-    {
-      "version": 4,
-      "sha256": "050777ed043360cb3d41d011c98297116de6833a1f629b44632ee1ceca39c2a2"
-    },
-    {
-      "version": 5,
-      "sha256": "43250fba79dc1c423bcb14f79b726e7139067939ce366f41d36efb3756996d0e"
-    },
-    {
-      "version": 6,
-      "sha256": "0381434368bf569922c1c7d021d9687a83cdb7aac605f8c447ce5361408c4c8b"
-    },
-    {
-      "version": 7,
-      "sha256": "e829fa25349b67f348ec54d3cd823fdb3590c8c87561ab87c3537aac41847d04"
-    },
-    {
-      "version": 8,
-      "sha256": "ce0657dc81c0810685b88420967db443d36f602f929e8ba77b9d45ec5059e51e"
-    },
-    {
-      "version": 9,
-      "sha256": "d57086c4cd55d62c2e6f9ab0bd4acdebd6efc931125949a31025cacefffbba77"
-    },
-    {
-      "version": 10,
-      "sha256": "e6eb5b2232feb7266375624a9f21abc00744c3b448839e6e1a907bebad6221cc"
+      "version": 14,
+      "sha256": "5f397232e57cf2d472102de80b85b371d5457a0551eea3fdfdf957c5c6f7debc",
+      "released": true
     }
   ],
   "connect-card": [
     {
-      "version": 1,
-      "sha256": "1429861e6b101b2dbac4e983a11b7334b40e9122c05b741bf430a14675bcc59a"
+      "version": 10,
+      "sha256": "689713b7f2068994ca39e74b7b3d444da2792989ba244b74bd6632228f2d1b62",
+      "released": true
     },
     {
-      "version": 2,
-      "sha256": "9046ca97c32c6c53d964d214a3da11ce2019798a61c984b89c9f0fff89e4f5cc"
+      "version": 11,
+      "sha256": "318ed0ab6c7cca81991e8ddd2c1fbba594c07e603bd6da6c4cee5d20e0d3cf44",
+      "released": true
     },
     {
-      "version": 3,
-      "sha256": "c1448527e26652dc86dcb893c08ee008803f230f483962a42432f8829b39cda3"
-    },
-    {
-      "version": 4,
-      "sha256": "90d7bc94699793b8d410af547e29ba101d65a232ff184598aec84670fb64bec6"
-    },
-    {
-      "version": 5,
-      "sha256": "94105a6b1a47f0a32ed8c37ef98e41db0399cacc5cc9aadd48a1072c0a31dccf"
-    },
-    {
-      "version": 6,
-      "sha256": "cfa8cec91c9f2171866f4c42f99972b70f4797a4bfb9e77da459cb360e62ca99"
-    },
-    {
-      "version": 7,
-      "sha256": "b8e6cbc575abfd55a606d5a3f7b62dd633fb3e81f6fe4fef0cef273aecaa88f3"
-    },
-    {
-      "version": 8,
-      "sha256": "69fd9fa0f5e74717ef45ad7f3f877f4574eee537a77272caaa24a114e3c48409"
+      "version": 12,
+      "sha256": "997560098b84fb59ddfd3bdfea40205bda00c8be8cfa4f2b8f80e26b60d0d1ed",
+      "released": true
     }
   ],
   "health-card": [
     {
-      "version": 1,
-      "sha256": "982f55d30b203183e41913dbda282c1d4fc173cb0603597c88f2d28a5c1fbd32"
-    },
-    {
-      "version": 2,
-      "sha256": "de5f533765776348bd1cdd59c6ae3af3b041a2793d9491e071dd597b0462addb"
-    },
-    {
-      "version": 3,
-      "sha256": "072c56d34930c4c9411979181a185544234b593fc590c073dd2af78ba47caf10"
-    },
-    {
-      "version": 4,
-      "sha256": "1ad52c88cc411fd2fa714490e11586f3c915e793361e9a96beab7adaa196fedd"
-    },
-    {
-      "version": 5,
-      "sha256": "a51353dd630135eb03b02bbc6ac38bb6b5a75e23c7acf44299bf6ebcb29b9891"
-    },
-    {
-      "version": 6,
-      "sha256": "ccd3d184cfe082ea6fee84fb26dc5c4fed34327efe3635cc73a307cf638286a1"
-    },
-    {
       "version": 7,
-      "sha256": "e58a1445e27cbe3e8ab11b113fd1928cf9e0cab110aa6b176054c4686c9c774e"
+      "sha256": "e58a1445e27cbe3e8ab11b113fd1928cf9e0cab110aa6b176054c4686c9c774e",
+      "released": true
     }
   ]
 }

@@ -80,31 +80,26 @@ function turnStartedAtMs(turn: Pick<NormalizedSlackTurn, 'messageTs'>): number {
   return units === null ? Date.now() : Number(units / 1000n);
 }
 
-/**
- * After a reply, find the approval this turn created (a workspace-change
- * proposal or a held browser step) and post it as a host-owned card with
- * Approve and Cancel/Stop buttons. The record is durable before the post and
- * its id derives from the turn, so a retried delivery never posts twice.
- * Typed "approve"/"stop" keep working; the card is an addition, not a gate.
- */
-export async function deliverHostApprovalSurfaces(input: {
+/** Where a turn's host approval card is looked up, and posted. */
+interface HostApprovalTurn {
   turn: NormalizedSlackTurn;
   assignment: ResolvedAssignment;
-  turnJobId: string;
-  state: SlackStateStore;
   settings?: SettingsStore;
   identity?: Pick<IdentityStore, 'resolveSlackIdentity'>;
   management?: Pick<ManagementStore, 'getActiveChangeSetProposal'>;
-  messenger: UiSurfaceMessenger;
   now?: number;
-}): Promise<void> {
+}
+
+/**
+ * The approvals this turn created that still wait: a held browser step and a
+ * workspace-change proposal. Reads only, so a turn can look them up while
+ * its reply is delivered.
+ */
+export async function findHostApprovals(input: HostApprovalTurn): Promise<HostApprovalSpec[]> {
   const { turn, assignment } = input;
-  if (!input.state.executeUiSurface) return;
-  const state = input.state as SurfaceState;
-  const kind = slackConversationKind(turn);
   // A click comes back as a message in its card's conversation, which a card
   // records only as a Channel or a DM: a group DM keeps typed approval only.
-  if (kind === 'mpim') return;
+  if (slackConversationKind(turn) === 'mpim') return [];
   const startedAt = turnStartedAtMs(turn);
   const threadTs = conversationThreadTs(turn, assignment.runtimeContract);
   const specs: HostApprovalSpec[] = [];
@@ -139,6 +134,29 @@ export async function deliverHostApprovalSurfaces(input: {
       specs.push({ kind: 'approval', approval: 'workspace_change', proposalId: proposal.proposalId });
     }
   }
+  return specs;
+}
+
+/**
+ * After a reply, post the approval this turn created (see findHostApprovals)
+ * as a host-owned card with Approve and Cancel/Stop buttons. The record is
+ * durable before the post and its id derives from the turn, so a retried
+ * delivery never posts twice. Typed "approve"/"stop" keep working; the card
+ * is an addition, not a gate. `approvals`: a lookup the turn already started.
+ */
+export async function deliverHostApprovalSurfaces(input: HostApprovalTurn & {
+  turnJobId: string;
+  state: SlackStateStore;
+  messenger: UiSurfaceMessenger;
+  approvals?: Promise<readonly HostApprovalSpec[]>;
+}): Promise<void> {
+  const { turn, assignment } = input;
+  if (!input.state.executeUiSurface) return;
+  const state = input.state as SurfaceState;
+  const kind = slackConversationKind(turn);
+  if (kind === 'mpim') return;
+  const threadTs = conversationThreadTs(turn, assignment.runtimeContract);
+  const specs = await (input.approvals ?? findHostApprovals(input));
   if (specs.length === 0) return;
 
   // One live approval card per thread and Agent: a newer one closes older ones.
@@ -316,7 +334,7 @@ export async function deliverInteractiveSurfaces(input: {
 }): Promise<void> {
   if (!input.state.executeUiSurface) return;
   const state = input.state as SurfaceState;
-  const superseded = await state.executeUiSurface({
+  const superseding = state.executeUiSurface({
     kind: 'supersede_surfaces',
     scope: {
       workspaceId: input.turn.workspaceId,
@@ -327,10 +345,14 @@ export async function deliverInteractiveSurfaces(input: {
     exceptTurnJobId: input.turnJobId,
     kinds: ['question', 'form', 'actions'],
   });
+  // The supersede spares this turn's own surfaces, so they are read beside it.
+  const listing = state.executeUiSurface({ kind: 'list_turn_surfaces', turnJobId: input.turnJobId });
+  listing.catch(() => undefined);
+  const superseded = await superseding;
   if (superseded.kind === 'surfaces') {
     for (const surface of superseded.surfaces) await redrawUiSurface(input.messenger, surface);
   }
-  const own = await state.executeUiSurface({ kind: 'list_turn_surfaces', turnJobId: input.turnJobId });
+  const own = await listing;
   if (own.kind !== 'surfaces') return;
   for (const surface of own.surfaces) {
     if (surface.namespace !== 'ui' || surface.status !== 'pending_delivery' || surface.messageTs ||

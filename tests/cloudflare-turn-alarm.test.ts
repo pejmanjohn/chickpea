@@ -62,7 +62,7 @@ const stateClass = source.statements.find((node) =>
   ts.isClassDeclaration(node) && node.name?.text === 'TagStateStore');
 assert.ok(stateClass && ts.isClassDeclaration(stateClass));
 const methodNames = [
-  'enqueueTurn', 'admitSlackTurn', 'resumeTurnAfterOAuth', 'slackInstallationRecoveryRetry',
+  'enqueueTurn', 'admitSlackTurn', 'afterSlackAdmission', 'resumeTurnAfterOAuth', 'slackInstallationRecoveryRetry',
   'maintainWork', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'admissionWakeAt', 'runnerMode', 'keepWarmTickAt',
   'testRunModelAccessBind', 'hold',
 ];
@@ -306,6 +306,7 @@ for (const { withPendingTurn, testRun } of [
       localFrontDeskDispatcher: () => undefined,
       localSlackPresentationState: () => ({}),
       runTurn: async () => { throw new Error('the preflight fails first'); },
+      startEarlyJudgment: () => undefined,
       drainGatewayInbox: async () => false,
       drainLedgerRuns: async () => ({}),
       drainSlackInteractionCleanups: async () => {},
@@ -348,7 +349,7 @@ for (const { withPendingTurn, testRun } of [
         newestEnqueuedAt: () => undefined,
       },
       gatewayInbox: { hasPending: () => false, nextPendingDueAt: () => undefined },
-      testRuns: { hasUnerased: () => testRun, nextDueAt: (now: number) => testRun ? now + 10_000 : undefined },
+      testRuns: { hasUnerased: () => testRun, nextDueAt: (now: number) => testRun ? now + 10_000 : undefined, eraseExpired: () => 0 },
     };
     let passes = 0;
     (drainingProbe as unknown as { testRuns(): Promise<{ pass(): Promise<unknown> }> }).testRuns =
@@ -554,6 +555,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
     localFrontDeskDispatcher: () => undefined,
     earliestDefined: (...values: Array<number | undefined>) =>
       values.filter((value): value is number => value !== undefined).sort((a, b) => a - b)[0],
+    startEarlyJudgment: () => undefined,
     runTurn: async (_turn: unknown, _assignment: unknown, _env: unknown, options: {
       turnId: string; replayText?: string; replayTerminalResult?: string;
       observationSignal?: AbortSignal; onObservationStarted?: () => void;
@@ -653,7 +655,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
       endTurn: (id: string, turnJobs: { markDelivered(id: string): unknown }) => turnJobs.markDelivered(id),
     },
     gatewayInbox: { hasPending: () => false, nextPendingDueAt: () => undefined },
-    testRuns: { hasUnerased: () => false, nextDueAt: () => undefined },
+    testRuns: { hasUnerased: () => false, nextDueAt: () => undefined, eraseExpired: () => 0 },
     presentations: { get: (runId: string) => ({ runId, projectionVersion: 3 }) },
     config: {
       getWorkspaceInstallation: (workspaceId: string) => ({
@@ -979,7 +981,7 @@ test('an OAuth continuation already handed to a thread runner is admitted there 
 
 function admissionHarness(runner: { refuse?: boolean } = {}) {
   const methods = [
-    'admitSlackTurn', 'admitToRunner', 'wakeAgentAtHandoff', 'showStatusAtHandoff', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan',
+    'admitSlackTurn', 'afterSlackAdmission', 'admitToRunner', 'wakeAgentAtHandoff', 'showStatusAtHandoff', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan',
     'admissionWakeAt', 'runnerMode', 'keepWarmTickAt', 'hold',
   ].map((name) => {
     const method = (stateClass as ts.ClassDeclaration).members.find((member) =>
@@ -1265,7 +1267,8 @@ function restartFixture(state: {
       hasHandoffs: read(state.handoffs),
     },
     gatewayInbox: { hasOrphanedLease: read(state.inbox) },
-    testRuns: { hasUnerased: read(state.testRun) },
+    // Due while a run's instance waits to be erased, or its text for its hour.
+    testRuns: { nextDueAt: (now: number) => state.testRun ? now + 10_000 : undefined },
   };
   let alarm = state.alarm;
   probe.ctx = { storage: {
@@ -1408,7 +1411,7 @@ function stopOutboxHarness(input: {
   runner?: boolean;
 }) {
   const methods = [
-    'deliverStopNotices', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'slackTurnSteer', 'admitSlackTurn', 'offerCreatedStop',
+    'deliverStopNotices', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'slackTurnSteer', 'admitSlackTurn', 'afterSlackAdmission', 'offerCreatedStop',
   ].map((name) => {
     const method = (stateClass as ts.ClassDeclaration).members.find((member) =>
       ts.isMethodDeclaration(member) && member.name.getText(source) === name);
@@ -1632,10 +1635,10 @@ test('a late fold over the state RPC takes follow-ups only for a head its thread
 /** The production inbox drain, with its collaborators injected. */
 function inboxDrainProbe(context: Record<string, unknown>) {
   const declarations = source.statements.filter((node) =>
-    (ts.isFunctionDeclaration(node) && ['drainGatewayInbox', 'gatewayConversationKey'].includes(node.name?.text ?? '')) ||
+    (ts.isFunctionDeclaration(node) && ['drainGatewayInbox', 'gatewayConversationKey', 'slackEventConversationKey'].includes(node.name?.text ?? '')) ||
     (ts.isVariableStatement(node) && node.declarationList.declarations.some((declaration) =>
       declaration.name.getText(source) === 'GATEWAY_INBOX_CONVERSATION_CONCURRENCY')));
-  assert.equal(declarations.length, 3);
+  assert.equal(declarations.length, 4);
   const code = ts.transpileModule(`${declarations.map((node) => node.getText(source)).join('\n')}\ndrainGatewayInbox`, {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
   }).outputText;

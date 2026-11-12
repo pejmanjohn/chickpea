@@ -112,11 +112,12 @@ test('offline execution clears live build selectors and overrides operator state
     WRANGLER_CI_OVERRIDE_NAME: 'live-worker', WORKERS_CI: '1', CLOUDFLARE_ENV: 'production',
     TAG_DB_PATH: '/operator/db', SLACK_STATE_DB_PATH: '/operator/slack', CHICKPEA_AUTH_DB_PATH: '/operator/auth',
     NODE_OPTIONS: '--test-reporter=tap', NODE_PATH: '/operator/node-modules',
+    CHICKPEA_CHECK_OWNER: 'token', CHICKPEA_SHARED_CHECK_OWNER: 'token', CHICKPEA_VERIFY_HOST_PID: '1234',
   });
   assert.ok(env.PATH.endsWith('/test/bin'));
   assert.equal(env.FLUE_NODE_BIN, process.execPath);
   for (const key of ['TAG_DB_PATH', 'SLACK_STATE_DB_PATH', 'CHICKPEA_AUTH_DB_PATH']) assert.equal(env[key], ':memory:');
-  for (const key of ['CHICKPEA_DEPLOY_TARGET', 'CHICKPEA_DEPLOY_AUTH_DB_ID', 'CHICKPEA_LOCAL_STATE_PATH', 'CHICKPEA_ENV_TARGET', 'WRANGLER_CI_OVERRIDE_NAME', 'WORKERS_CI', 'CLOUDFLARE_ENV', 'NODE_OPTIONS', 'NODE_PATH']) assert.equal(env[key], undefined);
+  for (const key of ['CHICKPEA_DEPLOY_TARGET', 'CHICKPEA_DEPLOY_AUTH_DB_ID', 'CHICKPEA_LOCAL_STATE_PATH', 'CHICKPEA_ENV_TARGET', 'WRANGLER_CI_OVERRIDE_NAME', 'WORKERS_CI', 'CLOUDFLARE_ENV', 'NODE_OPTIONS', 'NODE_PATH', 'CHICKPEA_CHECK_OWNER', 'CHICKPEA_SHARED_CHECK_OWNER', 'CHICKPEA_VERIFY_HOST_PID']) assert.equal(env[key], undefined);
   assert.equal(env.TAG_REQUIRE_LOOPBACK, '1');
 });
 
@@ -261,7 +262,7 @@ test('a step that ran the test runner records every file it reran alone, and a r
 test('proofs after the suite form one group behind a single Node build; the export stays last and alone', () => {
   const full = createRegressionPlan({ files: ['src/new-runtime.ts'], testFiles });
   const scripts = full.steps.map((step: { script?: string, file?: string }) => step.script ?? step.file ?? 'tests');
-  // The closure ceiling reads the build before anything rebuilds dist-cf.
+  // The closure check reads the build before anything rebuilds dist-cf.
   assert.deepEqual(scripts.slice(0, 5), ['verify:hygiene', 'build', 'verify:worker-closure', 'test', 'flue:build']);
   // The alarm-fallback smoke rebuilds dist-cf, so it runs alone after the group.
   assert.equal(full.steps.at(-1).script, 'verify:cf-smoke:alarm');

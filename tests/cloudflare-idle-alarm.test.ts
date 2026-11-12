@@ -14,6 +14,7 @@ import { slackTurnExecutor } from '../src/slack/turn-executor-flag.ts';
 import { TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { residencyHoldMs } from '../src/state/residency-hold.ts';
+import { localTurnEnqueue } from '../src/state/tag-state-stores.ts';
 import { turnJob as maintenanceTurnJob } from './fixtures/state-db/maintenance.ts';
 import { HOLD_ENV, HOLD_MS, holdOn, ScriptedTimers } from './helpers/residency-hold.ts';
 
@@ -48,7 +49,7 @@ const compiled = ts.transpileModule(
   `${['RELAY_BATCH_WINDOW_MS', 'KEEP_WARM_WINDOW_MS', 'KEEP_WARM_TICK_MS', 'RETENTION_SWEEP_INTERVAL_MS', 'earliestDefined'].map(moduleStatement).join('\n')}
 class StateStoreProbe { boot = { call() {} };
 ${[
-    'alarm', 'drainRelayAlarm', 'deliverStopNotices', 'admitSlackTurn', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'admissionWakeAt',
+    'alarm', 'drainRelayAlarm', 'deliverStopNotices', 'admitSlackTurn', 'afterSlackAdmission', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'admissionWakeAt',
     'runnerMode', 'keepWarmTickAt', 'dispatchingWhile', 'hold', 'threadRunnerTurn',
   ].map(stateMethod).join('\n')} }\nStateStoreProbe`,
   { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
@@ -62,13 +63,6 @@ const RETENTION_SWEEP_INTERVAL_MS = 5 * 60_000;
 const RUNNER_ENV = { SLACK_THREAD_RUNNER: {} };
 
 type TurnJob = ReturnType<typeof maintenanceTurnJob>;
-/** The host's own enqueue path (src/cloudflare.ts), which writes an Agent's ask or a setup wake. */
-const localTurnEnqueue = vm.runInNewContext(
-  ts.transpileModule(`${moduleStatement('localTurnEnqueue')}\nlocalTurnEnqueue`, {
-    compilerOptions: { target: ts.ScriptTarget.ES2022 },
-  }).outputText,
-  {},
-) as (stores: { turnJobs: TurnJobStoreLogic }) => (job: TurnJob) => Promise<unknown>;
 function hostTurnJob(id: string, turn: Partial<TurnJob['turn']>): TurnJob {
   const job = maintenanceTurnJob(id);
   return { ...job, turn: { ...job.turn, ...turn } };
@@ -243,6 +237,7 @@ function idleStore(costs: PartCosts, options: {
     testRuns: {
       hasUnerased: () => options.testRunUnerased === true,
       nextDueAt: (now: number) => options.testRunUnerased ? now + 10_000 : undefined,
+      eraseExpired: () => 0,
     },
   };
   return { ...store, reads: () => reads, sweeps: () => sweeps, cleanupChecks: () => cleanupChecks };

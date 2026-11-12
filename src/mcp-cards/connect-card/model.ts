@@ -31,7 +31,7 @@ import {
 } from '../card-model.ts';
 import { channelNames } from '../../management/channel-names.ts';
 import { plainWords } from '../check-words.ts';
-import { presentFirstAnswer, stepFirstAnswer, tryOnce, type FirstAnswer } from '../first-answer.ts';
+import { checkingView, presentFirstAnswer, stepFirstAnswer, stillAnswering, stillAnsweringOf, tryOnce, type FirstAnswer } from '../first-answer.ts';
 
 /**
  * The connect card: a setup link from connect_service or reconnect_service.
@@ -114,7 +114,18 @@ export type Event = CardEvent<Action>;
 
 export const INITIAL: State = { view: { kind: 'waiting' }, busy: false, seq: 0 };
 
-export const step = sequenced(transition);
+/**
+ * The card keeps only a first answer's run still going when it stopped
+ * waiting, so a chat that reopens reads that run once; once the run settles
+ * it keeps nothing, and comes back to its link.
+ */
+export const step = sequenced(transition, {
+  remember: (view) => view.kind === 'first_answer' ? stillAnswering(view) ?? { kind: 'settled' } : undefined,
+  resume: (view, kept) => {
+    const still = stillAnsweringOf(kept);
+    return still ? checkingView(still, { avatarUrl: 'agent' in view ? view.agent?.avatarUrl : undefined }) : undefined;
+  },
+});
 
 function transition(state: State, event: Event): Next<View> {
   const { view } = state;

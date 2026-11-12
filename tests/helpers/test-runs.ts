@@ -1,6 +1,6 @@
 /**
  * Test runs over one hosted installation's real stores: a V5 plan, a start
- * request as try_agent_once builds one, and a fake instance whose every call
+ * request as practice_agent builds one, and a fake instance whose every call
  * is recorded by instance, so a test can say which steps reached it.
  */
 import type { RuntimePlanV2 } from '../../src/agents/runtime-plan.ts';
@@ -9,6 +9,7 @@ import { installationOwnershipOf } from '../../src/config/installation-scope.ts'
 import type { PlatformEnv } from '../../src/config/state-backend.ts';
 import type { ResolvedAssignment } from '../../src/config/types.ts';
 import type { TestRunStartRequest } from '../../src/management/test-run-types.ts';
+import { practiceQuestionDigest } from '../../src/management/test-runs.ts';
 import {
   TestRunLifecycle,
   type TestRunDispatch,
@@ -56,29 +57,46 @@ let sequence = 0;
 /** A start request for one caller, with fresh IDs unless given. */
 export function startRequest(
   installation: HostedInstallation,
-  options: { organizationId?: string; actorMembershipId?: string; idempotencyKey?: string; at?: number; agentId?: string } = {},
+  options: {
+    organizationId?: string;
+    actorMembershipId?: string;
+    idempotencyKey?: string;
+    at?: number;
+    agentId?: string;
+    question?: string;
+    /** The conversation the question continues; a first question's own is minted. */
+    practiceId?: string;
+    planDigest?: string;
+  } = {},
 ): TestRunStartRequest {
   sequence += 1;
   const testRunId = `testrun_${String(sequence).padStart(4, '0')}`;
   const coordinateToken = `${'abcdefghijklmnopqrstuv'}${sequence.toString(32).padStart(4, 'a')}`.replace(/[0189]/g, 'z');
   const actorMembershipId = options.actorMembershipId ?? 'membership_caller';
+  const organizationId = options.organizationId ?? installation.organizationId;
+  const question = options.question ?? `Where is order ${sequence}?`;
   const plan = testRunPlan(installation, { testRunId, coordinateToken, actorMembershipId });
   return {
     run: {
       testRunId,
       runToken: `tr_${testRunId}`,
       coordinateToken,
-      organizationId: options.organizationId ?? installation.organizationId,
+      organizationId,
       actorMembershipId,
       agentId: options.agentId ?? ASSIGNMENT.agentId,
       idempotencyKey: options.idempotencyKey ?? `key_${testRunId}`,
+      practiceId: options.practiceId ?? null,
+      newPracticeId: `pr_${testRunId}`,
+      question,
+      questionDigest: practiceQuestionDigest(organizationId, question),
+      planDigest: options.planDigest ?? 'plan_digest_unchanged',
+      admitted: { off: ['Posting, files and images in Slack'] },
       usage: TestRunUsageRecorder.admission({
         testRunId, startedAt: options.at ?? Date.now(), workspaceId: TEST_RUN_WORKSPACE, agentId: ASSIGNMENT.agentId,
         agentLabel: ASSIGNMENT.agent.name, requesterMembershipId: actorMembershipId, requestedModel: TEST_RUN_MODEL,
         credentialRefId: null, credentialVersion: null, platformEnv: installation.env,
       }),
     },
-    message: 'Where is order 42?',
     initialData: {
       runtimePlan: JSON.parse(JSON.stringify(plan)) as unknown,
       requester: { name: 'Pat', timezone: 'UTC', askedAt: options.at ?? Date.now() },

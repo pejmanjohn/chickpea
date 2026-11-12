@@ -28,6 +28,13 @@
  * reports still queued for the pipe, so each file's process writes its reports
  * with blocking writes (scripts/lib/test-report-pipe.mjs).
  *
+ * Nothing in node:test bounds a file's process, and files print in order, so
+ * one process that never ends silences the whole pass. A file that starts and
+ * finishes no test for FILE_STALL_MS is named with what it was doing, and its
+ * processes are killed: it fails, and the pass goes on to rerun it alone
+ * (scripts/lib/test-file-watchdog.mjs). A file that still does not end stops
+ * the pass.
+ *
  * `--fail-on-retry` still reruns each failed file alone, so the log says
  * whether it is flaky or broken, but fails the run even when every rerun
  * passes. verify:regression's focused test steps use it: that command never
@@ -37,8 +44,14 @@
  *
  * The root suite, the CLI package's tests and verify:regression's focused test
  * steps all run through this runner.
+ *
+ * A pass started outside verify:host restarts itself under
+ * `verify:host --shared`: it takes one of the host's shared CPU slots, unless
+ * it already runs under one or under the exclusive reservation, and stops
+ * with its whole process group after 10 minutes without output
+ * (qa/live/operator/host-checks.md).
  */
-import { execFile } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { basename, resolve, relative } from 'node:path';
 import { finished } from 'node:stream/promises';
@@ -47,13 +60,28 @@ import { spec } from 'node:test/reporters';
 import { fileURLToPath } from 'node:url';
 import { recordFileReports } from './lib/test-file-reports.mjs';
 import { appendRunResult, RUN_RESULT_FILE_ENV } from './lib/test-run-results.mjs';
-import { runnerTestTimeoutMs } from './lib/test-timeout.mjs';
+import { describeStall, fileProcesses, watchFileProgress } from './lib/test-file-watchdog.mjs';
+import { runnerFileStallMs, runnerTestTimeoutMs } from './lib/test-timeout.mjs';
+import { hostChecksLiveness } from './lib/verification-host.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const REPORT_PIPE = new URL('./lib/test-report-pipe.mjs', import.meta.url).href;
+const VERIFY_HOST = fileURLToPath(new URL('./verify-host.mjs', import.meta.url));
 
 const CONCURRENCY = 8;
 const MAX_RETRIED_FILES = CONCURRENCY;
+// Each file's process runs without V8's two background code compilers. Node
+// 24.22.1's process.exit(), which --test-force-exit calls after a file's last
+// test, can deadlock: it joins V8's worker threads while a background Maglev
+// or Sparkplug compile on one of them waits for the exiting main thread to
+// collect garbage (nodejs/node#64274). Every hang captured on this host had
+// one of these two waiting; on a busy host the same file hung 5 times in
+// 1,500 runs with them and 0 in 1,500 without (2026-11-12).
+const CHILD_V8_FLAGS = ['--no-maglev', '--no-concurrent-sparkplug'];
+// How long a stalled file whose processes were killed may take to end before
+// the pass is stopped: killed processes end at once, so a file still running
+// is held by a process outside its tree.
+const STOPPED_FILE_GRACE_MS = 30_000;
 // Files measured at 5 s or more inside the 8-way pass, slowest first. Split
 // parts (`name-2`) share their base name's position. A stale entry only costs
 // scheduling time, never coverage.
@@ -61,6 +89,7 @@ const SLOW_FIRST = [
   'environment-registry', 'upgrade-cli', 'verification-record', 'node-installer-bootstrap',
   'flue-progressive-characterization', 'environment-preflight', 'deploy-with-epilogue',
   'live-contract-coordinator', 'environment-wait', 'chickpea-art', 'images-openai-client-workerd', 'admin-visual-fixture',
+  'verification-host-shared',
 ];
 
 const args = process.argv.slice(2);
@@ -69,19 +98,24 @@ while (['--typecheck', '--fail-on-retry'].includes(args[0])) options.add(args.sh
 const withTypecheck = options.has('--typecheck');
 const failOnRetry = options.has('--fail-on-retry');
 const files = args.map((file) => resolve(file));
-// Out of the environment before any test process starts, so a runner that a
-// test starts cannot write into this pass's result file.
-const resultFile = process.env[RUN_RESULT_FILE_ENV];
-delete process.env[RUN_RESULT_FILE_ENV];
 if (files.length === 0) {
   console.error('Usage: node scripts/run-tests.mjs [--typecheck] [--fail-on-retry] <test files...>');
   process.exitCode = 2;
+} else if (hostChecksLiveness(Number(process.env.CHICKPEA_VERIFY_HOST_PID)) !== 'live') {
+  const pass = spawnSync(process.execPath, [VERIFY_HOST, '--shared', '--', process.execPath, fileURLToPath(import.meta.url), ...process.argv.slice(2)], { stdio: 'inherit' });
+  process.exitCode = pass.status ?? 1;
 } else {
-  const result = await main(longestFirst(files));
+  // Out of the environment before any test process starts, so a runner that a
+  // test starts cannot write into this pass's result file.
+  const resultFile = process.env[RUN_RESULT_FILE_ENV];
+  delete process.env[RUN_RESULT_FILE_ENV];
+  const { stopped, ...result } = await main(longestFirst(files));
   if (resultFile) {
     appendRunResult(resultFile, { ...result, retries: result.retries.map(({ file, alone }) => ({ file: relative(ROOT, file), alone })) });
   }
   process.exitCode = result.exitCode;
+  // A stopped pass leaves node:test holding the stuck file's output pipe open, which would keep this process alive.
+  if (stopped) process.exit();
 }
 
 function slowRank(file) {
@@ -96,24 +130,25 @@ function longestFirst(list) {
     .map(({ file }) => file);
 }
 
-/** Resolves to the pass's exit code and every file it reran alone, with that rerun's outcome. */
+/** Resolves to the pass's exit code, every file it reran alone with that rerun's outcome, and whether the watchdog stopped it. */
 async function main(list) {
   const controller = new AbortController();
   const typecheck = withTypecheck ? startTypecheck(controller) : undefined;
-  const failed = await runFiles(list, CONCURRENCY, controller.signal);
+  const { failed, stopped } = await runFiles(list, CONCURRENCY, controller.signal);
   const result = (exitCode, retries = [], failedOnRetry = false) => ({ exitCode, retries, failedOnRetry });
-  if (typecheck && (await typecheck) !== 0) return result(1);
+  // A stopped pass must say so on every path out: the caller exits on it, and would otherwise stay alive on the stuck file's pipe.
+  if ((typecheck && (await typecheck) !== 0) || stopped) return { ...result(1), stopped };
   if (failed.length === 0) return result(0);
   if (failed.length > MAX_RETRIED_FILES) {
     console.error(`\n[run-tests] ${failed.length} test files failed; not retrying.`);
     return result(1);
   }
   console.log(`\n[run-tests] ${failed.length} file(s) failed under ${CONCURRENCY}-way concurrency; rerunning each alone once:\n${listing(failed)}`);
-  const stillFailing = await runFiles(failed, 1);
+  const { failed: stillFailing, stopped: stoppedAlone } = await runFiles(failed, 1);
   const retries = failed.map((file) => ({ file, alone: stillFailing.includes(file) ? 'fail' : 'pass' }));
   if (stillFailing.length > 0) {
     console.error(`\n[run-tests] still failing alone:\n${listing(stillFailing)}`);
-    return result(1, retries);
+    return { ...result(1, retries), stopped: stoppedAlone };
   }
   if (failOnRetry) {
     console.error(`\n[run-tests] PASSED ONLY ON RETRY: ${failed.length} file(s) failed under ${CONCURRENCY}-way concurrency and passed alone; --fail-on-retry fails the run on any retry:\n${listing(failed)}`);
@@ -136,25 +171,41 @@ function startTypecheck(controller) {
   }));
 }
 
+/** Resolves to the files that failed, and whether the pass was stopped for a file nothing could end. */
 async function runFiles(list, concurrency, signal) {
   const failed = new Set();
   // A child spawned by node:test inherits this marker and would treat the
   // files here as already-running test children, reporting nothing. Clear it
   // so the runner also works when a test launches it.
   delete process.env.NODE_TEST_CONTEXT;
+  const stuck = new AbortController();
   const stream = run({
-    files: list, concurrency, execArgv: ['--import', 'tsx', '--import', REPORT_PIPE],
-    timeout: runnerTestTimeoutMs(list), forceExit: true, ...(signal ? { signal } : {}),
+    files: list, concurrency, execArgv: [...CHILD_V8_FLAGS, '--import', 'tsx', '--import', REPORT_PIPE],
+    timeout: runnerTestTimeoutMs(list), forceExit: true, signal: signal ? AbortSignal.any([signal, stuck.signal]) : stuck.signal,
   });
   // Every failure event names its file, including a file whose process exited
   // non-zero before reporting (a killed worker or a crash at load).
   stream.on('test:fail', (event) => {
     if (event.file) failed.add(resolve(event.file));
   });
+  const stallMs = runnerFileStallMs(list);
+  const unwatch = watchFileProgress(stream, list, {
+    stallMs,
+    graceMs: Math.min(STOPPED_FILE_GRACE_MS, stallMs),
+    onStall: (stall) => {
+      failed.add(stall.file);
+      stopStalledFile(stall, stallMs);
+    },
+    onStuck: ({ file }) => {
+      console.error(`\n[run-tests] ${relative(process.cwd(), file)} has still not ended after its processes were stopped: something outside them holds its output. Stopping the pass.`);
+      stuck.abort(new Error(`${file} never ended`));
+    },
+  });
   const reports = recordFileReports(stream);
   const report = stream.compose(spec);
   report.pipe(process.stdout, { end: false });
   await finished(report);
+  unwatch();
   const passed = list.filter((file) => !failed.has(file));
   const silent = passed.filter((file) => reports.reported(file) === 0);
   if (silent.length > 0) {
@@ -166,7 +217,28 @@ async function runFiles(list, concurrency, signal) {
     console.error(`\n[run-tests] ${incomplete.length} file(s) ended before all of their tests reported; treating each as failed:\n${listing(incomplete, reports.shortfall)}`);
     for (const file of incomplete) failed.add(file);
   }
-  return [...failed];
+  return { failed: [...failed], stopped: stuck.signal.aborted };
+}
+
+/** Names a stalled file and what it was doing, then kills its processes so node:test fails it and moves on. */
+function stopStalledFile(stall, stallMs) {
+  let processes = [];
+  let listed;
+  try {
+    processes = fileProcesses(stall.file);
+    // node:test passes each file's process every runner flag; its program and last argument, the file, say enough.
+    const short = (command) => (command.length > 200 ? `${basename(command.split(' ')[0])} … ${command.split(' ').at(-1)}` : command);
+    listed = processes.map(({ pid, stat, elapsed, cpu, command }) => `\n    ${pid} ${stat} ${elapsed} ${cpu} ${short(command)}`).join('') || '\n    none found';
+  } catch (error) {
+    listed = `\n    could not list them: ${error.message}`;
+  }
+  const graceS = Math.min(STOPPED_FILE_GRACE_MS, stallMs) / 1000;
+  console.error(`\n[run-tests] HUNG: ${relative(process.cwd(), stall.file)} started and finished no test for ${Math.round(stall.idleMs / 1000)} s (limit ${stallMs / 1000} s). ${describeStall(stall)}`
+    + `\n  Its processes (pid, state, elapsed, CPU, command):${listed}`
+    + `\n  ${processes.length > 0 ? 'Stopping them; the file fails' : 'None to stop; the file fails'}, and the pass stops if it has not ended in ${graceS} s.`);
+  for (const { pid } of processes) {
+    try { process.kill(pid, 'SIGKILL'); } catch {}
+  }
 }
 
 function listing(paths, detail) {

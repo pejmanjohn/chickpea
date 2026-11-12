@@ -44,6 +44,16 @@ export function readHostChecksOwners({ files = HOST_CHECK_SLOTS } = {}) {
   });
 }
 
+/** The slot file whose live owner env's CHICKPEA_CHECK_OWNER names, or undefined: the reservation a nested command runs under. */
+export function inheritedHostChecks({ files = HOST_CHECK_SLOTS, env = process.env } = {}) {
+  const token = env.CHICKPEA_CHECK_OWNER;
+  if (!token) return undefined;
+  return files.find((file) => {
+    const owner = readSlot(file);
+    return owner?.token === token && hostChecksLiveness(owner.pid) === 'live';
+  });
+}
+
 export class HostChecksBusyError extends Error {
   constructor(owners, now = Date.now()) {
     const held = owners.map((owner) => {

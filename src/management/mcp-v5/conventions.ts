@@ -244,6 +244,20 @@ export function mcpErrorText(error: McpToolError): string {
   ].filter((line): line is string => line !== undefined).join('\n');
 }
 
+/**
+ * A listed output schema that accepts fields it does not name. A client may
+ * check each result against the schema it listed and keep that listing, so
+ * an `additionalProperties: false` anywhere in it would refuse every result
+ * once a release adds a field there (`tools` on `get_agent`). The server still
+ * checks its own results strictly before they leave (tools.ts).
+ */
+export function openOutputSchema<T>(schema: T): T {
+  if (Array.isArray(schema)) return schema.map(openOutputSchema) as T;
+  if (typeof schema !== 'object' || schema === null) return schema;
+  return Object.fromEntries(Object.entries(schema).flatMap(([key, value]) =>
+    key === 'additionalProperties' && value === false ? [] : [[key, openOutputSchema(value)]])) as T;
+}
+
 export function mcpErrorResult(error: McpToolError) {
   return {
     content: [{ type: 'text' as const, text: mcpErrorText(error) }],
@@ -255,7 +269,8 @@ export function mcpErrorResult(error: McpToolError) {
 /**
  * A success: `structuredContent` matches the tool's `outputSchema`, and the
  * text block carries the same JSON for a client that passes only `content` to
- * its model, so no handle a follow-up call needs is lost there. A result a
+ * its model, so no handle a follow-up call needs is lost there. A tool may
+ * give its own `text`, which must carry those handles too. A result a
  * card draws names its tool in `_meta`, which only the card reads: hosts do
  * not say which tool a result came from. The tokens a card holds go there too.
  * `lead` comes before the JSON, for a card host's model: what the card shows.
@@ -263,11 +278,12 @@ export function mcpErrorResult(error: McpToolError) {
 export function mcpSuccessResult<T extends Record<string, unknown>>(
   structured: T,
   card?: { tool: string; held?: HeldTokens | undefined; lead?: string | undefined },
+  text: string = JSON.stringify(structured),
 ) {
   return {
     content: [
       ...card?.lead ? [{ type: 'text' as const, text: card.lead }] : [],
-      { type: 'text' as const, text: JSON.stringify(structured) },
+      { type: 'text' as const, text },
     ],
     structuredContent: structured,
     ...(card ? { _meta: { 'chickpea/tool': card.tool, ...card.held ? { 'chickpea/held': card.held } : {} } } : {}),

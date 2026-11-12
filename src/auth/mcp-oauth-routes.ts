@@ -570,8 +570,10 @@ export function renderMcpConsentPage(input: {
   const [heading, line] = known
     ? [`Allow ${known} to manage your workspace?`, `${known} will act as you in this Chickpea workspace. It can do only what you can do.`]
     : ['Allow workspace management?', 'An app is asking to manage this Chickpea workspace as you. It signs in as you and can only do what you can do.'];
+  const reader = known ?? 'The app';
   return brandPage('Authorize Chickpea', `      <h1>${heading}</h1>
       <p>${line}</p>
+      <p>${reader} can read practice answers, your own direct messages with Agents, and Agents' conversations in public Slack Channels. These can include information from services your team connected. ${reader} keeps what it reads under your account's settings there.</p>
       <dl><dt>App</dt><dd>${app}</dd>${domain}<dt>Permission</dt><dd>${escapeHtml(permission)}</dd></dl>
       <form method="post" action="/auth/mcp/consent">
         <input type="hidden" name="oauth_query" value="${escapeHtml(input.oauthQuery)}">

@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
 
 import { normalizeContext, type JsonObject } from '@earendil-works/pi-ai';
-import { AgentRunError, init, instrument, useModel, useTool, type FlueExecutionInterceptor } from '@flue/runtime';
+import { init, instrument, useModel, useTool, type FlueExecutionInterceptor } from '@flue/runtime';
 import { start } from '@flue/runtime/node';
 import * as v from 'valibot';
 
@@ -46,11 +46,6 @@ import { createWebTurn, WEB_READS_PER_TURN, WEB_SEARCHES_PER_TURN, type WebTurnS
 import { genericSemanticDescriptor } from '../src/activity/semantic.ts';
 import { runFeeInterceptor } from '../src/config/run-fee-interceptor.ts';
 import { CHICKPEA_TEST_TURN_AGENT_NAME } from '../src/agents/names.ts';
-import {
-  TEST_TURN_TOOL_CALL_LIMIT,
-  TEST_TURN_TOOL_LIMIT_MESSAGE,
-  testTurnToolCallInterceptor,
-} from '../src/agents/test-turn-limits.ts';
 import type { PlatformEnv } from '../src/config/state-backend.ts';
 import { ANTHROPIC_COMPAT_PROVIDER_ID } from '../src/model-catalog/provider-alias.ts';
 import { SlackCanvasService } from '../src/slack/canvases/service.ts';
@@ -65,7 +60,6 @@ import {
 import { createSlackCreateChannelTool } from '../src/slack/channel-creation/tools.ts';
 import { GroupDmReceipts } from '../src/slack/group-dm/receipts.ts';
 import { SlackGroupDmService } from '../src/slack/group-dm/service.ts';
-import { testRunSettlement } from '../src/state/test-run-instance.ts';
 import { createSlackGroupDmTool } from '../src/slack/group-dm/tools.ts';
 import { textCell } from '../src/slack/lists/schema.ts';
 import { SlackListsService } from '../src/slack/lists/service.ts';
@@ -1251,19 +1245,13 @@ for (const [name, env, port] of [
   });
 }
 
-/** The test run's limit where app.ts registers it, outside the run fees, or (to show why) inside them. */
-function testTurnInterceptors(t: TestContext, limit: 'outside' | 'inside', refusals: string[]) {
+/** A practice run's model access and run fees, as app.ts registers them for every agent. */
+function testTurnInterceptors(t: TestContext) {
   const modelAccess = createModelAccessInterceptor({
     lookup: async (context) => replyRun(hostedEnv())(context.submissionId),
     installationGrants: async () => [],
   });
-  const recordsRefusals: FlueExecutionInterceptor = (operation, context, next) =>
-    testTurnToolCallInterceptor(operation, context, next).catch((error: unknown) => {
-      if (error instanceof Error && error.message === TEST_TURN_TOOL_LIMIT_MESSAGE) refusals.push(error.message);
-      throw error;
-    });
-  const order = limit === 'outside' ? [recordsRefusals, runFeeInterceptor] : [runFeeInterceptor, recordsRefusals];
-  for (const interceptor of [modelAccess, ...order]) {
+  for (const interceptor of [modelAccess, runFeeInterceptor]) {
     t.after(instrument({ key: Symbol('test-turn-fees'), interceptor, observe() {}, dispose() {} }));
   }
 }
@@ -1289,79 +1277,18 @@ async function testTurnReply(id: string): Promise<string> {
 
 const freeReads = (count: number) => callsTools(...Array.from({ length: count }, () => 'read_slack_thread'));
 
-test('a test run\'s 26th tool call is refused to the model before it runs, and posts no task fee', { timeout: 20_000 }, async (t) => {
+test('a practice run makes as many calls as a direct message would, and pays the fees that direct message would', { timeout: 20_000 }, async (t) => {
   const posts = hostedPort(t);
-  const refusals: string[] = [];
-  testTurnInterceptors(t, 'outside', refusals);
-  // 25 calls that are no task, then the run's first task call as its 26th.
-  const { sent } = scriptedProvider([freeReads(TEST_TURN_TOOL_CALL_LIMIT), callsTools('read_slack_channel'), answers]);
+  testTurnInterceptors(t);
+  const script = () => scriptedProvider([freeReads(40), callsTools('read_slack_channel'), answers]);
+  script();
   ran.length = 0;
-
-  assert.equal(await testTurnReply('test-turn-limit'), 'done', 'the model read the refusal and answered');
-  assert.equal(sent.length, 3);
-  assert.deepEqual(ran, Array.from({ length: TEST_TURN_TOOL_CALL_LIMIT }, () => 'read_slack_thread'));
-  assert.deepEqual(refusals, [TEST_TURN_TOOL_LIMIT_MESSAGE]);
-  assert.deepEqual(admissions, [], 'the refused call never asked to become a task');
-  assert.deepEqual(tiers(posts), ['chat:posted']);
-});
-
-test('a test run that calls a tool again after its refusal gets one more model request, then the attempt ends', { timeout: 20_000 }, async (t) => {
-  hostedPort(t);
-  const refusals: string[] = [];
-  testTurnInterceptors(t, 'outside', refusals);
-  // Refused at its 26th call, it calls again instead of answering: no request follows that one.
-  const { sent } = scriptedProvider([
-    freeReads(TEST_TURN_TOOL_CALL_LIMIT), callsTools('read_slack_channel'), callsTools('read_slack_thread'), answers,
-  ]);
-  ran.length = 0;
-
-  const ended = await testTurnReply('test-turn-ended').then(() => undefined, (error: unknown) => error);
-  assert.ok(ended instanceof AgentRunError);
-  // Its settlement, as the store reads it: the model's own doing, so nothing is credited back.
-  assert.deepEqual(testRunSettlement({ outcome: 'failed', error: ended.cause }, ended.submissionId, undefined),
-    { kind: 'failed', failure: 'failed', creditBack: null });
-  assert.equal(sent.length, 3, 'the request after the second refusal is never sent');
-  assert.deepEqual(refusals, [TEST_TURN_TOOL_LIMIT_MESSAGE, TEST_TURN_TOOL_LIMIT_MESSAGE]);
-  assert.equal(ran.length, TEST_TURN_TOOL_CALL_LIMIT);
-});
-
-test('calls a test run makes in parallel cannot pass its limit together', { timeout: 20_000 }, async (t) => {
-  hostedPort(t);
-  const refusals: string[] = [];
-  testTurnInterceptors(t, 'outside', refusals);
-  scriptedProvider([freeReads(TEST_TURN_TOOL_CALL_LIMIT + 2), answers]);
-  ran.length = 0;
-
-  assert.equal(await testTurnReply('test-turn-parallel'), 'done');
-  assert.equal(ran.length, TEST_TURN_TOOL_CALL_LIMIT);
-  assert.equal(refusals.length, 2);
-});
-
-test('only a test run is limited: the same calls from another agent all run', { timeout: 20_000 }, async (t) => {
-  hostedPort(t);
-  const refusals: string[] = [];
-  testTurnInterceptors(t, 'outside', refusals);
-  scriptedProvider([freeReads(TEST_TURN_TOOL_CALL_LIMIT + 1), answers]);
-  ran.length = 0;
-
-  assert.deepEqual(await slackTurn('test-turn-other-agent'), { text: 'done' });
-  assert.equal(ran.length, TEST_TURN_TOOL_CALL_LIMIT + 1);
-  assert.deepEqual(refusals, []);
-});
-
-test('registered inside the run fees, the same refusal would post a task fee, so app.ts registers it outside them', { timeout: 20_000 }, async (t) => {
-  const posts = hostedPort(t);
-  const refusals: string[] = [];
-  testTurnInterceptors(t, 'inside', refusals);
-  scriptedProvider([freeReads(TEST_TURN_TOOL_CALL_LIMIT), callsTools('read_slack_channel'), answers]);
-  ran.length = 0;
-
-  assert.equal(await testTurnReply('test-turn-limit-inside'), 'done');
-  assert.deepEqual(refusals, [TEST_TURN_TOOL_LIMIT_MESSAGE]);
-  assert.deepEqual(tiers(posts), ['chat:posted', 'task:posted'], 'a fee for a call that never ran');
-
-  const app = readFileSync(new URL('../src/app.ts', import.meta.url), 'utf8');
-  const at = (key: string) => app.indexOf(`Symbol.for('${key}')`);
-  assert.ok(at('chickpea.test-turn-tool-calls') > 0 && at('chickpea.test-turn-tool-calls') < at('chickpea.run-fees'),
-    'app.ts registers the test run limit before, and so outside, the run fees');
+  assert.equal(await testTurnReply('test-turn-unlimited'), 'done');
+  assert.deepEqual(ran, [...Array.from({ length: 40 }, () => 'read_slack_thread'), 'read_slack_channel'], 'every call ran, none refused');
+  const practiced = tiers(posts);
+  posts.length = 0;
+  script();
+  assert.deepEqual(await slackTurn('test-turn-as-a-dm'), { text: 'done' });
+  assert.deepEqual(practiced, tiers(posts), 'the same fees as a direct message making the same calls');
+  assert.deepEqual(practiced, ['chat:posted', 'task:posted']);
 });

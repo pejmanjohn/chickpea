@@ -9,6 +9,7 @@ import type { TurnLatencyContext } from '../observability/runtime-latency.ts';
 import { isStateStoreDisconnect } from '../config/cf-state-proxies.ts';
 import { reportInteractiveDelivery } from '../config/hosted-activity.ts';
 import { installationScopeOf } from '../config/installation-scope.ts';
+import { endTurnReads } from '../config/turn-reads.ts';
 import { readSandboxTurnProgress, type CodingTaskStopReport } from '../sandbox/coding-task-stop.ts';
 import { slackTurnSandboxKey } from '../sandbox/thread-key.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
@@ -45,6 +46,7 @@ import {
   deliverAgentFailureFinal,
   sanitizeError,
   type runTurn,
+  type startEarlyJudgment,
   type RunTurnOptions,
   type SlackStopEnding,
 } from './run-turn.ts';
@@ -167,6 +169,12 @@ export interface TurnExecutionPorts {
    */
   sandboxes(sandboxKey: string): Array<() => SandboxTurnReader>;
   runTurn: typeof runTurn;
+  /**
+   * Starts the Clef calls of the turn's judgment before its installation and
+   * fold, for `runTurn` to adopt. Absent, the judgment starts them where it
+   * judges. The model classifier always starts there.
+   */
+  startJudgment?: typeof startEarlyJudgment;
 }
 
 /** What a turn's recovery reads from its coding Sandbox. */
@@ -240,6 +248,11 @@ export async function executeTurnJob(
   if (!job.turn.interactionIntent && job.progress.interactionIntent) {
     job.turn.interactionIntent = job.progress.interactionIntent;
   }
+  // The judgment's Clef calls go now, beside the installation's resolution
+  // and the fold claim, instead of after them.
+  const earlyJudgment = stoppedBeforeDispatch
+    ? undefined
+    : ports.startJudgment?.(job.turn, job.assignment, ports.env);
   let installationContext: SlackInstallationExecutionContext;
   try {
     installationContext = await ports.resolveInstallation(effectiveTurnSlackInstallationId(job.turn), job.assignment.agentId);
@@ -305,6 +318,8 @@ export async function executeTurnJob(
       threadFileIds?: readonly string[],
       workspaceChangeTools?: boolean,
     ) => {
+      // The turn's prefetched reads answer its preparation only.
+      endTurnReads();
       try {
         return await ports.turnJobs.prepareFlueDispatch(
           job.id,
@@ -525,6 +540,7 @@ export async function executeTurnJob(
       ...(ports.statusRegistry ? { statusRegistry: ports.statusRegistry } : {}),
       ...(runtimePlanDecision ? { runtimePlanDecision } : {}),
       ...(options.agentWake ? { admissionAgentWake: options.agentWake } : {}),
+      ...(earlyJudgment ? { earlyJudgment } : {}),
       onRuntimePlan: async (candidate) => {
         const decision = await ports.turnJobs.freezeRuntimePlan(job.id, candidate);
         frozenPlan = decision.runtimePlan;

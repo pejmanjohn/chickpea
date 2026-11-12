@@ -5,7 +5,7 @@ import { tagStateStub } from './config/state-rpc.ts';
 import { instrument, type FlueObservation } from '@flue/runtime';
 import { Hono, type Context } from 'hono';
 
-import { createAdminRoutes } from './admin/routes.ts';
+import { ADMIN_ROUTE_PATHS } from './admin/route-paths.ts';
 import { CHICKPEA_SLACK_AGENT_NAME } from './agents/names.ts';
 import {
   getConfigStore,
@@ -23,8 +23,6 @@ import type { OAuthContinuation } from './connections/types.ts';
 import { BETTER_AUTH_PUBLIC_PATHS, MCP_OAUTH_PATHS } from './auth/public-auth-paths.ts';
 import { lazyRoutes } from './http/lazy-routes.ts';
 import { recoveryOnlyGate } from './auth/request-auth-control.ts';
-import { createManagementSetupRoutes } from './management/setup-routes.ts';
-import { createConnectRoutes } from './management/connect-routes.ts';
 import { activityStatusForObservation } from './activity/status.ts';
 import { noteAgentAuthoringActivation } from './management/workspace-change-tools.ts';
 import {
@@ -40,7 +38,7 @@ import {
   agentFailureDiagnosticsInterceptor,
   observeAgentResultDiagnostics,
 } from './slack/agent-failure-diagnostics.ts';
-import { slackToolBoundaryFoldInterceptor } from './slack/follow-up-fold.ts';
+import { observeSlackAnswerStep, slackToolBoundaryFoldInterceptor } from './slack/follow-up-fold.ts';
 import {
   observePresentationToolPolicy,
   presentationToolPolicyInterceptor,
@@ -54,9 +52,11 @@ import { ModelStepMarks } from './observability/runtime-latency.ts';
 import { readStagedSlackObservationTarget } from './agents/turn-input.ts';
 import { modelAccessInterceptor } from './agents/model-access-lookup.ts';
 import { runFeeInterceptor } from './config/run-fee-interceptor.ts';
-import { testTurnToolCallInterceptor } from './agents/test-turn-limits.ts';
 import { observeModelAccess } from './config/model-access.ts';
 import { workspaceRegistryInterceptor } from './sandbox/workspace-registry.ts';
+import { emitMcpConnectionUnavailable } from './config/mcp-unavailable.ts';
+import { mcpToolResultBoundInterceptor } from './config/mcp-tool-result-bound.ts';
+import { providerStreamErrorTurnInterceptor } from './model-compat/provider-stream-errors.ts';
 import {
   observeResponseMetadata,
   responseMetadataInterceptor,
@@ -151,7 +151,7 @@ instrument({
 instrument({
   key: Symbol.for('chickpea.slack-tool-boundary-fold'),
   interceptor: slackToolBoundaryFoldInterceptor,
-  observe() {},
+  observe: observeSlackAnswerStep,
   dispose() {},
 });
 
@@ -207,10 +207,27 @@ function slackTurnJobIdOf({ instanceId, submissionId }: FlueObservation): string
   return readStagedSlackObservationTarget(instanceId, submissionId)?.turnJobId;
 }
 
-// Outside the run fees, so a test run's call refused past its limit posts no fee.
+// Flue drops an optional MCP connection it cannot connect with only a warning.
 instrument({
-  key: Symbol.for('chickpea.test-turn-tool-calls'),
-  interceptor: testTurnToolCallInterceptor,
+  key: Symbol.for('chickpea.mcp-connection-unavailable'),
+  interceptor: async (_operation, _context, next) => next(),
+  observe: (event) => emitMcpConnectionUnavailable(event),
+  dispose() {},
+});
+
+// Every MCP tool result the model sees is at most 128 KiB.
+instrument({
+  key: Symbol.for('chickpea.mcp-tool-result-bound'),
+  interceptor: mcpToolResultBoundInterceptor,
+  observe() {},
+  dispose() {},
+});
+
+// The code of an error a provider sent inside a model's stream, for the
+// agent model turn failed line.
+instrument({
+  key: Symbol.for('chickpea.provider-stream-error-turn'),
+  interceptor: providerStreamErrorTurnInterceptor,
   observe() {},
   dispose() {},
 });
@@ -300,14 +317,25 @@ app.route('/', lazyRoutes('Better Auth routes', BETTER_AUTH_PUBLIC_PATHS, async 
   (await import('./auth/better-auth-runtime.ts')).createBetterAuthRuntimeRoutes()));
 app.route('/', lazyRoutes('MCP OAuth routes', MCP_OAUTH_PATHS, async () =>
   (await import('./auth/mcp-oauth-routes.ts')).createMcpOAuthRuntimeRoutes({ productTelemetry: productTelemetryForRequest })));
-app.route('/', createManagementSetupRoutes({
-  productTelemetry: productTelemetryForRequest,
-  wakeAgent: admitSetupWake,
-}));
-app.route('/', createConnectRoutes());
-app.route('/', createAdminRoutes({
-  onOAuthContinuationReady: resumeOAuthContinuation,
-  productTelemetry: productTelemetryForRequest,
+// Admin, the setup links and the connect pages load on their first request
+// too. They share one app, in this order, because a setup link's OAuth return
+// falls through to Admin's.
+app.route('/', lazyRoutes('Admin routes', ADMIN_ROUTE_PATHS, async () => {
+  const [{ createManagementSetupRoutes }, { createConnectRoutes }, { createAdminRoutes }] = await Promise.all([
+    import('./management/setup-routes.ts'),
+    import('./management/connect-routes.ts'),
+    import('./admin/routes.ts'),
+  ]);
+  return new Hono()
+    .route('/', createManagementSetupRoutes({
+      productTelemetry: productTelemetryForRequest,
+      wakeAgent: admitSetupWake,
+    }))
+    .route('/', createConnectRoutes())
+    .route('/', createAdminRoutes({
+      onOAuthContinuationReady: resumeOAuthContinuation,
+      productTelemetry: productTelemetryForRequest,
+    }));
 }));
 app.route('/', createAgentSlackAppRoutes({ serveDelivery: serveAgentAppSlackDelivery }));
 app.route('/channels/slack', channel.route());

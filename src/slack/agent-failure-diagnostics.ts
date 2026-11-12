@@ -1,13 +1,14 @@
 import type { FlueEventContext, FlueExecutionInterceptor, FlueObservation } from '@flue/runtime';
 
 import { CHICKPEA_SLACK_AGENT_NAME } from '../agents/names.ts';
+import { takeProviderStreamErrorCode } from '../model-compat/provider-stream-errors.ts';
 import { opaqueId } from '../work/admission.ts';
 
 const ERROR_KINDS = new Set([
   'AgentRunError', 'BoundedObservationAbortedError', 'AlarmTurnBudgetYield',
   'Error', 'TypeError', 'RangeError', 'ReferenceError', 'SyntaxError',
   'AggregateError', 'AbortError', 'TimeoutError', 'FlueError',
-  'AgentPromptFailure', 'AgentObservationYield', 'StateStoreUnavailable',
+  'AgentPromptFailure', 'AgentObservationYield', 'StateStoreUnavailable', 'AgentReplyReadInterrupted',
   'StateStoreDisconnectedError', 'SlackPresentationStateError',
   'AgentInstanceNotFoundError', 'WorkStateError',
   'SlackTransportError', 'PersistedSlackDeliveryError',
@@ -164,8 +165,13 @@ function serializedProviderFailure(message: unknown): Record<string, string | nu
       ...providerErrorBodyFacts(remainder),
     };
   }
-  const streamCode = /^(?:Error Code )?(server_error|rate_limit_exceeded|context_length_exceeded): /.exec(message);
-  if (streamCode) return { providerFailureKind: 'provider_stream_error', providerErrorCode: streamCode[1]! };
+  // pi-ai writes an unnamed stream error as `Error Code <code>: <message>`,
+  // and a failed response's code as `<code>: <message>`. Any code is kept,
+  // such as `invalid_prompt`; without the prefix only a snake_case one, so
+  // prose such as `private: ...` names none. The message is never kept.
+  const streamCode = /^(?:Error Code ([a-z][a-z0-9_]{0,39})|([a-z][a-z0-9]*(?:_[a-z0-9]+)+)): /.exec(message);
+  const code = streamCode?.[1] ?? streamCode?.[2];
+  if (code && code.length <= 40) return { providerFailureKind: 'provider_stream_error', providerErrorCode: code };
   const transportErrors: Record<string, string> = {
     'Network connection lost.': 'network_connection_lost',
     'fetch failed': 'fetch_failed',
@@ -243,6 +249,9 @@ export function observeAgentResultDiagnostics(
       value !== undefined && Number.isSafeInteger(value) && value >= 0 ? value : null;
     const errorCode = event.response.error?.code ?? event.response.error?.type;
     const status = event.response.error?.meta?.status;
+    const messageFacts = failed ? serializedProviderFailure(event.response.error?.message) : {};
+    // The code of an error OpenAI sent inside the stream, which the message lacks.
+    const streamErrorCode = takeProviderStreamErrorCode(event.turnId);
     console.error(failed ? '[chickpea] agent model turn failed:' : '[chickpea] agent model returned no text:', {
       submissionRef: event.submissionId ? opaqueId('fluesubmission', event.submissionId) : null,
       finishReason: finishReason(event.response.finishReason),
@@ -255,7 +264,9 @@ export function observeAgentResultDiagnostics(
       hasThinking: content.some((block) => block.type === 'thinking'),
       hasToolCalls,
       ...(failed ? {
-        ...serializedProviderFailure(event.response.error?.message),
+        ...(messageFacts.providerFailureKind === undefined && streamErrorCode
+          ? { providerFailureKind: 'provider_stream_error', providerErrorCode: streamErrorCode }
+          : messageFacts),
         errorCode: errorCode === undefined ? null : MODEL_ERROR_CODES.has(errorCode) ? errorCode : 'other',
         status: typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599
           ? status : null,

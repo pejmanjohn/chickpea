@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { ADMIN_PATH, adminOrigin } from '../admin-links.ts';
 import { offNextStep, type ChangeResult } from './changes.ts';
-import { mcpErrorText, type McpToolError } from './conventions.ts';
+import { mcpErrorText, openOutputSchema, type McpToolError } from './conventions.ts';
 import { cardRefusalOutput } from './schemas.ts';
 
 /**
@@ -88,7 +88,7 @@ let refusalSchema: Record<string, unknown> | undefined;
  */
 export function withRefusalOutput(schema: Record<string, unknown>): Record<string, unknown> {
   const { $schema, ...own } = schema;
-  refusalSchema ??= z.toJSONSchema(cardRefusalOutput, { io: 'output', target: 'draft-2020-12' }) as Record<string, unknown>;
+  refusalSchema ??= openOutputSchema(z.toJSONSchema(cardRefusalOutput, { io: 'output', target: 'draft-2020-12' }) as Record<string, unknown>);
   const { $schema: _same, ...refusal } = refusalSchema;
   return { ...$schema === undefined ? {} : { $schema }, type: 'object', anyOf: [own, refusal] };
 }
@@ -104,7 +104,7 @@ export interface HeldTokens {
  * changes when the person presses, and the model's own words would not, so
  * it says one sentence and waits instead of listing what the card shows.
  */
-export const CARD_SHOWS_IT = 'The card above shows this to the person, and they act on it there. Reply in one short sentence: don\'t restate what the card shows, and don\'t say whether anything was created, saved, connected or changed, because the card changes when they press. Then wait for them.';
+export const CARD_SHOWS_IT = 'The card above shows this to the person, and they act on it there. Reply in one short sentence: don\'t restate what the card shows, don\'t name its buttons, and don\'t say whether anything was created, saved, connected or changed, because the card replaces itself when they press. Then wait for them.';
 
 /**
  * A result as a card host's model sees it: no token it could use without

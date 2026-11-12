@@ -35,6 +35,13 @@ import {
 import type { SlackStateStore } from '../src/slack/claim-store.ts';
 import { stopNodeTurnRelay, wakeNodeTurnRelay } from '../src/slack/node-turn-relay.ts';
 import {
+  AgentObservationYield,
+  AgentPromptFailure,
+  AgentReplyReadInterrupted,
+  StateStoreUnavailable,
+} from '../src/slack/flue-dispatch.ts';
+import {
+  attemptEndReason,
   runTurn,
   WORKSPACE_DEFAULT_MODEL_REPAIR_TEXT,
   type RunTurnOptions,
@@ -156,6 +163,7 @@ test('interaction_judgment keeps its tokens, scales probabilities to thousandths
     recordedBy: 'clef',
     basis: 'reply',
     basisMs: 312.4,
+    earlyMs: 92.4,
     clef: 'read',
     clefMs: 260,
     clefInputTokens: 878,
@@ -178,6 +186,7 @@ test('interaction_judgment keeps its tokens, scales probabilities to thousandths
   emitInteractionJudgment({
     recordedBy: 'Complete the verification.',
     clef: 'unavailable',
+    rejudged: true,
     gate: 'await_model',
     model: 'slack.botToken',
     clefLate: true,
@@ -192,6 +201,7 @@ test('interaction_judgment keeps its tokens, scales probabilities to thousandths
     recordedBy: 'clef',
     basis: 'reply',
     basisMs: 312,
+    earlyMs: 92,
     clef: 'read',
     clefMs: 260,
     clefInputTokens: 878,
@@ -214,6 +224,7 @@ test('interaction_judgment keeps its tokens, scales probabilities to thousandths
   assert.deepEqual(records[1], {
     component: 'runtime',
     event: 'interaction_judgment',
+    rejudged: true,
     clef: 'unavailable',
     gate: 'await_model',
     clefLate: true,
@@ -541,6 +552,42 @@ function shadowRecord(overrides: Partial<AnswerReleaseShadowRecord> = {}): Answe
   };
 }
 
+// Defects caught: the reply's text taken as visible only at final, a later
+// acknowledgement (the stream's stop) moving it, or an attempt that never
+// showed text logging a time.
+test('turn_latency times the reply text Slack acknowledged, apart from final', () => {
+  const { records, sink } = captureSink();
+  const time = clock(10_000);
+  const tracker = new TurnLatencyTracker(
+    { receivedAt: 8_000, admittedAt: 9_000, lane: 'cloudflare', executor: 'runner' },
+    { turnJobId: 'evt:T_LATENCY:1785509000.000200', runId: 'run-visible', attempt: 1 },
+    time.now,
+    sink,
+  );
+  time.advance(14_000 - time.now());
+  tracker.markAnswerVisible();
+  time.advance(600);
+  tracker.markAnswerVisible();
+  time.advance(15_400 - time.now());
+  tracker.markFinal('delivered');
+  tracker.emit('returned');
+  const visible = records.filter((record) => record.event === 'turn_latency').at(-1)!;
+  assert.equal(visible.receiptToAnswerVisibleMs, 6_000);
+  assert.equal(visible.admissionToAnswerVisibleMs, 5_000);
+  assert.equal(visible.receiptToFinalMs, 7_400);
+
+  const silent = new TurnLatencyTracker(
+    { receivedAt: 8_000, admittedAt: 9_000, lane: 'cloudflare', executor: 'runner' },
+    { turnJobId: 'evt:T_LATENCY:1785509000.000300' },
+    time.now,
+    sink,
+  );
+  silent.markFinal('delivered');
+  silent.emit('returned');
+  const none = records.filter((record) => record.event === 'turn_latency').at(-1)!;
+  assert.equal('receiptToAnswerVisibleMs' in none, false, 'no acknowledged text, no time');
+});
+
 // Defects caught: a status or task card counted as answer text, a stream
 // start not counted, the shadow time taken from a retired release (whose
 // answer still waits for the terminal), an epoch timestamp logged as is, a
@@ -637,6 +684,55 @@ test('turn_latency times the first answer text as shown and as a host release wo
   records.forEach(assertContentFree);
 });
 
+// Defects caught: the live release unlogged, its retirement's visible time
+// lost, or text it retired counted as the answer's first text.
+test('answer_release logs what the host release did, and retired text is not the first answer text', () => {
+  const { records, sink } = captureSink();
+  const run = (records_: Parameters<TurnLatencyTracker['markHostRelease']>[0][]) => {
+    const time = clock(10_000);
+    const tracker = new TurnLatencyTracker(
+      { receivedAt: 8_000, admittedAt: 9_000, lane: 'cloudflare', executor: 'runner' },
+      { turnJobId: 'evt:T_LATENCY:1785509000.000100', runId: 'run-raw', attempt: 1 },
+      time.now,
+      sink,
+    );
+    time.advance(4_000);
+    tracker.markStreamedAnswerText();
+    for (const record of records_) tracker.markHostRelease(record);
+    time.advance(30_000 - time.now());
+    tracker.markFinal('delivered');
+    tracker.emit('returned', shadowRecord({ outcome: 'released', releasedAt: 14_000 }));
+    return {
+      latency: records.filter((record) => record.event === 'turn_latency').at(-1)!,
+      release: records.filter((record) => record.event === 'answer_release').at(-1)!,
+    };
+  };
+
+  const kept = run([{ outcome: 'released' }]);
+  assert.equal(kept.release.hostRelease, 'released');
+  assert.equal(kept.latency.firstAnswerText, 'stream');
+  assert.equal(kept.latency.receiptToFirstAnswerTextMs, 6_000);
+
+  const retired = run([{ outcome: 'released' }, { outcome: 'retired', late: 'tool', retiredVisibleMs: 1_400 }]);
+  assert.deepEqual(
+    [retired.release.hostRelease, retired.release.hostLate, retired.release.retiredVisibleMs],
+    ['retired', 'tool', 1_400],
+  );
+  assert.equal(retired.latency.firstAnswerText, 'final', 'the retired text was not the answer');
+  assert.equal(retired.latency.receiptToFirstAnswerTextMs, 22_000);
+
+  const corrected = run([{ outcome: 'released' }, { outcome: 'corrected', late: 'presentation_tool' }]);
+  assert.deepEqual([corrected.release.hostRelease, corrected.release.hostLate], ['corrected', 'presentation_tool']);
+  assert.equal(corrected.latency.firstAnswerText, 'stream', 'a corrected stream keeps its text in Slack');
+
+  const blocked = run([{ outcome: 'blocked', block: 'display_component' }]);
+  assert.deepEqual([blocked.release.hostRelease, blocked.release.hostBlock], ['blocked', 'display_component']);
+
+  const off = run([]);
+  assert.equal('hostRelease' in off.release, false, 'no host release, no field');
+  records.forEach(assertContentFree);
+});
+
 // Defect caught: a record that drops the receipt wake's lead its runner measured.
 test("turn_latency logs a runner turn's hand-off delay and wake lead from its context", () => {
   const { records, sink } = captureSink();
@@ -653,6 +749,44 @@ test("turn_latency logs a runner turn's hand-off delay and wake lead from its co
   ).emit('returned');
   assert.equal('runnerWakeLeadMs' in records[1]!, false, 'a turn whose runner no wake reached omits the field');
   records.forEach(assertContentFree);
+});
+
+// Defects caught: a retried attempt with no reason for the one before it, a
+// reason on an attempt that returned, and a stalled read the record misses.
+test('turn_latency names why a thrown attempt ended, and counts reads a fresh one joined', () => {
+  const { records, sink } = captureSink();
+  const interrupted = new TurnLatencyTracker(
+    { admittedAt: 9_000, lane: 'cloudflare', executor: 'runner' }, { attempt: 1 }, clock(10_000).now, sink,
+  );
+  interrupted.emit('threw', undefined, 'reply_read_interrupted');
+  const resumed = new TurnLatencyTracker(
+    { admittedAt: 9_000, lane: 'cloudflare', executor: 'runner' }, { attempt: 2 }, clock(10_000).now, sink,
+  );
+  resumed.markStalledRead();
+  resumed.markStalledRead();
+  resumed.markFinal('delivered');
+  resumed.emit('returned');
+  assert.deepEqual(records.map(({ attempt, outcome, reason, stalledReads }) => ({ attempt, outcome, reason, stalledReads })), [
+    { attempt: 1, outcome: 'threw', reason: 'reply_read_interrupted', stalledReads: undefined },
+    { attempt: 2, outcome: 'returned', reason: undefined, stalledReads: 2 },
+  ]);
+  records.forEach(assertContentFree);
+});
+
+// Defect caught: a failure class logged under another class's reason, so
+// retries are counted under the wrong cause.
+test('a thrown attempt\'s reason names its failure class', () => {
+  assert.deepEqual([
+    new AgentObservationYield(),
+    new StateStoreUnavailable(),
+    new AgentReplyReadInterrupted(new TypeError('Network connection lost')),
+    new AgentPromptFailure('agent', 409, true),
+    new AgentPromptFailure('agent', 503, false, true),
+    new Error('slack unavailable'),
+  ].map(attemptEndReason), [
+    'observation_yield', 'state_store_unavailable', 'reply_read_interrupted',
+    'recovery_required', 'agent_failure', 'other',
+  ]);
 });
 
 // Defects caught: a first write that ignores the status the state store
@@ -708,6 +842,20 @@ test('turn_latency logs how long staging the turn input took and how soon it beg
   new TurnLatencyTracker({ lane: 'node', executor: 'node' }, {}, clock(0).now, sink).emit('returned');
   assert.equal('agentStageMs' in records[1]!, false, 'a turn that staged nothing omits the field');
   assert.equal('startToStageMs' in records[1]!, false);
+});
+
+// Defects caught: the title's time is dropped from the record, a second
+// title call (a retry's) overwrites the first, or a turn that sent no title
+// reports one.
+test('turn_latency logs how long Slack took to answer the thread title, from its first call', () => {
+  const { records, sink } = captureSink();
+  const tracker = new TurnLatencyTracker({ lane: 'cloudflare', executor: 'runner' }, {}, clock(0).now, sink);
+  tracker.markTitle(124);
+  tracker.markTitle(30);
+  tracker.emit('returned');
+  assert.equal(records[0]?.titleMs, 124);
+  new TurnLatencyTracker({ lane: 'cloudflare', executor: 'runner' }, {}, clock(0).now, sink).emit('returned');
+  assert.equal('titleMs' in records[1]!, false, 'a turn that sent no title omits the field');
 });
 
 // Defects caught: the lead is measured to the end of staging instead of its
@@ -1025,6 +1173,52 @@ test('model_step logs each model request\'s first token, duration, tokens and to
   assert.equal(records[0]!.modelToken, 'openrouter_synthetic_model_2_5');
 });
 
+// Defects caught: no size when a tool result overflows the window (#775's
+// activity log), the largest result's tool misnamed, an image's data not
+// counted, text in the record.
+test('model_step carries its request\'s size and its largest tool result\'s size and tool, never their text', () => {
+  const time = clock(0);
+  const { records, sink } = captureSink();
+  const steps = new ModelStepMarks(time.now, sink);
+  const input = {
+    systemPrompt: 'Complete the verification.',
+    messages: [
+      { role: 'user', content: 'Complete the verification.' },
+      { role: 'assistant', content: [{ type: 'toolCall', id: 'call_a', name: 'mcp__meta-ads__activity_log', arguments: {} }] },
+      { role: 'toolResult', toolCallId: 'call_a', toolName: 'mcp__meta-ads__activity_log', isError: false,
+        content: [{ type: 'text', text: `U_LATENCY ${'é'.repeat(1_000)}` }] },
+      { role: 'toolResult', toolCallId: 'call_b', toolName: 'slack_read', isError: false,
+        content: [{ type: 'text', text: 'C_LATENCY' }, { type: 'image', data: 'A'.repeat(3_000), mimeType: 'image/png' }] },
+    ],
+    tools: [{ name: 'slack_read', description: 'Complete the verification.', parameters: { type: 'object' } }],
+  };
+  const turn = (turnId: string) => flueEvent({ type: 'turn', turnId, purpose: 'agent', durationMs: 2_400, isError: true,
+    request: { providerId: 'openai', providerName: 'openai', requestedModel: 'gpt-6.1-terra', api: 'openai-responses' },
+    response: {} });
+  steps.observe(flueEvent({ type: 'turn_request', turnId: 'step_tools', purpose: 'agent', request: { input } }));
+  steps.observe(turn('step_tools'));
+  steps.observe(flueEvent({ type: 'turn_request', turnId: 'step_plain', purpose: 'agent',
+    request: { input: { systemPrompt: 'x', messages: [{ role: 'user', content: 'x' }], tools: [] } } }));
+  steps.observe(turn('step_plain'));
+
+  const sizes = records.map(({ requestBytes, toolResults, largestToolResultBytes, largestToolResultTool }) =>
+    ({ requestBytes, toolResults, largestToolResultBytes, largestToolResultTool }));
+  assert.deepEqual(sizes, [{
+    requestBytes: Buffer.byteLength(JSON.stringify(input)),
+    toolResults: 2,
+    largestToolResultBytes: 'C_LATENCY'.length + 3_000,
+    largestToolResultTool: 'slack_read',
+  }, {
+    requestBytes: Buffer.byteLength(JSON.stringify({ systemPrompt: 'x', messages: [{ role: 'user', content: 'x' }], tools: [] })),
+    toolResults: 0,
+    largestToolResultBytes: undefined,
+    largestToolResultTool: undefined,
+  }]);
+  assert.equal(records[0]!.outcome, 'error', 'a failed step carries the sizes that may explain it');
+  for (const record of records) assertContentFree(record);
+  assert.doesNotMatch(JSON.stringify(records), /é|AAAA/);
+});
+
 test('turn_latency omits durations it cannot measure and never throws', () => {
   const time = clock(5_000);
   const { records, sink } = captureSink();
@@ -1217,6 +1411,7 @@ test('runTurn emits one content-free turn_latency record per relay attempt', asy
   }));
   assert.equal(logged.length, 1);
   assert.equal(logged[0]?.outcome, 'threw');
+  assert.equal(logged[0]?.reason, 'other', 'a failed Slack write is none of the reattaching reasons');
   assert.equal(logged[0]?.final, 'none');
   assert.equal(logged[0]?.firstWrite, 'none');
 });

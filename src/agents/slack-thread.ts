@@ -75,6 +75,7 @@ import {
 import {
   resolveRuntimePlanMcpConnections,
 } from '../config/profile-mcp.ts';
+import { withMcpFailureCause } from '../config/mcp-unavailable.ts';
 import {
   projectMcpPolicyInstructions,
 } from '../config/mcp-policy-instructions.ts';
@@ -289,6 +290,7 @@ import {
 import { stageArtifactWithReceipt, reuseImageWithReceipt } from '../slack/artifact-staging.ts';
 import { FILE_COMPLETION_INSTRUCTION, useFileDeliveryCompletion, type FileDeliveryCompletion } from '../slack/file-delivery-completion.ts';
 import { useSlackFollowUpFold, type SlackFollowUps } from '../slack/follow-up-fold.ts';
+import { answerReleaseSetting } from '../slack/answer-release-setting.ts';
 import { useSlackMidRunReplyTool } from '../slack/midrun-reply.ts';
 import { createSlackAttachmentClient } from '../slack/attachment-client.ts';
 import {
@@ -1356,6 +1358,7 @@ export function useRuntimePlanAgent(
     instanceId: id,
     blocked: () => fileCompletion.unresolved() || fileCompletion.state().repairRequested,
     fold: async (request) => getSlackStateStore(await resolveAgentPlatformEnv()).foldTurn?.(request),
+    answerRelease: async () => answerReleaseSetting(await resolveAgentPlatformEnv()),
   });
   const reserveImageCall = useImageCallBudget();
   const writeWorkspaceUse = useDataWriter(CODING_WORKSPACE_USE_DATA_NAME, {
@@ -1505,7 +1508,7 @@ export function useRuntimePlanAgent(
     plan.actorMembershipId ? { workspaceId: plan.conversation.workspaceId, actorMembershipId: plan.actorMembershipId } : undefined,
     { readsOnly: plan.conversation.surface === 'test' },
   )) {
-    useMcpConnection(connection);
+    useMcpConnection(withMcpFailureCause(connection, id));
   }
   const sandbox = createRuntimePlanSandbox(plan, options.turn);
   useSandbox(options.artifactToolsDisabled ? sandbox : fileCompletion.wrapSandbox(sandbox));

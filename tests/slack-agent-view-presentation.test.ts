@@ -20,6 +20,7 @@ import { WebClientPresenter } from '../src/slack/web-client-presenter.ts';
 import { slackClientMessageId } from '../src/slack/transport/message-id.ts';
 import type { SlackArtifactReceipt } from '../src/slack/artifact-receipts.ts';
 import type { SlackReadGate } from '../src/slack/read-budget.ts';
+import type { HostReleaseRecord } from '../src/slack/host-release-relay.ts';
 
 const HARNESS_START_MS = 1_785_700_100_000;
 
@@ -59,6 +60,10 @@ function harness(input: {
     | { kind: 'selected_agent'; persona: { name: string; avatarUrl: string; avatarRevision: number } }
     | { kind: 'chickpea' };
   wait?: (milliseconds: number) => Promise<void>;
+  /** Host answer release on, with this hold. */
+  answerRelease?: { holdChars: number };
+  onHostRelease?: (record: HostReleaseRecord) => void;
+  root?: typeof ROOT;
 } = {}) {
   // Slack stream timestamps below are seconds on this clock, so a stream's
   // age reads as it would in production.
@@ -72,7 +77,7 @@ function harness(input: {
     bindingId: 'binding_agent_view',
     workBindingGeneration: 1,
     runFencingToken: 0,
-    root: ROOT,
+    root: input.root ?? ROOT,
     ...(input.tasks ? { taskLabels: input.tasks } : {}),
   };
   store.create(input.schemaVersion === 3
@@ -213,6 +218,8 @@ function harness(input: {
     ...(input.onAnswerTextStreamed ? { onAnswerTextStreamed: input.onAnswerTextStreamed } : {}),
     ...(input.onTaskCardStreamed ? { onTaskCardStreamed: input.onTaskCardStreamed } : {}),
     ...(input.readGate ? { readGate: input.readGate } : {}),
+    ...(input.answerRelease ? { answerRelease: input.answerRelease } : {}),
+    ...(input.onHostRelease ? { onHostRelease: input.onHostRelease } : {}),
   });
   return {
     db,
@@ -2324,6 +2331,25 @@ test('thread titles are deterministic, bounded, and reject credential-shaped inp
   }
 });
 
+// Defects caught: a title sent ahead is sent again when it is recorded, its
+// record is skipped, or a retry whose title is already recorded sends one more.
+test('a title sent ahead is recorded through that same call, and a recorded title is not sent ahead again', async () => {
+  const h = harness();
+  try {
+    const titleCalls = () => h.calls.filter((call) => call.method === 'assistant.threads.setTitle').length;
+    const sent = h.presentation.sendTitle('Review the release', h.store.get(h.runId)!);
+    assert.equal(titleCalls(), 1, 'the Slack call goes at once');
+    assert.equal(h.store.get(h.runId)?.title, undefined, 'nothing is recorded until setTitle');
+    await h.presentation.setTitle('Review the release', sent);
+    assert.equal(titleCalls(), 1, 'setTitle records the call already made');
+    assert.equal(h.store.get(h.runId)?.title?.outcome, 'set');
+    assert.equal(h.presentation.sendTitle('Review the release', h.store.get(h.runId)!), undefined);
+    assert.equal(titleCalls(), 1, 'a recorded title is not sent again');
+  } finally {
+    h.db.close();
+  }
+});
+
 for (const alreadyStopped of [false, true]) {
   test(`V3 recovers a finalizing stream after receipt loss (already stopped: ${alreadyStopped})`, async () => {
     const h = harness({ schemaVersion: 3, stopStreamError: alreadyStopped
@@ -3563,5 +3589,267 @@ test('a refused run closes a V2 native task card as failed while ending its stre
     assert.equal(row.stream.state, 'artifact_delivered');
   } finally {
     h.db.close();
+  }
+});
+
+const HOST_RELEASE = { holdChars: 400 };
+const ROTA = 'The synthetic rota lists three early shifts and one late handover. ';
+const HOST_ANSWER = ROTA.repeat(10).trim();
+
+/** A reply read through the host release relay, one word per text chunk. */
+async function hostReleaseRead(h: ReturnType<typeof harness>, id = 'host') {
+  const submissionId = `submission_${id}`;
+  const messageId = `message_${id}`;
+  const relay = await prepareReceipt(h, {
+    instanceId: `instance_${id}`,
+    receipt: { submissionId, acceptedAt: 'now', uid: 'uid' },
+    eligibility: { allowed: true, reason: 'final_answer_release' },
+  });
+  assert.ok(relay);
+  let batch = 0;
+  const emit = (body: Record<string, unknown>) => relay.onEvent({
+    conversationId: 'conversation', ...body, position: { batch: ++batch, index: 0 },
+  } as Parameters<typeof relay.onEvent>[0]);
+  return {
+    relay,
+    step: () => emit({ type: 'message-started', submissionId, messageId }),
+    text(text: string) {
+      for (const delta of text.split(/(?= )/)) emit({ type: 'message-delta', messageId, kind: 'text', delta });
+    },
+    tool: (toolName: string) => emit({ type: 'tool-input', messageId, toolCallId: `call_${batch}`, toolName, input: {} }),
+    complete: () => emit({ type: 'message-completed', messageId }),
+  };
+}
+
+/** Markdown Slack received on the stream; `appends: false` when every append was refused. */
+function markdownSent(h: ReturnType<typeof harness>, { appends = true } = {}): string {
+  return h.calls
+    .filter((call) => call.method === 'chat.startStream' || (appends && call.method === 'chat.appendStream') ||
+      call.method === 'chat.stopStream')
+    .flatMap((call) => ((call.input.chunks ?? []) as Array<{ type: string; text?: string }>)
+      .filter((chunk) => chunk.type === 'markdown_text').map((chunk) => chunk.text ?? ''))
+    .join('');
+}
+
+// Defect caught: host release off in the presenter, so an answer waits for its
+// terminal (or for a declaration the model never makes).
+test('a host-released answer streams while the model writes and closes as the reply with one footer', async () => {
+  const records: HostReleaseRecord[] = [];
+  const h = harness({ schemaVersion: 3, answerRelease: HOST_RELEASE, onHostRelease: (record) => records.push(record) });
+  try {
+    const read = await hostReleaseRead(h);
+    read.step();
+    read.text(HOST_ANSWER.slice(0, 450));
+    await until(() => h.calls.some((call) => call.method === 'chat.startStream'), 'the stream opens before the step ends');
+    read.text(HOST_ANSWER.slice(450));
+    read.complete();
+    await read.relay.closeAndDrain();
+    const stored = h.store.get(h.runId)!;
+    assert.deepEqual(stored.schemaVersion === 3 ? stored.progressiveIntent.status : undefined, 'requested');
+
+    const result = await h.presentation.finalize(HOST_ANSWER, 'markdown', 'complete', observer([]));
+    assert.equal(result.handled, true);
+    assert.equal(markdownSent(h), HOST_ANSWER);
+    assert.deepEqual(h.calls.filter((call) => ['chat.update', 'chat.delete', 'chat.postMessage'].includes(call.method)), []);
+    const stops = h.calls.filter((call) => call.method === 'chat.stopStream');
+    assert.equal(stops.length, 1);
+    assert.deepEqual((stops[0]!.input.blocks as Array<{ type: string }>).map(({ type }) => type), ['context']);
+    await h.presentation.markCanonicalFinalized();
+    assert.equal(h.finalizationRecords[0]?.policyOutcome, 'host_released_progressive');
+    assert.deepEqual(records, [{ outcome: 'released' }]);
+  } finally {
+    h.db.close();
+  }
+});
+
+for (const [kind, channelId] of [['DM', 'D_HOST_RELEASE'], ['Channel thread', 'C_HOST_RELEASE']] as const) {
+  // Defect caught: a late tool leaving the preamble in Slack, corrected in
+  // place with a marker, instead of deleting it and posting the final fresh.
+  test(`a tool call after host-released text deletes it, and the final posts fresh with no marker (${kind})`, async () => {
+    const records: HostReleaseRecord[] = [];
+    const h = harness({
+      schemaVersion: 3, answerRelease: HOST_RELEASE, root: { ...ROOT, channelId },
+      onHostRelease: (record) => records.push(record),
+    });
+    try {
+      const read = await hostReleaseRead(h);
+      read.step();
+      read.text(HOST_ANSWER.slice(0, 500));
+      await until(() => h.calls.some((call) => call.method === 'chat.startStream'), 'the preamble streams');
+      const streamTs = h.store.get(h.runId)!.stream.messageTs;
+      assert.ok(streamTs);
+      h.advanceClock(1_500);
+      read.tool('web_search');
+      await read.relay.closeAndDrain();
+      const afterStart = h.calls.slice(h.calls.findIndex((call) => call.method === 'chat.startStream') + 1)
+        .filter((call) => call.method !== 'chat.appendStream');
+      assert.deepEqual(afterStart, [
+        { method: 'chat.stopStream', input: { channel: channelId, ts: streamTs } },
+        { method: 'chat.delete', input: { channel: channelId, ts: streamTs } },
+      ]);
+      assert.equal(h.store.get(h.runId)!.stream.state, 'fallback');
+
+      const before = h.calls.length;
+      const result = await h.presentation.finalize('The final answer, after the search.', 'markdown', 'complete', observer([]));
+      assert.deepEqual(result, { handled: false, fallbackPresentation: true, operationId: result.handled ? undefined : result.operationId });
+      assert.deepEqual(h.calls.slice(before), [], 'the caller posts the final fresh; nothing corrects the deleted stream');
+      assert.equal(JSON.stringify(h.calls).includes('_Corrected_'), false);
+      await h.presentation.markFallbackDelivered('1785700100.000999');
+      await h.presentation.markCanonicalFinalized();
+      assert.equal(h.finalizationRecords[0]?.policyOutcome, 'host_released_fallback');
+      assert.deepEqual(records, [
+        { outcome: 'released' },
+        { outcome: 'retired', late: 'tool', retiredVisibleMs: 1_500 },
+      ]);
+    } finally {
+      h.db.close();
+    }
+  });
+}
+
+// Defect caught: a retirement Slack refused logged as a deletion, with a
+// visible time that ends while Slack still shows the text.
+test('a retirement Slack refuses reports no visible time, and the final finishes the deletion', async () => {
+  const records: HostReleaseRecord[] = [];
+  const controls: NonNullable<Parameters<typeof harness>[0]> = {
+    schemaVersion: 3, answerRelease: HOST_RELEASE,
+    onHostRelease: (record) => records.push(record),
+  };
+  const h = harness(controls);
+  try {
+    const read = await hostReleaseRead(h);
+    read.step();
+    read.text(HOST_ANSWER.slice(0, 500));
+    await until(() => h.calls.some((call) => call.method === 'chat.startStream'), 'the preamble streams');
+    const streamTs = h.store.get(h.runId)!.stream.messageTs;
+    assert.ok(streamTs);
+    controls.stopStreamError = Object.assign(new Error('ratelimited'), { code: ErrorCode.RateLimitedError, retryAfter: 1 });
+    h.advanceClock(1_500);
+    read.tool('web_search');
+    await read.relay.closeAndDrain();
+    assert.equal(h.calls.some((call) => call.method === 'chat.delete'), false, 'the stop was refused, so nothing was deleted');
+    assert.equal(h.store.get(h.runId)!.stream.priorStreamMessageTs, streamTs, 'the coordinate waits for the final');
+    assert.deepEqual(records, [{ outcome: 'released' }, { outcome: 'retired', late: 'tool' }]);
+
+    controls.stopStreamError = undefined;
+    const result = await h.presentation.finalize('The final answer, after the search.', 'markdown', 'complete', observer([]));
+    assert.equal(result.handled, false);
+    assert.deepEqual(h.calls.slice(-2), [
+      { method: 'chat.stopStream', input: { channel: ROOT.channelId, ts: streamTs } },
+      { method: 'chat.delete', input: { channel: ROOT.channelId, ts: streamTs } },
+    ]);
+    assert.equal(h.store.get(h.runId)!.stream.priorStreamMessageTs, undefined);
+  } finally {
+    h.db.close();
+  }
+});
+
+// Defect caught: deleting a stream that carries the native task card, which
+// takes the card with it.
+test('a tool call after host-released text on a task-card stream keeps the card and the final corrects it', async () => {
+  const records: HostReleaseRecord[] = [];
+  const h = harness({
+    schemaVersion: 3, tasks: ['Search the docs', 'Write the answer'], answerRelease: HOST_RELEASE,
+    onHostRelease: (record) => records.push(record),
+  });
+  try {
+    const persisted = h.store.get(h.runId);
+    assert.ok(persisted?.plan);
+    await h.presentation.transitionMilestone({ taskId: persisted.plan.tasks[0]!.id, to: 'in_progress' });
+    const read = await hostReleaseRead(h, 'card');
+    assert.equal(h.calls.filter((call) => call.method === 'chat.startStream').length, 1, 'the card opened the stream');
+    read.step();
+    read.text(HOST_ANSWER.slice(0, 500));
+    await until(() => markdownSent(h).length > 0, 'the released text appends onto the card');
+    read.tool('web_search');
+    await read.relay.closeAndDrain();
+    assert.equal(h.calls.some((call) => call.method === 'chat.delete'), false);
+    assert.equal(h.store.get(h.runId)!.stream.state, 'streaming');
+
+    await h.presentation.finalize('A different final answer.', 'markdown', 'complete', observer([]));
+    assert.equal(h.calls.some((call) => call.method === 'chat.delete'), false);
+    assert.ok(JSON.stringify(h.calls).includes('_Corrected_'), 'today\'s correction path');
+    assert.deepEqual(records, [{ outcome: 'released' }, { outcome: 'corrected', late: 'tool' }]);
+  } finally {
+    h.db.close();
+  }
+});
+
+test('a table closes a host-released answer in the stop call\'s blocks', async () => {
+  const h = harness({ schemaVersion: 3, answerRelease: HOST_RELEASE });
+  try {
+    const read = await hostReleaseRead(h);
+    read.step();
+    read.text(HOST_ANSWER);
+    read.complete();
+    await read.relay.closeAndDrain();
+    await h.presentation.finalize(HOST_ANSWER, 'markdown', 'complete', observer([]), {
+      caption: 'Synthetic rota',
+      presentation: 'explore',
+      columns: [{ header: 'Shift' }, { header: 'Hours', type: 'number' }],
+      rows: Array.from({ length: 7 }, (_, index) => [`Shift ${index + 1}`, 8 - index]),
+    });
+    const stops = h.calls.filter((call) => call.method === 'chat.stopStream');
+    assert.equal(stops.length, 1);
+    assert.deepEqual((stops[0]!.input.blocks as Array<{ type: string }>).map(({ type }) => type), ['data_table', 'context']);
+    assert.equal(markdownSent(h), HOST_ANSWER);
+  } finally {
+    h.db.close();
+  }
+});
+
+// Defect caught: a rate-limited append ending a host-released stream, or its
+// text lost, instead of the terminal carrying the rest.
+test('a rate-limited append keeps the host-released stream and the terminal carries the rest', async () => {
+  const h = harness({
+    schemaVersion: 3, answerRelease: HOST_RELEASE,
+    appendStreamError: Object.assign(new Error('ratelimited'), { code: ErrorCode.RateLimitedError, retryAfter: 1 }),
+  });
+  try {
+    const read = await hostReleaseRead(h);
+    read.step();
+    read.text(HOST_ANSWER.slice(0, 450));
+    await until(() => h.calls.some((call) => call.method === 'chat.startStream'), 'the stream opens');
+    read.text(HOST_ANSWER.slice(450));
+    await until(() => h.calls.some((call) => call.method === 'chat.appendStream'), 'an append was tried');
+    read.complete();
+    await read.relay.closeAndDrain();
+    await h.presentation.finalize(HOST_ANSWER, 'markdown', 'complete', observer([]));
+    assert.equal(markdownSent(h, { appends: false }), HOST_ANSWER, 'Slack shows the whole answer once');
+    assert.deepEqual(h.calls.filter((call) => call.method === 'chat.update' || call.method === 'chat.delete'), []);
+    await h.presentation.markCanonicalFinalized();
+    assert.ok((h.finalizationRecords[0]?.appendBudget?.rateLimited ?? 0) >= 1);
+  } finally {
+    h.db.close();
+  }
+});
+
+// Defect caught: the setting deciding a resumed read whose intent the model's
+// declaration already requested, or a host release resumed with the setting off.
+test('the durable intent, not the setting, decides which relay a resumed read gets', async () => {
+  const declared = harness({ schemaVersion: 3, answerRelease: HOST_RELEASE });
+  try {
+    applyPresentationMutation(declared, { kind: 'freeze_progressive_eligibility', eligibility: { allowed: true, reason: 'final_answer_release' } });
+    applyPresentationMutation(declared, { kind: 'progressive_intent_candidate', toolCallId: 'stream_call_1' });
+    const relay = await declared.presentation.prepareReceipt({
+      instanceId: 'instance_declared', receipt: { submissionId: 'submission_declared', acceptedAt: 'now', uid: 'uid' },
+      eligibility: { allowed: true, reason: 'final_answer_release' },
+    });
+    assert.equal(relay?.constructor.name, 'ReceiptScopedTextRelay');
+  } finally {
+    declared.db.close();
+  }
+  const resumed = harness({ schemaVersion: 3 });
+  try {
+    applyPresentationMutation(resumed, { kind: 'freeze_progressive_eligibility', eligibility: { allowed: true, reason: 'final_answer_release' } });
+    applyPresentationMutation(resumed, { kind: 'progressive_intent_candidate', toolCallId: 'host_release' });
+    applyPresentationMutation(resumed, { kind: 'progressive_intent_requested', toolCallId: 'host_release' });
+    const relay = await resumed.presentation.prepareReceipt({
+      instanceId: 'instance_resumed', receipt: { submissionId: 'submission_resumed', acceptedAt: 'now', uid: 'uid' },
+      eligibility: { allowed: true, reason: 'final_answer_release' },
+    });
+    assert.equal(relay?.constructor.name, 'HostReleaseRelay');
+  } finally {
+    resumed.db.close();
   }
 });

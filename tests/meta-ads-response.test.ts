@@ -78,15 +78,15 @@ test('account helper advertises the same contract through SSE and preserves noti
 });
 
 test('account helper output advertisement fails closed on malformed JSON-RPC listings', async () => {
-  for (const payload of [
-    { jsonrpc: '2.0', id: {}, result: { tools: [] } },
-    { jsonrpc: '2.0', id: 1, error: { code: -1 }, result: { tools: [] } },
-    { jsonrpc: '2.0', id: 1, result: { tools: [
+  for (const [payload, reason] of [
+    [{ jsonrpc: '2.0', id: {}, result: { tools: [] } }, 'response-id'],
+    [{ jsonrpc: '2.0', id: 2, error: { code: -1 }, result: { tools: [] } }, 'json-rpc'],
+    [{ jsonrpc: '2.0', id: 2, result: { tools: [
       { name: 'ads_get_ad_accounts' }, { name: 'ads_get_ad_accounts' },
-    ] } },
-  ]) {
+    ] } }, 'duplicate-account-helper'],
+  ] as const) {
     await assert.rejects(advertiseMetaAdsAccountHelperOutput(toolsListRequest, Response.json(payload)),
-      /Meta Ads tool discovery returned an unsupported response/);
+      new RegExp(`Meta Ads tool discovery returned an unsupported response \\(${reason}\\)`));
   }
 });
 
@@ -200,4 +200,96 @@ test('account helper fails closed on malformed, raw, conflicting, or incomplete 
       (error: unknown) => error instanceof Error && /unsupported response/.test(error.message) &&
         !/private provider text|private-cursor/.test(error.message), label);
   }
+});
+
+test('account helper ignores a new top-level envelope key, forwards none of it, and logs its name once', async (t) => {
+  const logged: unknown[] = [];
+  t.mock.method(console, 'info', (event: unknown) => { logged.push(event); });
+  const provider = {
+    data: [{ ad_account_id: '123450001', is_ads_mcp_enabled: true, is_queryable: true }],
+    paging: { cursors: { before: 'synthetic-before', after: '' } },
+    summary: { total: 'synthetic-private-total' },
+    request_context: 'synthetic-private-context',
+  };
+  const response = await sanitizeMetaAdsAccountHelperResponse(rpcResult({
+    content: [{ type: 'text', text: JSON.stringify(provider) }],
+    structuredContent: provider,
+  }), approved, { connectionId: 'meta-test' });
+  const body = await response.text();
+  assert.match(body, /"ad_account_id":"123450001"/);
+  assert.doesNotMatch(body, /summary|request_context|synthetic-/);
+  assert.deepEqual(logged, [{
+    event: 'chickpea.meta_ads.account_envelope_extra_keys', connectionId: 'meta-test', keys: ['summary', 'request_context'],
+  }], 'once for the response, though both payloads carry the keys');
+});
+
+test('account helper logs at most 20 envelope key names, and none that is not a short identifier', async (t) => {
+  const logged: Array<{ keys?: string[] }> = [];
+  t.mock.method(console, 'info', (event: { keys?: string[] }) => { logged.push(event); });
+  const provider: Record<string, unknown> = {
+    data: [{ ad_account_id: '123450001', is_ads_mcp_enabled: true, is_queryable: true }],
+    'synthetic private sentence': 1,
+    ['k'.repeat(121)]: 1,
+    request_context: 1,
+  };
+  for (let index = 0; index < 30; index += 1) provider[`extra_${index}`] = 1;
+  await sanitizeMetaAdsAccountHelperResponse(
+    rpcResult({ structuredContent: provider }), approved, { connectionId: 'meta-test' },
+  );
+  assert.equal(logged.length, 1);
+  assert.deepEqual(logged[0]!.keys, [
+    '(other)', '(other)', 'request_context', ...Array.from({ length: 17 }, (_, index) => `extra_${index}`),
+  ]);
+});
+
+test('account helper logs nothing for an envelope it knows', async (t) => {
+  const logged: unknown[] = [];
+  t.mock.method(console, 'info', (event: unknown) => { logged.push(event); });
+  const provider = {
+    accounts: [{ ad_account_id: '123450001', is_ads_mcp_enabled: true, is_queryable: true }],
+    next_cursor: '', nextCursor: null, cursor: '', has_more: false, hasMore: false, paging: null,
+  };
+  await sanitizeMetaAdsAccountHelperResponse(rpcResult({ structuredContent: provider }), approved);
+  assert.deepEqual(logged, []);
+});
+
+test('account helper still refuses more pages or a second account array, whatever new keys the envelope holds', async (t) => {
+  t.mock.method(console, 'info', () => undefined);
+  const records = [{ ad_account_id: '123450001', is_ads_mcp_enabled: true, is_queryable: true }];
+  const cases: Array<[Record<string, unknown>, string]> = [
+    [{ accounts: records, next_cursor: 'private-cursor', extra: 1 }, 'incomplete-pagination'],
+    [{ accounts: records, nextCursor: 'private-cursor', extra: 1 }, 'incomplete-pagination'],
+    [{ accounts: records, cursor: 'private-cursor', extra: 1 }, 'incomplete-pagination'],
+    [{ accounts: records, has_more: true, extra: 1 }, 'incomplete-pagination'],
+    [{ accounts: records, hasMore: true, extra: 1 }, 'incomplete-pagination'],
+    [{ data: records, paging: { next: 'https://private.example/next' }, extra: 1 }, 'incomplete-pagination'],
+    [{ data: records, paging: { cursors: { after: 'private-cursor' } }, extra: 1 }, 'incomplete-pagination'],
+    [{ data: records, paging: { previous: 'private-cursor' }, extra: 1 }, 'incomplete-pagination'],
+    [{ data: records, paging: 'private-cursor', extra: 1 }, 'incomplete-pagination'],
+    [{ accounts: records, data: [], extra: 1 }, 'account-envelope'],
+    [{ extra: records }, 'account-envelope'],
+  ];
+  for (const [provider, reason] of cases) {
+    await assert.rejects(sanitizeMetaAdsAccountHelperResponse(rpcResult({ structuredContent: provider }), approved),
+      (error: unknown) => error instanceof Error && error.message.includes(`(${reason};`) &&
+        !/private/.test(error.message), JSON.stringify(provider));
+  }
+});
+
+test('account helper logs a new envelope key from an event-stream answer too', async (t) => {
+  const logged: unknown[] = [];
+  t.mock.method(console, 'info', (event: unknown) => { logged.push(event); });
+  const provider = {
+    accounts: [{ ad_account_id: '123450001', is_ads_mcp_enabled: true, is_queryable: true }],
+    request_context: 'synthetic-private-context',
+  };
+  const envelope = { jsonrpc: '2.0', id: 'call-2', result: { structuredContent: provider } };
+  const response = await sanitizeMetaAdsAccountHelperResponse(new Response(
+    `event: message\ndata: ${JSON.stringify(envelope)}\n\n`,
+    { headers: { 'content-type': 'text/event-stream' } },
+  ), approved, { connectionId: 'meta-test' });
+  assert.doesNotMatch(await response.text(), /request_context|synthetic-/);
+  assert.deepEqual(logged, [{
+    event: 'chickpea.meta_ads.account_envelope_extra_keys', connectionId: 'meta-test', keys: ['request_context'],
+  }]);
 });

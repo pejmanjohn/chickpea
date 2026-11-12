@@ -1,38 +1,54 @@
 /**
- * The state store's side of a test run (U6a §3.2): admission and dispatch
- * in one call, then the settle step, which alone addresses the run's
- * instance. The alarm, the caller's polls and a cancellation pass all run
- * it; one step per run at a time, and none once the instance is erased.
+ * The state store's side of a practice run (U6a §3.2): admission and
+ * dispatch in one call, then the settle step, which alone addresses the
+ * run's instance. The alarm, the caller's polls and a cancellation pass all
+ * run it; one step per run at a time, and none once the instance is erased.
  */
-import { deriveRuntimePlanInstanceId, parseRuntimePlanV2 } from '../agents/runtime-plan.ts';
+import { practiceMessage } from '../agents/practice-history.ts';
+import { deriveRuntimePlanInstanceId, parseRuntimePlanV2, type RuntimePlanV2 } from '../agents/runtime-plan.ts';
+import { CHICKPEA_SUBMISSION_DURABILITY } from '../agents/submission-durability.ts';
 import { installationScopeOfObjectName, requireInstallationScope } from '../config/installation-scope.ts';
-import type { CreditBackReason } from '../config/platform-funding.ts';
+import type { CreditBackReason, PlatformFundingRefusal } from '../config/platform-funding.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type {
+  PracticeKeptResult,
+  PracticeRunListing,
+  PracticeRunsQuery,
+  PracticeStep,
   TestRunFailure,
   TestRunQuery,
   TestRunReplayQuery,
+  TestRunResult,
   TestRunRow,
   TestRunSettlement,
   TestRunStartRequest,
   TestRunStartResult,
+  TestRunStepQuery,
+  TestRunStepResult,
   TestRunView,
 } from '../management/test-run-types.ts';
-import type { TestRunStoreLogic } from '../management/test-runs.ts';
+import { liveTestRun as live, type TestRunStoreLogic } from '../management/test-runs.ts';
 import type { ChickpeaResponseMetadata } from '../usage/response-metadata.ts';
 import { TestRunUsageRecorder } from '../usage/test-run-usage.ts';
+import { givenUpReason, planFunding } from '../usage/run-settlement.ts';
 import type { UsageStoreLogic } from '../usage/store.ts';
 import type { RecordUsageTerminalInput } from '../usage/types.ts';
 import { opaqueId } from '../work/admission.ts';
 
 /** Admitted with no submission this long: the dispatch never landed, as far as the store knows. */
 export const TEST_RUN_DISPATCH_GRACE_MS = 30_000;
-/** The store aborts a run still unsettled this long after admission, past Flue's own 120 s. */
-export const TEST_RUN_ABORT_AFTER_MS = 125_000;
+/** The store aborts a run still unsettled this long after admission, 5 s past Flue's own timeout, a direct message's. */
+export const TEST_RUN_ABORT_AFTER_MS = CHICKPEA_SUBMISSION_DURABILITY.timeoutMs + 5_000;
 /** The store fails a run still unsettled this long after admission, whatever the instance reports. */
-export const TEST_RUN_DEADLINE_MS = 150_000;
+export const TEST_RUN_DEADLINE_MS = CHICKPEA_SUBMISSION_DURABILITY.timeoutMs + 30_000;
 /** The erase waits for the instance to settle no longer than this after admission. */
-export const TEST_RUN_FORCED_ERASE_MS = 10 * 60_000;
+export const TEST_RUN_FORCED_ERASE_MS = TEST_RUN_DEADLINE_MS + 7.5 * 60_000;
+/**
+ * A run that never had a submission while it was live never ran, so it has
+ * no timeout to outlast: its erase waits only this long after admission, for
+ * a dispatch that lands late.
+ */
+export const TEST_RUN_UNBOUND_ERASE_MS = 10 * 60_000;
 /** Each dispatch, abort, settlement read and erase is one request to the instance. */
 export const TEST_RUN_INSTANCE_CALL_MS = 10_000;
 
@@ -48,11 +64,22 @@ export type TestRunInstanceSettlement =
   | { kind: 'unsettled' }
   /** No instance, or no stream: counted as settled, with nothing to read. */
   | { kind: 'not_found' }
-  | { kind: 'answered'; reply: string; read: string[]; metadata?: ChickpeaResponseMetadata }
+  | {
+      kind: 'answered';
+      reply: string;
+      replyTruncated?: true;
+      read: string[];
+      steps: PracticeStep[];
+      moreSteps?: number;
+      skills?: string[];
+      /** More of each cut result than its excerpt, kept beside the run. */
+      results?: PracticeKeptResult[];
+      metadata?: ChickpeaResponseMetadata;
+    }
   | {
       kind: 'failed';
       failure: Extract<TestRunFailure, 'deadline' | 'out_of_usage' | 'daily_limit' | 'failed'>;
-      resumesAt?: number;
+      funding?: PlatformFundingRefusal;
       creditBack: CreditBackReason | null;
     };
 
@@ -114,12 +141,14 @@ export class TestRunLifecycle {
   }
 
   /**
-   * Admission, then the dispatch, in one call: no other run can start
-   * between them. The row's plan is the creation data's, and it must name
-   * this run, its caller, its Agent and an instance of this installation,
-   * so its instance is the run's own and never another's. A dispatch that
-   * throws leaves the run `admitted` for the 30-second rule; one that landed
-   * binds its submission at its first model request anyway.
+   * Admission, then the dispatch, in one call. The row's plan is the
+   * creation data's, and it must name this run, its caller, its Agent and an
+   * instance of this installation, so its instance is the run's own and
+   * never another's. The message is the store's: a follow-up quotes the
+   * conversation's earlier turns from its own rows, and the creation data
+   * says so for the framing. A dispatch that throws leaves the run
+   * `admitted` for the 30-second rule; one that landed binds its submission
+   * at its first model request anyway.
    */
   async start(request: TestRunStartRequest): Promise<TestRunStartResult> {
     const { testRuns } = this.deps.stores();
@@ -135,25 +164,35 @@ export class TestRunLifecycle {
         installationScopeOfObjectName(instanceId)?.installationId !== requireInstallationScope(this.deps.platformEnv)?.installationId) {
       throw new Error('A test run must run its own test run plan.');
     }
-    // A run that has finished but that no one has read yet must not hold the lock.
-    for (const row of testRuns.unerased()) {
-      if (row.organizationId === run.organizationId && live(row)) await this.step(row.testRunId);
-    }
     const at = this.now();
     const admission = testRuns.admit({ ...run, instanceId, planJson: JSON.stringify(request.initialData.runtimePlan) }, at);
-    if (admission.kind === 'replayed') return { kind: 'replayed', run: testRunView(await this.settled(admission.row)) };
-    if (admission.kind !== 'admitted') return admission;
+    switch (admission.kind) {
+      case 'in_progress':
+      case 'ended':
+        return admission;
+      case 'replayed':
+      case 'running':
+        return { kind: admission.kind, run: this.view(await this.settled(admission.row)) };
+      case 'repeat':
+        return { kind: 'repeat', run: { ...this.view(admission.row), repeat: true } };
+    }
     const { row } = admission;
+    const { message, quoted } = practiceMessage(run.question, admission.earlier);
+    // Before any wait, so the run is still admitted: the result says how many turns its Agent never saw.
+    const dropped = admission.expired + admission.earlier.length - quoted;
+    if (dropped > 0) testRuns.recordDroppedTurns(row.testRunId, dropped);
+    const { quotesEarlierTurns: _sent, ...data } = request.initialData;
+    const initialData = quoted > 0 ? { ...data, quotesEarlierTurns: true as const } : data;
     await this.deps.armAlarm(testRuns.nextDueAt(at) ?? at);
     try {
-      await bounded(this.dispatch(row, request));
+      await bounded(this.dispatch(row, { message, initialData }));
     } catch (error) {
       log('test_run_dispatch_failed', row, error);
     }
     // A cancellation that settled the run while its dispatch was out left the instance alone: stop and erase it now.
     const dispatched = testRuns.get(row.testRunId) ?? row;
     if (!live(dispatched) && !this.dispatching.has(row.testRunId)) await this.step(row.testRunId);
-    return { kind: 'admitted', run: testRunView(testRuns.get(row.testRunId) ?? row) };
+    return { kind: 'admitted', run: this.view(testRuns.get(row.testRunId) ?? row) };
   }
 
   /**
@@ -161,15 +200,11 @@ export class TestRunLifecycle {
    * bound that is. A receipt that lands after the run's instance was erased
    * makes the run unerased again, and the alarm erases it.
    */
-  private dispatch(row: TestRunRow, request: TestRunStartRequest): Promise<void> {
+  private dispatch(row: TestRunRow, sent: Omit<TestRunDispatch, 'idempotencyKey'>): Promise<void> {
     this.dispatching.add(row.testRunId);
     return (async () => {
       try {
-        const receipt = await (await this.deps.port()).dispatch(row.instanceId, {
-          message: request.message,
-          initialData: request.initialData,
-          idempotencyKey: row.testRunId,
-        });
+        const receipt = await (await this.deps.port()).dispatch(row.instanceId, { ...sent, idempotencyKey: row.testRunId });
         if (this.deps.stores().testRuns.recordSubmission(row.testRunId, receipt.submissionId)) {
           await this.deps.armAlarm(this.now());
         }
@@ -184,15 +219,29 @@ export class TestRunLifecycle {
   }
 
   async replay(query: TestRunReplayQuery): Promise<TestRunView | undefined> {
-    const row = this.deps.stores().testRuns.findByIdempotencyKey(query.actorMembershipId, query.idempotencyKey);
-    if (!row || row.organizationId !== query.organizationId) return undefined;
-    const read = this.deps.stores().testRuns.read({ ...query, runToken: row.runToken }, this.now());
-    return read ? testRunView(await this.settled(read)) : undefined;
+    const row = this.deps.stores().testRuns.replay(query, this.now());
+    return row ? this.view(await this.settled(row)) : undefined;
   }
 
   async observe(query: TestRunQuery): Promise<TestRunView | undefined> {
     const row = this.deps.stores().testRuns.read(query, this.now());
-    return row ? testRunView(await this.settled(row)) : undefined;
+    return row ? this.view(await this.settled(row)) : undefined;
+  }
+
+  /** What the caller learns of a run, with the earlier answer to the same question, of another version, beside it. */
+  private view(row: TestRunRow): TestRunView {
+    const before = this.deps.stores().testRuns.before(row, this.now());
+    return { ...testRunView(row), ...before ? { before } : {} };
+  }
+
+  /** A read of the rows as they stand: no run is stepped for it. */
+  async list(query: PracticeRunsQuery): Promise<PracticeRunListing[]> {
+    return this.deps.stores().testRuns.list(query, this.now());
+  }
+
+  /** A read of one step's kept result as it stands: no run is stepped for it. */
+  async stepResult(query: TestRunStepQuery): Promise<TestRunStepResult | undefined> {
+    return this.deps.stores().testRuns.stepResult(query, this.now());
   }
 
   /** A caller's read runs the run's step and re-arms the alarm, which a cancellation deletes. */
@@ -263,7 +312,7 @@ export class TestRunLifecycle {
     }
     this.writeOwedTerminal(row, now);
     // Until its dispatch call returns, an abort or an erase could come before what it lands.
-    if (this.dispatching.has(testRunId) && age < TEST_RUN_FORCED_ERASE_MS) return row;
+    if (this.dispatching.has(testRunId) && !eraseForced(row, now)) return row;
     if (await this.eraseReady(row, probe, now)) await this.erase(row);
     return testRuns.get(testRunId);
   }
@@ -271,11 +320,11 @@ export class TestRunLifecycle {
   /**
    * The instance has settled or is gone, or the forced bound has passed. An
    * instance still running is aborted first. A run with no submission has
-   * nothing to read, so its erase waits for the bound, unless a submission
-   * that lands later binds it and settles.
+   * nothing to read, so its erase waits for its own bound, unless a
+   * submission that lands later binds it and settles.
    */
   private async eraseReady(row: TestRunRow, probe: TestRunInstanceSettlement | undefined, now: number): Promise<boolean> {
-    if (now - row.createdAt >= TEST_RUN_FORCED_ERASE_MS) {
+    if (eraseForced(row, now)) {
       await this.abortOnce(row);
       log('test_run_forced_erase', row);
       return true;
@@ -332,25 +381,29 @@ export class TestRunLifecycle {
     mode: TestRunStepMode,
   ): Promise<void> {
     if (settled.kind === 'answered') {
+      const { kind: _kind, metadata, results, ...result } = settled;
       await this.write(row, {
         status: 'answered',
-        result: { reply: settled.reply, read: settled.read },
-        terminal: this.terminal(row, { status: 'answered', ...(settled.metadata ? { metadata: settled.metadata } : {}) }, now),
+        result,
+        ...(results ? { results } : {}),
+        terminal: this.terminal(row, { status: 'answered', ...(metadata ? { metadata } : {}) }, now),
       }, null);
       return;
     }
     let failure: TestRunFailure;
     let creditBack: CreditBackReason | null = null;
-    let result: { resumesAt: number } | undefined;
+    let result: TestRunResult | undefined;
     if (settled.kind === 'not_found') {
       failure = now - row.createdAt >= TEST_RUN_DEADLINE_MS ? 'deadline' : 'failed';
+      // The run is lost: credited as a direct message's lost run is, whatever the time.
+      creditBack = givenUpReason(undefined, planFunding(planOf(row) as Pick<RuntimePlanV2, 'modelCredential'> | undefined));
     } else if (mode === 'cancel' && settled.failure === 'deadline') {
       // Stopped by this cancellation's own abort, not by a deadline.
       failure = 'cancelled';
     } else {
       failure = settled.failure;
       creditBack = settled.creditBack;
-      if (settled.resumesAt !== undefined) result = { resumesAt: settled.resumesAt };
+      result = settled.funding ? { funding: settled.funding } : {};
     }
     await this.write(row, {
       status: 'failed',
@@ -376,10 +429,15 @@ export class TestRunLifecycle {
   /**
    * Settles the row with its usage terminal. A terminal Usage refuses never
    * keeps the run live: the row settles without it, and each later step
-   * until the erase writes one with its usage unreported.
+   * until the erase writes one with its usage unreported. A failure that is
+   * Chickpea's, a deadline included, is credited back every time, exactly
+   * as a direct message's is.
    */
   private async write(row: TestRunRow, settlement: TestRunSettlement, creditBack: CreditBackReason | null): Promise<void> {
     const { testRuns } = this.deps.stores();
+    if (row.submissionId !== null && creditBack !== null) {
+      settlement = { ...settlement, result: { ...settlement.result, creditedBack: true as const } };
+    }
     let settled: boolean;
     try {
       settled = testRuns.settle(row.testRunId, settlement);
@@ -437,11 +495,21 @@ function testRunView(row: TestRunRow): TestRunView {
     failure: row.failure,
     result: row.result,
     createdAt: row.createdAt,
+    settledAt: row.settledAt,
+    practiceId: row.practiceId,
+    turn: row.turn,
+    question: row.question,
   };
 }
 
-function live(row: TestRunRow): boolean {
-  return row.status === 'admitted' || row.status === 'running';
+/**
+ * The erase stops waiting for the instance: at the forced bound, or sooner
+ * for a run that never ran. A submission that binds after the store failed
+ * the run as not dispatched gets no model access, so that run never ran either.
+ */
+function eraseForced(row: TestRunRow, now: number): boolean {
+  const neverRan = row.submissionId === null || row.failure === 'not_dispatched';
+  return now - row.createdAt >= (neverRan ? TEST_RUN_UNBOUND_ERASE_MS : TEST_RUN_FORCED_ERASE_MS);
 }
 
 function planOf(row: TestRunRow): unknown {

@@ -350,6 +350,7 @@ test('MCP consent explains renewable access without changing the signed request'
 test('MCP consent shows the app-provided name, labelled as self-asserted', () => {
   const html = renderMcpConsentPage({ clientName: 'Claude Code', scope: MCP_WORKSPACE_SCOPE, oauthQuery: 'sig=test' });
   assert.ok(html.includes('<dt>App</dt><dd>Claude Code <span class="note">(name provided by the app)</span></dd>'));
+  assert.ok(html.includes('<p>The app can read practice answers, your own direct messages with Agents'), 'a self-named app is never named in the consent line');
   assert.ok(!html.includes('<dt>Client</dt>'));
 });
 
@@ -360,6 +361,8 @@ test('MCP consent and its return page name ChatGPT only for ChatGPT\'s own clien
   });
   assert.ok(chatgpt.includes('<h1>Allow ChatGPT to manage your workspace?</h1>'));
   assert.ok(chatgpt.includes('<p>ChatGPT will act as you in this Chickpea workspace. It can do only what you can do.</p>'));
+  assert.ok(chatgpt.includes('<p>ChatGPT can read practice answers, your own direct messages with Agents, and Agents\' conversations in public Slack Channels. These can include information from services your team connected. ChatGPT keeps what it reads under your account\'s settings there.</p>'),
+    'the consent names what run history lets the app read');
   assert.ok(chatgpt.includes('<dt>App</dt><dd>ChatGPT</dd><dt>Domain</dt><dd>chatgpt.com</dd>'));
   const callback = 'https://chatgpt.com/connector_platform_oauth_redirect?code=code_123&state=state_123';
   const back = await createMcpConsentRedirectResponse(callback, 'https://chatgpt.com/oauth/client.json').text();

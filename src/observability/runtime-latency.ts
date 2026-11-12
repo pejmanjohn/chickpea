@@ -1,9 +1,10 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 
-import type { FlueObservation } from '@flue/runtime';
+import type { FlueObservation, ModelRequestInput } from '@flue/runtime';
 
 import type { AnswerReleaseShadowRecord } from '../slack/answer-release.ts';
+import type { HostReleaseRecord } from '../slack/host-release-relay.ts';
 import type { GatewayInboundDelivery } from '../slack/gateway/protocol.ts';
 import type { GatewaySessionRunnerHealthSnapshot } from '../slack/gateway/session-runner.ts';
 import type { SlackThreadRunnerRpc } from '../slack/thread-runner-rpc.ts';
@@ -26,6 +27,8 @@ export type RuntimeLatencyEvent =
   | 'turn_fold'
   | 'state_rpc'
   | 'state_rpc_summary'
+  | 'state_rpc_fallback'
+  | 'slack_store_admission'
   | 'gateway_delivery'
   | 'thread_runner_alarm'
   | 'thread_runner_superseded'
@@ -59,6 +62,9 @@ const STRING_FIELDS: Readonly<Record<string, RegExp>> = {
   final: TOKEN,
   block: TOKEN,
   late: TOKEN,
+  hostRelease: TOKEN,
+  hostBlock: TOKEN,
+  hostLate: TOKEN,
   method: TOKEN,
   firstMethod: TOKEN,
   op: TOKEN,
@@ -72,6 +78,7 @@ const STRING_FIELDS: Readonly<Record<string, RegExp>> = {
   filterReason: TOKEN,
   order: TOKEN,
   reason: TOKEN,
+  path: TOKEN,
   recordedBy: TOKEN,
   basis: TOKEN,
   clef: TOKEN,
@@ -90,6 +97,7 @@ const STRING_FIELDS: Readonly<Record<string, RegExp>> = {
   scope: TOKEN,
   slowestMethod: TOKEN,
   purpose: TOKEN,
+  largestToolResultTool: /^[A-Za-z][A-Za-z0-9_-]{0,127}$/,
 };
 
 /**
@@ -466,16 +474,20 @@ export class TurnLatencyTracker {
   private stateRpcs: StateRpcSummary | undefined;
   private firstWrite: { surface: TurnFirstWrite; at: number } | undefined;
   private answerText: { surface: TurnAnswerTextSurface; at: number } | undefined;
+  private answerVisibleAt: number | undefined;
   private final: { kind: 'delivered' | 'deferred'; at: number } | undefined;
   private folded = 0;
   private foldedInformed = 0;
   private read = 0;
   private midRunReplies = 0;
+  private stalledReads = 0;
   private agentStageMs: number | undefined;
   private agentWake: { sentAt: number; source: 'admission' | 'plan' } | undefined;
   private agentWakeLeadMs: number | undefined;
   private startToStageMs: number | undefined;
+  private titleMs: number | undefined;
   private taskCardStreamed = false;
+  private hostRelease: HostReleaseRecord | undefined;
   private emitted = false;
 
   /** `model`: the model id the turn runs with, logged as its `modelToken`. */
@@ -519,9 +531,23 @@ export class TurnLatencyTracker {
     this.answerText ??= { surface: 'stream', at: this.now() };
   }
 
+  /** Slack acknowledged the call that completes the final's text; only the first is kept. */
+  markAnswerVisible(): void {
+    this.answerVisibleAt ??= this.now();
+  }
+
   /** Slack acknowledged native task card rows on the reply's stream before its terminal. */
   markTaskCardStreamed(): void {
     this.taskCardStreamed = true;
+  }
+
+  /**
+   * What the host answer release did; the latest replaces the last. Text it
+   * retired was not the answer, so the answer's first text is the final's.
+   */
+  markHostRelease(record: HostReleaseRecord): void {
+    this.hostRelease = { ...record };
+    if (record.outcome === 'retired' && this.answerText?.surface === 'stream') this.answerText = undefined;
   }
 
   /** The turn took this many queued messages as follow-ups. */
@@ -544,6 +570,11 @@ export class TurnLatencyTracker {
     this.midRunReplies += 1;
   }
 
+  /** A read of the reply had not answered in time, and a fresh one joined it. */
+  markStalledRead(): void {
+    this.stalledReads += 1;
+  }
+
   /**
    * The turn's Agent object was woken: by admission at `admissionSentAt` (the
    * state store's clock), or by the turn now. Only the first wake is kept.
@@ -562,6 +593,11 @@ export class TurnLatencyTracker {
     this.startToStageMs = Math.max(0, this.now() - ms - this.startedAt);
   }
 
+  /** Slack answered the thread title's call after this long; only the first is kept. */
+  markTitle(ms: number): void {
+    this.titleMs ??= ms;
+  }
+
   /** The terminal was delivered, or handed to a durable outbox. */
   markFinal(kind: 'delivered' | 'deferred'): void {
     if (this.final) return;
@@ -576,9 +612,10 @@ export class TurnLatencyTracker {
    * returned with a stopped run's ending (KTD3), which is not a failure.
    * `answerRelease`, the attempt's shadow of the host release rule, adds an
    * `answer_release` record and the time a release would have shown the
-   * answer, without changing anything Slack showed.
+   * answer, without changing anything Slack showed. `reason`: why a thrown
+   * attempt ended without a final, a fixed token.
    */
-  emit(outcome: 'returned' | 'threw' | 'stopped', answerRelease?: AnswerReleaseShadowRecord): void {
+  emit(outcome: 'returned' | 'threw' | 'stopped', answerRelease?: AnswerReleaseShadowRecord, reason?: string): void {
     if (this.emitted) return;
     this.emitted = true;
     const { admittedAt, receivedAt } = this.context;
@@ -602,6 +639,7 @@ export class TurnLatencyTracker {
       attempt: this.ids.attempt,
       modelToken: model,
       outcome,
+      reason,
       firstWrite: this.firstWrite?.surface ?? 'none',
       final: this.final?.kind ?? 'none',
       admissionToStartMs: since(this.startedAt),
@@ -615,6 +653,8 @@ export class TurnLatencyTracker {
       firstAnswerText: this.answerText?.surface ?? 'none',
       admissionToFirstAnswerTextMs: since(answerTextAt),
       receiptToFirstAnswerTextMs: sinceReceipt(answerTextAt),
+      admissionToAnswerVisibleMs: since(this.answerVisibleAt),
+      receiptToAnswerVisibleMs: sinceReceipt(this.answerVisibleAt),
       admissionToShadowAnswerTextMs: since(shadowAnswerTextAt),
       receiptToShadowAnswerTextMs: sinceReceipt(shadowAnswerTextAt),
       handoffMs: this.context.handoffMs,
@@ -624,11 +664,13 @@ export class TurnLatencyTracker {
       agentWakeLeadMs: this.agentWakeLeadMs,
       agentWakeSource: this.agentWakeLeadMs === undefined ? undefined : this.agentWake?.source,
       startToStageMs: this.startToStageMs,
+      titleMs: this.titleMs,
       attemptMs: end - this.startedAt,
       folded: this.folded > 0 ? this.folded : undefined,
       foldedInformed: this.foldedInformed > 0 ? this.foldedInformed : undefined,
       read: this.read > 0 ? this.read : undefined,
       midRunReplies: this.midRunReplies > 0 ? this.midRunReplies : undefined,
+      stalledReads: this.stalledReads > 0 ? this.stalledReads : undefined,
       modelSteps: this.work?.modelSteps,
       toolCalls: this.work?.toolCalls,
       toolMs: this.work?.toolMs,
@@ -642,6 +684,12 @@ export class TurnLatencyTracker {
         modelToken: model,
         ...shadow,
         taskCardStream: this.taskCardStreamed,
+        hostRelease: this.hostRelease?.outcome,
+        hostBlock: this.hostRelease?.outcome === 'blocked' ? this.hostRelease.block : undefined,
+        hostLate: this.hostRelease && 'late' in this.hostRelease ? this.hostRelease.late : undefined,
+        retiredVisibleMs: this.hostRelease && 'retiredVisibleMs' in this.hostRelease
+          ? this.hostRelease.retiredVisibleMs
+          : undefined,
         admissionToReleaseMs: since(releasedAt),
         receiptToReleaseMs: sinceReceipt(releasedAt),
       }, this.sink);
@@ -718,6 +766,8 @@ export function emitInteractionJudgment(
     recordedBy: string;
     basis?: string;
     basisMs?: number;
+    earlyMs?: number;
+    rejudged?: boolean;
     clef: string;
     clefMs?: number;
     clefInputTokens?: number;
@@ -746,6 +796,8 @@ export function emitInteractionJudgment(
     recordedBy: record.recordedBy,
     basis: record.basis,
     basisMs: record.basisMs,
+    earlyMs: record.earlyMs,
+    rejudged: record.rejudged,
     clef: record.clef,
     clefMs: record.clefMs,
     clefInputTokens: record.clefInputTokens,
@@ -843,8 +895,12 @@ export function resetStateRpcCountersForTest(): void {
 // caller. `state_rpc` samples only slow calls, so its medians are the slow
 // tail's; this record counts them all.
 
-/** `slack_delivery`: a direct delivery from Core's handler to its admission chain's end. `turn`: one turn attempt. */
-export type StateRpcScope = 'slack_delivery' | 'turn';
+/**
+ * `slack_delivery`: a direct delivery from Core's handler to its admission
+ * chain's end. `turn`: one turn attempt. `store_admission`: a delivery the
+ * state store admits itself, whose calls over RPC must be none.
+ */
+export type StateRpcScope = 'slack_delivery' | 'turn' | 'store_admission';
 
 /**
  * A scope's calls. A round is a run of overlapping calls: one starts while
@@ -904,6 +960,11 @@ export class StateRpcSummary {
     return stateRpcScopes.run(this.tally, fn);
   }
 
+  /** The calls counted so far. */
+  get calls(): number {
+    return this.tally.calls;
+  }
+
   /** The turn's model starts: the calls so far are the ones before it. Only the first is kept. */
   markModelStart(): void {
     this.beforeModelStart ??= {
@@ -918,7 +979,13 @@ export class StateRpcSummary {
    * none). `receivedAt`: the delivery's receipt, so the record shows how long
    * it waited before this scope.
    */
-  emit(fields: { turnJobId?: string | undefined; receivedAt?: number | undefined } = {}): void {
+  emit(fields: {
+    turnJobId?: string | undefined;
+    receivedAt?: number | undefined;
+    /** `slack_delivery`: who admitted it (`store`, `worker`, `fallback`), and on a fallback why. */
+    path?: 'store' | 'worker' | 'fallback';
+    reason?: string | undefined;
+  } = {}): void {
     if (this.emitted) return;
     this.emitted = true;
     if (this.tally.calls === 0) return;
@@ -936,6 +1003,8 @@ export class StateRpcSummary {
       slowestMs: tally.slowest?.ms,
       spanMs: at - this.startedAt,
       receiptToStartMs: fields.receivedAt === undefined ? undefined : this.startedAt - fields.receivedAt,
+      path: fields.path,
+      reason: fields.reason,
       callsBeforeModelStart: beforeModelStart?.calls,
       roundsBeforeModelStart: beforeModelStart?.rounds,
       busyMsBeforeModelStart: beforeModelStart?.busyMs,
@@ -1047,15 +1116,45 @@ const FIRST_TOKEN_EVENTS: ReadonlySet<FlueObservation['type']> = new Set([
   'text_delta', 'thinking_start', 'thinking_delta', 'toolcall_delta',
 ]);
 
+interface ModelRequestSize {
+  /** UTF-8 bytes of the model input as JSON, as Flue assembled it: system prompt, messages and tools. */
+  requestBytes: number;
+  toolResults: number;
+  /** UTF-8 bytes of the largest tool result's text, and an image's base64 characters. */
+  largestToolResultBytes?: number;
+  largestToolResultTool?: string;
+}
+
+const utf8 = new TextEncoder();
+
+/** Sizes only: the input is measured, never kept. */
+function modelRequestSize(input: ModelRequestInput): ModelRequestSize {
+  let toolResults = 0;
+  let largest: { bytes: number; tool: string } | undefined;
+  for (const message of input.messages) {
+    if (message.role !== 'toolResult') continue;
+    toolResults += 1;
+    const bytes = message.content.reduce((sum, part) =>
+      sum + (part.type === 'text' ? utf8.encode(part.text).byteLength : part.data.length), 0);
+    if (!largest || bytes > largest.bytes) largest = { bytes, tool: message.toolName };
+  }
+  return {
+    // Counted without a second copy of the input: it can hold megabytes of image data.
+    requestBytes: Buffer.byteLength(JSON.stringify(input)),
+    toolResults,
+    ...(largest ? { largestToolResultBytes: largest.bytes, largestToolResultTool: largest.tool } : {}),
+  };
+}
+
 /**
  * Times each model request from Flue's `turn_request` to its first streamed
  * token (text, thinking, or a tool call's arguments), and logs the model that
  * served it, Flue's duration, its token counts and its tool calls when its
- * `turn` ends.
+ * `turn` ends, with the request's size measured at `turn_request`.
  * `inputTokens` excludes the cached input that `cachedInputTokens` counts.
  */
 export class ModelStepMarks {
-  private readonly open = new Map<string, { startedAt: number; firstTokenAt?: number }>();
+  private readonly open = new Map<string, { startedAt: number; firstTokenAt?: number; size?: ModelRequestSize }>();
 
   constructor(
     private readonly now: () => number = Date.now,
@@ -1069,7 +1168,14 @@ export class ModelStepMarks {
       if (turnId === undefined) return;
       if (event.type === 'turn_request') {
         this.open.delete(turnId);
-        this.open.set(turnId, { startedAt: this.now() });
+        const startedAt = this.now();
+        let size: ModelRequestSize | undefined;
+        try {
+          size = modelRequestSize(event.request.input);
+        } catch {
+          // A request that cannot be measured is still timed.
+        }
+        this.open.set(turnId, { startedAt, ...(size ? { size } : {}) });
         if (this.open.size > MODEL_STEP_OPEN_LIMIT) this.open.delete(this.open.keys().next().value!);
         return;
       }
@@ -1101,6 +1207,7 @@ export class ModelStepMarks {
         cacheWriteTokens: usage?.cacheWrite,
         outputTokens: usage?.output,
         toolCalls: output?.content.filter((part) => part.type === 'toolCall').length,
+        ...open?.size,
       }, this.sink);
     } catch {
       // Observability is best effort and never changes the model request.

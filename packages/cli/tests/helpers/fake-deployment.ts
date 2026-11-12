@@ -17,6 +17,8 @@ export interface FakeDeploymentOptions {
   legacyOnly?: boolean;
   createMcpServer?: () => McpServer;
   tools?: Record<string, (args: Record<string, unknown>) => Record<string, unknown>>;
+  /** A tool's input schema by name, in place of an open object. */
+  toolInputs?: Record<string, z.ZodObject>;
   accessTokenRevocationStatus?: number;
   alternateAuthorizationServer?: string;
 }
@@ -67,12 +69,14 @@ export class FakeDeployment {
   private readonly ttl: number;
   private readonly now: () => number;
   private readonly tools: Record<string, (args: Record<string, unknown>) => Record<string, unknown>>;
+  private readonly toolInputs: Record<string, z.ZodObject>;
   private readonly accessTokenRevocationStatus: number | undefined;
   private readonly alternateAuthorizationServer: string | undefined;
 
   constructor(options: FakeDeploymentOptions = {}) {
     this.mode = options.mode ?? 'ready';
     this.serverFactory = options.createMcpServer;
+    this.toolInputs = options.toolInputs ?? {};
     this.accessTokenRevocationStatus = options.accessTokenRevocationStatus;
     this.alternateAuthorizationServer = options.alternateAuthorizationServer;
     this.ttl = options.accessTokenTtlSeconds ?? 900;
@@ -354,7 +358,7 @@ export class FakeDeployment {
       server.registerTool(name, {
         title: name,
         description: `Fake ${name}. Second sentence that the CLI should not print.`,
-        inputSchema: z.looseObject({}),
+        inputSchema: this.toolInputs[name] ?? z.looseObject({}),
         annotations: name.startsWith('inspect') || name.startsWith('export') || name.startsWith('preview')
           ? { readOnlyHint: true }
           : name === 'confirm_workspace_change' ? { destructiveHint: true, idempotentHint: true } : {},
