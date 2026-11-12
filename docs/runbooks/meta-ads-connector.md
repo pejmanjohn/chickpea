@@ -43,7 +43,9 @@ campaign reporting and insights, they cover the account's change history,
 custom audiences and custom conversions. Their optional filters for
 particular campaigns, ads, objects, people or datasets stay unavailable, so
 each answers for the whole account. The change history
-(`ads_account_get_activity_logs`) can run to megabytes for one week, so the
+(`ads_account_get_activity_logs`) names the person behind each change and
+includes billing events, which Admin's tool picker states. It can run to
+megabytes for one week, so the
 Agent is told to start with 50 entries and narrow the time window or event
 category for more. A larger answer is cut to fit the model's context. An
 account connected before the change history was offered lists it after its

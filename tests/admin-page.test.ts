@@ -19918,7 +19918,7 @@ test('a plain Save in Meta tool review drops a granted tool the picker cannot sh
 
 test("Meta tool review describes the account-wide reads in Chickpea's words, as reports", async () => {
   const reads: Array<[string, string]> = [
-    ['ads_account_get_activity_logs', "View the account&#39;s change history."],
+    ['ads_account_get_activity_logs', "View the account&#39;s change history, including who made each change."],
     ['ads_get_ad_account_custom_audiences', "View the account&#39;s custom and lookalike audiences."],
     ['ads_get_customconversions', "View the account&#39;s custom conversions."],
   ];
