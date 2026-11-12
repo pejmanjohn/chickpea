@@ -108,7 +108,7 @@ import { isTransientSlackApiError } from '../slack/credentials.ts';
 import { slackPlatformErrorCode } from '../slack/errors.ts';
 import { SlackInstallationUnavailableError } from '../slack/installation-execution.ts';
 import { SlackTransportError } from '../slack/transport/types.ts';
-import { isValidRepositoryFullName } from '../config/github-app.ts';
+import { getGithubConnection, isValidRepositoryFullName, type GithubConnection } from '../config/github-app.ts';
 import { newAgentCredentialIncarnation } from '../config/connection-credential-binding.ts';
 import {
   applyConnectionCapabilityCeiling,
@@ -4229,6 +4229,17 @@ export class WorkspaceManagementService {
   async agentReader(context: ManagementActorContext, agentId: string) {
     const actor = await this.requireLiveActor(context);
     return { actor, agent: await this.requireEditableAgent(actor, agentId), stores: this.stores };
+  }
+
+  /**
+   * For list_agents: the stored GitHub connection, as check_agent reads it,
+   * or undefined where this deployment keeps no settings. A read that fails
+   * counts as no connection, as it does in check_agent.
+   */
+  async githubConnection(context: ManagementActorContext): Promise<GithubConnection | undefined> {
+    await this.requireLiveActor(context, { cleanupRetention: false });
+    if (!this.stores.settings) return undefined;
+    return getGithubConnection(this.stores.settings, this.stores.env).catch((): GithubConnection => ({ mode: 'none' }));
   }
 
   private async generatedAvatarSeeds(): Promise<string[]> {

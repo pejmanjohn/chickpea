@@ -14,6 +14,8 @@ import {
   MCP_ERROR_CODES,
   versionToken,
 } from '../src/management/mcp-v5/conventions.ts';
+import { configureHostedGithub, resetHostedGithubForTests } from '../src/config/hosted-github.ts';
+import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { agentConnectionsOf } from '../src/management/mcp-v5/reads.ts';
 import { changeResultOutput, createAgentInputSchema, updateAgentInputSchema } from '../src/management/mcp-v5/schemas.ts';
 import { CARD_URIS } from '../src/management/mcp-v5/cards.ts';
@@ -358,7 +360,7 @@ test('list_agents, get_agent and the other reads carry handles and versions, nev
     description: 'Finds sources.',
     status: 'on',
     canEdit: true,
-    needsAttention: [],
+    needsAttention: ['It is not in Slack yet, so no one can mention it.'],
   });
   assert.equal(agents.canCreate, true);
   assert.equal(agents.nextCursor, undefined);
@@ -406,6 +408,67 @@ test('list_agents, get_agent and the other reads carry handles and versions, nev
   }]);
   const after = structured(await call('get_agent', { agentId: 'agent_research' }));
   assert.notEqual(after.version, before, 'a change gives a new version');
+});
+
+test('list_agents flags what check_agent finds from stored state: an Agent not in Slack, and GitHub access that no longer reaches a repository', async (t) => {
+  // The platform GitHub App on a deployment serving many installations: acme-b's binding is suspended.
+  resetHostedGithubForTests();
+  t.after(() => resetHostedGithubForTests());
+  configureHostedGithub({
+    app: () => ({ appId: '900100', appSlug: 'chickpea-test', privateKeyPem: '-----BEGIN PRIVATE KEY-----\nnot-a-real-key\n-----END PRIVATE KEY-----', botUserId: 900_200 }),
+    bindings: {
+      list: async () => [101, 202].map((githubInstallationId) => ({
+        githubInstallationId, accountLogin: githubInstallationId === 101 ? 'acme-a' : 'acme-b', accountType: 'Organization',
+        repositorySelection: 'all', status: githubInstallationId === 101 ? 'active' : 'suspended',
+      })),
+      disconnect: async () => false,
+      reportGone() {},
+    },
+  });
+  const env = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' } as Record<string, unknown>, { installationId: `inst_${'0123456789abcdef'.repeat(2)}` });
+  const { f, call } = await harness(t, 'attention', 'owner', ({ settings }) => ({ settings, env: env as never }));
+  const inSlack = (handle: string) => ({
+    slackPresence: {
+      requestedHandle: handle, normalizedHandle: handle, desiredState: 'active' as const, health: 'healthy' as const,
+      avatar: { kind: 'generated' as const, revision: 1, seed: handle },
+    },
+  });
+  await createFixtureAgent(f, 'agent_coder', {
+    name: 'Coder',
+    ...inSlack('coder'),
+    repositories: [
+      { id: 'repo_app', installationId: 101, accountLogin: 'acme-a', fullName: 'acme-a/app', enabled: true },
+      { id: 'repo_api', installationId: 202, accountLogin: 'acme-b', fullName: 'acme-b/api', enabled: true },
+    ],
+  });
+  await createFixtureAgent(f, 'agent_new', { name: 'Newcomer' });
+  await createFixtureAgent(f, 'agent_resting', { name: 'Resting', enabled: false });
+  await createFixtureAgent(f, 'agent_ready', { name: 'Ready', ...inSlack('ready') });
+
+  const rows = structured(await call('list_agents')).agents as Array<{ agentId: string; needsAttention: string[] }>;
+  const attention = Object.fromEntries(rows.map(({ agentId, needsAttention }) => [agentId, needsAttention]));
+  assert.deepEqual(attention, {
+    agent_coder: ['GitHub access for acme-b is suspended or was removed.'],
+    agent_new: ['It is not in Slack yet, so no one can mention it.'],
+    agent_resting: [],
+    agent_ready: [],
+  }, 'an Agent that is off has left Slack on purpose');
+
+  for (const agentId of ['agent_coder', 'agent_new', 'agent_ready']) {
+    const { checks } = structured(await call('check_agent', { agentId })) as { checks: Array<{ part: string; status: string; detail: string }> };
+    const found = checks.filter(({ part, status }) => (part === 'repository' || part === 'slack') && status !== 'ok').map(({ detail }) => detail);
+    assert.deepEqual(found, rows.find((row) => row.agentId === agentId)!.needsAttention, `${agentId}: check_agent finds what the list says, in the same words`);
+  }
+
+  // A standalone deployment with no GitHub App: the list says so, as check_agent does.
+  const standalone = await harness(t, 'attention-standalone', 'owner', ({ settings }) => ({ settings }));
+  await createFixtureAgent(standalone.f, 'agent_coder', {
+    name: 'Coder',
+    ...inSlack('coder'),
+    repositories: [{ id: 'repo_app', installationId: 101, accountLogin: 'acme-a', fullName: 'acme-a/app', enabled: true }],
+  });
+  assert.deepEqual((structured(await standalone.call('list_agents')).agents as Array<{ needsAttention: string[] }>)[0]!.needsAttention,
+    ['GitHub is not connected to Chickpea, so it cannot reach its repositories.']);
 });
 
 test('propose_agent saves nothing and returns create_agent arguments it accepts, with what to settle', async (t) => {

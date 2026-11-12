@@ -14,7 +14,7 @@ If none of the person's test questions has passed yet, offer a test drive first 
 
 Ask only for what's missing, and put your draft answer in each question.
 
-- **Where it answers.** Everyone in the workspace can already message it directly. For a Channel, find the ones the team asks in with `list_slack_channels`. `channels` in `get_agent` shows where it answers now.
+- **Where it answers.** Until it joins a Channel, only its creator can message it. Once it's in a public Channel, everyone in the workspace can message it directly. If all its Channels are private, only their members can. For a Channel, find the ones the team asks in with `list_slack_channels`. `channels` in `get_agent` shows where it answers now.
 - **Who can change it.** `creator_and_admins` keeps changes to its creator and the Owners and Admins. `all_workspace_members` lets every member change its instructions and connections. Suggest keeping it narrow unless the person wants the team to tune it.
 - **Who has to sign in.** A connection whose `owner` is `member` is personal: each person signs in with their own account, and the Agent uses it only for that person's requests. Name each such service: everyone who wants the Agent to use it for them signs in first. A `team` connection needs nothing from them.
 

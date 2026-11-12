@@ -985,7 +985,8 @@ function presentProposal({ proposal, issues }: Proposal): Omit<Presentation<Acti
         parts: [
           { text: 'Answers in ' },
           { text: where, strong: true },
-          { text: `. Anyone in ${proposal.workspaceName?.trim() || 'your Slack workspace'} can message it.` },
+          // Who may DM a new Agent, as slack/agent-access.ts admits it: its creator, until a Channel widens that.
+          { text: proposal.answersIn.length ? '. Everyone in its Channels can ask it there.' : '. Only you can message it until it joins a Channel.' },
         ],
       },
       ...proposal.needs.length

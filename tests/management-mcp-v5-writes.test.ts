@@ -147,9 +147,10 @@ test('create_agent takes propose_agent\'s arguments unchanged, joins its Channel
 
   const created = structured(await call('create_agent', args));
   assert.equal(created.status, 'done');
-  // The summary is for the person, so it names no tool; following its arrival is the model's next step.
+  // The summary is for the person, so it names no tool; the next part of the job is the model's next step.
   assert.equal(created.summary, 'Created Support Desk. It joins 1 Channel.');
-  assert.equal(created.nextStep, 'get_creation_status follows its arrival in Slack.');
+  assert.equal(created.nextStep,
+    'Next, agree on its test questions and test drive it the way the person expects. With no Chickpea skill loaded, call get_guide topic scope first.');
   const { agentId } = created.agent;
   assert.equal(agentId, 'agent_support_desk');
   assert.equal(created.agent.links.admin, 'https://chickpea.example.test/admin/agents/agent_support_desk');
@@ -184,6 +185,7 @@ test('create_agent takes propose_agent\'s arguments unchanged, joins its Channel
     name: 'Support Desk', handle: 'support-desk-two', instructions: 'Second desk.', createEvenIfSimilar: true, idempotencyKey: 'distinct',
   }));
   assert.equal(distinct.agent.agentId, 'agent_support_desk_2', 'a derived agentId skips one in use');
+  assert.equal(distinct.nextStep, created.nextStep, 'with or without Channels, the next part of the job is the same');
   assert.equal(await f.config.getAgentFirstAsk(distinct.agent.agentId), null, 'a creation without an ask stores none');
 
   errorOf(await call('create_agent', {
@@ -549,6 +551,8 @@ test('the immediate writes apply in the call, as policy.ts says for this door', 
   });
   const [listed] = structured(await call('list_schedules', { agentId: 'agent_research' })).schedules;
   assert.equal(schedule.version, listed.version);
+  assert.equal(schedule.nextStep, 'Tell the person when it next runs: list_schedules shows its nextRun. ' +
+    'To see later how its runs go, check on it. With no Chickpea skill loaded, call get_guide topic check-in first.');
   const paused = await run('pause_schedule', { scheduleId: listed.scheduleId, version: listed.version });
   const resumed = await run('resume_schedule', { scheduleId: listed.scheduleId, version: paused.version });
   // A run needs a served model, which this fixture has none of; the lookup still applies.

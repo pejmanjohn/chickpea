@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { MCP_WORKSPACE_SCOPE } from '../../auth/mcp-oauth.ts';
 import { AgentPresenceError } from '../../slack/agent-presence/errors.ts';
+import type { PlaybookTopic } from '../playbook/index.ts';
 import { ManagementError } from '../types.ts';
 import type { HeldTokens } from './card-host.ts';
 
@@ -60,6 +61,16 @@ export function toolMeta(input: {
     ...(input.card ? { 'openai/outputTemplate': input.card } : {}),
     ...(input.profile ? { 'openai/profile': true } : {}),
   };
+}
+
+/**
+ * Sends a client with no Chickpea skill to one job's guide. It goes in the
+ * description of each tool that starts the job, and in the next step of a
+ * result that starts the job's next part: ChatGPT without skills skipped the
+ * server instructions' pointer to get_guide, but it reads both of these.
+ */
+export function guideFirst(topic: PlaybookTopic): string {
+  return `With no Chickpea skill loaded, call get_guide topic ${topic} first.`;
 }
 
 /**
