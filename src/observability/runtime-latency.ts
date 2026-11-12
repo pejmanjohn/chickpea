@@ -51,6 +51,8 @@ const OPAQUE_REF = /^(run|turn)_[0-9a-f]{24}$/;
 const VERSION_ID = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[a-z][a-z0-9_]{0,63})$/i;
 /** What `modelToken` returns. */
 const MODEL_TOKEN = /^[a-z][a-z0-9_]{0,63}$/;
+/** The first 8 hex characters of a SHA-256: says that a part changed, never what it holds. */
+const SHORT_HASH = /^[0-9a-f]{8}$/;
 
 /** The only string fields any event may carry, and their allowed shapes. */
 const STRING_FIELDS: Readonly<Record<string, RegExp>> = {
@@ -99,6 +101,8 @@ const STRING_FIELDS: Readonly<Record<string, RegExp>> = {
   purpose: TOKEN,
   largestToolResultTool: /^[A-Za-z][A-Za-z0-9_-]{0,127}$/,
   sharedPrefix: /^(?:none|[a-z]+\/[a-z_]{1,63})$/,
+  systemPromptHash: SHORT_HASH,
+  toolsHash: SHORT_HASH,
 };
 
 /**
@@ -1126,12 +1130,24 @@ interface ModelRequestSize {
   /** UTF-8 bytes of the largest tool result's text, and an image's base64 characters. */
   largestToolResultBytes?: number;
   largestToolResultTool?: string;
+  /** The system prompt's short hash and UTF-8 bytes: a changed hash is a prompt cache rewrite. */
+  systemPromptHash?: string;
+  systemPromptBytes?: number;
+  /** The same for the tools as JSON. */
+  toolsHash?: string;
+  toolsBytes?: number;
 }
 
 const utf8 = new TextEncoder();
 
-/** Sizes only: the input is measured, never kept. */
+function partDigest(text: string | undefined): { hash: string; bytes: number } | undefined {
+  return text === undefined ? undefined : { hash: sha256(text).slice(0, 8), bytes: Buffer.byteLength(text) };
+}
+
+/** Sizes and short hashes only: the input is measured, never kept. */
 function modelRequestSize(input: ModelRequestInput): ModelRequestSize {
+  const systemPrompt = partDigest(input.systemPrompt);
+  const tools = partDigest(input.tools && JSON.stringify(input.tools));
   let toolResults = 0;
   let largest: { bytes: number; tool: string } | undefined;
   for (const message of input.messages) {
@@ -1146,6 +1162,8 @@ function modelRequestSize(input: ModelRequestInput): ModelRequestSize {
     requestBytes: Buffer.byteLength(JSON.stringify(input)),
     toolResults,
     ...(largest ? { largestToolResultBytes: largest.bytes, largestToolResultTool: largest.tool } : {}),
+    ...(systemPrompt ? { systemPromptHash: systemPrompt.hash, systemPromptBytes: systemPrompt.bytes } : {}),
+    ...(tools ? { toolsHash: tools.hash, toolsBytes: tools.bytes } : {}),
   };
 }
 

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
@@ -1223,6 +1224,24 @@ test('model_step carries its request\'s size and its largest tool result\'s size
     largestToolResultTool: undefined,
   }]);
   assert.equal(records[0]!.outcome, 'error', 'a failed step carries the sizes that may explain it');
+  // Defects caught: a hash of the wrong part or of the whole input, a hash
+  // that survives a changed system prompt, bytes counted as characters, and
+  // a hash or size invented for a part the request lacks.
+  const short = (text: string) => createHash('sha256').update(text).digest('hex').slice(0, 8);
+  const parts = ({ systemPromptHash, systemPromptBytes, toolsHash, toolsBytes }: LogRecord) =>
+    ({ systemPromptHash, systemPromptBytes, toolsHash, toolsBytes });
+  assert.deepEqual(parts(records[0]!), {
+    systemPromptHash: short(input.systemPrompt), systemPromptBytes: input.systemPrompt.length,
+    toolsHash: short(JSON.stringify(input.tools)), toolsBytes: JSON.stringify(input.tools).length,
+  });
+  assert.deepEqual(parts(records[1]!), { systemPromptHash: short('x'), systemPromptBytes: 1, toolsHash: short('[]'), toolsBytes: 2 });
+  steps.observe(flueEvent({ type: 'turn_request', turnId: 'step_memory', purpose: 'agent',
+    request: { input: { systemPrompt: 'Mémoire', messages: [] } } }));
+  steps.observe(turn('step_memory'));
+  assert.deepEqual(parts(records[2]!), { systemPromptHash: short('Mémoire'), systemPromptBytes: 8, toolsHash: undefined, toolsBytes: undefined });
+  steps.observe(flueEvent({ type: 'turn_request', turnId: 'step_bare', purpose: 'agent', request: { input: { messages: [] } } }));
+  steps.observe(turn('step_bare'));
+  assert.deepEqual(parts(records[3]!), { systemPromptHash: undefined, systemPromptBytes: undefined, toolsHash: undefined, toolsBytes: undefined });
   for (const record of records) assertContentFree(record);
   assert.doesNotMatch(JSON.stringify(records), /é|AAAA/);
 });
