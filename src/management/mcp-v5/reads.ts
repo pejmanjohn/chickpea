@@ -35,6 +35,7 @@ import {
 } from '../types.ts';
 import { accountProfileId, fail, versionToken } from './conventions.ts';
 import type * as schemas from './schemas.ts';
+import { withSkillText } from './skill-text.ts';
 
 /** What every 5.0 tool reads with: the service, the caller, and this deployment. */
 export interface FiveZeroDeps {
@@ -319,7 +320,7 @@ export async function getAgent(
   const handle = agentHandle(agent);
   const presence = agent.slackPresence;
   const links = agentLinks(deps.baseUrl, agent.id, await deps.service.slackAppLink(context));
-  return {
+  const output: Out<typeof schemas.getAgentOutput> = {
     agentId: agent.id,
     name: agent.name,
     ...(handle ? { handle } : {}),
@@ -360,6 +361,9 @@ export async function getAgent(
       .map(({ channelId, label }) => ({ channelId, ...(label ? { name: label } : {}) })),
     ...(links ? { links } : {}),
   };
+  return input.includeSkillText || input.skill !== undefined || input.offset !== undefined
+    ? withSkillText(output, agent.skills, input)
+    : output;
 }
 
 /** A member sees only the Agents they may edit, so any other ID reads as missing. */
