@@ -575,9 +575,39 @@ test('check_agent reports Slack presence and each Channel grant', async (t) => {
     fix: { label: 'Retry in Admin', url: `${BASE_URL}/admin/agents/agent_ops` },
   }]);
   assert.deepEqual(new Map(part(checked, 'channel').map(({ name, status }) => [name, status])), new Map([
-    ['#gone', 'failing'], ['#new', 'warning'], ['#support', 'ok'],
+    ['#gone', 'failing'], ['#new', 'failing'], ['#support', 'ok'],
   ]));
   assert.ok(part(checked, 'channel').find(({ name }) => name === '#gone')?.fix);
+});
+
+test('a Channel add held by the Agent\'s failed Slack presence says why, not that it is still joining', async (t) => {
+  const { f, teamId, call } = await harness(t, 'held-add');
+  // A free Slack plan: the bot joined the Channel, but Slack refused the handle, so the grant stayed pending.
+  await seedOps(f, teamId, { slackPresence: { ...PRESENCE, health: 'needs_attention', errorCode: 'paid_plan_required' } });
+  await f.config.putAgentChannelGrant({
+    workspaceId: teamId, channelId: 'C_NEW', agentId: 'agent_ops', status: 'pending',
+    createdByMembershipId: f.owner.membership.id, channelLabel: 'new', channelIsPrivate: false,
+  });
+  const paidPlan = 'Slack needs a paid plan before an Agent can have its own handle.';
+  const held = part(await check(call, { agentId: 'agent_ops' }), 'channel').find(({ channelId }) => channelId === 'C_NEW');
+  assert.deepEqual([held?.status, held?.detail, held?.fix], ['failing', `Not in this Channel yet. ${paidPlan}`,
+    { label: 'Retry in Admin', url: `${BASE_URL}/admin/agents/agent_ops` }]);
+  const admission = part(await check(call, { agentId: 'agent_ops', place: 'C_NEW' }), 'admission')[0]!;
+  assert.deepEqual([admission.status, admission.detail], ['failing', `Ops is not in this Channel yet. ${paidPlan}`]);
+  const listed = async () => (structured(await call('list_slack_channels', {})).channels as Array<{ channelId: string; agents: Array<{ status: string }> }>)
+    .find(({ channelId }) => channelId === 'C_NEW')?.agents[0]?.status;
+  assert.equal(await listed(), 'needs_attention');
+
+  // An add refused because the person adding it was not in the Channel names that, not the generic failure.
+  await f.config.updateAgent('agent_ops', { slackPresence: { ...PRESENCE, health: 'needs_attention', errorCode: 'channel_membership_required' } } as never);
+  const outsider = part(await check(call, { agentId: 'agent_ops' }), 'channel').find(({ channelId }) => channelId === 'C_NEW');
+  assert.equal(outsider?.detail, 'Not in this Channel yet. Whoever adds it to a Channel must be in that Slack Channel.');
+
+  // While the handle is still being made, the same grant is joining.
+  await f.config.updateAgent('agent_ops', { slackPresence: { ...PRESENCE, health: 'pending' } } as never);
+  const joining = part(await check(call, { agentId: 'agent_ops' }), 'channel').find(({ channelId }) => channelId === 'C_NEW');
+  assert.deepEqual([joining?.status, joining?.detail], ['warning', 'Still joining this Channel.']);
+  assert.equal(await listed(), 'joining');
 });
 
 test('check_agent reports a schedule\'s next run and the failures in its stored runs', async (t) => {
