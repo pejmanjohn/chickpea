@@ -414,7 +414,7 @@ export const FIVE_ZERO_TOOLS = {
   }),
   reconnect_service: tool({
     title: 'Reconnect a service',
-    description: 'Get a Chickpea setup link that signs one of an Agent\'s connections in again or replaces its saved key, by its connectionId from get_agent: for one that needs attention, or to change what a service shares with it. Never ask for the key. To drop an optional key, like Exa\'s, remove_connection, then connect_service with the key left empty. Each call makes a new link.',
+    description: 'Get a Chickpea setup link that signs one of an Agent\'s connections in again or replaces its saved key, by its connectionId from get_agent: for one that needs attention, or to change what a service shares with it. Never ask for the key. Each call makes a new link.',
     input: schemas.reconnectServiceInput,
     output: schemas.connectServiceOutput,
     write: writeHints({ destructive: true, idempotent: false }),
