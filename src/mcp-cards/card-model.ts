@@ -215,10 +215,14 @@ export const tell = <V extends { kind: string }>(next: Next<V>, text: string): N
 export const carryOn = <V extends { kind: string }>(next: Next<V>, text: string): Next<V> =>
   ({ ...next, effects: [...next.effects, { type: 'message', sent: text, continues: true }] });
 
-/** A name in a message the card sends as the person: one line, cut short, since a member chose it. */
+/**
+ * A name in a message the card sends as the person, which the host's model
+ * reads as the person's own words: quoted, on one line and cut short, since
+ * a member chose it, so it reads as a name and never as an instruction.
+ */
 export function nameInMessage(name: string): string {
   const line = name.replace(/\s+/g, ' ').trim();
-  return line.length > NAMED_MAX ? `${line.slice(0, NAMED_MAX - 1)}…` : line;
+  return JSON.stringify(line.length > NAMED_MAX ? `${line.slice(0, NAMED_MAX - 1)}…` : line);
 }
 
 /** How one card remembers its presses' outcomes and comes back to them. */
