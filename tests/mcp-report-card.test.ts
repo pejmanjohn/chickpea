@@ -257,3 +257,31 @@ test('the report card draws a refusal as its words, and a result of another shap
   await odd.result({ structuredContent: { agent: { name: 'Docs Guide' }, runs: [{ question: 'Q', verdict: 7 }], summary: 's' } });
   assert.equal(odd.shown.title, 'Nothing to show here.');
 });
+
+// Review finding 3: the playbook always sends before, so a one-round job's verdict would show beside itself.
+test('a row shows "was:" only when the first round\'s verdict differs, ignoring case and spacing', () => {
+  const report = (runs: Array<{ verdict: string; before?: string; note?: string }>) => ({
+    structuredContent: {
+      agent: { agentId: AGENT, name: 'Docs Guide' },
+      runs: runs.map((run, index) => ({ question: `Question ${index + 1}?`, ...run })),
+      summary: 'One round.',
+      nextStep: 'Carry on.',
+    },
+  });
+  const runs = [
+    { verdict: 'passes', before: 'passes' },
+    { verdict: 'Passes', before: '  PASSES ' },
+    { verdict: 'passes', before: '   ' },
+    { verdict: 'passes', before: ' fails ', note: 'Two lines.' },
+    { verdict: 'fails' },
+  ];
+  const details = (result: ReturnType<typeof report> & { _meta?: Record<string, unknown> }) => {
+    const { state } = reportCard.step(reportCard.INITIAL, { type: 'result', result, now: 0 });
+    return rowsOf(reportCard.present(state).blocks).map(({ detail }) => detail);
+  };
+  const answers = { 'chickpea/answers': runs.map(() => 'An answer.') };
+  assert.deepEqual(details({ ...report(runs), _meta: answers }), [undefined, undefined, undefined, 'was: fails', undefined],
+    'rows that open: the first round shows only when it changed, trimmed');
+  assert.deepEqual(details(report(runs)), [undefined, undefined, undefined, 'was: fails · Two lines.', undefined],
+    'rows with no answers to open: the same, beside the note');
+});

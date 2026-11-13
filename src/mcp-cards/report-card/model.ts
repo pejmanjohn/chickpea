@@ -131,12 +131,12 @@ function presentReport(view: Shown): Omit<Presentation<Action>, 'busy' | 'error'
 }
 
 /**
- * A question, its verdict as a chip, and the first round's beside it. With
- * the answers, the row opens to the Agent's answer and the model's note;
- * without them, the note is the row's own line.
+ * A question, its verdict as a chip, and the first round's beside it when it
+ * differs. With the answers, the row opens to the Agent's answer and the
+ * model's note; without them, the note is the row's own line.
  */
 function runRow(view: Shown, run: Report['runs'][number], index: number): Row<Action> {
-  const was = run.before ? `was: ${run.before}` : undefined;
+  const was = changed(run.before, run.verdict) ? `was: ${run.before!.trim()}` : undefined;
   const base = { icon: 'tile' as const, tile: String(index + 1), title: run.question || 'A practice question', chip: run.verdict };
   if (!view.answers) return { ...base, ...was || run.note ? { detail: [was, run.note].filter(Boolean).join(' · ') } : {} };
   const open = view.open.includes(index);
@@ -146,6 +146,12 @@ function runRow(view: Shown, run: Report['runs'][number], index: number): Row<Ac
     control: { label: open ? 'Hide answer' : 'Show answer', action: `toggle:${index}`, style: 'toggle', expanded: open },
     ...open ? { open: opened(view, run, view.answers[index] ?? null) } : {},
   };
+}
+
+/** A first-round verdict worth showing: one, and not the same words as the verdict now. */
+function changed(before: string | undefined, verdict: string): boolean {
+  const was = before?.trim().toLowerCase();
+  return was !== undefined && was !== '' && was !== verdict.trim().toLowerCase();
 }
 
 function opened(view: Shown, run: Report['runs'][number], answer: string | null): Array<Block<Action>> {
