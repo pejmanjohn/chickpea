@@ -290,6 +290,8 @@ const PRESENCE_PROBLEMS: Readonly<Record<string, string>> = {
   handle_collision: 'Another Slack group already uses this handle.',
   name_collision: 'Another Slack group already uses this name.',
   invalid_handle: 'Slack does not accept this handle.',
+  channel_membership_required: 'Whoever adds it to a Channel must be in that Slack Channel.',
+  private_channel_invite_required: 'Chickpea must be invited to the private Slack Channel first.',
   slack_reconnect_required: 'Chickpea\'s Slack connection needs to be reconnected in Admin.',
   rate_limited: 'Slack is busy. Chickpea tries again shortly.',
 };
@@ -572,7 +574,7 @@ export async function listSlackChannels(
 ): Promise<Out<typeof schemas.listSlackChannelsOutput>> {
   const { context, snapshot } = await readWorkspace(deps);
   const directory = await slackDirectory(deps, context);
-  const agentNames = new Map(snapshot.agents.map(({ id, name }) => [id, name]));
+  const agents = new Map(snapshot.agents.map((agent) => [agent.id, agent]));
   const known = new Map(snapshot.channels.map((channel) => [channel.channelId, channel]));
   const rows = new Map<string, Out<typeof schemas.listSlackChannelsOutput>['channels'][number]>();
   const chickpea = (channelId: string) => {
@@ -581,11 +583,13 @@ export async function listSlackChannels(
     return {
       settings: { ...(channel.label ? { label: channel.label } : {}), on: channel.lifecycle === 'active' },
       agents: channel.grants.flatMap(({ agentId, status }) => {
-        const name = agentNames.get(agentId);
-        return name ? [{
+        const agent = agents.get(agentId);
+        // A pending add waits on the Agent's Slack presence; one that failed is not joining.
+        const joining = status === 'pending' && agent?.slackPresence?.health !== 'needs_attention';
+        return agent ? [{
           agentId,
-          name,
-          status: status === 'active' ? 'on' as const : status === 'pending' ? 'joining' as const : 'needs_attention' as const,
+          name: agent.name,
+          status: status === 'active' ? 'on' as const : joining ? 'joining' as const : 'needs_attention' as const,
         }] : [];
       }),
     };

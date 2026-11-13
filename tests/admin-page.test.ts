@@ -5037,6 +5037,37 @@ test('an open attach picker refreshes on return without losing its Agent draft, 
   assert.deepEqual(harness.modelSelectionRanges.at(-1), [6, 6]);
 });
 
+test('the press that brings the window back still finds Attach: a return refresh renders only when it answers', async () => {
+  let resolveRefresh: ((response: FakeResponse) => void) | undefined;
+  const harness = runAdminPageHarness({
+    slackConnection: connectedSlackFixture(),
+    slackChannelsFetch(path) {
+      if (path.includes('refresh=1')) return new Promise((resolve) => { resolveRefresh = resolve; });
+      return Promise.resolve(jsonResponse({ ...channelsFixture([{ id: 'C_SHOWN', name: 'all-hands' }]) }));
+    },
+    attachSelectionValue: 'C_SHOWN',
+  });
+  const click = await openReleaseAttachPicker(harness);
+  const rendersBeforeReturn = harness.renderHistory.length;
+
+  // The window's focus event comes with the press, before its click.
+  harness.focusWindow();
+  assert.ok(resolveRefresh, 'the return refreshes the channel list');
+  assert.equal(harness.renderHistory.length, rendersBeforeReturn, 'nothing replaces the Attach button under the press');
+
+  // Other reads the return started may answer first; Attach stays while the list is refreshing.
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /data-action="attach-channel-confirm">Attach<\/button>/);
+  assert.doesNotMatch(harness.app.innerHTML, /Loading workspace channels/);
+  assert.match(harness.app.innerHTML, /data-action="refresh-channels"[^>]*disabled/);
+  click({ target: actionTarget({ 'data-action': 'attach-channel-confirm' }) });
+  await flushAsync();
+  assert.deepEqual(harness.agentChannelPosts.map(({ body }) => body.channelId), ['C_SHOWN'], 'Attach posts the shown channel');
+
+  resolveRefresh!(jsonResponse({ ...channelsFixture([{ id: 'C_SHOWN', name: 'all-hands' }]) }));
+  await flushAsync();
+});
+
 test('a real hide and return refreshes an open attach picker after a recent refresh', async () => {
   let refreshes = 0;
   const harness = runAdminPageHarness({

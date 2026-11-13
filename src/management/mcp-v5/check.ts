@@ -192,10 +192,26 @@ async function channelChecks(deps: FiveZeroDeps, reading: AgentRunReading): Prom
         agentAdminFix(deps, reading, 'Open the Agent in Admin'));
     }
     if (grant.status === 'active') return { ...base, status: 'ok', detail: 'Answers here.' };
+    const blocked = grant.status === 'pending' ? joinBlocked(reading) : undefined;
+    if (blocked) {
+      return withFix({ ...base, status: 'failing', detail: `Not in this Channel yet. ${blocked}` },
+        agentAdminFix(deps, reading, 'Retry in Admin'));
+    }
     if (grant.status === 'pending') return { ...base, status: 'warning', detail: 'Still joining this Channel.' };
     return withFix({ ...base, status: 'failing', detail: 'Chickpea cannot answer here; invite Chickpea to the Channel again.' },
       agentAdminFix(deps, reading, 'Open the Agent in Admin'));
   });
+}
+
+/**
+ * A Channel add finishes only after the Agent's Slack presence does. A
+ * presence that failed, such as a handle Slack refuses on a free plan,
+ * leaves the grant pending until the problem is fixed and Admin's Retry
+ * adds it again, so that grant is not still joining.
+ */
+function joinBlocked(reading: Pick<AgentAdmissionReading, 'agent'>): string | undefined {
+  const presence = reading.agent.slackPresence;
+  return presence?.health === 'needs_attention' ? presenceProblem(presence.errorCode) : undefined;
 }
 
 const RECENT_RUNS = 5;
@@ -352,6 +368,8 @@ function channelAdmission(reading: AgentAdmissionReading, name: string, channelI
   const inChannel = seesChannel(reading, channelId) ? reading.grants.filter((grant) => grant.channelId === channelId) : [];
   const grant = inChannel.find(({ agentId }) => agentId === agent.id);
   if (!grant) return check('failing', `${agent.name} is not added to this Channel.`);
+  const blocked = grant.status === 'pending' ? joinBlocked(reading) : undefined;
+  if (blocked) return check('failing', `${agent.name} is not in this Channel yet. ${blocked}`);
   if (grant.status === 'pending') return check('warning', `${agent.name} is still joining this Channel.`);
   if (grant.status !== 'active') return check('failing', 'Chickpea cannot answer in this Channel until it is invited again.');
   const handle = snapshotAgent.slackPresence?.normalizedHandle;
