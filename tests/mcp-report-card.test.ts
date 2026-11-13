@@ -139,6 +139,28 @@ test('a run the report can\'t draw is refused, naming which one', async (t) => {
   assert.equal(gone2.structuredContent!.error.code, 'not_found');
 });
 
+test('the report reads runs as the caller only: another person\'s runToken is no run', async (t) => {
+  const w = await world(t, 'report-own-runs');
+  const mine = await w.practice('How do I add a second warehouse?');
+  const asked: Array<{ organizationId: string; actorMembershipId: string }> = [];
+  const observe = w.runs.observe.bind(w.runs);
+  w.runs.observe = async (query: { organizationId: string; actorMembershipId: string; runToken: string }) => {
+    asked.push({ organizationId: query.organizationId, actorMembershipId: query.actorMembershipId });
+    return observe(query);
+  };
+  const report = () => w.call('show_test_report', { agentId: AGENT, runs: [{ runToken: mine, verdict: 'Good' }], summary: 'One round.' });
+  assert.equal((await report()).structuredContent!.error, undefined);
+  const { membership } = w.f.owner;
+  assert.deepEqual(asked, [{ organizationId: membership.organizationId, actorMembershipId: membership.id }]);
+
+  // The same token, once the run is someone else's: gone, with none of its question or answer.
+  w.runs.runs[0]!.request.run.actorMembershipId = 'membership_someone_else';
+  const refused = await report();
+  assert.equal(refused.structuredContent!.error.code, 'not_found');
+  assert.equal(refused._meta?.['chickpea/answers'], undefined);
+  assert.equal(JSON.stringify(refused).includes('second warehouse'), false);
+});
+
 test('a failed run draws as a row that says it did not finish', async (t) => {
   const w = await world(t, 'report-failed');
   w.runs.outcome = { status: 'failed', failure: 'deadline', result: {} };
