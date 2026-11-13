@@ -4,10 +4,12 @@ import type * as schemas from '../../management/mcp-v5/schemas.ts';
 import {
   agentNamed,
   call,
+  carryOn,
   errorOf,
   GENERIC,
   httpsUrl,
   isRecord,
+  nameInMessage,
   NOTHING,
   outdated,
   pollDelay,
@@ -39,10 +41,12 @@ import { checkingView, presentFirstAnswer, stepFirstAnswer, stillAnswering, stil
  * follows get_setup_status until the connection is ready. The person may
  * finish on another tab or device, or connect the service another way, so
  * the card reads again when it comes back into view, and counts the
- * connection as done when the Agent has it ready.
+ * connection as done when the Agent has it ready. A link asked for with
+ * `continues` also sends a message once the sign-in it follows is through,
+ * so the model carries the job on.
  */
 
-type ChangeResult = z.infer<typeof schemas.changeResultOutput>;
+type ChangeResult = z.infer<typeof schemas.connectServiceOutput>;
 type Setup = NonNullable<ChangeResult['setup']>;
 type SetupStatus = z.infer<typeof schemas.getSetupStatusOutput>;
 type Connection = NonNullable<SetupStatus['connection']>;
@@ -69,6 +73,8 @@ interface Link {
    * A connection that was ready then says nothing about this sign-in.
    */
   before?: Connection['status'] | 'none';
+  /** The result's `continues`: a sign-in the card follows to the end carries the job on. */
+  continues?: true;
 }
 
 export type View =
@@ -171,7 +177,10 @@ function fromResult(result: ToolResult): Next<View> {
   const { setup } = content;
   if (content.status !== 'needs_setup' || !isSetup(setup)) return show({ kind: 'notice', title: content.summary.replace(/\.$/, '') });
   // Only Chickpea's page for this one connection comes with a token to follow it.
-  return show({ kind: setup.setupToken && httpsUrl(setup.url) ? 'start' : 'elsewhere', flow, agent, setup });
+  return show({
+    kind: setup.setupToken && httpsUrl(setup.url) ? 'start' : 'elsewhere', flow, agent, setup,
+    ...content.continues === true ? { continues: true as const } : {},
+  });
 }
 
 function press(state: State, action: Action, now: number): Next<View> {
@@ -238,10 +247,10 @@ function setupStatus(state: State, view: Open, status: SetupStatus, now: number)
   const agent = view.agent ? ` ${view.flow === 'reconnect' ? 'for' : 'to'} ${agentNamed(view.agent.name)}` : '';
   if (status.status === 'done' || readyNow) {
     const done = connected(view, connection, status.agent?.hasFirstAsk === true);
+    if (view.kind !== 'finishing') return done;
     // Ready may come another way than this card's link, so the sentence says only what is true now.
-    return view.kind === 'finishing'
-      ? tell(done, view.flow === 'reconnect' ? `${what} is signed in again${agent}.` : `${what} is connected${agent} now.`)
-      : done;
+    const told = tell(done, view.flow === 'reconnect' ? `${what} is signed in again${agent}.` : `${what} is connected${agent} now.`);
+    return view.continues ? carryOn(told, finished(view)) : told;
   }
   const link = { ...linkOf(view), ...before ? { before } : {} };
   if (status.status === 'failed' || status.status === 'cancelled' || status.status === 'expired') {
@@ -339,7 +348,19 @@ function timer(inMs: number): Effect {
 }
 
 function linkOf(view: Link): Link {
-  return { flow: view.flow, agent: view.agent, setup: view.setup, ...view.before ? { before: view.before } : {} };
+  return {
+    flow: view.flow, agent: view.agent, setup: view.setup,
+    ...view.before ? { before: view.before } : {}, ...view.continues ? { continues: view.continues } : {},
+  };
+}
+
+/** The message that carries the job on once the sign-in is through, in the person's words. */
+function finished(view: Link): string {
+  const what = nameInMessage(view.setup.what);
+  const agent = view.agent && nameInMessage(view.agent.name);
+  return view.flow === 'reconnect'
+    ? `${what} is signed in again${agent ? ` for ${agent}` : ''}. Carry on.`
+    : `${what} is connected${agent ? ` to ${agent}` : ''}. Carry on.`;
 }
 
 function newLinkAsk(view: Link): string {

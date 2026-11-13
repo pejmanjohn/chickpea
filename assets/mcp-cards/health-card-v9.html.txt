@@ -1,0 +1,863 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Chickpea health card</title>
+<style>/*
+ * Framework-free MCP App styles.
+ */
+
+@layer base {
+  :root {
+    color-scheme: light dark;
+    --background: var(
+      --color-background-primary,
+      light-dark(rgb(255 255 255), rgb(24 24 24))
+    );
+    --foreground: var(
+      --color-text-primary,
+      light-dark(rgb(26 28 31), rgb(255 255 255))
+    );
+    --card: color-mix(in oklab, var(--foreground) 5%, var(--background));
+    --card-foreground: var(--color-text-primary, var(--foreground));
+    --primary: var(
+      --color-text-info,
+      light-dark(rgb(51 156 255), rgb(131 195 255))
+    );
+    --primary-foreground: var(
+      --color-text-inverse,
+      light-dark(rgb(255 255 255), rgb(13 13 13))
+    );
+    --secondary: var(
+      --color-background-secondary,
+      light-dark(rgb(255 255 255 / 96%), rgb(54 54 54 / 96%))
+    );
+    --secondary-foreground: var(--color-text-primary, var(--foreground));
+    --muted: color-mix(in srgb, var(--foreground) 10%, transparent);
+    --muted-foreground: var(
+      --color-text-secondary,
+      light-dark(rgb(26 28 31 / 49.4%), rgb(255 255 255 / 49.8%))
+    );
+    --accent: var(
+      --color-background-info,
+      light-dark(rgb(229 242 255), rgb(13 39 63))
+    );
+    --accent-foreground: var(--color-text-info, var(--primary));
+    --destructive: var(
+      --color-text-warning,
+      light-dark(rgb(226 85 7), rgb(255 133 73))
+    );
+    --border: var(
+      --color-border-secondary,
+      light-dark(rgb(26 28 31 / 8%), rgb(255 255 255 / 8.2%))
+    );
+    --input: var(
+      --color-border-primary,
+      light-dark(rgb(26 28 31 / 11.8%), rgb(255 255 255 / 12%))
+    );
+    --ring: var(--color-ring-primary, var(--primary));
+    --font-size-base: var(--font-text-md-size, 14px);
+    --radius: var(--border-radius-lg, 12.5px);
+  }
+
+  :root[data-theme="light"] {
+    color-scheme: light;
+  }
+
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+  }
+
+  body {
+    margin: 0;
+    color: var(--foreground);
+    background: var(--background);
+    font-size: max(11px, var(--font-size-base));
+    font-weight: var(--font-weight-normal, 430);
+    line-height: 1.5;
+  }
+
+  /* MCP sandboxes can force their own font on body, so restore the host font below it. */
+  body,
+  body > * {
+    font-family: var(
+      --font-sans,
+      -apple-system,
+      system-ui,
+      "Segoe UI",
+      sans-serif
+    );
+  }
+
+  h1,
+  h2,
+  h3,
+  p {
+    margin-block: 0;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-weight: var(--font-weight-medium, 500);
+    line-height: 1.25;
+  }
+
+  h1 {
+    font-size: calc(var(--font-size-base) * 1.7142857143);
+  }
+
+  h2 {
+    font-size: calc(var(--font-size-base) * 1.4285714286);
+  }
+
+  h3 {
+    font-size: calc(var(--font-size-base) * 1.2857142857);
+  }
+}
+
+@layer components {
+  .cursor-interaction {
+    cursor: var(--cursor-interaction, pointer);
+  }
+
+  .card {
+    min-width: 0;
+    padding: 12px;
+    overflow-wrap: break-word;
+    border-radius: calc(var(--radius) * 1.6);
+    corner-shape: superellipse(1.5);
+    color: var(--card-foreground);
+    background: var(--card);
+  }
+
+  .btn,
+  .form-check-input,
+  .form-control,
+  .form-select {
+    box-sizing: border-box;
+    font: inherit;
+  }
+
+  .btn {
+    appearance: button;
+    display: inline-flex;
+    inline-size: fit-content;
+    max-inline-size: 100%;
+    min-height: 28px;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    margin: 0;
+    padding: 0 8px;
+    border: 1px solid var(--input);
+    border-radius: var(--radius);
+    corner-shape: superellipse(1.5);
+    color: var(--secondary-foreground);
+    background: var(--secondary);
+    cursor: var(--cursor-interaction, pointer);
+    text-align: center;
+    text-decoration: none;
+    white-space: nowrap;
+    user-select: none;
+  }
+
+  .btn:not(:disabled):hover {
+    background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+  }
+
+  .btn-primary {
+    border-color: transparent;
+    color: var(--primary-foreground);
+    background: var(--foreground);
+    background-clip: padding-box;
+  }
+
+  .btn-primary:not(:disabled):hover {
+    background: color-mix(in srgb, var(--foreground) 80%, transparent);
+    background-clip: padding-box;
+  }
+
+  .btn-ghost {
+    border-color: transparent;
+    color: var(--muted-foreground);
+    background: transparent;
+  }
+
+  .btn-ghost:not(:disabled):hover {
+    color: var(--foreground);
+    background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+  }
+
+  .btn:not(.btn-primary):is([aria-pressed="true"], [aria-selected="true"]) {
+    border-color: var(--primary);
+    color: var(--primary-foreground);
+    background: var(--primary);
+  }
+
+  .btn:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  .btn:disabled,
+  .form-check-input:disabled,
+  .form-control:disabled,
+  .form-select:disabled {
+    cursor: not-allowed;
+    opacity: 0.4;
+  }
+
+  .form-label {
+    display: block;
+    margin-bottom: 6px;
+    color: var(--foreground);
+  }
+
+  .form-control,
+  .form-select {
+    display: block;
+    width: 100%;
+    min-height: 28px;
+    padding: 0 8px;
+    outline: none;
+    border: 1px solid var(--input);
+    border-radius: var(--radius);
+    corner-shape: superellipse(1.5);
+    color: var(--foreground);
+    background: var(--secondary);
+  }
+
+  .form-control::placeholder {
+    color: var(--muted-foreground);
+  }
+
+  .form-select {
+    appearance: none;
+    padding-right: 32px;
+    background-image:
+      linear-gradient(45deg, transparent 50%, var(--muted-foreground) 50%),
+      linear-gradient(135deg, var(--muted-foreground) 50%, transparent 50%);
+    background-position:
+      calc(100% - 14px) 50%,
+      calc(100% - 10px) 50%;
+    background-repeat: no-repeat;
+    background-size: 4px 4px;
+    cursor: var(--cursor-interaction, pointer);
+  }
+
+  .form-select:not(:disabled):hover {
+    background-color: color-mix(
+      in srgb,
+      var(--foreground) 6%,
+      var(--secondary)
+    );
+  }
+
+  textarea.form-control {
+    min-height: 72px;
+    padding: 8px 10px;
+    resize: vertical;
+  }
+
+  .form-control:focus-visible,
+  .form-select:focus-visible {
+    border-color: var(--ring);
+    box-shadow: inset 0 0 0 1px var(--ring);
+  }
+
+  .form-check {
+    display: flex;
+    min-height: 20px;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .form-check-input {
+    appearance: none;
+    display: grid;
+    width: 16px;
+    height: 16px;
+    flex: 0 0 auto;
+    place-items: center;
+    margin: 0;
+    border: 1px solid var(--input);
+    border-radius: 5px;
+    corner-shape: superellipse(1.5);
+    color: var(--primary-foreground);
+    background: var(--secondary);
+    cursor: var(--cursor-interaction, pointer);
+  }
+
+  .form-check-input:checked {
+    border-color: var(--primary);
+    background: var(--primary);
+  }
+
+  .form-check-input:checked::after {
+    width: 7px;
+    height: 4px;
+    border-bottom: 2px solid currentColor;
+    border-left: 2px solid currentColor;
+    content: "";
+    transform: translateY(-1px) rotate(-45deg);
+  }
+
+  .form-check-input:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  .form-check-label {
+    color: var(--foreground);
+  }
+
+  svg.lucide {
+    display: block;
+    width: 16px;
+    height: 16px;
+    flex: none;
+    stroke-width: 1.6;
+  }
+
+  .text-small {
+    font-size: max(11px, calc(var(--font-size-base) - 2px));
+  }
+
+  .text-muted {
+    color: var(--muted-foreground);
+  }
+
+  .text-destructive {
+    color: var(--destructive);
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+}
+
+/*
+ * The Agent card in ChatGPT's own look: its type, colors and black primary
+ * buttons, from the host's style variables. Chickpea shows only in the avatar
+ * and the quote accent. Without host variables the colors fall back to the
+ * mockup's palette, and without a host theme to light.
+ */
+
+:root:not([data-theme]) {
+  color-scheme: light;
+}
+
+:root {
+  --cp-bg: var(--color-background-primary, light-dark(#ffffff, #181818));
+  --cp-fg: var(--color-text-primary, light-dark(#0d0d0d, #ededed));
+  /* Secondary text stays at AA contrast; the host's tertiary text does not. */
+  --cp-muted: var(--color-text-secondary, light-dark(#5d5d5d, #cdcdcd));
+  --cp-line: var(--color-border-primary, light-dark(#e5e5e5, rgb(255 255 255 / 20%)));
+  --cp-soft: light-dark(#f7f7f7, rgb(255 255 255 / 6%));
+  --cp-ok: light-dark(#1a7f37, #40c977);
+  --cp-warn: light-dark(#a15c00, #f0a050);
+  --cp-danger: #c62828;
+  --cp-danger-hover: #a31f1f;
+  --cp-accent: #e8901a;
+  --cp-size: var(--font-text-md-size, 14px);
+}
+
+html,
+body {
+  background: var(--cp-bg);
+  color: var(--cp-fg);
+}
+
+body {
+  font-size: var(--cp-size);
+  line-height: 1.45;
+}
+
+.cp-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 16px;
+  overflow-wrap: anywhere;
+}
+
+.cp-hdr {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.cp-avatar {
+  flex: none;
+  display: block;
+}
+
+.cp-avatar svg,
+.cp-avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* Slack's rounded square, cropped as Admin and the setup page crop it. */
+.cp-avatar img {
+  object-fit: cover;
+}
+
+.cp-avatar-lg {
+  width: 44px;
+  height: 44px;
+}
+
+.cp-avatar-lg img {
+  border-radius: 12px;
+}
+
+.cp-avatar-sm {
+  width: 26px;
+  height: 26px;
+}
+
+.cp-avatar-sm img {
+  border-radius: 7px;
+}
+
+/* On an alert card, an Agent's picture keeps the alert art's red. */
+.cp-avatar-alert img {
+  outline: 2px solid var(--cp-danger);
+  outline-offset: 1px;
+}
+
+.cp-heading {
+  min-width: 0;
+}
+
+.cp-title {
+  margin: 0;
+  font-size: calc(var(--cp-size) * 1.143);
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+/* Focus lands here after a redraw only so the keyboard stays on the card. */
+.cp-title:focus {
+  outline: none;
+}
+
+.cp-sub {
+  margin: 2px 0 0;
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.93);
+}
+
+.cp-ok {
+  color: var(--cp-ok);
+}
+
+.cp-warn {
+  color: var(--cp-warn);
+}
+
+.cp-text {
+  margin: 12px 0 0;
+  white-space: pre-line;
+}
+
+.cp-sect {
+  margin: 14px 0 6px;
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.79);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.cp-sect + .cp-text {
+  margin-top: 0;
+}
+
+.cp-quote {
+  margin: 6px 0;
+  padding: 2px 0 2px 10px;
+  border-left: 3px solid var(--cp-accent);
+  white-space: pre-line;
+}
+
+.cp-note {
+  margin: 6px 0 0;
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.93);
+}
+
+.cp-note.cp-warn {
+  color: var(--cp-warn);
+}
+
+.cp-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--cp-line);
+  border-radius: 12px;
+  background: var(--cp-soft);
+}
+
+.cp-msg {
+  display: grid;
+  grid-template-columns: 26px 1fr;
+  gap: 8px;
+  font-size: calc(var(--cp-size) * 0.964);
+}
+
+/*
+ * A host may pass an example's line breaks as they are; they show as written.
+ * A long one shows its start and an ellipsis: the tool's result holds it whole.
+ */
+.cp-said {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.cp-clamp-2 {
+  -webkit-line-clamp: 2;
+}
+
+.cp-clamp-5 {
+  -webkit-line-clamp: 5;
+}
+
+/* An answer the person opened shows whole. */
+.cp-said-whole {
+  display: block;
+}
+
+.cp-init {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border-radius: 7px;
+  background: #4a6cc4;
+  color: #ffffff;
+  font-size: calc(var(--cp-size) * 0.86);
+  font-weight: 600;
+}
+
+.cp-line {
+  margin: 10px 0 0;
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.964);
+}
+
+.cp-line b {
+  color: var(--cp-fg);
+  font-weight: 500;
+}
+
+.cp-chip {
+  display: inline-flex;
+  padding: 0 9px;
+  border: 1px solid var(--cp-line);
+  border-radius: 999px;
+  background: var(--cp-soft);
+  color: var(--cp-fg);
+  font-size: calc(var(--cp-size) * 0.9);
+}
+
+.cp-foot {
+  margin: 14px 0 0;
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.93);
+}
+
+.cp-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: calc(var(--cp-size) * 0.964);
+}
+
+.cp-steps li {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.cp-ic {
+  display: inline-grid;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  box-sizing: border-box;
+  place-items: center;
+  border-radius: 50%;
+  font-size: 11px;
+}
+
+.cp-ic-done {
+  background: color-mix(in srgb, var(--cp-ok) 14%, transparent);
+  color: var(--cp-ok);
+}
+
+.cp-ic-now {
+  border: 2px solid var(--cp-accent);
+  border-right-color: transparent;
+  animation: cp-spin 0.9s linear infinite;
+}
+
+.cp-ic-todo {
+  border: 1.5px solid var(--cp-line);
+}
+
+.cp-ic-failed {
+  background: color-mix(in srgb, var(--cp-danger) 14%, transparent);
+  color: light-dark(var(--cp-danger), #ff8a80);
+  font-weight: 700;
+}
+
+@keyframes cp-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cp-ic-now {
+    animation: none;
+  }
+}
+
+.cp-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 14px;
+}
+
+.cp-card .btn {
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: 999px;
+  font-size: calc(var(--cp-size) * 0.964);
+  font-weight: 600;
+}
+
+.cp-btn-primary {
+  border-color: transparent;
+  color: var(--color-text-inverse, light-dark(#ffffff, #0d0d0d));
+  background: var(--cp-fg);
+}
+
+.cp-btn-primary:not(:disabled):hover {
+  background: color-mix(in srgb, var(--cp-fg) 82%, var(--cp-bg));
+}
+
+.cp-btn-danger {
+  border-color: transparent;
+  color: #ffffff;
+  background: var(--cp-danger);
+}
+
+.cp-btn-danger:not(:disabled):hover {
+  background: var(--cp-danger-hover);
+}
+
+.cp-btn-secondary {
+  border-color: var(--cp-line);
+  color: var(--cp-fg);
+  background: var(--cp-bg);
+}
+
+.cp-card .btn:focus-visible {
+  outline: 2px solid var(--color-ring-primary, light-dark(#0169cc, #ffffff));
+  outline-offset: 2px;
+}
+
+.cp-acts[hidden],
+.cp-error[hidden] {
+  display: none;
+}
+
+.cp-error {
+  margin: 10px 0 0;
+  color: light-dark(#b42318, #ff8a80);
+  font-size: calc(var(--cp-size) * 0.93);
+}
+
+.cp-rows {
+  display: flex;
+  flex-direction: column;
+  container-type: inline-size;
+  margin: 12px 0 0;
+  padding: 0;
+  border: 1px solid var(--cp-line);
+  border-radius: 14px;
+  list-style: none;
+}
+
+.cp-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border-top: 1px solid var(--cp-line);
+  font-size: calc(var(--cp-size) * 0.964);
+}
+
+.cp-row:first-child {
+  border-top: 0;
+}
+
+/* A narrow card puts a row's link under its words instead of squeezing them. */
+@container (max-width: 520px) {
+  .cp-row:has(> .cp-link-go) {
+    grid-template-columns: 22px minmax(0, 1fr);
+    row-gap: 2px;
+  }
+
+  .cp-row > .cp-link-go {
+    grid-column: 2;
+    justify-self: start;
+    white-space: normal;
+    text-align: start;
+  }
+}
+
+.cp-row-detail {
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.893);
+  white-space: pre-line;
+}
+
+.cp-row-detail.cp-warn {
+  color: var(--cp-warn);
+}
+
+.cp-row-detail .cp-chip {
+  margin-inline-end: 2px;
+}
+
+/* What a row shows under itself once opened, beneath its words. */
+.cp-row-open {
+  grid-column: 2 / -1;
+  min-width: 0;
+}
+
+.cp-row-open > .cp-thread {
+  margin-top: 4px;
+}
+
+.cp-tile {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 6px;
+  background: var(--cp-fg);
+  color: var(--cp-bg);
+  font-size: calc(var(--cp-size) * 0.86);
+  font-weight: 700;
+}
+
+.cp-ic-warning {
+  background: color-mix(in srgb, var(--cp-warn) 16%, transparent);
+  color: var(--cp-warn);
+  font-weight: 700;
+}
+
+.cp-ic-unknown {
+  border: 1.5px solid var(--cp-line);
+  color: var(--cp-muted);
+  font-weight: 700;
+}
+
+.cp-card .btn-sm {
+  min-height: 30px;
+  padding: 0 12px;
+  font-size: calc(var(--cp-size) * 0.893);
+  white-space: nowrap;
+}
+
+.cp-link {
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--cp-fg);
+  font: inherit;
+  font-size: calc(var(--cp-size) * 0.93);
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: var(--cursor-interaction, pointer);
+}
+
+.cp-link-go::after {
+  content: " →" / "";
+}
+
+.cp-link:not(:disabled):hover {
+  text-decoration: underline;
+}
+
+.cp-link:disabled {
+  color: var(--cp-muted);
+}
+
+.cp-link:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid var(--color-ring-primary, light-dark(#0169cc, #ffffff));
+  outline-offset: 2px;
+}
+
+/* Two answers side by side where there is room, one above the other on a phone. */
+.cp-panes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 10px;
+  margin: 10px 0 0;
+}
+
+.cp-pane {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--cp-line);
+  border-radius: 12px;
+  font-size: calc(var(--cp-size) * 0.964);
+}
+
+.cp-pane-label {
+  margin: 0 0 4px;
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.79);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.cp-pane-text {
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+</style></head>
+<body><div id="card"></div><script>"use strict";(()=>{function K(e){return g(e)?{..."code"in e?{code:e.code}:{},...g(e.data)?{data:e.data}:{}}:{}}function Ee({told:e=[],outcome:t,continued:n},o){return{modelContent:e.join(`
+`),privateContent:{card:{version:o,told:e,...t===void 0?{}:{outcome:t},...n?{continued:n}:{}}}}}var Ae=1e3;function J(e,t){let n=g(e)?e.privateContent:void 0,o=g(n)&&g(n.card)?n.card:void 0;if(o?.version!==t||!Array.isArray(o.told))return;let r=o.told.filter(i=>typeof i=="string"&&i.length<=Ae);return{told:Q(r),...o.outcome===void 0?{}:{outcome:o.outcome},...o.continued===!0?{continued:!0}:{}}}function X(e,t,n,o){return o.keepsState?(n.state.told!==e.told||n.state.outcome!==e.outcome||n.state.continued!==e.continued)&&t.type!=="result"?[{type:"state",state:Ee(n.state,o.version)}]:[]:n.effects.flatMap(i=>i.type==="context"?[{type:"context",text:i.text}]:[])}var Ye=2*6e4;var y=(e,t=[])=>({state:e,effects:t}),b=(e,t=[])=>({state:{view:e,busy:!1},effects:t}),S=(e,t)=>({type:"call",call:{tool:e,args:t}}),O=(e,t)=>({...e,effects:[{type:"context",text:t},...e.effects]});var Re=6,ve=1500;function Y(e,t={}){return(n,o)=>{if(n.checking&&o.type==="press")return{state:n,effects:[]};if(o.type==="refused"&&o.effect.type==="message"&&o.effect.continues)return{state:n,effects:[]};let r=e(n,o.type==="result"||o.type==="reply"?{...o,result:Te(o.result)}:o),{told:i=[],outcome:s,continued:u}=n,l=0;if(o.type==="result"){({told:i,outcome:s,continued:u}=o.kept??{told:[]});let f=s===void 0?void 0:t.resume?.(r.state.view,s);f&&(r={state:{view:f,busy:!1},effects:[]});let m=e({...r.state,seq:n.seq},{type:"reread",now:o.now});l=m.effects.filter(({type:E})=>E==="call").length;let R=new Set(m.effects.map(({type:E})=>E));r={state:m.state,effects:[...r.effects.filter(({type:E})=>!R.has(E)),...m.effects]}}else if(n.checking&&r.state.view===n.view){let f=(o.type==="reply"||o.type==="unreachable")&&o.call.seq===n.seq;l=n.checking-(f?1:0)}let h=r.effects.flatMap(f=>f.type==="context"?[f.text]:[]);h.length>0&&(i=Q([...i.filter(f=>!h.includes(f)),...h]),s=t.remember?.(r.state.view)??s);let d=r.state.view===n.view?n.seq:n.seq+1,{told:w,outcome:C,continued:A,checking:p,...a}=r.state,k=r.effects.flatMap(f=>f.type==="context"?[]:f.type==="call"?[{...f,call:{...f.call,seq:d}}]:f.type!=="message"||!f.continues?[f]:u?[]:(u=!0,[f]));return{state:{...a,seq:d,...i.length?{told:i}:{},...s===void 0?{}:{outcome:s},...u?{continued:u}:{},...l>0?{checking:l}:{}},effects:[...h.length>0?[{type:"context",text:i.join(`
+`)}]:[],...k]}}}function Q(e){let t=e.slice(-Re);for(;t.length>1&&t.join(`
+`).length>ve;)t=t.slice(1);return t}function I(e,t){return t.seq!==e.seq}function Te(e){let t=e._meta?.["chickpea/held"],n=e.structuredContent;if(!g(t)||!g(n))return e;let o=typeof t.confirmToken=="string"?t.confirmToken:void 0,r=typeof t.undoToken=="string"?t.undoToken:void 0;return{...e,structuredContent:{...n,...r?{undoToken:r}:{},...o&&g(n.confirmation)?{confirmation:{...n.confirmation,confirmToken:o}}:{}}}}var T="That did not work. Try again.",Z="Chickpea could not be reached. Try again.",_={kind:"notice",title:"Nothing to show here."};function M(e){return typeof e=="string"&&URL.parse(e)?.protocol==="https:"?e:void 0}var F=60;function N(e,t){let n=e.length>F?`${e.slice(0,F-1)}\u2026`:e;return`the Agent ${JSON.stringify(n)}${t?` (@${t})`:""}`}function ee(e,t){return typeof t!="object"||t===null||Array.isArray(t)?e:{...e,_meta:{...t,...e._meta}}}var G=200;function Se(e){let t=e.replace(/\s+/g," ").trim();return t.length>G?`${t.slice(0,G-1)}\u2026`:t}function te(e){return JSON.stringify(Se(e))}function g(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function $(e){for(let t of _e(e)){let n=g(t.structuredContent)?t.structuredContent.error:void 0;if(g(n)&&typeof n.code=="string"&&typeof n.message=="string")return{code:n.code,message:n.message,retryable:n.retryable,fix:n.fix}}}function _e(e){let t=e.hostError?.data,n=o=>g(o)?[o.mcp_tool_result,o.call_tool_result].filter(g):[];return[e,...n(e._meta),...g(t)?[t,...n(t),...n(t._meta)]:[]]}function L(e){return $(e)?.message??(e.isError?T:void 0)}function ne(e){return e.hostError!==void 0&&$(e)===void 0}function oe(e){return e===void 0||g(e)&&typeof e.label=="string"&&(typeof e.url=="string"||typeof e.tool=="string"&&g(e.arguments))}function re(e){return e.tool==="reconnect_service"||e.tool==="connect_model_provider"||e.tool==="connect_service"&&!("custom"in e.arguments)}function ie(e){return t=>{let n;try{n=e(t)}catch{return{busy:t.busy,error:t.error,avatar:"none",title:_.title,blocks:[],buttons:[]}}return t.checking?{...n,busy:!0}:n}}var Me="2026-01-26",$e=6e4,V=class{constructor(t){this.appInfo=t;window.addEventListener("message",n=>{n.source===window.parent&&this.#i(n.data)}),this.on("ui/notifications/host-context-changed",n=>{let o=n,{styles:r,...i}=this.hostContext??{},s=o.theme!==void 0&&o.theme!==i.theme&&!o.styles;this.hostContext={...i,...r&&!s?{styles:r}:{},...o}})}appInfo;#r=1;#e=new Map;#n=new Map;hostContext;hostCapabilities;on(t,n){this.#n.set(t,[...this.#n.get(t)??[],n])}async connect(){let t=await this.#t("ui/initialize",{appInfo:this.appInfo,appCapabilities:{availableDisplayModes:["inline"]},protocolVersion:Me});this.hostContext=t?.hostContext,this.hostCapabilities=t?.hostCapabilities,this.#o("ui/notifications/initialized",{}),new ResizeObserver(()=>this.#o("ui/notifications/size-changed",{height:Math.ceil(document.body.getBoundingClientRect().height)})).observe(document.body)}async callTool(t,n,o){let r=(i,s)=>s===void 0?i:{isError:!0,hostError:K(s)};try{return r(await this.#t("tools/call",{name:t,arguments:n},(i,s)=>o(r(i,s))))}catch(i){if(i instanceof Error)throw i;return r(void 0,i)}}async sendMessage(t){let n=this.hostCapabilities?.experimental?.["openai/message"]?.draft!==void 0,o=t.draft!==void 0&&n?t.draft:t.sent;P(await this.#t("ui/message",{role:"user",content:[{type:"text",text:o}],...o===t.draft?{_meta:{"openai/message":{target:"active",send:!1}}}:{}}))}async updateModelContext(t){P(await this.#t("ui/update-model-context",{content:[{type:"text",text:t}]}))}async openLink(t){if(window.openai?.openExternal)try{await window.openai.openExternal({href:t,redirectUrl:!1});return}catch{}P(await this.#t("ui/open-link",{url:t}))}#o(t,n){window.parent.postMessage({jsonrpc:"2.0",method:t,params:n},"*")}#t(t,n,o){let r=this.#r++;return new Promise((i,s)=>{let u=setTimeout(()=>{o?this.#e.set(r,{resolve:l=>o(l),reject:l=>o(void 0,l??{})}):this.#e.delete(r),s(new Error(`${t} timed out`))},$e);this.#e.set(r,{resolve:l=>{clearTimeout(u),i(l)},reject:l=>{clearTimeout(u),s(l)}}),window.parent.postMessage({jsonrpc:"2.0",id:r,method:t,params:n},"*")})}#i(t){if(!(!t||t.jsonrpc!=="2.0")){if(t.method===void 0){let n=typeof t.id=="number"?this.#e.get(t.id):void 0;if(!n)return;this.#e.delete(t.id),t.error?n.reject(t.error):n.resolve(t.result);return}for(let n of this.#n.get(t.method)??[])n(t.params);t.id!==void 0&&window.parent.postMessage({jsonrpc:"2.0",id:t.id,result:{}},"*")}}};function P(e){if(e?.isError===!0)throw new Error("The host refused it")}function Ve(e){document.documentElement.setAttribute("data-theme",e),document.documentElement.style.colorScheme=e}function He(e){for(let[t,n]of Object.entries(e))n!==void 0&&document.documentElement.style.setProperty(t,n)}var se=[];function q(e){e?.theme&&Ve(e.theme);let t=e?.["openai/interactionCursor"],n={...e?.styles?.variables,"--cursor-interaction":typeof t=="string"&&/^[a-z-]+$/.test(t)?t:void 0};for(let o of se)n[o]===void 0&&document.documentElement.style.removeProperty(o);He(n),se=Object.keys(n).filter(o=>n[o]!==void 0)}var ae=(e,t,n)=>`<svg viewBox="0 0 44 44" aria-hidden="true" focusable="false"><rect width="44" height="44" rx="12" fill="${e}"/><path d="M22 6c-9 0-14 8-14 18v14h28V24C36 14 31 6 22 6z" fill="${t}"/><path d="M22 12c-6 0-9.5 6-9.5 13.5S16 38 22 38s9.5-5 9.5-12.5S28 12 22 12z" fill="${n}"/><circle cx="18.5" cy="26" r="1.3" fill="#3a2a1e"/><circle cx="25.5" cy="26" r="1.3" fill="#3a2a1e"/><path d="M20.5 30.2q1.5 1.2 3 0" stroke="#3a2a1e" stroke-width="1.1" fill="none" stroke-linecap="round"/></svg>`,Oe={agent:ae("#3a2a1e","#E8901A","#f3d9b1"),alert:ae("#2a1f2e","#c2453a","#f1d3b8")},Ie={done:"done",now:"in progress",todo:"to do",failed:"failed"},ce={done:{glyph:"\u2713",words:"done"},now:{glyph:"",words:"in progress"},failed:{glyph:"!",words:"needs attention"},warning:{glyph:"!",words:"warning"},unknown:{glyph:"?",words:"unknown"}};function c(e,t,n){let o=document.createElement(e);return t&&(o.className=t),n!==void 0&&(o.textContent=n),o}var de=new Set;function le(e,t,n){let o=c("span",`cp-avatar cp-avatar-${t}`),r=()=>{o.innerHTML=Oe[e]};if(!n||de.has(n))return r(),o;e==="alert"&&o.classList.add("cp-avatar-alert");let i=c("img");return i.alt="",i.decoding="async",i.addEventListener("error",()=>{de.add(n),r()},{once:!0}),i.src=n,o.append(i),o}function Ne(e){let t=c("p","cp-sub");for(let n of e)t.append(n.tone?c("span",`cp-${n.tone}`,n.text):n.text);return t}function ue(e,t,n){switch(e.kind){case"text":return c("p","cp-text",e.text);case"quote":return c("blockquote","cp-quote",e.text);case"section":return c("h3","cp-sect",e.label);case"note":return c("p",`cp-note${e.tone?` cp-${e.tone}`:""}`,e.text);case"exchange":{let o=(l,h,d)=>{let w=c("div");return w.append(c("span","sr-only",`${l}: `),c("div",`cp-said ${e.whole?"cp-said-whole":`cp-clamp-${d}`}`,h)),w},r=c("span","cp-init","Y");r.setAttribute("aria-hidden","true");let i=c("div","cp-msg");i.append(r,o("You",e.ask,2));let s=c("div","cp-msg");s.append(le(t,"sm",n),o(e.agent,e.answer,5));let u=c("div","cp-thread");return u.append(i,s),u}case"line":{let o=c("p","cp-line");for(let r of e.parts)o.append("chip"in r?c("span","cp-chip",r.chip):r.strong?c("b",void 0,r.text):r.text);return o}case"steps":{let o=c("ul","cp-steps");for(let{label:r,state:i}of e.steps){let s=c("li"),u=c("span",`cp-ic cp-ic-${i}`,i==="done"?"\u2713":i==="failed"?"!":"");u.setAttribute("aria-hidden","true"),s.append(u,r,c("span","sr-only",` (${Ie[i]})`)),o.append(s)}return o}case"rows":{let o=c("ul","cp-rows");return o.append(...e.rows.map(r=>Le(r,t,n))),o}case"panes":{let o=c("div","cp-panes");for(let{label:r,text:i}of e.panes){let s=c("section","cp-pane");s.append(c("h3","cp-pane-label",r),c("div","cp-pane-text",i)),o.append(s)}return o}}}function Le(e,t,n){let o=c("li","cp-row");if(e.icon==="tile"){let s=c("span","cp-tile",e.tile??"");s.setAttribute("aria-hidden","true"),o.append(s)}else{let s=ce[e.icon],u=c("span",`cp-ic cp-ic-${e.icon}`,s.glyph);u.setAttribute("aria-hidden","true"),o.append(u)}let r=c("div","cp-row-body"),i=c("div","cp-row-title",e.title);if(e.icon!=="tile"&&i.append(c("span","sr-only",` (${ce[e.icon].words})`)),r.append(i),e.chip){let s=c("div",`cp-row-detail${e.tone?` cp-${e.tone}`:""}`);s.append(c("span","cp-chip",e.chip),...e.detail?[" ",e.detail]:[]),r.append(s)}else e.detail&&r.append(c("div",`cp-row-detail${e.tone?` cp-${e.tone}`:""}`,e.detail));if(o.append(r),e.control){let{label:s,action:u,style:l,expanded:h}=e.control,d=pe(s,u,l==="link"?"cp-link cp-link-go":l==="toggle"?"cp-link":`btn btn-sm cp-btn-${l}`);h!==void 0&&d.setAttribute("aria-expanded",String(h)),o.append(d)}if(e.open){let s=c("div","cp-row-open");s.append(...e.open.map(u=>ue(u,t,n))),o.append(s)}return o}function pe(e,t,n){let o=c("button",`${n} cursor-interaction`,e);return o.type="button",o.dataset.action=t,o}function fe(e,t){let n=c("p","sr-only");n.setAttribute("aria-live","polite");let o=c("main","cp-card"),r=c("div","cp-content"),i=c("div","cp-acts"),s=c("p","cp-error");s.setAttribute("role","alert"),o.append(r,i,s),e.replaceChildren(n,o),o.addEventListener("click",d=>{let w=d.target?.closest("button[data-action]");w instanceof HTMLButtonElement&&!w.disabled&&t(w.dataset.action)});let u="",l="",h=new Map;return{render(d){let w=JSON.stringify(d);if(w===u)return;u=w;let C=o.contains(document.activeElement),A=C&&document.activeElement instanceof HTMLButtonElement?document.activeElement.dataset.action:void 0,p=d.announce??d.title;n.textContent!==p&&(n.textContent=p);let a=c("header","cp-hdr"),k=d.avatar==="none"?"agent":d.avatar,{avatarUrl:f}=d;d.avatar!=="none"&&a.append(le(d.avatar,"lg",f));let m=c("div","cp-heading"),R=c("h2","cp-title");if(R.tabIndex=-1,d.done){let x=c("span","cp-ok","\u2713 ");x.setAttribute("aria-hidden","true"),R.append(x)}R.append(d.title),m.append(R),d.subtitle&&m.append(Ne(d.subtitle)),a.append(m);let E=new Map,Ce=d.blocks.map(x=>{let v=JSON.stringify([x,k,f]),U=!E.has(v)&&h.get(v)||ue(x,k,f);return E.has(v)||E.set(v,U),U});h=E,r.replaceChildren(a,...Ce,...d.foot?[c("p","cp-foot",d.foot)]:[]);let z=JSON.stringify(d.buttons);z!==l&&(l=z,i.replaceChildren(...d.buttons.map(x=>pe(x.label,x.action,`btn cp-btn-${x.tone}`)))),i.hidden=d.buttons.length===0;for(let x of o.querySelectorAll("button"))x.disabled=d.busy,x.toggleAttribute("aria-busy",d.busy);s.textContent=d.error??"",s.hidden=!d.error,C&&!o.contains(document.activeElement)&&([...o.querySelectorAll("button[data-action]")].find(v=>v.dataset.action===A)??R).focus({preventScroll:!0})}}}var Pe=1e3;function he(e,t){let n=new V({name:e,version:String(9)}),o=t.initial,r,i=0,s,u=fe(document.getElementById("card"),a=>l({type:"press",action:a,now:Date.now()}));function l(a){let k=t.step(o,a),f=X(o,a,k,{keepsState:qe(),version:9});o=k.state,a.type==="press"&&(s=void 0),u.render(t.present(o));for(let m of f)h(m);for(let m of k.effects)w(m)}function h(a){a.type==="state"?Promise.resolve(window.openai?.setWidgetState?.(a.state)).catch(()=>{}):n.updateModelContext(a.text).catch(()=>{})}function d(a,k){ne(k)?l({type:"unreachable",call:a,now:Date.now()}):l({type:"reply",call:a,result:k,now:Date.now()})}function w(a){switch(a.type){case"call":{let k=m=>d(a.call,m),f=m=>{(!m.isError||$(m))&&k(m)};n.callTool(a.call.tool,a.call.args,f).then(k,()=>l({type:"unreachable",call:a.call,now:Date.now()}));return}case"timer":clearTimeout(r),r=setTimeout(()=>l({type:"tick",now:Date.now()}),a.inMs);return;case"message":n.sendMessage(a).catch(()=>l({type:"refused",effect:a,now:Date.now()}));return;case"open":n.openLink(a.url).catch(()=>l({type:"refused",effect:a,now:Date.now()}));return;case"context":return}}function C(){let a=Date.now();a-i<Pe||o.view.kind==="waiting"||(i=a,l({type:"reread",now:a}))}function A(a,k){s={result:a,kept:k!==void 0},i=Date.now(),l({type:"result",result:a,kept:k,now:Date.now()})}n.on("ui/notifications/tool-result",a=>{o.view.kind==="waiting"&&A(ee(a,window.openai?.toolResponseMetadata),ge())}),n.on("ui/notifications/tool-cancelled",()=>l({type:"no_result",now:Date.now()})),n.on("ui/notifications/host-context-changed",()=>q(n.hostContext)),window.addEventListener("openai:set_globals",()=>{let a=s&&!s.kept?ge():void 0;s&&a&&A(s.result,a)}),window.addEventListener("focus",C),document.addEventListener("visibilitychange",()=>{document.visibilityState==="visible"&&C()});let p=!0;new IntersectionObserver(([a])=>{a?.isIntersecting&&!p&&C(),p=a?.isIntersecting??p}).observe(document.body),u.render(t.present(o)),n.connect().then(()=>q(n.hostContext),()=>l({type:"no_result",now:Date.now()}))}function qe(){return typeof window.openai?.setWidgetState=="function"}function ge(){return J(window.openai?.widgetState,9)}function D(e){return typeof e.plain=="string"&&e.plain!==""?e.plain:De[e.part][e.status]}var De={connection:{ok:"Connected.",warning:"Connected, but something needs a look.",failing:"It is not working.",unknown:"The check could not tell whether it works."},model:{ok:"It can run.",warning:"It may not run as expected.",failing:"It cannot run now.",unknown:"The check could not tell whether it can run."},slack:{ok:"Ready in Slack.",warning:"Not ready in Slack yet.",failing:"It has a problem in Slack.",unknown:"The check could not tell whether it is ready in Slack."},channel:{ok:"Answers here.",warning:"Not answering here yet.",failing:"It cannot answer here.",unknown:"The check could not tell whether it answers here."},schedule:{ok:"On schedule.",warning:"Some of its runs need a look.",failing:"Its runs are failing.",unknown:"The check could not tell whether it runs."},repository:{ok:"GitHub access is installed.",warning:"GitHub access needs a look.",failing:"It cannot reach this repository.",unknown:"The check could not tell whether it can reach this repository."},website_login:{ok:"Ready to sign in.",warning:"This login needs a look.",failing:"It cannot sign in.",unknown:"The check could not tell whether it can sign in."},admission:{ok:"A message reaches it.",warning:"A message may not reach it.",failing:"A message does not reach it.",unknown:"Slack decides when the message arrives."}};var ye={view:{kind:"waiting"},busy:!1,seq:0},we=Y(je);function je(e,t){switch(t.type){case"result":return Be(t.result);case"press":return e.busy||e.view.kind!=="health"?y(e):We(e,e.view,t.action);case"reply":return I(e,t.call)?y(e):Ue(e,t.call.tool,t.result);case"unreachable":return I(e,t.call)?y(e):t.call.tool==="get_agent"||e.view.kind!=="health"?y(e):y({view:H(e.view),busy:!1,error:Z});case"refused":return y({...e,error:T});case"no_result":return e.view.kind==="waiting"?b(_):y(e);case"tick":return y(e);case"reread":return!e.busy&&e.view.kind==="health"?y(e,[S("get_agent",{agentId:e.view.checked.agent.agentId})]):y(e)}}function Be(e){let t=L(e);return t?b({kind:"notice",title:t}):ke(e.structuredContent)?b({kind:"health",checked:e.structuredContent}):b(_)}function We(e,t,n){switch(n){case"show":return b({...t,open:!0});case"hide":{let{open:o,...r}=t;return b(r)}case"check_again":return t.checked.person.you?{state:{view:t,busy:!0},effects:[ze(t.checked)]}:y(e);default:{let o=Number(n.slice(4)),r=t.checked.checks[o],i=r?.fix;if(!r||!i)return y(e);if("url"in i){let s=M(i.url);return s?y(e,[{type:"open",url:s}]):y(e)}return re(i)?{state:{view:{...t,fixing:o},busy:!0},effects:[S(i.tool,i.arguments)]}:y(e,[me(t,o)])}}}function me(e,t){let n=e.checked.checks[t];return{type:"message",sent:`Fix ${n.name} for ${e.checked.agent.name}: ${n.fix.label}.`}}function ze(e){return S("check_agent",{agentId:e.agent.agentId,...e.place.kind==="channel"&&e.place.channelId?{place:e.place.channelId}:{}})}function Ue(e,t,n){let{view:o}=e;if(o.kind!=="health")return y(e);let r=L(n),i=n.structuredContent;if(t==="get_agent")return e.busy||r?y(e):Fe(e,o,i);if(t==="check_agent"){if(r||!ke(i))return y({view:o,busy:!1,error:r??T});let d=i.checks.filter(({status:w})=>w==="failing"||w==="warning").length;return O(b({kind:"health",checked:i,...o.open?{open:!0}:{}}),`The person checked ${N(i.agent.name)} again from the card: ${d===0?"no problems found":`${d} ${d===1?"thing needs":"things need"} attention`}.`)}let s=!r&&g(i)&&g(i.setup)?i.setup:void 0,u=M(s?.url);if(!u||o.fixing===void 0){let d=g(i)&&typeof i.summary=="string"?i.summary:void 0;return y({view:H(o),busy:!1,error:r??d??T})}if(typeof s?.setupToken!="string")return b(H(o),[me(o,o.fixing)]);let l=[...(o.opened??[]).filter(d=>d!==o.fixing),o.fixing],h=o.checked.checks[o.fixing]?.fix;return O(b({...H(o),opened:l},[{type:"open",url:u}]),`The person pressed ${te(h?.label??"Fix it")} for ${N(o.checked.agent.name)} on the card, which opened Chickpea's page. It changes when they finish there.`)}function Fe(e,t,n){let o=g(n)&&Array.isArray(n.connections)?n.connections:void 0;if(!o)return y(e);let r=Object.fromEntries(o.map(({connectionId:u,status:l})=>[u,l]));if(!t.before)return b({...t,before:r});let s=t.checked.checks.filter(({part:u,status:l,connectionId:h})=>u==="connection"&&l!=="ok"&&h!==void 0&&t.before[h]!=="ready"&&r[h]==="ready").map(({connectionId:u})=>u).filter(u=>!t.fixed?.includes(u));return s.length?b({...t,fixed:[...t.fixed??[],...s]}):y(e)}function H({fixing:e,...t}){return t}function ke(e){return g(e)&&g(e.agent)&&typeof e.agent.name=="string"&&g(e.person)&&g(e.place)&&Array.isArray(e.checks)&&e.checks.every(t=>g(t)&&typeof t.name=="string"&&typeof t.detail=="string"&&typeof t.part=="string"&&Object.hasOwn(xe,t.part)&&typeof t.status=="string"&&Object.hasOwn(B,t.status)&&oe(t.fix))}var xe={connection:"connections",model:"model",slack:"Slack",channel:"Channels",schedule:"schedules",repository:"repositories",website_login:"website logins",admission:"who can reach it"},B={failing:0,warning:1,unknown:2,ok:3},be=ie(Ge);function Ge(e){let t={busy:e.busy,error:e.error},{view:n}=e;switch(n.kind){case"waiting":return{...t,avatar:"none",title:"Loading\u2026",blocks:[],buttons:[]};case"notice":return{...t,avatar:"none",title:n.title,blocks:[],buttons:[]};case"health":return{...t,...Ke(n)}}}function Ke(e){let{checked:t}=e,n=t.checks.map((p,a)=>({check:p,index:a,status:Je(e,p)})),o=n.filter(({status:p})=>p==="failing"||p==="warning"),r=n.filter(({status:p})=>p==="unknown"),i=n.filter(({status:p})=>p==="ok"),s=[...o,...r].sort((p,a)=>B[p.status]-B[a.status]||p.index-a.index),u=t.agent.handle?`@${t.agent.handle}`:t.agent.name,l=[...new Set(t.checks.map(({part:p})=>xe[p]))],h=s.length>0,d=[...s.map(p=>j(e,p)),...i.length?[{icon:"done",title:`${i.length} ${h?"other ":""}${i.length===1?"part looks":"parts look"} healthy`,control:e.open?{label:"Hide",action:"hide",style:"toggle"}:{label:"Show",action:"show",style:"toggle"}}]:[],...e.open?i.map(p=>j(e,p)):[]],w=o.length>0?`${o.length} ${o.length===1?"thing needs":"things need"} attention`:r.length>0?"No problems found":"Everything looks healthy",C=e.opened?.at(-1),A=C===void 0?void 0:n[C];return{avatar:n.some(({status:p})=>p==="failing")?"alert":"agent",avatarUrl:M(t.agent.avatarUrl),title:w,...A?{announce:`${w}. ${W(A.check)}: ${j(e,A).detail}`}:{},subtitle:[{text:`${u} \xB7 checked its ${Xe(l)}`}],blocks:d.length?[{kind:"rows",rows:d}]:[],buttons:t.person.you?[{label:"Check again",action:"check_again",tone:"secondary"}]:[]}}function Je(e,t){return t.connectionId!==void 0&&e.fixed?.includes(t.connectionId)?"ok":t.status}function j(e,{check:t,index:n,status:o}){if(o==="ok")return{icon:"done",title:W(t),detail:e.fixed?.includes(t.connectionId??"")?"Connected.":D(t)};let r=e.opened?.includes(n);return{icon:r?"now":o==="failing"?"failed":o==="warning"?"warning":"unknown",title:W(t),detail:r?"Finish on the Chickpea page that opened, then come back.":D(t),...t.fix?{control:{label:t.fix.label,action:`fix:${n}`,style:"link"}}:{}}}function W(e){let{channelId:t}=e;if(e.part==="channel"&&t&&e.name===t)return"A private Channel";let n=e.part==="admission"&&t&&e.name.endsWith(`, in ${t}`)?`${e.name.slice(0,-t.length)}a private Channel`:e.name;return e.part==="admission"?`${n.charAt(0).toUpperCase()}${n.slice(1)}`:n}function Xe(e){return e.length<=2?e.join(" and "):`${e.slice(0,-1).join(", ")} and ${e.at(-1)}`}he("chickpea-health-card",{initial:ye,step:we,present:be});})();
+</script></body>
+</html>

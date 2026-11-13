@@ -131,7 +131,7 @@ const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
     'get_account', 'get_workspace', 'get_guide', 'list_agents', 'get_agent', 'list_services', 'get_service', 'list_models',
     'list_members', 'list_slack_channels', 'get_agent_memory', 'list_schedules', 'get_setup_status',
     'export_agents', 'list_connected_apps', 'propose_agent', 'propose_agent_change',
-    'get_creation_status', 'practice_agent', 'get_practice_run', 'list_practice_runs', 'explain_agent', 'check_agent',
+    'get_creation_status', 'practice_agent', 'get_practice_run', 'list_practice_runs', 'show_test_report', 'explain_agent', 'check_agent',
     'create_agent', 'update_agent', 'update_agent_memory', 'archive_agent', 'restore_agent',
     'add_agent_to_channel', 'save_channel_settings', 'import_skill_from_github', 'upload_skill_files', 'set_agent_skill',
     'save_schedule', 'pause_schedule', 'resume_schedule', 'run_schedule_now', 'take_over_schedule',

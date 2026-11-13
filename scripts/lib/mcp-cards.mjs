@@ -24,6 +24,7 @@ export const CARD_TITLES = {
   'agent-card': 'Chickpea Agent card',
   'connect-card': 'Chickpea connect card',
   'health-card': 'Chickpea health card',
+  'report-card': 'Chickpea test report card',
 };
 
 export function readPublished() {

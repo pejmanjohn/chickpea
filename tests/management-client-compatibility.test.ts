@@ -58,6 +58,7 @@ const MCP_TOOL_ANNOTATIONS = {
   practice_agent: { ...DESTRUCTIVE_5, openWorldHint: true },
   get_practice_run: READ_5,
   list_practice_runs: READ_5,
+  show_test_report: READ_5,
   explain_agent: READ_5,
   check_agent: { ...READ_5, openWorldHint: true },
   // 5.0 writes: OpenAI's rule, so an overwrite, removal or irreversible send is destructive,
@@ -235,7 +236,7 @@ test('server instructions are the 5.0 text: short, linkless, and naming only 5.0
 test('workspace management MCP publishes the version 5 server contract', () => {
   assert.deepEqual(WORKSPACE_MANAGEMENT_SERVER_INFO, {
     name: 'chickpea-workspace',
-    version: '5.0.0',
+    version: '5.1.0',
   });
 });
 

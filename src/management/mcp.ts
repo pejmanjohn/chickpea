@@ -25,7 +25,7 @@ import type { ManagementActorContext } from './types.ts';
 
 export const WORKSPACE_MANAGEMENT_SERVER_INFO = {
   name: 'chickpea-workspace',
-  version: '5.0.0',
+  version: '5.1.0',
 } as const;
 
 const FIVE_ZERO_TOOL_NAME_SET: ReadonlySet<string> = new Set(FIVE_ZERO_TOOL_NAMES);

@@ -8,11 +8,13 @@ import { textChangeWindows } from '../../management/text-changes.ts';
 import {
   agentNamed,
   call,
+  carryOn,
   errorCode,
   errorOf,
   GENERIC,
   httpsUrl,
   isRecord,
+  nameInMessage,
   NOTHING,
   outdated,
   pollDelay,
@@ -53,7 +55,9 @@ import {
  * The Agent card as a state machine. Every host message, button press and
  * tool reply is an event; `step` returns the next state and the effects to
  * run. `present` decides everything the card shows. After a press's write
- * answers, the card tells the host's model what the person did.
+ * answers, the card tells the host's model what the person did. A proposal
+ * made with `continues` also sends a message once its Create or Save is
+ * through, so the model carries the job on.
  */
 
 type Proposal = z.infer<typeof schemas.proposeAgentOutput>;
@@ -77,6 +81,8 @@ type Offer =
       name: string;
       avatarUrl?: string | undefined;
       promised?: Promised | undefined;
+      /** The proposal's `continues`: its Create anyway carries the job on. */
+      continues?: true;
     };
 
 export type View =
@@ -101,6 +107,8 @@ export type View =
       /** The person created it from this card, so its arrival is theirs to hear about. */
       byPress?: true;
       promised?: Promised | undefined;
+      /** The message that carries the job on once it arrives in Slack. */
+      carryOn?: string;
     }
   | {
       kind: 'ready';
@@ -148,6 +156,8 @@ export type View =
       agent?: AgentLabel & { agentId: string };
       avatarUrl?: string | undefined;
       adminUrl?: string | undefined;
+      /** A Save that waits for this confirmation: the message that carries the job on once it is confirmed. */
+      carryOn?: string;
     }
   /**
    * A re-read found the Agent archived, or no longer there for this person:
@@ -227,7 +237,11 @@ function fromResult(result: ToolResult, now: number): Next<View> {
   return show(NOTHING);
 }
 
-function changeView(result: ChangeResult, now: number, options: { saved?: boolean; undone?: boolean; practice?: boolean } = {}): Next<View> {
+function changeView(
+  result: ChangeResult,
+  now: number,
+  options: { saved?: boolean; undone?: boolean; practice?: boolean; carryOn?: string | undefined } = {},
+): Next<View> {
   switch (result.status) {
     case 'needs_confirmation':
       if (!result.confirmation) return show({ kind: 'notice', title: result.summary });
@@ -236,6 +250,7 @@ function changeView(result: ChangeResult, now: number, options: { saved?: boolea
         {
           kind: 'confirm',
           confirmation: result.confirmation,
+          ...options.carryOn ? { carryOn: options.carryOn } : {},
           ...result.agent
             ? {
                 agent: { agentId: result.agent.agentId, name: result.agent.name, handle: result.agent.handle },
@@ -280,6 +295,7 @@ function creating(
     avatarUrl?: string | undefined;
     byPress?: true;
     promised?: Promised | undefined;
+    carryOn?: string | undefined;
   },
   now: number,
 ): Next<View> {
@@ -296,6 +312,7 @@ function creating(
     startedAt: now,
     ...from.byPress ? { byPress: true as const } : {},
     ...from.promised ? { promised: from.promised } : {},
+    ...from.carryOn ? { carryOn: from.carryOn } : {},
   }, [call('get_creation_status', { agentId: agent.agentId })]);
 }
 
@@ -456,13 +473,17 @@ function reply(state: State, made: Call, result: ToolResult, now: number): Next<
           avatarUrl: offerAvatar(offer),
           byPress: true,
           promised: promiseOf(offer),
+          carryOn: continuesFrom(offer) ? `I created ${nameInMessage(name)}. Carry on.` : undefined,
         }, now), `The person created ${agentNamed(name, handle)} from the card. It is joining Slack now.`);
       }
       if (content.status === 'similar_agent_exists' && offer) {
         const create = offer.kind === 'proposal' ? offer.proposal.create.arguments : offer.create;
         const promised = promiseOf(offer);
         return tell(
-          show({ kind: 'similar', summary: content.summary, create, name: create.name, avatarUrl: offerAvatar(offer), ...promised ? { promised } : {} }),
+          show({
+            kind: 'similar', summary: content.summary, create, name: create.name, avatarUrl: offerAvatar(offer),
+            ...promised ? { promised } : {}, ...continuesFrom(offer) ? { continues: true as const } : {},
+          }),
           `The person pressed Create in Slack on the card, but nothing was created. Chickpea said: ${quoted(content.summary)}`,
         );
       }
@@ -481,13 +502,18 @@ function reply(state: State, made: Call, result: ToolResult, now: number): Next<
       const agent = name === undefined ? 'the Agent' : agentNamed(name);
       // The summary names the Agent again, whole and unquoted, so it is left out when this sentence names it.
       const practice = view.kind === 'change' && practiceAfter(view.preview);
-      return tell(changeView(content, now, { saved: true, practice }), content.status === 'needs_confirmation'
+      const after = view.kind === 'change' && view.preview.continues === true
+        ? `I saved the change to ${nameInMessage(view.preview.agent.name)}. Carry on.`
+        : undefined;
+      const waits = content.status === 'needs_confirmation';
+      const saved = tell(changeView(content, now, { saved: true, practice, carryOn: after }), waits
         ? `The person pressed Save on the card for ${agent}. Nothing has changed yet: it waits for their confirmation on the card.`
         : name === undefined
           ? `The person saved the change from the card. Chickpea said: ${quoted(content.summary)}`
           : `The person saved the change to ${agent} from the card.`);
+      return after && content.status === 'done' ? carryOn(saved, after) : saved;
     }
-    case 'confirm_change':
+    case 'confirm_change': {
       if (code === 'confirmation_expired') return show(EXPIRED);
       if (failure || !isChangeResult(content)) {
         // Only Chickpea's refusal says nothing changed. An error with no code is the host's, and
@@ -496,7 +522,9 @@ function reply(state: State, made: Call, result: ToolResult, now: number): Next<
           ? tell(show({ kind: 'notice', title: 'Nothing changed', body: failure }), `The person confirmed on the card, but nothing changed. Chickpea said: ${quoted(failure)}`)
           : stay({ view, busy: false, error: failure ?? GENERIC });
       }
-      return tell(changeView(content, now), `The person confirmed on the card. Chickpea said: ${quoted(content.summary)}`);
+      const confirmed = tell(changeView(content, now), `The person confirmed on the card. Chickpea said: ${quoted(content.summary)}`);
+      return view.kind === 'confirm' && view.carryOn && content.status === 'done' ? carryOn(confirmed, view.carryOn) : confirmed;
+    }
     case 'decline_change': {
       // Kept only on an answer that proves the token dead: Chickpea retired it, or holds no
       // confirmation of this person's under it. Any other failure may leave it live.
@@ -604,9 +632,12 @@ function creationStatus(state: State, status: CreationStatus | undefined, now: n
   });
   if (view.kind !== 'creating' || !view.byPress) return ready;
   const who = agentNamed(view.agent.name, view.agent.handle);
-  return tell(ready, status.stage === 'needs_attention'
-    ? `The person created ${who} from the card, but it needs attention in Slack. Chickpea said: ${quoted(status.problem ?? 'Slack has not finished setting it up.')}`
+  const told = tell(ready, status.stage === 'needs_attention'
+    ? status.paidPlanNeeded
+      ? `The person created ${who} from the card. It answers them in direct messages, but Slack needs a paid plan before it can have its own handle, so no one can mention it in a Channel yet.`
+      : `The person created ${who} from the card, but it needs attention in Slack. Chickpea said: ${quoted(status.problem ?? 'Slack has not finished setting it up.')}`
     : `The person created ${who} from the card. It is ready in Slack${status.stage === 'said_hello' ? ' and said hello to them there' : ''}.`);
+  return view.carryOn ? carryOn(told, view.carryOn) : told;
 }
 
 function keepPolling(view: Creating, now: number): Next<View> {
@@ -807,6 +838,11 @@ function slackUrlOf(view: View): string | undefined {
   return undefined;
 }
 
+/** The proposal on this card asked it to carry the job on once its Create is through. */
+function continuesFrom(offer: Offer | undefined): boolean {
+  return offer?.kind === 'proposal' ? offer.proposal.continues === true : offer?.continues === true;
+}
+
 function offerAvatar(offer: Offer | undefined): string | undefined {
   if (offer?.kind === 'proposal') return httpsUrl(offer.proposal.proposal.avatarUrl);
   return offer?.avatarUrl;
@@ -972,7 +1008,9 @@ function presentProposal({ proposal, issues }: Proposal): Omit<Presentation<Acti
     avatar: 'agent',
     avatarUrl: httpsUrl(proposal.avatarUrl),
     title: proposal.name,
+    // Which workspace it joins, before the press: a person signed in to several sees which.
     subtitle: [
+      ...proposal.workspaceName ? [{ text: `In ${proposal.workspaceName}'s Slack` }, { text: ' · ' }] : [],
       { text: `@${proposal.handle}` },
       ...proposal.handleAvailable === false ? [{ text: ' · ' }, { text: 'handle is taken', tone: 'warn' as const }] : [],
     ],
@@ -1071,6 +1109,24 @@ function presentCreating(view: Creating): Omit<Presentation<Action>, 'busy' | 'e
 function presentReady(view: Extract<View, { kind: 'ready' }>): Omit<Presentation<Action>, 'busy' | 'error'> {
   const { status, agent } = view;
   const mention = agent.handle ? `@${agent.handle}` : agent.name;
+  // No handle on a free Slack plan: what works comes first, then what doesn't.
+  if (status.stage === 'needs_attention' && status.paidPlanNeeded) {
+    const next = readyNextStep(view);
+    return {
+      avatar: 'agent',
+      avatarUrl: view.avatarUrl,
+      title: `${agent.name} is ready in your DMs`,
+      subtitle: [{ text: 'Its handle needs a paid Slack plan', tone: 'warn' }],
+      blocks: [{
+        kind: 'text',
+        text: `Message it from Chickpea's Home tab in Slack. Until the workspace is on a paid Slack plan, no one can mention ${agent.handle ? `@${agent.handle}` : 'it'} in a Channel.`,
+      }],
+      buttons: [
+        ...httpsUrl(status.slackUrl) ? [{ label: 'Open in Slack', action: 'open_slack' as const, tone: 'primary' as const }] : [],
+        ...next.length ? next : view.adminUrl ? [{ label: 'Open in Admin', action: 'open_admin' as const, tone: 'secondary' as const }] : [],
+      ],
+    };
+  }
   if (status.stage === 'needs_attention') {
     return {
       avatar: 'alert',
@@ -1113,8 +1169,10 @@ function readyNextStep(view: Extract<View, { kind: 'ready' }>): Array<Button<Act
   return offersFirstAnswer(view) ? [{ label: 'See its first answer', action: 'try_once', tone: 'secondary' }] : [];
 }
 
+/** A practice run asks it as a direct message would, which an Agent with no handle still answers. */
 function offersFirstAnswer(view: Extract<View, { kind: 'ready' }>): boolean {
-  return view.needs.length === 0 && view.status.stage !== 'needs_attention' && view.status.agent?.hasFirstAsk === true;
+  const answers = view.status.stage !== 'needs_attention' || view.status.paidPlanNeeded === true;
+  return view.needs.length === 0 && answers && view.status.agent?.hasFirstAsk === true;
 }
 
 /**
@@ -1159,6 +1217,8 @@ function presentChange(view: Extract<View, { kind: 'change' }>, saving: boolean)
     // The heading stays, so the live region says the step.
     ...saving ? { announce: `Change ${preview.agent.name}. Saving…` } : { subtitle: [{ text: `${count} ${count === 1 ? 'change' : 'changes'} · nothing is saved until you press Save` }] },
     blocks: [
+      // The evidence for it may sit below the card in the chat, so the card says why itself.
+      ...preview.reason?.trim() ? [{ kind: 'note' as const, text: `Why: ${preview.reason.trim().replace(/^why:\s*/i, '')}` }] : [],
       ...preview.changes.flatMap((change): Array<Block<Action>> => [{ kind: 'section', label: FIELD_LABELS[change.field] }, ...changeBlocks(change, view.whole)]),
       ...stale ? [{ kind: 'note' as const, text: 'It changed since this preview. Ask again for a fresh one.', tone: 'warn' as const }] : [],
       ...saving ? [{ kind: 'steps' as const, steps: [{ label: 'Saving…', state: 'now' as const }] }] : [],

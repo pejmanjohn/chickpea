@@ -193,6 +193,11 @@ body {
   -webkit-line-clamp: 5;
 }
 
+/* An answer the person opened shows whole. */
+.cp-said-whole {
+  display: block;
+}
+
 .cp-init {
   display: grid;
   width: 26px;
@@ -398,6 +403,20 @@ body {
 
 .cp-row-detail.cp-warn {
   color: var(--cp-warn);
+}
+
+.cp-row-detail .cp-chip {
+  margin-inline-end: 2px;
+}
+
+/* What a row shows under itself once opened, beneath its words. */
+.cp-row-open {
+  grid-column: 2 / -1;
+  min-width: 0;
+}
+
+.cp-row-open > .cp-thread {
+  margin-top: 4px;
 }
 
 .cp-tile {

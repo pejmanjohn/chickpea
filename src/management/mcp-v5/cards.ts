@@ -35,6 +35,11 @@ const CARD_TEXT: Record<CardName, { title: string; description: string; widgetDe
     description: 'The card ChatGPT draws for a check of one Agent: what needs attention, each with its fix, and what looks healthy.',
     widgetDescription: 'Shows the check of one Chickpea Agent from the last result: each part that needs attention with its fix, and the parts that look healthy. The person fixes from the card, so do not repeat every row.',
   },
+  'report-card': {
+    title: 'Chickpea test report card',
+    description: 'The card ChatGPT draws for a test report: each practice question with its verdict, opening to the Agent\'s answer.',
+    widgetDescription: 'Shows the test report from the last result: each practice question with the verdict you gave it, and the Agent\'s answer when the person opens its row. It waits for nothing, so do not repeat it, and carry on.',
+  },
 };
 
 /** Hosts may link out only to Slack and to Chickpea's own pages. */

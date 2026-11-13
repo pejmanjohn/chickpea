@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 
 const REQUEST_TIMEOUT_MS = 15_000;
 const DISCOVERY_GUIDE_URI = 'chickpea://guide/discovery/v1';
-const MANAGEMENT_MCP_SERVER_VERSION = '5.0.0';
+const MANAGEMENT_MCP_SERVER_VERSION = '5.1.0';
 /** Contract 5.0.0 removed these resources; each answers with what replaced it. */
 const REMOVED_RESOURCE_URIS = [
   'chickpea://schema/operations/v2',
@@ -34,6 +34,7 @@ const MANAGEMENT_MCP_TOOL_NAMES = [
   'practice_agent',
   'get_practice_run',
   'list_practice_runs',
+  'show_test_report',
   'explain_agent',
   'check_agent',
   'create_agent',

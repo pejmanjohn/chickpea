@@ -53,6 +53,12 @@ export interface FiveZeroTool {
   write?: ReturnType<typeof writeHints>;
   /** Its text block, in place of the JSON, when its result's text says more in fewer characters. */
   text?(output: Structured): Promise<string>;
+  /**
+   * Fields of its result only its card reads: they go in `_meta`, which a
+   * host never shows its model. Its card waits for nothing, so the result's
+   * own nextStep says what the card shows, in place of the card host's words.
+   */
+  cardOnly?: readonly string[];
   run(deps: FiveZeroDeps, args: Structured, call: FiveZeroCall): Promise<Structured>;
 }
 
@@ -76,6 +82,7 @@ function tool<I extends z.ZodType<Structured>, O extends z.ZodType<Structured>>(
   openWorld?: true;
   write?: ReturnType<typeof writeHints>;
   text?: (output: z.output<O>) => Promise<string>;
+  cardOnly?: ReadonlyArray<keyof z.output<O> & string>;
   run: (deps: FiveZeroDeps, args: z.output<I>, call: FiveZeroCall) => Promise<z.output<O>>;
 }): FiveZeroTool {
   return definition;
@@ -264,6 +271,15 @@ export const FIVE_ZERO_TOOLS = {
     output: schemas.listPracticeRunsOutput,
     run: async (deps, args) => (await import('./test-runs.ts')).listPracticeRuns(deps, args),
   }),
+  show_test_report: tool({
+    title: 'Show a test report',
+    description: 'Show the person one card for a round of practice runs: each question with your verdict, opening to the Agent\'s answer. Send each run\'s runToken from practice_agent with your verdict, an optional note, and before for its first-round verdict. Chickpea fills in each question and answer from its own records. Verdicts and notes are not stored. Reads only; changes nothing.',
+    input: schemas.showTestReportInput,
+    output: schemas.showTestReportOutput,
+    card: 'report-card',
+    cardOnly: ['answers'],
+    run: async (deps, args, call) => (await import('./test-report.ts')).showTestReport(deps, args, call.cardHost),
+  }),
   explain_agent: tool({
     title: 'Explain an Agent',
     description: 'One Agent as it would run for a person in a place, by default their direct messages with it: each part of its prompt, its tools by connection and why any are missing, its model and whether it can run now, and the tokens it starts with and their three biggest sources. Reads only; changes nothing.',
@@ -384,20 +400,20 @@ export const FIVE_ZERO_TOOLS = {
     title: 'Connect a service to an Agent',
     description: 'Get a Chickpea setup link that connects one service to an Agent: a service from list_services, or with custom an API or MCP server the catalog lacks, which this adds to the Agent first. The person signs in or enters the key on Chickpea\'s page; never ask for it. A connection the Agent already has is refused: use reconnect_service. Each call makes a new link.',
     input: schemas.connectServiceInput,
-    output: schemas.changeResultOutput,
+    output: schemas.connectServiceOutput,
     // Adding an open MCP server asks that server for its tools.
     write: writeHints({ destructive: false, openWorld: true, idempotent: false }),
     card: 'connect-card',
-    run: (deps, args) => connections.connectService(deps, args),
+    run: async (deps, { continues, ...args }) => ({ ...await connections.connectService(deps, args), ...continuing(continues) }),
   }),
   reconnect_service: tool({
     title: 'Reconnect a service',
     description: 'Get a Chickpea setup link that signs one of an Agent\'s connections in again or replaces its saved key, by its connectionId from get_agent: for one that needs attention, or to change what a service shares with it. Never ask for the key. To drop an optional key, like Exa\'s, remove_connection, then connect_service with the key left empty. Each call makes a new link.',
     input: schemas.reconnectServiceInput,
-    output: schemas.changeResultOutput,
+    output: schemas.connectServiceOutput,
     write: writeHints({ destructive: true, idempotent: false }),
     card: 'connect-card',
-    run: (deps, args) => connections.reconnectService(deps, args),
+    run: async (deps, { continues, ...args }) => ({ ...await connections.reconnectService(deps, args), ...continuing(continues) }),
   }),
   update_connection: tool({
     title: 'Update a connection',
@@ -574,6 +590,11 @@ export const FIVE_ZERO_TOOLS = {
 
 export type FiveZeroToolName = keyof typeof FIVE_ZERO_TOOLS;
 
+/** Its card carries the job on after the person's press: the result says so, for the card. */
+function continuing(continues: boolean | undefined): { continues?: true } {
+  return continues ? { continues: true } : {};
+}
+
 /** In registration order. */
 export const FIVE_ZERO_TOOL_NAMES = Object.keys(FIVE_ZERO_TOOLS) as FiveZeroToolName[];
 
@@ -662,6 +683,16 @@ export function registerFiveZeroTool(
       emitManagementMetric('tool.call', { surface: 'mcp', tool: name, outcome: 'success', durationMs: Date.now() - startedAt });
       // Whatever the tool, a card host's model never gets a confirm token.
       const confirms = (parsed.data as { status?: unknown }).status === 'needs_confirmation';
+      if (definition.cardOnly) {
+        const shown: Structured = { ...parsed.data };
+        const meta: Record<string, unknown> = {};
+        for (const field of definition.cardOnly) {
+          meta[`chickpea/${field}`] = shown[field];
+          delete shown[field];
+        }
+        const result = mcpSuccessResult(shown, { tool: name });
+        return { ...result, _meta: { ...result._meta, ...meta } };
+      }
       if (definition.text) return mcpSuccessResult(parsed.data, undefined, await definition.text(parsed.data));
       if (!drawn && !(confirms && cardHost())) return mcpSuccessResult(parsed.data);
       if (!cardHost()) return mcpSuccessResult(parsed.data, { tool: name });

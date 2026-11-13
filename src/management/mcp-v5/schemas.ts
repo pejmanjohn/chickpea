@@ -39,6 +39,13 @@ const zFix = z.union([
   z.strictObject({ label: z.string(), tool: z.string(), arguments: z.record(z.string(), z.unknown()) }),
 ]);
 
+/** Asked of a tool whose card waits for the person's press. */
+const zContinues = z.boolean().optional()
+  .describe('true when the job has more steps after the person\'s press, such as connecting a service or testing next: once the press succeeds, the card sends a short message in the chat so you carry on.');
+/** The same, in the result, for the card. */
+const zContinuing = z.literal(true).optional()
+  .describe('The card sends a short message in the chat once the person\'s press succeeds, so you carry on.');
+
 // Inputs.
 
 export const getAccountInput = z.strictObject({});
@@ -97,6 +104,7 @@ export const proposeAgentInput = z.strictObject({
   channels: z.array(zText(128)).max(20).optional()
     .describe('Slack Channels it answers in, by channelId or #name from list_slack_channels.'),
   model: zModel.optional().describe('A chat model from list_models. Omit to use the workspace default.'),
+  continues: zContinues,
 });
 
 /** The fields `propose_agent_change` previews and `update_agent` takes. */
@@ -116,6 +124,9 @@ export const proposeAgentChangeInput = z.strictObject({
   agentId: zAgentId,
   version: zVersion.describe('The version get_agent returned.'),
   change: zAgentChange.refine((change) => Object.keys(change).length > 0, 'Name at least one field to change.'),
+  reason: zText(160).optional()
+    .describe('Why you propose it, in one line under 140 characters, such as "4 of 5 answers ran past ten lines". The card shows it above the change.'),
+  continues: zContinues,
 });
 
 const zIdempotencyKey = zText(256).describe('Any unique string. Reuse it only to retry this exact call.');
@@ -297,6 +308,7 @@ export const connectServiceInput = z.strictObject({
   checkPath: zCheckPath.optional(),
   version: zAgentVersion.optional().describe('Required with custom: the version get_agent returned.'),
   idempotencyKey: zIdempotencyKey,
+  continues: zContinues,
 }).refine((input) => (input.service === undefined) !== (input.custom === undefined), 'Send service or custom, not both.')
   .refine((input) => input.service === undefined || input.owner !== undefined, 'Say whose account it is: owner team or me.')
   .refine((input) => input.custom === undefined || input.version !== undefined, 'Send the version get_agent returned with custom.')
@@ -305,6 +317,7 @@ export const reconnectServiceInput = z.strictObject({
   agentId: zAgentId,
   connectionId: zConnectionId,
   checkPath: zCheckPath.optional(),
+  continues: zContinues,
 });
 export const updateConnectionInput = z.strictObject({
   agentId: zAgentId,
@@ -607,6 +620,7 @@ export const proposeAgentOutput = z.strictObject({
   }),
   create: z.strictObject({ tool: z.literal('create_agent'), arguments: createAgentInputSchema }),
   issues: z.array(z.string()),
+  continues: zContinuing,
   nextStep: zCardNextStep,
 });
 
@@ -643,6 +657,8 @@ export const proposeAgentChangeOutput = z.strictObject({
   })),
   save: z.strictObject({ tool: z.literal('update_agent'), arguments: updateAgentInputSchema }),
   needsConfirmation: z.boolean(),
+  reason: z.string().optional().describe('Why you proposed it, as the card shows it.'),
+  continues: zContinuing,
   nextStep: zCardNextStep,
 });
 
@@ -696,6 +712,9 @@ const changeResultShape = {
 
 export const changeResultOutput = z.strictObject(changeResultShape);
 
+/** connect_service and reconnect_service: a change result that may say the card carries the job on. */
+export const connectServiceOutput = z.strictObject({ ...changeResultShape, continues: zContinuing });
+
 export const setAgentRepositoriesOutput = z.strictObject({
   ...changeResultShape,
   moreSetups: z.array(zSetup).optional()
@@ -737,6 +756,8 @@ export const getCreationStatusOutput = z.strictObject({
   channels: z.enum(['none', 'joining', 'joined', 'needs_attention']),
   slackUrl: z.string().optional(),
   problem: z.string().optional(),
+  paidPlanNeeded: z.literal(true).optional()
+    .describe('Slack gave it no handle because the workspace needs a paid Slack plan. It still answers its creator in direct messages, from Chickpea\'s Home tab in Slack.'),
   hello: z.string().optional().describe('The hello it posted to the person in Slack, as plain text.'),
 });
 
@@ -842,6 +863,36 @@ export const listPracticeRunsOutput = z.strictObject({
   note: z.string(),
 });
 
+// show_test_report.
+
+export const showTestReportInput = z.strictObject({
+  agentId: zAgentId,
+  runs: z.array(z.strictObject({
+    runToken: zText(64).describe('The runToken practice_agent returned for this question.'),
+    verdict: zText(40).describe('Your verdict in a few words, such as Good or Too long.'),
+    note: zText(160).optional().describe('One line on why, such as "Right page, 14 lines."'),
+    before: zText(40).optional().describe('The verdict this question got in the first round, when this is a later round.'),
+  })).min(1).max(10)
+    .refine((runs) => new Set(runs.map(({ runToken }) => runToken)).size === runs.length, 'Send each runToken once.')
+    .describe('Each question of the last round, in the order asked.'),
+  summary: zText(200).describe('The round in one line, such as "Right page 5 of 5 · Short enough 1 of 5".'),
+  next: zText(160).optional().describe('What happens next, if anything, such as "Shorten the answers, then ask all five again."'),
+});
+
+export const showTestReportOutput = z.strictObject({
+  agent: z.strictObject({ agentId: z.string(), name: z.string(), handle: z.string().optional(), avatarUrl: zAvatarUrl }),
+  runs: z.array(z.strictObject({
+    question: z.string().describe('The question, cut at 300 characters.'),
+    verdict: z.string(),
+    note: z.string().optional(),
+    before: z.string().optional(),
+  })),
+  summary: z.string(),
+  next: z.string().optional(),
+  answers: z.array(z.string().nullable()).optional()
+    .describe('Never in the result you read: the card gets each answer apart from it.'),
+  nextStep: z.string(),
+});
 
 // explain_agent and check_agent.
 
