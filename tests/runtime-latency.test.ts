@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
 
-import type { FlueObservation } from '@flue/runtime';
+import { IMAGE_DATA_OMITTED, type FlueObservation } from '@flue/runtime';
 import type { WebClient } from '@slack/web-api';
 import ts from 'typescript';
 
@@ -1183,8 +1183,8 @@ test('model_step logs each model request\'s first token, first text, duration, t
 });
 
 // Defects caught: no size when a tool result overflows the window (#775's
-// activity log), the largest result's tool misnamed, an image's data not
-// counted, text in the record.
+// activity log), the largest result's tool misnamed, Flue's image placeholder
+// counted as the image, text in the record.
 test('model_step carries its request\'s size and its largest tool result\'s size and tool, never their text', () => {
   const time = clock(0);
   const { records, sink } = captureSink();
@@ -1197,7 +1197,7 @@ test('model_step carries its request\'s size and its largest tool result\'s size
       { role: 'toolResult', toolCallId: 'call_a', toolName: 'mcp__meta-ads__activity_log', isError: false,
         content: [{ type: 'text', text: `U_LATENCY ${'é'.repeat(1_000)}` }] },
       { role: 'toolResult', toolCallId: 'call_b', toolName: 'slack_read', isError: false,
-        content: [{ type: 'text', text: 'C_LATENCY' }, { type: 'image', data: 'A'.repeat(3_000), mimeType: 'image/png' }] },
+        content: [{ type: 'text', text: 'C_LATENCY' }, { type: 'image', data: IMAGE_DATA_OMITTED, mimeType: 'image/png' }] },
     ],
     tools: [{ name: 'slack_read', description: 'Complete the verification.', parameters: { type: 'object' } }],
   };
@@ -1215,14 +1215,16 @@ test('model_step carries its request\'s size and its largest tool result\'s size
   assert.deepEqual(sizes, [{
     requestBytes: Buffer.byteLength(JSON.stringify(input)),
     toolResults: 2,
-    largestToolResultBytes: 'C_LATENCY'.length + 3_000,
-    largestToolResultTool: 'slack_read',
+    largestToolResultBytes: Buffer.byteLength(`U_LATENCY ${'é'.repeat(1_000)}`),
+    largestToolResultTool: 'mcp__meta-ads__activity_log',
   }, {
     requestBytes: Buffer.byteLength(JSON.stringify({ systemPrompt: 'x', messages: [{ role: 'user', content: 'x' }], tools: [] })),
     toolResults: 0,
     largestToolResultBytes: undefined,
     largestToolResultTool: undefined,
   }]);
+  assert.equal(records[0]!.toolResultBytes, Buffer.byteLength(`U_LATENCY ${'é'.repeat(1_000)}`) + 'C_LATENCY'.length,
+    'an image adds nothing: Flue\'s events carry a placeholder, not its data');
   assert.equal(records[0]!.outcome, 'error', 'a failed step carries the sizes that may explain it');
   // Defects caught: a hash of the wrong part or of the whole input, a hash
   // that survives a changed system prompt, bytes counted as characters, and
@@ -1244,6 +1246,34 @@ test('model_step carries its request\'s size and its largest tool result\'s size
   assert.deepEqual(parts(records[3]!), { systemPromptHash: undefined, systemPromptBytes: undefined, toolsHash: undefined, toolsBytes: undefined });
   for (const record of records) assertContentFree(record);
   assert.doesNotMatch(JSON.stringify(records), /é|AAAA/);
+});
+
+// Defects caught: the total counted in characters rather than UTF-8 bytes, or
+// left out of a step with no tool results; a list that is unbounded, not
+// largest first, cut to the first 10 results rather than the largest 10, or
+// rejected by the log's shape at its full length; and a tool name in the list.
+test('model_step carries its tool results\' total UTF-8 bytes and the largest 10 sizes, largest first', () => {
+  const { records, sink } = captureSink();
+  const steps = new ModelStepMarks(() => 0, sink);
+  const sizes = [5, 1_200, 40, 108_601, 3, 31_022, 7, 900, 64, 12, 2_048, 31_022];
+  const result = (bytes: number, index: number) => ({
+    role: 'toolResult', toolCallId: `call_${index}`, toolName: index % 2 ? 'slack_read' : 'web_page', isError: false,
+    content: [{ type: 'text', text: index === 3 ? 'é'.repeat(bytes / 2 | 0) + 'x' : 'x'.repeat(bytes) }],
+  });
+  const step = (turnId: string, messages: unknown[]) => {
+    steps.observe(flueEvent({ type: 'turn_request', turnId, purpose: 'agent', request: { input: { messages } } }));
+    steps.observe(flueEvent({ type: 'turn', turnId, purpose: 'agent', durationMs: 10, isError: false, response: {} }));
+    const { toolResults, toolResultBytes, toolResultTopBytes } = records.at(-1)!;
+    return { toolResults, toolResultBytes, toolResultTopBytes };
+  };
+  assert.deepEqual(step('step_many', [{ role: 'user', content: 'Complete the verification.' }, ...sizes.map(result)]), {
+    toolResults: 12,
+    toolResultBytes: sizes.reduce((sum, bytes) => sum + bytes, 0),
+    toolResultTopBytes: '108601,31022,31022,2048,1200,900,64,40,12,7',
+  });
+  assert.deepEqual(step('step_one', [result(2_048, 0)]), { toolResults: 1, toolResultBytes: 2_048, toolResultTopBytes: '2048' });
+  assert.deepEqual(step('step_none', [{ role: 'user', content: 'x' }]), { toolResults: 0, toolResultBytes: 0, toolResultTopBytes: undefined });
+  for (const record of records) assertContentFree(record);
 });
 
 // Defects caught: a gap measured from another Agent object's request, from
@@ -1299,6 +1329,99 @@ test('model_step carries what the proxy reports as it settles: the cache write s
   assert.deepEqual(await settle('step_unsplit', { usage: { cacheWrite: 700 }, sharedPrefix: undefined }), {
     cacheWriteTokens: 700, cacheWrite1hTokens: undefined, cacheWrite5mTokens: undefined, sharedPrefix: undefined, chargeWaitMs: 240,
   }, 'a provider that reports no split, on a request no payload hook built');
+  for (const record of records) assertContentFree(record);
+});
+
+// Defects caught: a `thinking_mismatch_allowed` entry (its block reached the
+// model) counted as a drop, a reason repeated or out of order, a reason that
+// is not a code logged as sent, a block's path or a reason's text in the
+// record, a later report that does not replace an earlier one, 0 missing
+// when the provider reported an empty list, and a count with no report.
+test('model_step counts the thinking blocks the provider dropped and lists their reason codes only', async () => {
+  const { records, sink } = captureSink();
+  const steps = new ModelStepMarks(() => 0, sink);
+  const step = async (turnId: string, reports: unknown[][]) => {
+    steps.observe(flueEvent({ type: 'turn_request', turnId, purpose: 'agent' }));
+    await steps.intercept({ type: 'model', turnId }, async () => {
+      for (const reported of reports) modelStepProbe()!.inputTransformations(reported);
+    });
+    steps.observe(flueEvent({ type: 'turn', turnId, purpose: 'agent', durationMs: 10, isError: false, response: {} }));
+    const { thinkingBlocksDropped, thinkingDropReasons } = records.at(-1)!;
+    return { thinkingBlocksDropped, thinkingDropReasons };
+  };
+  const entry = (type: string, path: string, reason?: string) => ({ type, path, ...(reason === undefined ? {} : { reason }) });
+  assert.deepEqual(await step('step_memory', [[
+    entry('thinking_dropped', 'messages.7.content.0', 'prefix_binding_mismatch'),
+    entry('thinking_dropped', 'messages.9.content.0', 'prefix_binding_mismatch'),
+    entry('thinking_dropped', 'messages.3.content.1', 'model_binding_mismatch'),
+    entry('thinking_mismatch_allowed', 'messages.11.content.0', 'prefix_binding_mismatch'),
+    entry('thinking_dropped', 'messages.13.content.0', 'Complete the verification.'),
+    entry('thinking_dropped', 'messages.15.content.0'),
+    'thinking_dropped',
+  ]]), { thinkingBlocksDropped: 5, thinkingDropReasons: 'model_binding_mismatch,other,prefix_binding_mismatch' });
+  assert.deepEqual(await step('step_clean', [[]]), { thinkingBlocksDropped: 0, thinkingDropReasons: undefined });
+  assert.deepEqual(await step('step_allowed', [[entry('thinking_mismatch_allowed', 'messages.1.content.0', 'prefix_binding_mismatch')]]),
+    { thinkingBlocksDropped: 0, thinkingDropReasons: undefined });
+  assert.deepEqual(await step('step_fallback', [
+    [entry('thinking_dropped', 'messages.1.content.0', 'prefix_binding_mismatch'), entry('thinking_dropped', 'messages.3.content.0', 'prefix_binding_mismatch')],
+    [entry('thinking_dropped', 'messages.1.content.0', 'model_binding_mismatch')],
+  ]), { thinkingBlocksDropped: 1, thinkingDropReasons: 'model_binding_mismatch' });
+  assert.deepEqual(await step('step_unreported', []), { thinkingBlocksDropped: undefined, thinkingDropReasons: undefined });
+  for (const record of records) assertContentFree(record);
+  assert.doesNotMatch(JSON.stringify(records), /messages\.\d|content\.\d/);
+});
+
+// Defects caught: a compaction logged at its start rather than its end, or
+// twice; its trigger or its tokens before taken from another Agent object's
+// compaction; a failed compaction dropped or logged as ok; the summary's
+// input counted as its output; and a turn that cannot be read losing the record.
+test('compaction logs one record per compaction: its trigger, tokens before, summary output and messages, without content', () => {
+  const { records, sink } = captureSink();
+  const steps = new ModelStepMarks(() => 0, sink);
+  const usage = { input: 412_000, output: 9_800, cacheRead: 0, cacheWrite: 0, totalTokens: 421_800, cost: {} };
+  steps.observe(flueEvent({ type: 'compaction_start', instanceId: 'agent_thread_a', reason: 'threshold', estimatedTokens: 981_204 }));
+  steps.observe(flueEvent({ type: 'compaction_start', instanceId: 'agent_thread_b', reason: 'overflow', estimatedTokens: 1_004_310 }));
+  assert.equal(records.length, 0, 'a compaction is logged when it ends');
+  steps.observe(flueEvent({ type: 'turn_request', instanceId: 'agent_thread_a', turnId: 'step_summary', purpose: 'compaction' }));
+  steps.observe(flueEvent({ type: 'turn', instanceId: 'agent_thread_a', turnId: 'step_summary', purpose: 'compaction',
+    durationMs: 48_000, isError: false, response: { usage } }));
+  records.length = 0;
+  steps.observe(flueEvent({ type: 'compaction', instanceId: 'agent_thread_a', messagesBefore: 412, messagesAfter: 9,
+    durationMs: 48_250, isError: false, usage }), () => 'evt:T_LATENCY:1785509000.000100');
+  steps.observe(flueEvent({ type: 'compaction', instanceId: 'agent_thread_b', messagesBefore: 377, messagesAfter: 377,
+    durationMs: 1_200, isError: true, error: { message: 'Complete the verification.' } }), () => {
+    throw new Error('Staged Slack turn input belongs to another submission.');
+  });
+  steps.observe(flueEvent({ type: 'compaction', instanceId: 'agent_thread_a', messagesBefore: 9, messagesAfter: 9,
+    durationMs: 900, isError: true }));
+  assert.deepEqual(records, [{
+    component: 'runtime',
+    event: 'compaction',
+    turnRef: opaqueTurnRef('evt:T_LATENCY:1785509000.000100'),
+    trigger: 'threshold',
+    outcome: 'ok',
+    durationMs: 48_250,
+    tokensBefore: 981_204,
+    summaryOutputTokens: 9_800,
+    messagesBefore: 412,
+    messagesAfter: 9,
+  }, {
+    component: 'runtime',
+    event: 'compaction',
+    trigger: 'overflow',
+    outcome: 'error',
+    durationMs: 1_200,
+    tokensBefore: 1_004_310,
+    messagesBefore: 377,
+    messagesAfter: 377,
+  }, {
+    component: 'runtime',
+    event: 'compaction',
+    outcome: 'error',
+    durationMs: 900,
+    messagesBefore: 9,
+    messagesAfter: 9,
+  }]);
   for (const record of records) assertContentFree(record);
 });
 

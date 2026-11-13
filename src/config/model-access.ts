@@ -666,6 +666,28 @@ function firstTextFetch(base: typeof fetch | undefined, kind: FirstTextEvent, ma
 }
 
 /**
+ * Passes pi-ai's parsed Anthropic events to the caller's observer, and reports
+ * the provider's `input_transformations`: on `message_start`, and again on the
+ * last `message_delta` after a mid-stream fallback to another model. Only a
+ * request that sends the thinking binding beta gets one; pi-ai sends it where
+ * it asks the provider to drop a thinking block that no longer matches.
+ */
+function inputTransformationsObserver(
+  caller: StreamOptions['onProviderStreamEvent'],
+  report: ModelStepProbe['inputTransformations'],
+): NonNullable<StreamOptions['onProviderStreamEvent']> {
+  return (event, model) => {
+    if (isRecord(event)) {
+      const reported = event.type === 'message_start' && isRecord(event.message)
+        ? event.message.input_transformations
+        : event.type === 'message_delta' ? event.input_transformations : undefined;
+      if (Array.isArray(reported)) report(reported);
+    }
+    return caller?.(event, model);
+  };
+}
+
+/**
  * The request the proxy of registered provider `registeredId` sends: the
  * cell's key, endpoint and headers injected over whatever the caller passed,
  * or a refusal before egress. Every request needs a cell; one on a lane that
@@ -703,6 +725,9 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
   const sentFetch = probe && firstText
     ? firstTextFetch(reader?.fetch ?? options?.fetch, firstText, probe.upstreamFirstText)
     : reader?.fetch;
+  const onProviderStreamEvent = probe && providerId === 'anthropic'
+    ? inputTransformationsObserver(options?.onProviderStreamEvent, probe.inputTransformations)
+    : undefined;
   const payloadMode = platformGrant
     ? listPriced && LIST_PRICE_MODES[listPriced]
     : bound && CUSTOMER_PAYLOAD_MODES[bound.grant.providerId];
@@ -723,6 +748,7 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
       ...(access.headers ? { headers: { ...options?.headers, ...access.headers } } : {}),
       ...(sentFetch ? { fetch: sentFetch } : {}),
       ...(payloadHook ? { onPayload: payloadHook.onPayload } : {}),
+      ...(onProviderStreamEvent ? { onProviderStreamEvent } : {}),
     } as TOptions,
     redact: (stream) => withoutKeyInErrors(stream, access.apiKey),
     send,

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 
-import { normalizeContext, type AssistantMessageEvent, type Context } from '@earendil-works/pi-ai';
+import { normalizeContext, type AssistantMessageEvent, type Context, type StreamOptions } from '@earendil-works/pi-ai';
 import type { FlueExecutionOperation, FlueObservation } from '@flue/runtime';
 
 import {
@@ -285,4 +285,68 @@ test('a request outside a model step keeps its own fetch, and a tool-call step l
     await settled();
   }));
   assert.equal('upstreamFirstTextMs' in step.end(), false);
+});
+
+// Defects caught: a report read from an event pi-ai's adapter never hands
+// the observer, a fallback's final report ignored, the caller's own observer
+// replaced or skipped, 0 lost when the provider reported an empty list, a
+// count on a step with no report, and an observer installed outside a model
+// step or on another provider's request.
+test('an Anthropic step through pi-ai logs the thinking blocks the provider dropped, and a later report replaces the first', async (t) => {
+  proxied(t);
+  const provider = registeredPiProvider('anthropic')!;
+  const dropped = (reason: string, path = 'messages.1.content.0') => ({ type: 'thinking_dropped', path, reason });
+  const run = async (reports: { start?: unknown[]; delta?: unknown[] }) => {
+    const step = stepMarks();
+    const wire = pushedBody();
+    wire.push([
+      sse({
+        type: 'message_start',
+        message: {
+          id: 'msg_drops', type: 'message', role: 'assistant', model: MODEL.anthropic, content: [],
+          usage: { input_tokens: 12, output_tokens: 1 },
+          ...(reports.start ? { input_transformations: reports.start } : {}),
+        },
+      }),
+      sse({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
+      WIRE.anthropic.text('Hello'),
+      sse({ type: 'content_block_stop', index: 0 }),
+      sse({
+        type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 9 },
+        ...(reports.delta ? { input_transformations: reports.delta } : {}),
+      }),
+      sse({ type: 'message_stop' }),
+    ].join(''));
+    wire.end();
+    const seen: string[] = [];
+    await withModelAccess(grant('anthropic', 'customer'), undefined, 'reply', () => step.steps.intercept(STEP, async () => {
+      const stream = provider.streamSimple(modelOf('anthropic'), normalizeContext(CONTEXT), {
+        fetch: async () => eventStream(wire.body),
+        onProviderStreamEvent: (event) => {
+          seen.push(String((event as { type?: unknown }).type));
+        },
+      });
+      assert.equal((await stream.result()).stopReason, 'stop');
+    }));
+    const { thinkingBlocksDropped, thinkingDropReasons } = step.end();
+    return { seen: seen.length, thinkingBlocksDropped, thinkingDropReasons };
+  };
+  assert.deepEqual(await run({ start: [dropped('prefix_binding_mismatch'), dropped('prefix_binding_mismatch', 'messages.3.content.0')] }),
+    { seen: 6, thinkingBlocksDropped: 2, thinkingDropReasons: 'prefix_binding_mismatch' }, 'the caller still sees every event');
+  assert.deepEqual(await run({ start: [] }), { seen: 6, thinkingBlocksDropped: 0, thinkingDropReasons: undefined });
+  assert.deepEqual(await run({ start: [dropped('prefix_binding_mismatch')], delta: [dropped('model_binding_mismatch')] }),
+    { seen: 6, thinkingBlocksDropped: 1, thinkingDropReasons: 'model_binding_mismatch' }, 'a fallback\'s final report replaces the first');
+  assert.deepEqual(await run({}), { seen: 6, thinkingBlocksDropped: undefined, thinkingDropReasons: undefined },
+    'a request without the thinking binding beta gets no report');
+
+  const mine: NonNullable<StreamOptions['onProviderStreamEvent']> = () => undefined;
+  const step = stepMarks();
+  await withModelAccess(grant('anthropic', 'customer'), undefined, 'reply', async () => {
+    assert.equal(modelAccessRequest('anthropic', modelOf('anthropic'), { onProviderStreamEvent: mine }).options.onProviderStreamEvent, mine,
+      'outside a model step');
+  });
+  await withModelAccess(grant('openai', 'customer'), undefined, 'reply', () => step.steps.intercept(STEP, async () => {
+    assert.equal(modelAccessRequest('openai', modelOf('openai'), { onProviderStreamEvent: mine }).options.onProviderStreamEvent, mine,
+      'another provider\'s request');
+  }));
 });
