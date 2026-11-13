@@ -31,7 +31,7 @@ import type { ThreadRunnerJob } from '../../src/slack/thread-runner-jobs.ts';
 import { threadRunnerStub } from '../../src/slack/thread-runner-rpc.ts';
 import { slackTurnExecutor } from '../../src/slack/turn-executor-flag.ts';
 import { ConversationOrder } from '../../src/state/conversation-order.ts';
-import { ResidencyHold, residencyHoldMs } from '../../src/state/residency-hold.ts';
+import { ResidencyHold, storeResidencyHoldMs } from '../../src/state/residency-hold.ts';
 import { localGatewayAppStores, type TagStateStores } from '../../src/state/tag-state-stores.ts';
 import { ScriptedTimers } from './residency-hold.ts';
 
@@ -83,7 +83,7 @@ class StoreProbe { ${[
     console,
     ConversationOrder,
     ResidencyHold,
-    residencyHoldMs,
+    storeResidencyHoldMs,
     StateRpcSummary,
     emitRuntimeLatency,
     deploymentTenancy,
@@ -153,7 +153,7 @@ export function directStore(stores: TagStateStores, env: PlatformEnv): DirectSto
   const probe = Object.assign(new StoreProbe(), {
     env: storeEnv,
     stores,
-    conversationHold: new ResidencyHold(residencyHoldMs(storeEnv), timers),
+    conversationHold: new ResidencyHold(storeResidencyHoldMs(storeEnv), timers),
     directAdmissions: new ConversationOrder(),
     firstHandoffs: new Set<string>(),
     boot: { call() {} },

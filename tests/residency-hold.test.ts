@@ -14,13 +14,17 @@ import { createRunnerSupersedeState, runnerLoopScheduler } from '../src/slack/th
 import { DoSqlStateDb } from '../src/state/do-state-db.ts';
 import {
   MAX_RESIDENCY_HOLD_MS,
+  MAX_STORE_RESIDENCY_HOLD_MS,
   parseResidencyHoldMs,
+  parseStoreResidencyHoldMs,
   RESIDENCY_HOLD_VARIABLE,
   ResidencyHold,
   residencyHoldMs,
+  STORE_RESIDENCY_HOLD_VARIABLE,
+  storeResidencyHoldMs,
 } from '../src/state/residency-hold.ts';
 import { FakeObjectRestoreContext, FakeObjectStorage } from './helpers/installation-objects.ts';
-import { HOLD_ENV, HOLD_MS, holdOn, ScriptedTimers } from './helpers/residency-hold.ts';
+import { HOLD_ENV, HOLD_MS, holdOn, ScriptedTimers, STORE_HOLD_ENV } from './helpers/residency-hold.ts';
 
 const NOW = 1_800_000_000_000;
 const MINUTE = 60_000;
@@ -56,6 +60,72 @@ test('the hold window is a whole number of milliseconds up to 15 minutes; unset,
     );
     assert.equal(residencyHoldMs({ [RESIDENCY_HOLD_VARIABLE]: value }), undefined, `an object holds nothing for ${JSON.stringify(value)}`);
   }
+});
+
+// Defects caught: a store window that only adds to the conversation's, so 0
+// cannot turn the store off; an unset or refused store value that holds
+// nothing where the store held before the setting; a store window that
+// reaches the runner and the Agent object; and a bound other than an hour.
+test("the store's window is its own setting up to an hour; unset, the conversation's; 0, none", () => {
+  assert.equal(MAX_STORE_RESIDENCY_HOLD_MS, 60 * MINUTE);
+  for (const [value, window] of [
+    [undefined, undefined], ['', undefined], ['0', 0], [0, 0],
+    ['1', 1], ['3600000', 3_600_000], [3_600_000, 3_600_000],
+  ] as const) {
+    assert.equal(parseStoreResidencyHoldMs(value), window, JSON.stringify(value));
+  }
+  const refused = ['3600001', '1h', '-1', '3.6e6', ' 3600000', true, 3_600_001];
+  for (const value of refused) {
+    assert.throws(
+      () => parseStoreResidencyHoldMs(value),
+      /CHICKPEA_STORE_RESIDENCY_HOLD_MS must be a whole number of milliseconds up to 3600000, 0 for no hold, or unset for CHICKPEA_RESIDENCY_HOLD_MS's window\./,
+      JSON.stringify(value),
+    );
+  }
+  const conversation = { [RESIDENCY_HOLD_VARIABLE]: '600000' };
+  for (const [env, window] of [
+    [{}, undefined],
+    [conversation, 600_000],
+    [{ ...conversation, [STORE_RESIDENCY_HOLD_VARIABLE]: '' }, 600_000],
+    [{ ...conversation, [STORE_RESIDENCY_HOLD_VARIABLE]: '0' }, undefined],
+    [{ ...conversation, [STORE_RESIDENCY_HOLD_VARIABLE]: '3600000' }, 3_600_000],
+    [{ [STORE_RESIDENCY_HOLD_VARIABLE]: '3600000' }, 3_600_000],
+    [{ [RESIDENCY_HOLD_VARIABLE]: '10m', [STORE_RESIDENCY_HOLD_VARIABLE]: '3600000' }, 3_600_000],
+    ...refused.map((value) => [{ ...conversation, [STORE_RESIDENCY_HOLD_VARIABLE]: value }, 600_000] as const),
+  ] as const) {
+    assert.equal(storeResidencyHoldMs(env), window, `store window for ${JSON.stringify(env)}`);
+  }
+  assert.equal(storeResidencyHoldMs(undefined), undefined);
+  assert.equal(residencyHoldMs(STORE_HOLD_ENV), HOLD_MS, "a thread's objects keep the conversation's window");
+  assert.equal(residencyHoldMs({ [STORE_RESIDENCY_HOLD_VARIABLE]: '3600000' }), undefined);
+});
+
+// Defects caught: one timer for a window past 15 minutes, which stops
+// blocking eviction 15 minutes after it was set; a run of timers that ends
+// early, outlives the window, or leaves two pending; and a renewal inside the
+// run that keeps the old deadline.
+test('a window past 15 minutes is a run of timers, each set before the last stops blocking eviction', () => {
+  let clock = NOW;
+  const timers = new ScriptedTimers(() => clock);
+  const hold = new ResidencyHold(60 * MINUTE, timers);
+  hold.holdFrom(NOW);
+  const heldThrough = (end: number, label: string) => {
+    while (clock + MINUTE < end) {
+      clock += MINUTE;
+      timers.fireDue();
+      assert.equal(timers.pending().length, 1, `${label}: one timer at ${(clock - NOW) / MINUTE} min`);
+      assert.equal(timers.blocksEviction(), true, `${label}: held at ${(clock - NOW) / MINUTE} min`);
+    }
+  };
+  heldThrough(NOW + 20 * MINUTE, 'first window');
+  hold.holdFrom(clock);
+  const renewed = clock + 60 * MINUTE;
+  heldThrough(renewed, 'renewed');
+  assert.deepEqual(timers.pending(), [renewed], 'the last timer ends with the renewed window');
+  clock = renewed;
+  timers.fireDue();
+  assert.deepEqual(timers.pending(), [], 'let go when the window ends');
+  assert.equal(timers.blocksEviction(), false);
 });
 
 // Defects caught: a hold that a nearer deadline shortens, one a past deadline
@@ -187,6 +257,10 @@ test("a thread's runner stays in memory for the configured window after a person
   runner.advance(HOLD_MS);
   assert.deepEqual(runner.heldUntil(), [], 'let go when the window ends');
 
+  const beside = threadRunner(STORE_HOLD_ENV);
+  await beside.runTurns(PERSON);
+  assert.deepEqual(beside.heldUntil(), [NOW + HOLD_MS], "a store window does not reach the runner");
+
   const host = threadRunner();
   await host.runTurns(AGENT_ASK, SETUP_WAKE);
   assert.deepEqual(host.heldUntil(), [], "an Agent's ask or a setup wake holds nothing");
@@ -256,6 +330,12 @@ test("a thread's Agent object stays in memory for the configured window after it
   }
   advance(HOLD_MS - elapsed);
   assert.deepEqual(heldUntil(), [], 'let go when the window ends');
+});
+
+test("a store window does not reach a thread's Agent object", async (t) => {
+  const { agent, heldUntil } = agentObject(t, STORE_HOLD_ENV);
+  assert.equal((await agent.fetch(new Request('https://agent.invalid/dispatch', { method: 'POST' }))).ok, true);
+  assert.deepEqual(heldUntil(), [NOW + HOLD_MS]);
 });
 
 test("a thread's Agent object holds nothing on a deployment that sets no window", async (t) => {

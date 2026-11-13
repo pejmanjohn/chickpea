@@ -928,6 +928,35 @@ test('deploy accepts a residency hold window up to 15 minutes, or none, and refu
   assert.equal(corrected.status, 0, corrected.stderr);
 });
 
+// Defects caught: a malformed or over-limit store window that reaches a
+// Worker, which then reads it as unset, from the command line or the
+// artifact's vars; and a preflight that refuses an hour or 0.
+test('deploy accepts a store hold window up to an hour, 0 or none, and refuses any other value', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCutoverArtifact(harness);
+
+  for (const value of ['', '0', '3600000']) {
+    const result = runHarness(harness, ['--skip-build', '--dry-run', '--var', `CHICKPEA_STORE_RESIDENCY_HOLD_MS:${value}`]);
+    assert.equal(result.status, 0, `${value}: ${result.stderr}`);
+  }
+  rmSync(harness.logPath, { force: true });
+  const refused = /CHICKPEA_STORE_RESIDENCY_HOLD_MS must be a whole number of milliseconds up to 3600000/;
+  for (const value of ['3600001', '1h', '-1']) {
+    const result = runHarness(harness, ['--skip-build', '--dry-run', `--var=CHICKPEA_STORE_RESIDENCY_HOLD_MS:${value}`]);
+    assert.equal(result.status, 1, value);
+    assert.match(result.stderr, refused, value);
+  }
+  writeCutoverArtifact(harness, { storeResidencyHold: '1h' });
+  const edited = runHarness(harness, ['--skip-build', '--dry-run']);
+  assert.equal(edited.status, 1);
+  assert.match(edited.stderr, refused);
+  assert.equal(existsSync(harness.logPath), false, 'nothing deployed with a refused store window');
+  writeCutoverArtifact(harness, { storeResidencyHold: '3600000' });
+  const kept = runHarness(harness, ['--skip-build', '--dry-run']);
+  assert.equal(kept.status, 0, kept.stderr);
+});
+
 test('sandbox preflight reports every blocking problem before build, D1, or upload', (context) => {
   const harness = sandboxHarness(context);
   const result = runHarness(harness, ['--profile', 'acme'], sandboxEnv(harness, {
