@@ -107,7 +107,7 @@ test("the store's window is its own setting up to an hour; unset, the conversati
 test('a window past 15 minutes is a run of timers, each set before the last stops blocking eviction', () => {
   let clock = NOW;
   const timers = new ScriptedTimers(() => clock);
-  const hold = new ResidencyHold(60 * MINUTE, timers);
+  const hold = new ResidencyHold(60 * MINUTE, { timers });
   hold.holdFrom(NOW);
   const heldThrough = (end: number, label: string) => {
     while (clock + MINUTE < end) {
@@ -134,7 +134,7 @@ test('a window past 15 minutes is a run of timers, each set before the last stop
 test('a hold is one pending timer, the window after its latest start, and gone once it fires', () => {
   let clock = NOW;
   const timers = new ScriptedTimers(() => clock);
-  const hold = new ResidencyHold(5 * MINUTE, timers);
+  const hold = new ResidencyHold(5 * MINUTE, { timers });
   assert.equal(hold.active, true);
   hold.holdFrom(NOW - 5 * MINUTE - 1);
   assert.deepEqual(timers.pending(), [], 'a window already past holds nothing');
@@ -149,7 +149,7 @@ test('a hold is one pending timer, the window after its latest start, and gone o
   hold.holdFrom(clock - 4 * MINUTE);
   assert.deepEqual(timers.pending(), [NOW + 8 * MINUTE], 'it holds again after it fired');
 
-  const none = new ResidencyHold(undefined, timers);
+  const none = new ResidencyHold(undefined, { timers });
   assert.equal(none.active, false);
   none.holdFrom(clock);
   assert.deepEqual(timers.pending(), [NOW + 8 * MINUTE], 'no window, no timer');
@@ -346,4 +346,21 @@ test("a thread's Agent object holds nothing on a deployment that sets no window"
       assert.deepEqual(heldUntil(), []);
     });
   }
+});
+
+// Defects caught: a thread's runner or Agent object that logs its hold's
+// changes; only the state store's are logged, and the Agent's hold moves at
+// every request of a turn.
+test("a thread's runner and Agent object log no residency_hold record", async (t) => {
+  const runner = threadRunner();
+  const { agent, heldUntil, advance } = agentObject(t);
+  const events: unknown[] = [];
+  t.mock.method(console, 'info', (record: { event?: unknown } | undefined) => { events.push(record?.event); });
+  await runner.runTurns(PERSON);
+  assert.deepEqual(runner.heldUntil(), [NOW + HOLD_MS]);
+  runner.advance(HOLD_MS);
+  assert.equal((await agent.fetch(new Request('https://agent.invalid/dispatch', { method: 'POST' }))).ok, true);
+  assert.deepEqual(heldUntil(), [NOW + HOLD_MS]);
+  advance(HOLD_MS);
+  assert.equal(events.includes('residency_hold'), false);
 });

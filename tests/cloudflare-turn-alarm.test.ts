@@ -122,6 +122,7 @@ const ProbeClass = vm.runInNewContext(compiled, {
   Date,
   ResidencyHold,
   storeResidencyHoldMs,
+  emitResidencyHold: () => undefined,
   oauthResumeTurnJobId: (id: string) => `oauthresume:${id}`,
   slackTurnExecutor: (env: Record<string, unknown>) => slackTurnExecutor(env, {}),
 }) as new () => Probe;
@@ -282,6 +283,7 @@ for (const { withPendingTurn, testRun } of [
       Date,
       ResidencyHold,
       storeResidencyHoldMs,
+      emitResidencyHold: () => undefined,
       setTimeout,
       clearTimeout,
       AbortController,
@@ -467,7 +469,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
   const AlarmProbe = vm.runInNewContext(alarmCode, {
     ...stopGlobals,
     Date, setTimeout, clearTimeout, AbortController, Promise,
-    ResidencyHold, storeResidencyHoldMs,
+    ResidencyHold, storeResidencyHoldMs, emitResidencyHold: () => undefined,
     MAX_TURN_DRAIN_BATCH: 16,
     RUNNER_DISPATCH_MAX_PAGES: 16,
     admissionStatusPresentation,
@@ -998,6 +1000,7 @@ function admissionHarness(runner: { refuse?: boolean } = {}) {
     Date,
     ResidencyHold,
     storeResidencyHoldMs,
+    emitResidencyHold: () => undefined,
     console: { warn() {} },
     admissionStatusPresentation,
     showAdmissionStatus,

@@ -6,6 +6,7 @@ import ts from 'typescript';
 
 import {
   emitRelayAlarm,
+  emitResidencyHold,
   startRelayAlarmMetrics,
   type RelayAlarmMetrics,
 } from '../src/observability/runtime-latency.ts';
@@ -13,7 +14,7 @@ import { StopAbortFence } from '../src/slack/runner-stops.ts';
 import { slackTurnExecutor } from '../src/slack/turn-executor-flag.ts';
 import { TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
-import { storeResidencyHoldMs } from '../src/state/residency-hold.ts';
+import { storeResidencyHoldMs, type ResidencyHoldChange } from '../src/state/residency-hold.ts';
 import { localTurnEnqueue } from '../src/state/tag-state-stores.ts';
 import { turnJob as maintenanceTurnJob } from './fixtures/state-db/maintenance.ts';
 import { HOLD_ENV, HOLD_MS, holdOn, ScriptedTimers, STORE_HOLD_ENV, STORE_HOLD_MS } from './helpers/residency-hold.ts';
@@ -50,7 +51,7 @@ const compiled = ts.transpileModule(
 class StateStoreProbe { boot = { call() {} };
 ${[
     'alarm', 'drainRelayAlarm', 'deliverStopNotices', 'admitSlackTurn', 'afterSlackAdmission', 'armAlarmNoLaterThan', 'setAlarmNoLaterThan', 'admissionWakeAt',
-    'runnerMode', 'keepWarmTickAt', 'dispatchingWhile', 'hold', 'threadRunnerTurn',
+    'runnerMode', 'keepWarmTickAt', 'dispatchingWhile', 'hold', 'threadRunnerTurn', 'call',
   ].map(stateMethod).join('\n')} }\nStateStoreProbe`,
   { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
 ).outputText;
@@ -106,14 +107,15 @@ interface Probe {
 
 /**
  * A probe over the test's clock, with alarm storage that records writes and
- * a sink that collects relay_alarm records as they would be logged, and its
- * hold's timers on the same clock. The idle drains each advance the clock by
+ * sinks that collect relay_alarm and residency_hold records as they would be
+ * logged, and its hold's timers on the same clock. The idle drains each advance the clock by
  * their cost; `duringDrain` runs inside the first of them, as an RPC arming
  * the alarm while the drain awaits would.
  */
 function newProbe(costs: PartCosts, duringDrain?: (armAt: (at: number) => void) => void) {
   let clock = NOW;
   const records: LogRecord[] = [];
+  const holds: LogRecord[] = [];
   let alarm: number | null = null;
   const writes: number[] = [];
   const armAt = (at: number) => { alarm = at; };
@@ -129,6 +131,8 @@ function newProbe(costs: PartCosts, duringDrain?: (armAt: (at: number) => void) 
     clearTimeout,
     ResidencyHold: holdOn(timers),
     storeResidencyHoldMs,
+    emitResidencyHold: (object: 'store', change: ResidencyHoldChange) =>
+      emitResidencyHold(object, change, { info: (record) => holds.push(record as LogRecord) }),
     cloudflareWorkerVersionId: () => undefined,
     applyThreadRunnerTurnOp: () => null,
     ALARM_ADMISSION_RECHECK_MS: 2_000,
@@ -170,6 +174,8 @@ function newProbe(costs: PartCosts, duringDrain?: (armAt: (at: number) => void) 
   return {
     probe,
     records,
+    /** The residency_hold records, one per change of the store's hold. */
+    holds,
     writes,
     alarm: () => alarm,
     /** The deadlines of the store's pending timers, which keep it in memory. */
@@ -517,6 +523,108 @@ test('a store that starts cold derives the window from its newest turn row, once
   assert.deepEqual(empty.writes, []);
   assert.deepEqual(empty.heldUntil(), [], 'no person has talked to it');
   assert.equal(empty.reads(), 1, 'an empty table is read once too');
+});
+
+/** The value of one call through the store's call(), as a minute tick's maintenance read makes it. */
+const tick = (store: ReturnType<typeof newProbe>) => {
+  const result = store.probe.call(() => 'tick');
+  return result.ok ? result.value : result.error.code;
+};
+
+/** A residency_hold record as the store logs it. */
+const holdRecord = (fields: LogRecord): LogRecord => ({ component: 'runtime', event: 'residency_hold', object: 'store', ...fields });
+
+// Defects caught: a store that restarted inside a person's window and stays
+// unheld until that person's next turn (staging, 2026-11-13: the platform
+// closed a held store 39 minutes into its hour, and it stayed cold for the
+// remaining 20); a re-hold counted from the call, which outlives the
+// person's window; one that reads the turn rows at every call, or again at
+// the next alarm; and a hold change that logs nothing.
+test("a store that restarts inside a person's window holds itself again at its first call, to that window's end", async () => {
+  const turnAt = NOW - 39 * 60_000;
+  const end = turnAt + STORE_HOLD_MS;
+  const store = idleStore(QUIET, { newestEnqueuedAt: turnAt, env: STORE_HOLD_ENV });
+  assert.equal(tick(store), 'tick');
+  assert.deepEqual(store.holds, [holdRecord({
+    reason: 'first_call', windowMs: STORE_HOLD_MS, holdEndsAt: end, holdLeftMs: 21 * 60_000,
+    timerMs: 14 * 60_000, renewed: false,
+  })]);
+  tick(store);
+  await store.fire();
+  assert.equal(store.reads(), 1, 'the turn rows are read once per instance');
+  assert.equal(store.holds.length, 1, 'a call or an alarm that moves nothing logs nothing');
+  for (let minute = 1; minute < 21; minute += 1) {
+    store.advance(60_000);
+    assert.equal(store.heldUntil().length, 1, `one timer ${minute} min after the restart`);
+    assert.equal(store.blocksEviction(), true, `held ${minute} min after the restart`);
+  }
+  assert.deepEqual(store.heldUntil(), [end], "the last timer ends with the person's window");
+  store.advance(60_000);
+  assert.deepEqual(store.heldUntil(), []);
+  assert.deepEqual(store.holds.slice(1), [
+    holdRecord({ reason: 'chain', windowMs: STORE_HOLD_MS, holdEndsAt: end, holdLeftMs: 7 * 60_000, timerMs: 7 * 60_000 }),
+    holdRecord({ reason: 'expired', windowMs: STORE_HOLD_MS, holdEndsAt: end, holdLeftMs: 0 }),
+  ]);
+});
+
+// Defects caught: a re-hold from a window that ended, or from no person's
+// turn, which would hold every idle store the scheduled tick restarts; and
+// a read of the turn rows on a deployment that holds nothing.
+test("a store that restarts after a person's window, or with none, holds nothing at its first call", async () => {
+  for (const [name, newestEnqueuedAt] of [
+    ['an hour and a minute on', NOW - STORE_HOLD_MS - 60_000],
+    ["at the window's end", NOW - STORE_HOLD_MS],
+    ["no person's turn", undefined],
+  ] as const) {
+    const store = idleStore(QUIET, { newestEnqueuedAt, env: STORE_HOLD_ENV });
+    assert.equal(tick(store), 'tick');
+    assert.deepEqual(store.heldUntil(), [], `${name}: no hold`);
+    assert.deepEqual(store.holds, [], `${name}: no record`);
+    assert.equal(store.reads(), 1, `${name}: one read`);
+  }
+  for (const env of [{}, { ...HOLD_ENV, CHICKPEA_STORE_RESIDENCY_HOLD_MS: '0' }]) {
+    const store = idleStore(QUIET, { newestEnqueuedAt: NOW - 60_000, env });
+    assert.equal(tick(store), 'tick');
+    assert.deepEqual(store.heldUntil(), [], `${JSON.stringify(env)}: no hold`);
+    assert.equal(store.reads(), 0, `${JSON.stringify(env)}: no read`);
+  }
+});
+
+// Defects caught: a first call that fails when the turn rows cannot be read,
+// and a failed read that stops the next call from holding.
+test("a store whose turn rows fail to read serves its first call unheld, and holds at the next", async () => {
+  const store = idleStore(QUIET, { newestEnqueuedAt: NOW - 60_000, env: STORE_HOLD_ENV });
+  const turnJobs = (store.probe.stores as { turnJobs: { newestEnqueuedAt(): number | undefined } }).turnJobs;
+  const read = turnJobs.newestEnqueuedAt;
+  turnJobs.newestEnqueuedAt = () => { throw new Error('SQLITE_BUSY'); };
+  assert.equal(tick(store), 'tick');
+  assert.deepEqual(store.heldUntil(), []);
+  turnJobs.newestEnqueuedAt = read;
+  tick(store);
+  assert.deepEqual(store.holds.map(({ reason, holdEndsAt }) => [reason, holdEndsAt]), [['first_call', NOW - 60_000 + STORE_HOLD_MS]]);
+});
+
+// Defects caught: an admission, a turn's end, or a cold alarm that moves the
+// hold with no record or the wrong reason; and a record for a renewal that
+// moved nothing, which would log every keep-warm tick.
+test("the store logs each change of its hold with its reason", async () => {
+  const store = admissionStore(undefined, HOLD_ENV, endingRows());
+  await store.probe.admitSlackTurn({ turnJob: { id: 'turn_person', turn: {} } });
+  store.advance(60_000);
+  await store.probe.threadRunnerTurn({ kind: 'markDelivered', id: 'turn_person' });
+  await store.probe.threadRunnerTurn({ kind: 'markDelivered', id: 'turn_ask' });
+  const ended = NOW + 60_000;
+  store.advance(HOLD_MS);
+  assert.deepEqual(store.holds, [
+    holdRecord({ reason: 'admission', windowMs: HOLD_MS, holdEndsAt: NOW + HOLD_MS, holdLeftMs: HOLD_MS, timerMs: HOLD_MS, renewed: false }),
+    holdRecord({ reason: 'turn_end', windowMs: HOLD_MS, holdEndsAt: ended + HOLD_MS, holdLeftMs: HOLD_MS, timerMs: HOLD_MS, renewed: true }),
+    holdRecord({ reason: 'expired', windowMs: HOLD_MS, holdEndsAt: ended + HOLD_MS, holdLeftMs: 0 }),
+  ]);
+  const cold = idleStore(QUIET, { newestEnqueuedAt: NOW - 2 * 60_000, env: HOLD_ENV });
+  await cold.fire();
+  cold.advance(KEEP_WARM_TICK_MS);
+  await cold.fire();
+  assert.deepEqual(cold.holds.map(({ reason }) => reason), ['alarm'], 'a cold alarm holds once; the next tick moves nothing');
 });
 
 test('idle firings run the retention sweep once per interval, not once per tick', async () => {

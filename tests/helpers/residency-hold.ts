@@ -3,6 +3,7 @@ import {
   ResidencyHold,
   STORE_RESIDENCY_HOLD_VARIABLE,
   type HoldTimers,
+  type ResidencyHoldOptions,
 } from '../../src/state/residency-hold.ts';
 
 /**
@@ -67,8 +68,8 @@ export class ScriptedTimers implements HoldTimers {
 /** ResidencyHold on `timers`, for production code that builds its own hold from its env. */
 export function holdOn(timers: ScriptedTimers): typeof ResidencyHold {
   return class extends ResidencyHold {
-    constructor(windowMs: number | undefined) {
-      super(windowMs, timers);
+    constructor(windowMs: number | undefined, options: ResidencyHoldOptions = {}) {
+      super(windowMs, { ...options, timers });
     }
   };
 }

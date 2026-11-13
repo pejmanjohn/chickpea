@@ -81,6 +81,7 @@ class HandoffProbe { ${[
     Promise,
     ResidencyHold,
     storeResidencyHoldMs,
+    emitResidencyHold: () => undefined,
     console: { warn() {} },
     MAX_TURN_DRAIN_BATCH: 16,
     RUNNER_DISPATCH_MAX_PAGES: 4,
