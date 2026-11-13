@@ -11,7 +11,7 @@ import { DISCOVERY_GUIDE_URI } from '../src/management/agent-authoring/index.ts'
 import { playbookSection } from '../src/management/playbook/index.ts';
 import { workspaceManagementMcpFetch } from '../src/management/mcp.ts';
 import { REMOVED_RESOURCE_URIS, REMOVED_TOOL_NAMES, removedToolResult, type RemovedToolName } from '../src/management/mcp-v5/removed-v4.ts';
-import { CARD_SHOWS_IT, forCardHost } from '../src/management/mcp-v5/card-host.ts';
+import { CARD_SHOWS_IT, CARD_SHOWS_QUESTION, CARD_WAITS, forCardHost } from '../src/management/mcp-v5/card-host.ts';
 import { writeHints } from '../src/management/mcp-v5/conventions.ts';
 import type { FiveZeroDeps } from '../src/management/mcp-v5/reads.ts';
 import { changeResultOutput, getWorkspaceInput } from '../src/management/mcp-v5/schemas.ts';
@@ -177,10 +177,10 @@ test('a client that draws cards never shows its model a confirm or undo token; i
   assert.equal(off.structuredContent!.confirmation.confirmToken, undefined);
   assert.ok(!modelView(off).includes(held.confirmToken!), 'the model sees no confirm token');
   assert.equal(off.structuredContent!.summary,
-    `Nothing has changed yet. Confirm on the card above, or in Admin: ${BASE_URL}/admin/agents/agent_support.`);
-  assert.deepEqual(off.content.map(({ text }) => text), [CARD_SHOWS_IT, JSON.stringify(off.structuredContent)],
+    `Nothing has changed yet. Confirm on the card, or in Admin: ${BASE_URL}/admin/agents/agent_support.`);
+  assert.deepEqual(off.content.map(({ text }) => text), [CARD_WAITS, JSON.stringify(off.structuredContent)],
     'the text leads with what the card shows, then says the same');
-  assert.equal(off.structuredContent!.nextStep, `${CARD_SHOWS_IT} Only the card can confirm it: it holds the confirmToken.`);
+  assert.equal(off.structuredContent!.nextStep, `${CARD_WAITS} Only the card can confirm it: it holds the confirmToken.`);
   assert.equal((await f.config.getAgent('agent_support')).enabled, true);
 
   // The card's press confirms with the token it holds.
@@ -202,6 +202,7 @@ test('a client that draws cards never shows its model a confirm or undo token; i
   assert.equal(renamed.structuredContent!.nextStep,
     `${CARD_SHOWS_IT} They can undo it on the card. ${name} is off, so it answers no one in Slack. Don't suggest trying it.`,
     'the Agent is off since the confirmation, and a card host\'s model hears so too');
+  assert.equal(renamed.content[0]!.text, CARD_SHOWS_IT, 'a save the model made waits for no press, so the job carries on');
 
   // A write no card draws keeps its token where the model can use it.
   const memory = await call('get_agent_memory', { agentId: 'agent_support' });
@@ -212,7 +213,7 @@ test('a client that draws cards never shows its model a confirm or undo token; i
   assert.equal(remembered._meta, undefined);
 });
 
-test('a card host\'s model hears that a card shows the result: one sentence, nothing restated, then wait', async (t) => {
+test('a card host\'s model hears that a card shows the result, and waits only for a proposal\'s press', async (t) => {
   const { connect } = await harness(t, 'card-shows-it');
   const cards = await connect(CARDS);
   const plain = await connect({});
@@ -222,19 +223,53 @@ test('a card host\'s model hears that a card shows the result: one sentence, not
       sampleAsk: 'who is overdue?', promisedAnswer: 'Three invoices are overdue.',
     },
     propose_agent_change: { agentId: 'agent_support', version: await version(cards.call, 'agent_support'), change: { description: 'Billing.' } },
-    check_agent: { agentId: 'agent_support' },
   };
   for (const [tool, args] of Object.entries(shown)) {
     const drawn = await cards.call(tool, args);
-    assert.equal(drawn.structuredContent!.nextStep, CARD_SHOWS_IT, tool);
-    assert.deepEqual(drawn.content.map(({ text }) => text), [CARD_SHOWS_IT, JSON.stringify(drawn.structuredContent)],
+    assert.equal(drawn.structuredContent!.nextStep, CARD_WAITS, tool);
+    assert.deepEqual(drawn.content.map(({ text }) => text), [CARD_WAITS, JSON.stringify(drawn.structuredContent)],
       `${tool}: the text leads with it, then the result`);
     const bare = await plain.call(tool, args);
     assert.equal(bare.structuredContent!.nextStep, undefined, `${tool}: a client without cards gets the result alone`);
     assert.deepEqual(bare.content.map(({ text }) => text), [JSON.stringify(bare.structuredContent)], tool);
   }
-  const read = await cards.call('get_agent', { agentId: 'agent_support' });
-  assert.equal(JSON.stringify(read).includes(CARD_SHOWS_IT), false, 'a result no card draws says nothing about a card');
+  for (const [tool, args] of [['get_agent', { agentId: 'agent_support' }], ['check_agent', { agentId: 'agent_support' }]] as const) {
+    const read = await cards.call(tool, args);
+    assert.deepEqual(read.content.map(({ text }) => text), [JSON.stringify(read.structuredContent)], `${tool}: no card draws it, so it says nothing about one`);
+    assert.equal(read._meta, undefined, tool);
+  }
+});
+
+test('the model waits only on a card that waits for a press, and carries on after any other', () => {
+  const agent = { agentId: 'agent_support', name: 'Support Desk' };
+  const proposal = { proposal: { name: 'Invoice Chaser' }, create: { tool: 'create_agent', arguments: {} }, issues: [] };
+  const preview = { agent: { name: 'Support Desk' }, changes: [], save: { tool: 'update_agent', arguments: {} }, needsConfirmation: false };
+  const confirmation = {
+    status: 'needs_confirmation', summary: 'Turn off Support Desk?', agent,
+    confirmation: { confirmToken: 'changeset_1', preview: 'Off.', expiresAt: '2030-01-01T00:00:00Z', inAdmin: true, ask: { question: '?', consequence: '.', confirm: 'Turn off', keep: 'Keep' } },
+  };
+  const setup = { status: 'needs_setup', summary: 'Open the link.', setup: { url: `${BASE_URL}/setup/setup_1`, setupToken: 'setup_1', what: 'Sentry' } };
+  for (const [name, result] of Object.entries({ proposal, preview, confirmation, setup })) {
+    const { structured, lead } = forCardHost(result, BASE_URL, true);
+    assert.equal(lead, CARD_WAITS, `${name}: the card waits for the person's press`);
+    assert.ok((structured.nextStep as string).startsWith(CARD_WAITS), name);
+  }
+  const saved = { status: 'done', summary: 'Saved Support Desk.', agent, undoToken: 'changeset_2' };
+  const created = { status: 'done', summary: 'Created Invoice Chaser.', agent: { agentId: 'agent_new', name: 'Invoice Chaser' } };
+  const unchanged = { status: 'unchanged', summary: 'Support Desk already says that.', agent };
+  const connected = { status: 'done', summary: 'Sentry is connected.', setup: { url: `${BASE_URL}/setup/setup_1`, what: 'Sentry' } };
+  for (const [name, result] of Object.entries({ saved, created, unchanged, connected })) {
+    const { structured, lead } = forCardHost(result, BASE_URL, true);
+    assert.equal(lead, CARD_SHOWS_IT, `${name}: nothing to press, so the job carries on`);
+    assert.ok((structured.nextStep as string).startsWith(CARD_SHOWS_IT), name);
+  }
+  // Nothing was made and the person has a choice no card offers: the model asks, as the result says, and never carries on.
+  const ask = 'Ask the person whether to use one of these Agents or create a new one.';
+  const similar = { status: 'similar_agent_exists', summary: 'Support Desk does that already.', nextStep: ask, matches: [agent] };
+  const asked = forCardHost(similar, BASE_URL, true);
+  assert.equal(asked.lead, `${CARD_SHOWS_QUESTION} ${ask}`);
+  assert.equal(asked.structured.nextStep, asked.lead);
+  assert.doesNotMatch(asked.lead!, /Carry on|wait for them/);
 });
 
 test('a setup link the card cannot open stays the model\'s to give; one it can open is the card\'s', () => {
@@ -244,7 +279,7 @@ test('a setup link the card cannot open stays the model\'s to give; one it can o
   };
   assert.deepEqual(forCardHost(link, BASE_URL, true), { structured: link }, 'Admin\'s page: the model hands it over');
   const page = { ...link, setup: { ...link.setup, url: `${BASE_URL}/setup/setup_1`, setupToken: 'setup_1' } };
-  assert.deepEqual(forCardHost(page, BASE_URL, true), { structured: { ...page, nextStep: CARD_SHOWS_IT }, lead: CARD_SHOWS_IT });
+  assert.deepEqual(forCardHost(page, BASE_URL, true), { structured: { ...page, nextStep: CARD_WAITS }, lead: CARD_WAITS });
   assert.deepEqual(forCardHost(page, BASE_URL, false), { structured: page }, 'a result no card draws is left as it is');
 });
 
@@ -586,7 +621,7 @@ for (const [app, clientId] of [
     assert.equal(off.structuredContent!.confirmation.confirmToken, undefined);
     assert.ok(!modelView(off).includes(confirmToken), 'neither text nor structured content exposes the token');
     assert.equal(off.structuredContent!.confirmation.inAdmin, true);
-    assert.match(off.structuredContent!.summary, /Confirm on the card above, or in Admin: https:\/\/chickpea\.example\.test\/admin/);
+    assert.match(off.structuredContent!.summary, /Confirm on the card, or in Admin: https:\/\/chickpea\.example\.test\/admin/);
     assert.equal((await h.f.config.getAgent('agent_support')).enabled, true, 'the fallback leaves the change pending');
 
     const done = await call('confirm_change', { confirmToken });
@@ -863,7 +898,7 @@ test('a held deletion never sends the person to Admin, which cannot delete an Ag
   assert.ok(!modelView(deleting).includes(held.confirmToken!), 'the model never sees it');
   assert.equal(deleting.structuredContent!.confirmation.inAdmin, false);
   assert.equal(deleting.structuredContent!.summary,
-    'Nothing has changed yet. Confirm on the card above. If the card doesn\'t show, ask again in a new chat.');
+    'Nothing has changed yet. Confirm on the card. If the card doesn\'t show, ask again in a new chat.');
 });
 
 test('an initialize that does not say its length, or is too long to be one, opens no card session', async (t) => {

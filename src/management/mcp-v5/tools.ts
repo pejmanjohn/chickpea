@@ -289,11 +289,12 @@ export const FIVE_ZERO_TOOLS = {
   }),
   check_agent: tool({
     title: 'Check on an Agent\'s health',
-    description: `How one Agent is doing, for "check on it" or a health check: its connections, model, Slack, Channels, schedules, repositories, website logins, and whether a message from a person in a place reaches it. ${guideFirst('check-in')} Each failing check has a fix: a tool call or a link. Tests custom connections with one request each; changes nothing.`,
+    description: `How one Agent is doing, for "check on it" or a health check: its connections, model, Slack, Channels, schedules, repositories, website logins, and whether a message from a person in a place reaches it. ${guideFirst('check-in')} Report each failing check in text, with its fix: a tool call or a link. Tests custom connections with one request each; changes nothing.`,
     input: schemas.checkAgentInput,
     output: schemas.checkAgentOutput,
     openWorld: true,
-    card: 'health-card',
+    // No card draws it: health is a line of text. A chat that drew the health card before still presses Check again.
+    cardCalls: true,
     run: (deps, args) => checkAgent(deps, args),
   }),
   create_agent: tool({

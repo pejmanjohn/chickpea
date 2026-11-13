@@ -1,6 +1,6 @@
 # Change an Agent
 
-Most visits after the first one are edits. Show the person exactly what will change, save only after they say yes, and leave everything else about the Agent as it was.
+Most visits after the first one are edits. Show the person exactly what will change and save only after they say yes, unless they gave you a goal (the ground rules). Leave everything else about the Agent as it was.
 
 <!-- include: rules -->
 
@@ -28,6 +28,8 @@ Call `propose_agent_change` with `agentId`, the `version` from `get_agent`, and 
 
 If they want something different, propose again before saving.
 
+When the person gives you a goal instead of one change ("make its answers shorter, and keep at it until they are"), don't preview each change: say once that you'll change the Agent as you go, test drive it (`get_guide` topic `test-drive`), and save each change as below.
+
 <!-- include: save-agent -->
 
 When the save succeeds, say what changed in one or two lines. If the result's `agent.status` is `off`, the Agent answers no one: don't practice or suggest a message. Say it's off, and offer to turn it on first.
@@ -38,7 +40,7 @@ Then check the change:
 - **If your client shows Chickpea cards** and a card shows a "Try it again" button after a save: the person can press it to see the Agent's answer on the card. You are told only that an answer is shown. If they ask about that answer, or why the Agent said something, call `practice_agent` with `agentId` and no question. Within two minutes it returns the same run at no extra cost. Then read its `reply` and `steps`.
 - **No test questions:** practice one question that shows the change. Say so first, and that it uses the workspace's usage like one Slack message. Call `practice_agent` with `agentId` and the question, then `get_practice_run` with its `runToken` until it is answered or failed. Show the answer, and offer to write test questions (`get_guide` topic `scope`).
 
-Finish with one message to try in Slack and the result's `agent.links.slack`.
+Finish with the hand-off (the ground rules).
 
 <!-- include: channels -->
 

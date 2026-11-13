@@ -51,4 +51,4 @@ If the person changes something, call `propose_agent` again with the new draft b
 1. For each service in the proposal, call `connect_service` with the new `agentId`, the service's `service` from `list_services`, and `owner` `team` (or `me` if it should act as the person). Give the person each `setup.url`: they sign in on Chickpea's page and finish there. When they're done, check it with `get_setup_status` or `check_agent` (`get_guide` topic `connect`).
 2. Scope the new Agent with the person (`get_guide` topic `scope`): draft its brief and test questions from this conversation, then test drive it on them. The person can answer its questions while a sign-in is still open.
 3. If the chore happens on a schedule ("every Monday"), offer to set that up next (`get_guide` topic `schedule`).
-4. Close with one line: what to send the Agent in Slack first.
+4. Close with the hand-off (the ground rules): the first message to send the Agent in its direct messages, or in its Channel.
