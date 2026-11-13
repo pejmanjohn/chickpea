@@ -115,6 +115,14 @@ export const CARD_WAITS = 'The card shows this to the person, and it waits for t
 export const CARD_SHOWS_IT = 'The card shows this to the person, and it waits for nothing. Don\'t restate what it shows or name its buttons. Carry on with the job.';
 
 /**
+ * What a card host's model hears with a result a card shows that leaves the
+ * person a question no card asks, such as an Agent like the new one existing
+ * already. The result's own next step follows it: carrying on would answer
+ * the question for them.
+ */
+export const CARD_SHOWS_QUESTION = 'The card shows this to the person. Don\'t restate what it shows or name its buttons.';
+
+/**
  * A result as a card host's model sees it: no token it could use without
  * the person's press, and words that send the person to the card, or,
  * should the host fail to draw it, to Admin or to a new chat. `drawn`: a
@@ -132,7 +140,9 @@ export function forCardHost(
   const { undoToken } = change;
   const shows = drawn && cardActsOn(change);
   if (confirmToken === undefined && undoToken === undefined && !shows) return { structured: result };
-  const lead = waitsForPress(result) ? CARD_WAITS : CARD_SHOWS_IT;
+  const lead = waitsForPress(result) ? CARD_WAITS
+    : asksThePerson(change) ? [CARD_SHOWS_QUESTION, change.nextStep].filter(Boolean).join(' ')
+      : CARD_SHOWS_IT;
   const { undoToken: _undo, ...rest } = change;
   const structured: Partial<ChangeResult> = rest;
   if (confirmToken !== undefined) {
@@ -174,6 +184,11 @@ function waitsForPress(result: Record<string, unknown>): boolean {
   return 'create' in result || 'save' in result
     || confirmation?.confirmToken !== undefined
     || status === 'needs_setup';
+}
+
+/** Nothing was done, and the result's next step has the model ask the person which way to go. */
+function asksThePerson({ status }: Partial<ChangeResult>): boolean {
+  return status === 'similar_agent_exists' || status === 'needs_choice';
 }
 
 /** Where else the person can make the change, should the card not show: only a way that exists. */

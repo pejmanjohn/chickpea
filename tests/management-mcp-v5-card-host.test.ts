@@ -11,7 +11,7 @@ import { DISCOVERY_GUIDE_URI } from '../src/management/agent-authoring/index.ts'
 import { playbookSection } from '../src/management/playbook/index.ts';
 import { workspaceManagementMcpFetch } from '../src/management/mcp.ts';
 import { REMOVED_RESOURCE_URIS, REMOVED_TOOL_NAMES, removedToolResult, type RemovedToolName } from '../src/management/mcp-v5/removed-v4.ts';
-import { CARD_SHOWS_IT, CARD_WAITS, forCardHost } from '../src/management/mcp-v5/card-host.ts';
+import { CARD_SHOWS_IT, CARD_SHOWS_QUESTION, CARD_WAITS, forCardHost } from '../src/management/mcp-v5/card-host.ts';
 import { writeHints } from '../src/management/mcp-v5/conventions.ts';
 import type { FiveZeroDeps } from '../src/management/mcp-v5/reads.ts';
 import { changeResultOutput, getWorkspaceInput } from '../src/management/mcp-v5/schemas.ts';
@@ -257,13 +257,19 @@ test('the model waits only on a card that waits for a press, and carries on afte
   const saved = { status: 'done', summary: 'Saved Support Desk.', agent, undoToken: 'changeset_2' };
   const created = { status: 'done', summary: 'Created Invoice Chaser.', agent: { agentId: 'agent_new', name: 'Invoice Chaser' } };
   const unchanged = { status: 'unchanged', summary: 'Support Desk already says that.', agent };
-  const similar = { status: 'similar_agent_exists', summary: 'Support Desk does that already.', matches: [agent] };
   const connected = { status: 'done', summary: 'Sentry is connected.', setup: { url: `${BASE_URL}/setup/setup_1`, what: 'Sentry' } };
-  for (const [name, result] of Object.entries({ saved, created, unchanged, similar, connected })) {
+  for (const [name, result] of Object.entries({ saved, created, unchanged, connected })) {
     const { structured, lead } = forCardHost(result, BASE_URL, true);
     assert.equal(lead, CARD_SHOWS_IT, `${name}: nothing to press, so the job carries on`);
     assert.ok((structured.nextStep as string).startsWith(CARD_SHOWS_IT), name);
   }
+  // Nothing was made and the person has a choice no card offers: the model asks, as the result says, and never carries on.
+  const ask = 'Ask the person whether to use one of these Agents or create a new one.';
+  const similar = { status: 'similar_agent_exists', summary: 'Support Desk does that already.', nextStep: ask, matches: [agent] };
+  const asked = forCardHost(similar, BASE_URL, true);
+  assert.equal(asked.lead, `${CARD_SHOWS_QUESTION} ${ask}`);
+  assert.equal(asked.structured.nextStep, asked.lead);
+  assert.doesNotMatch(asked.lead!, /Carry on|wait for them/);
 });
 
 test('a setup link the card cannot open stays the model\'s to give; one it can open is the card\'s', () => {
