@@ -30,14 +30,14 @@ const OTHER = 'agent_other';
 const LONG = 'Go to **Settings**, then Locations, and choose Add location.\n- Each one needs an address &lt;street>.\n- Then set stock levels.';
 const SHORT = 'Return labels are billed at your carrier rate.';
 
-async function world(t: TestContext, suffix: string) {
+async function world(t: TestContext, suffix: string, cards = true) {
   const runs = new StubTestRuns({ status: 'answered', failure: null, result: { reply: LONG, read: ['Notion'] } });
   const slack = { team: '' };
   const server = await cardServer(t, suffix, {
     modelReadiness: async () => async () => undefined,
     slackMember: async (id) => slackMember(id, slack.team),
     testRuns: runs,
-  }, { cards: true });
+  }, { cards });
   const { f, teamId, call, clock } = server;
   slack.team = teamId;
   runs.now = () => clock.now;
@@ -70,8 +70,9 @@ test('show_test_report reads only, links the report card, and lists an output sc
   assert.equal(listed._meta['openai/outputTemplate'], CARD_URIS['report-card']);
   // A card session lists each card tool's output beside its refusal.
   assert.ok(listed.outputSchema?.anyOf?.[0]?.properties?.runs, 'an output schema, like its siblings');
-  assert.deepEqual(Object.keys(listed.inputSchema.properties).sort(), ['agentId', 'next', 'runs', 'summary']);
+  assert.deepEqual(Object.keys(listed.inputSchema.properties).sort(), ['agentId', 'changes', 'final', 'next', 'round', 'runs', 'summary']);
   assert.deepEqual(Object.keys(listed.inputSchema.properties.runs.items.properties).sort(), ['before', 'note', 'runToken', 'verdict']);
+  assert.deepEqual(Object.keys(listed.inputSchema.properties.changes.items.properties).sort(), ['effect', 'what', 'why']);
 });
 
 test('the report fills each question and answer from the caller\'s own runs, and only the card gets the answers', async (t) => {
@@ -106,7 +107,7 @@ test('the report fills each question and answer from the caller\'s own runs, and
   assert.equal(text.includes('The card above shows this'), false, 'no card-host stop text: the card waits for nothing');
 });
 
-test('a run the report can\'t draw is refused, naming which one', async (t) => {
+test('a run of another Agent, or one still answering, is refused, naming which one', async (t) => {
   const w = await world(t, 'report-refusals');
   const mine = await w.practice('How do I add a second warehouse?');
   const others = await w.practice('Who are you?', OTHER);
@@ -114,11 +115,6 @@ test('a run the report can\'t draw is refused, naming which one', async (t) => {
     agentId: AGENT, runs: tokens.map((runToken) => ({ runToken, verdict: 'Good' })), summary: 'One round.',
   });
   const refusal = async (tokens: string[]) => (await report(tokens)).structuredContent!.error as Record<string, string>;
-
-  const gone = await refusal([mine, 'tr_gone']);
-  assert.equal(gone.code, 'not_found');
-  assert.equal(gone.message, 'The practice run for question 2 is no longer there. Practice runs can be read for an hour after they end.');
-  assert.match(gone.nextStep!, /runToken tr_gone \(question 2\)/);
 
   const elsewhere = await refusal([others]);
   assert.deepEqual([elsewhere.code, elsewhere.message], ['invalid_input', 'The practice run for question 1 is of another Agent.']);
@@ -153,12 +149,13 @@ test('the report reads runs as the caller only: another person\'s runToken is no
   const { membership } = w.f.owner;
   assert.deepEqual(asked, [{ organizationId: membership.organizationId, actorMembershipId: membership.id }]);
 
-  // The same token, once the run is someone else's: gone, with none of its question or answer.
+  // The same token, once the run is someone else's: a row with none of its question or answer.
   w.runs.runs[0]!.request.run.actorMembershipId = 'membership_someone_else';
-  const refused = await report();
-  assert.equal(refused.structuredContent!.error.code, 'not_found');
-  assert.equal(refused._meta?.['chickpea/answers'], undefined);
-  assert.equal(JSON.stringify(refused).includes('second warehouse'), false);
+  const theirs = await report();
+  assert.deepEqual(theirs.structuredContent!.runs, [{ question: '', verdict: 'Good', gone: true }]);
+  assert.deepEqual(theirs._meta?.['chickpea/answers'], [null]);
+  assert.equal(JSON.stringify(theirs).includes('second warehouse'), false);
+  assert.equal(JSON.stringify(theirs).includes(LONG.slice(0, 20)), false);
 });
 
 // Defect caught: on staging (11-13) Codex wrote a first-round verdict of 43 characters and a next of 162, and the
@@ -166,7 +163,7 @@ test('the report reads runs as the caller only: another person\'s runToken is no
 test('a report a few characters over what the card shows is drawn, cut, not refused', async (t) => {
   const w = await world(t, 'report-long-words');
   const result = await w.call('practice_agent', { agentId: AGENT, question: 'How do I add a second warehouse?' });
-  const longBefore = 'Fails: accurate and sourced, but 129 words.';
+  const longBefore = `round 1: fails, accurate and sourced but 129 words → round 2: ${'too long, '.repeat(8)}`;
   const longNext = `${'Tighten the length rule again, then ask all three questions once more. '.repeat(3)}`.trim();
   const report = await w.call('show_test_report', {
     agentId: AGENT,
@@ -175,7 +172,7 @@ test('a report a few characters over what the card shows is drawn, cut, not refu
   });
   assert.notEqual(report.isError, true, JSON.stringify(report));
   const row = (report.structuredContent!.runs as { verdict: string; before?: string }[])[0]!;
-  assert.equal(row.before!.length, 40);
+  assert.equal(row.before!.length, 100, 'earlier verdicts get a longer line than a verdict');
   assert.ok(row.before!.endsWith('…'));
   assert.equal(row.verdict.length, 40);
   assert.ok((report.structuredContent!.next as string).length <= 160);
@@ -232,7 +229,7 @@ test('the report card shows each question and verdict, opens a row to the answer
   await card.result(report);
   const shown = card.shown;
   assert.equal(shown.title, 'Tested Docs Guide · 2 questions');
-  assert.deepEqual(shown.subtitle, [{ text: 'Right page 2 of 2 · Short enough 1 of 2' }]);
+  assert.deepEqual(shown.subtitle, [{ text: '@docs-guide · Right page 2 of 2 · Short enough 1 of 2' }], 'the handle the person knows it by, first');
   assert.deepEqual(shown.buttons, [], 'nothing to press but the rows');
   assert.deepEqual(shown.blocks.at(-1), { kind: 'note', text: 'Next: shorten the answers, then ask both again.' }, 'one Next, however the model wrote it');
   assert.deepEqual(rowsOf(shown.blocks), [
@@ -293,8 +290,9 @@ test('a host that drops the answers still draws every verdict, with its note on 
 test('the report card draws a refusal as its words, and a result of another shape as nothing', async (t) => {
   const w = await world(t, 'report-shapes');
   const card = cardHost(REPORT_CARD, w.call, w.clock);
-  await card.result(await w.call('show_test_report', { agentId: AGENT, runs: [{ runToken: 'tr_gone', verdict: 'Good' }], summary: 'x' }));
-  assert.equal(card.shown.title, 'The practice run for question 1 is no longer there. Practice runs can be read for an hour after they end.');
+  const others = await w.practice('Who are you?', OTHER);
+  await card.result(await w.call('show_test_report', { agentId: AGENT, runs: [{ runToken: others, verdict: 'Good' }], summary: 'x' }));
+  assert.equal(card.shown.title, 'The practice run for question 1 is of another Agent.');
   const odd = cardHost(REPORT_CARD, w.call, w.clock);
   await odd.result({ structuredContent: { agent: { name: 'Docs Guide' }, runs: [{ question: 'Q', verdict: 7 }], summary: 's' } });
   assert.equal(odd.shown.title, 'Nothing to show here.');
@@ -326,4 +324,163 @@ test('a row shows "was:" only when the first round\'s verdict differs, ignoring 
     'rows that open: the first round shows only when it changed, trimmed');
   assert.deepEqual(details(report(runs)), [undefined, undefined, undefined, 'was: fails · Two lines.', undefined],
     'rows with no answers to open: the same, beside the note');
+});
+
+const CHANGE_ONE = { what: 'Give conditional checks before a fix', why: 'The answer assumed a cause the question never gave.' };
+
+test('a report mid-loop says its round, lists the changes so far above the questions, and opens a change to its reason', async (t) => {
+  const w = await world(t, 'report-mid-loop');
+  const first = await w.practice('How do I add a second warehouse?');
+  w.runs.outcome = { status: 'answered', failure: null, result: { reply: SHORT, read: [] } };
+  const second = await w.practice('What does the returns label cost?');
+  const report = await w.call('show_test_report', {
+    agentId: AGENT,
+    runs: [
+      { runToken: first, verdict: 'passes', before: 'passes' },
+      { runToken: second, verdict: 'fails', note: 'Assumes a cause.', before: 'round 1: too long' },
+    ],
+    summary: '1 of 2 pass so far',
+    next: 'Ask question 2 again.',
+    round: 2,
+    changes: [CHANGE_ONE],
+  });
+  assert.equal(report.structuredContent!.round, 2);
+  assert.deepEqual(report.structuredContent!.changes, [CHANGE_ONE], 'the reason goes back in the result');
+  assert.equal(report.structuredContent!.final, undefined);
+
+  const card = cardHost(REPORT_CARD, w.call, w.clock);
+  await card.result(report);
+  assert.equal(card.shown.title, 'Testing Docs Guide · round 2');
+  assert.deepEqual(card.shown.subtitle, [{ text: '@docs-guide · 1 of 2 pass so far · 1 change saved' }]);
+  assert.deepEqual(card.shown.blocks, [
+    { kind: 'section', label: 'Changes so far' },
+    { kind: 'rows', rows: [{
+      icon: 'tile', tile: '1', title: 'Give conditional checks before a fix',
+      control: { label: 'Show why', action: 'why:0', style: 'toggle', expanded: false },
+    }] },
+    { kind: 'section', label: 'Questions' },
+    { kind: 'rows', rows: [
+      {
+        icon: 'tile', tile: '1', title: 'How do I add a second warehouse?', chip: 'passes',
+        control: { label: 'Show answer', action: 'toggle:0', style: 'toggle', expanded: false },
+      },
+      {
+        icon: 'tile', tile: '2', title: 'What does the returns label cost?', chip: 'fails', detail: 'round 1: too long',
+        control: { label: 'Show answer', action: 'toggle:1', style: 'toggle', expanded: false },
+      },
+    ] },
+    { kind: 'note', text: 'Next: Ask question 2 again.' },
+  ], 'a round\'s earlier verdicts show as the model wrote them, never as "was:"');
+
+  await card.press('why:0');
+  const [change] = rowsOf(card.shown.blocks);
+  assert.deepEqual(change!.control, { label: 'Hide why', action: 'why:0', style: 'toggle', expanded: true });
+  assert.deepEqual(change!.open, [{ kind: 'text', text: CHANGE_ONE.why }]);
+  assert.deepEqual(rowsOf(card.shown.blocks).slice(1).map(({ open }) => open), [undefined, undefined], 'no question opened with it');
+  await card.press('why:3' as reportCard.Action);
+  await card.press('why:0');
+  assert.equal(rowsOf(card.shown.blocks)[0]!.open, undefined);
+  assert.deepEqual(card.effects, [], 'nothing to the host or its model');
+});
+
+test('the last report, sent with final, reads Tested with its rounds, and lists the changes after the questions', async (t) => {
+  const w = await world(t, 'report-final');
+  const first = await w.practice('How do I add a second warehouse?');
+  const changes = [CHANGE_ONE, { what: 'Keep troubleshooting answers to 85 words', why: 'Question 1 ran long.', effect: 'question 1: too long → passes' }];
+  const report = (extra: Record<string, unknown>) => w.call('show_test_report', {
+    agentId: AGENT,
+    runs: [{ runToken: first, verdict: 'passes', before: 'round 1: too long → round 2: passes' }],
+    summary: '1 of 1 pass',
+    ...extra,
+  });
+  const card = cardHost(REPORT_CARD, w.call, w.clock);
+  await card.result(await report({ round: 3, changes, final: true }));
+  assert.equal(card.shown.title, 'Tested Docs Guide · 1 question · 3 rounds');
+  assert.deepEqual(card.shown.subtitle, [{ text: '@docs-guide · 1 of 1 pass · 2 changes saved' }]);
+  assert.deepEqual(card.shown.blocks.map((block) => block.kind === 'section' ? block.label : block.kind),
+    ['Questions', 'rows', 'What changed, in order', 'rows']);
+  assert.deepEqual(rowsOf(card.shown.blocks).map(({ title, detail }) => [title, detail]), [
+    ['How do I add a second warehouse?', 'round 1: too long → round 2: passes'],
+    ['Give conditional checks before a fix', undefined],
+    ['Keep troubleshooting answers to 85 words', 'question 1: too long → passes'],
+  ], 'each question with its trail, then each change with what it did');
+
+  const titles = async (extra: Record<string, unknown>) => {
+    const again = cardHost(REPORT_CARD, w.call, w.clock);
+    await again.result(await report(extra));
+    return again.shown.title;
+  };
+  assert.equal(await titles({ round: 3, changes }), 'Testing Docs Guide · round 3', 'without final it is still testing');
+  assert.equal(await titles({ round: 1, final: true }), 'Tested Docs Guide · 1 question · 1 round');
+  assert.equal(await titles({ final: true }), 'Tested Docs Guide · 1 question', 'a single check has no rounds');
+  assert.equal(await titles({ round: 1, final: false }), 'Testing Docs Guide · round 1');
+});
+
+test('a run past its hour draws its row without the question or answer, and the result says which', async (t) => {
+  const w = await world(t, 'report-gone');
+  const old = await w.practice('How do I add a second warehouse?');
+  w.clock.now += 61 * 60_000;
+  w.runs.outcome = { status: 'answered', failure: null, result: { reply: SHORT, read: [] } };
+  const fresh = await w.practice('What does the returns label cost?');
+  const report = await w.call('show_test_report', {
+    agentId: AGENT,
+    runs: [{ runToken: old, verdict: 'passes', note: 'Right page.' }, { runToken: fresh, verdict: 'fails' }],
+    summary: '1 of 2 pass so far',
+    round: 2,
+  });
+  assert.notEqual(report.isError, true, JSON.stringify(report));
+  assert.deepEqual(report.structuredContent!.runs, [
+    { question: '', verdict: 'passes', note: 'Right page.', gone: true },
+    { question: 'What does the returns label cost?', verdict: 'fails' },
+  ]);
+  assert.deepEqual(report._meta?.['chickpea/answers'], [null, SHORT]);
+  assert.match(report.structuredContent!.nextStep as string,
+    /The practice run for question 1 can no longer be read, so the card shows its row without the question or answer\. Practice runs can be read for an hour after they end\.$/);
+
+  const card = cardHost(REPORT_CARD, w.call, w.clock);
+  await card.result(report);
+  const [gone, kept] = rowsOf(card.shown.blocks);
+  assert.deepEqual(gone, { icon: 'tile', tile: '1', title: 'A question asked over an hour ago', chip: 'passes', detail: 'Right page.' },
+    'nothing to open: its answer is gone');
+  assert.equal(kept!.control?.action, 'toggle:1');
+  await card.press('toggle:0');
+  assert.equal(rowsOf(card.shown.blocks)[0]!.open, undefined);
+  await card.press('toggle:1');
+  assert.equal((rowsOf(card.shown.blocks)[1]!.open![0] as { answer: string }).answer, SHORT);
+});
+
+test('a client without cards hears one line a round, and lists the results with the last report', async (t) => {
+  const plain = await world(t, 'report-plain', false);
+  const runs = [{ runToken: await plain.practice('What does the returns label cost?'), verdict: 'passes' }];
+  const step = async (extra: Record<string, unknown>) =>
+    (await plain.call('show_test_report', { agentId: AGENT, runs, summary: '1 of 1 pass', ...extra })).structuredContent!.nextStep;
+  assert.equal(await step({ round: 1 }),
+    'This client draws no card, so tell the person this round in one line. With the last report, sent with final, give the results: each question with your verdict and note.');
+  const list = 'This client draws no card, so give the person the results in your reply: each question with your verdict and note.';
+  assert.equal(await step({ round: 2, final: true }), list);
+  assert.equal(await step({}), list, 'a single check is its own last report');
+});
+
+test('each change is cut to what the card shows, like a note; twenty draw and more are refused', async (t) => {
+  const w = await world(t, 'report-change-cut');
+  const run = await w.practice('How do I add a second warehouse?');
+  const long = (word: string) => `${word} `.repeat(Math.floor(390 / (word.length + 1))).trim();
+  const report = await w.call('show_test_report', {
+    agentId: AGENT, runs: [{ runToken: run, verdict: 'passes' }], summary: 'All pass.', round: 2,
+    changes: [{ what: long('what'), why: long('why'), effect: long('effect') }],
+  });
+  const [change] = report.structuredContent!.changes as Array<{ what: string; why: string; effect: string }>;
+  assert.deepEqual([change!.what.length, change!.why.length, change!.effect.length], [160, 160, 100]);
+  assert.ok([change!.what, change!.why, change!.effect].every((text) => text.endsWith('…')));
+  // A loop of one change a round reaches round 20 without the report refusing it.
+  const twenty = await w.call('show_test_report', {
+    agentId: AGENT, runs: [{ runToken: run, verdict: 'passes' }], summary: 'All pass.', round: 20,
+    changes: Array.from({ length: 20 }, () => CHANGE_ONE),
+  });
+  assert.equal((twenty.structuredContent!.changes as unknown[]).length, 20);
+  const more = await w.call('show_test_report', {
+    agentId: AGENT, runs: [{ runToken: run, verdict: 'passes' }], summary: 'All pass.', round: 20,
+    changes: Array.from({ length: 21 }, () => CHANGE_ONE),
+  });
+  assert.equal(more.structuredContent!.error.code, 'invalid_input');
 });

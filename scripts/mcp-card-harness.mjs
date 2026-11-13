@@ -159,6 +159,16 @@ async function world() {
   }
 
   const created = () => f.config.getAgent('agent_invoice_chaser');
+  /** Scene 9's questions, asked once each: their runTokens, in order. */
+  const askReport = async () => {
+    const asked = [];
+    for (const [question, reply] of REPORT_RUNS) {
+      runs.outcome = { status: 'answered', failure: null, result: { reply, read: ['Notion'] } };
+      asked.push((await call('practice_agent', { agentId: 'agent_quiet_desk', question })).structuredContent.runToken);
+    }
+    runs.outcome = ANSWERED;
+    return asked;
+  };
   const scenes = {
     proposal: () => call('propose_agent', {
       name: 'Invoice Chaser',
@@ -329,12 +339,7 @@ async function world() {
     readyDocs: () => arrived.agent_docs_helper,
     // Scene 9: the report card, for three practice questions the model judged, Chickpea filling in each question and answer.
     report: async () => {
-      const asked = [];
-      for (const [question, reply] of REPORT_RUNS) {
-        runs.outcome = { status: 'answered', failure: null, result: { reply, read: ['Notion'] } };
-        asked.push((await call('practice_agent', { agentId: 'agent_quiet_desk', question })).structuredContent.runToken);
-      }
-      runs.outcome = ANSWERED;
+      const asked = await askReport();
       return call('show_test_report', {
         agentId: 'agent_quiet_desk',
         runs: [
@@ -344,6 +349,43 @@ async function world() {
         ],
         summary: 'Right page 3 of 3 · Short enough 2 of 3',
         next: 'Shorten the export answer, then ask all three again.',
+      });
+    },
+    // Scene 9b: the same card mid-loop, after round 2: the change so far above the questions, each with its earlier verdicts.
+    reportMidLoop: async () => {
+      const asked = await askReport();
+      return call('show_test_report', {
+        agentId: 'agent_quiet_desk',
+        runs: [
+          { runToken: asked[0], verdict: 'passes', before: 'round 1: passes' },
+          { runToken: asked[1], verdict: 'too long', note: 'Eleven lines; the question asked for five.', before: 'round 1: too long' },
+          { runToken: asked[2], verdict: 'passes', before: 'round 1: passes' },
+        ],
+        summary: '2 of 3 pass so far',
+        next: 'Ask the export question again, then two harder ones.',
+        round: 2,
+        changes: [{ what: 'Answer in five lines or fewer', why: 'The export answer ran to eleven lines when the question asked for five.', effect: 'question 2: still too long' }],
+      });
+    },
+    // Scene 9c: the last report, sent with final: each question's trail, then the changes in order.
+    reportFinal: async () => {
+      const asked = await askReport();
+      return call('show_test_report', {
+        agentId: 'agent_quiet_desk',
+        runs: [
+          { runToken: asked[0], verdict: 'passes', note: 'Right page, four lines.', before: 'passed in rounds 1, 2 and 4' },
+          { runToken: asked[1], verdict: 'passes', note: 'Five lines, links the Exports page.', before: 'rounds 1 and 2: too long → passes after change 2' },
+          { runToken: asked[2], verdict: 'passes', before: 'round 1: no source → passes after change 3' },
+        ],
+        summary: '3 of 3 pass',
+        next: 'Ready for questions in #support as @quiet.',
+        round: 4,
+        final: true,
+        changes: [
+          { what: 'Answer in five lines or fewer', why: 'The export answer ran to eleven lines when the question asked for five.', effect: 'question 2: still too long' },
+          { what: 'Link the page instead of listing every column', why: 'The second try still listed the columns one by one.', effect: 'question 2: too long → passes' },
+          { what: 'Name the docs page each answer comes from', why: 'The returns answer gave a price with no page to check it on.', effect: 'question 3: no source → passes' },
+        ],
       });
     },
     // A change with its reason, made where the job goes on after Save.
@@ -494,7 +536,7 @@ const SCENE_CARDS = {
   connect: 'connect-card', reconnect: 'connect-card', cancelled: 'connect-card', custom: 'connect-card', connectRenewals: 'connect-card',
   connectChoose: 'connect-card',
   health: 'health-card', healthy: 'health-card',
-  report: 'report-card',
+  report: 'report-card', reportMidLoop: 'report-card', reportFinal: 'report-card',
 };
 
 /** Scene 9's practice questions and the Agent's answers, one long enough to wrap. */
@@ -1512,10 +1554,10 @@ try {
     // Scene 9: the report card. It calls nothing, tells the model nothing and keeps nothing; a row opens in place to the answer.
     await open('report');
     await browser.waitForTitle(/^Tested Quiet Desk · 3 questions$/);
-    assert.equal(await subtitle(), 'Right page 3 of 3 · Short enough 2 of 3');
+    assert.equal(await subtitle(), '@quiet · Right page 3 of 3 · Short enough 2 of 3');
     assert.deepEqual(await buttons(), [], 'nothing to press but the rows');
     assert.deepEqual(await browser.inCard('[...document.querySelectorAll(".cp-row-detail")].map((node) => node.textContent)'),
-      ['Passes was: Too long', 'Too long was: Too long', 'Passes was: Passes'], 'each verdict as a chip, and the first round\'s');
+      ['Passes was: Too long', 'Too long', 'Passes'], 'each verdict as a chip, and the first round\'s only where it differs');
     await plain('The report card');
     await shot('9-report');
     await browser.click('toggle:1');
@@ -1528,6 +1570,34 @@ try {
     assert.deepEqual([reportCalls, reportMessages, reportContexts], [[], [], []], 'the report card waits for nothing');
     if (host === 'chatgpt') assert.deepEqual(await browser.host('window.harness.widgetStates'), [], 'and keeps nothing');
     await shot('9-report-open');
+
+    // Scene 9b: the report mid-loop, drawn again after each tested change: its round, the changes so far, then the questions.
+    const sections = () => browser.inCard('[...document.querySelectorAll(".cp-sect")].map((node) => node.textContent)');
+    await open('reportMidLoop');
+    await browser.waitForTitle(/^Testing Quiet Desk · round 2$/);
+    assert.equal(await subtitle(), '@quiet · 2 of 3 pass so far · 1 change saved');
+    assert.deepEqual(await sections(), ['Changes so far', 'Questions']);
+    assert.deepEqual(await browser.inCard('[...document.querySelectorAll(".cp-row-detail")].map((node) => node.textContent)'),
+      ['question 2: still too long', 'passes round 1: passes', 'too long round 1: too long', 'passes round 1: passes'], 'what the change did, then each verdict and its trail');
+    await plain('The report mid-loop');
+    await shot('9-report-mid-loop');
+    await browser.click('why:0');
+    await browser.waitFor('document.querySelector(".cp-row-open") !== null', 'the change, opened to its reason');
+    assert.equal(await browser.inCard('document.querySelector(".cp-row-open").textContent'), 'The export answer ran to eleven lines when the question asked for five.');
+    await shot('9-report-mid-loop-why');
+
+    // Scene 9c: the last report, sent with final: each question with its trail, then what changed, in order.
+    await open('reportFinal');
+    await browser.waitForTitle(/^Tested Quiet Desk · 3 questions · 4 rounds$/);
+    assert.equal(await subtitle(), '@quiet · 3 of 3 pass · 3 changes saved');
+    assert.deepEqual(await sections(), ['Questions', 'What changed, in order']);
+    await plain('The final report');
+    await shot('9-report-final');
+    await browser.click('why:1');
+    await browser.waitFor('document.querySelector(".cp-row-open") !== null', 'a change, opened to its reason');
+    await shot('9-report-final-why');
+    const [loopCalls, loopMessages, loopContexts] = await Promise.all(['calls', 'messages', 'contexts'].map((field) => browser.host(`window.harness.${field}`)));
+    assert.deepEqual([loopCalls, loopMessages, loopContexts], [[], [], []], 'the report card waits for nothing, however often it is drawn');
 
     // Scene 5b: a change that says why, saved where the job goes on: the card sends one sentence, once.
     await open('changeContinues');

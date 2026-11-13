@@ -83,7 +83,7 @@ for (const [who, clientId] of CLIENTS) for (const protocol of LEGS) {
       const initialized = (await send(clientId, protocol, 'initialize', {
         protocolVersion: protocol, capabilities: {}, clientInfo: { name: 'test-client', version: '1' },
       })).message.result;
-      assert.equal(initialized.serverInfo.version, '5.1.0');
+      assert.equal(initialized.serverInfo.version, '5.2.0');
       assert.deepEqual(initialized.capabilities.prompts, { listChanged: true }, 'the prompts capability, as a card host saw it before 5.0.0');
     }
     const listed = (await send(clientId, protocol, 'tools/list')).message.result.tools as Array<{ name: string }>;
@@ -120,7 +120,7 @@ for (const [who, clientId] of CLIENTS) for (const protocol of LEGS) {
 }
 
 test('a removed tool\'s answer names its replacements, keeps 4.x\'s ok: false, and names no other 4.x tool', () => {
-  assert.equal(WORKSPACE_MANAGEMENT_SERVER_INFO.version, '5.1.0');
+  assert.equal(WORKSPACE_MANAGEMENT_SERVER_INFO.version, '5.2.0');
   assert.equal(REMOVED_TOOL_NAMES.length, 21);
   for (const name of REMOVED_TOOL_NAMES) {
     const answer = removedToolResult(name);

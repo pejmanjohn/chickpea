@@ -868,27 +868,41 @@ export const listPracticeRunsOutput = z.strictObject({
 export const showTestReportInput = z.strictObject({
   agentId: zAgentId,
   runs: z.array(z.strictObject({
-    runToken: zText(64).describe('The runToken practice_agent returned for this question.'),
+    runToken: zText(64).describe('The runToken practice_agent returned for this question\'s latest run.'),
     verdict: zText(120).describe('Your verdict in a few words, such as Good or Too long. The card shows about 40 characters.'),
     note: zText(400).optional().describe('One line on why, such as "Right page, 14 lines." The card shows about 160 characters.'),
-    before: zText(120).optional().describe('The first round\'s verdict for this question, in a few words like verdict, when this is a later round. The card shows about 40 characters.'),
+    before: zText(400).optional().describe('Its earlier verdicts in a few words, such as "round 1: fails" or "round 1: too long → passes after change 2", when it was asked before. The card shows about 100 characters.'),
   })).min(1).max(10)
     .refine((runs) => new Set(runs.map(({ runToken }) => runToken)).size === runs.length, 'Send each runToken once.')
-    .describe('Each question of the last round, in the order asked.'),
-  summary: zText(400).describe('The round in one line, such as "Right page 5 of 5 · Short enough 1 of 5". The card shows about 200 characters.'),
+    .describe('Every question asked so far, in the order first asked.'),
+  summary: zText(400).describe('Where the questions stand in one line, such as "3 of 4 pass so far". The card adds the @handle and how many changes were saved. It shows about 200 characters.'),
   next: zText(400).optional().describe('What happens next, if anything, such as "Shorten the answers, then ask all five again." The card shows about 160 characters.'),
+  round: z.number().int().min(1).max(20).optional()
+    .describe('Which round of testing this is, counting the first as 1. The card says it in its title until final.'),
+  changes: z.array(z.strictObject({
+    what: zText(400).describe('The change in a few words, such as "Give conditional checks before a fix". The card shows about 160 characters.'),
+    why: zText(400).describe('One line on why you made it. The card shows about 160 characters.'),
+    effect: zText(400).optional().describe('What it did once you tested it, such as "question 4: fails → passes". The card shows about 100 characters.'),
+  })).max(20).optional().describe('Each change saved so far, oldest first.'),
+  final: z.boolean().optional()
+    .describe('true on the last call, when the testing is done: the card says Tested in place of Testing, and lists the changes after the questions.'),
 });
 
 export const showTestReportOutput = z.strictObject({
   agent: z.strictObject({ agentId: z.string(), name: z.string(), handle: z.string().optional(), avatarUrl: zAvatarUrl }),
   runs: z.array(z.strictObject({
-    question: z.string().describe('The question, cut at 300 characters.'),
+    question: z.string().describe('The question, cut at 300 characters; empty when gone.'),
     verdict: z.string(),
     note: z.string().optional(),
     before: z.string().optional(),
+    gone: z.literal(true).optional()
+      .describe('Its practice run can no longer be read, so the card shows its row without the question or answer.'),
   })),
   summary: z.string(),
   next: z.string().optional(),
+  round: z.number().optional(),
+  changes: z.array(z.strictObject({ what: z.string(), why: z.string(), effect: z.string().optional() })).optional(),
+  final: z.literal(true).optional(),
   answers: z.array(z.string().nullable()).optional()
     .describe('Never in the result you read: the card gets each answer apart from it.'),
   nextStep: z.string(),

@@ -32,13 +32,13 @@ When the person gives you a goal instead of one change ("make its answers shorte
 
 <!-- include: save-agent -->
 
-When the save succeeds, say what changed in one or two lines. If the result's `agent.status` is `off`, the Agent answers no one: don't practice or suggest a message. Say it's off, and offer to turn it on first.
+When the save succeeds, say what changed in one or two lines, or toward a goal in one numbered line (the ground rules). If the result's `agent.status` is `off`, the Agent answers no one: don't practice or suggest a message. Say it's off, and offer to turn it on first.
 
 Then check the change:
 
 - **The person has test questions** for this Agent, in this conversation or in a file: pick the ones this change could affect, and test drive the Agent on only those (`get_guide` topic `test-drive`).
 - **If your client shows Chickpea cards** and a card shows a "Try it again" button after a save: the person can press it to see the Agent's answer on the card. You are told only that an answer is shown. If they ask about that answer, or why the Agent said something, call `practice_agent` with `agentId` and no question. Within two minutes it returns the same run at no extra cost. Then read its `reply` and `steps`.
-- **No test questions:** practice one question that shows the change. Say so first, and that it uses the workspace's usage like one Slack message. Call `practice_agent` with `agentId` and the question, then `get_practice_run` with its `runToken` until it is answered or failed. Show it with `show_test_report`, with your verdict and a short note, and offer to write test questions (`get_guide` topic `scope`).
+- **No test questions:** practice one question that shows the change. Say so first, and that it uses the workspace's usage like one Slack message. Call `practice_agent` with `agentId` and the question, then `get_practice_run` with its `runToken` until it is answered or failed. Show it with `show_test_report`, with your verdict, a short note and `final` `true`, and offer to write test questions (`get_guide` topic `scope`).
 
 Finish with the hand-off (the ground rules).
 

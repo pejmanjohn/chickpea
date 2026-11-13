@@ -3,7 +3,7 @@ import type { z } from 'zod';
 
 import { emitManagementMetric } from '../telemetry.ts';
 import type { CardName } from '../../mcp-cards/published.ts';
-import { forCardHost } from './card-host.ts';
+import { CONFIRM_ON_A_PREVIEW, forCardHost } from './card-host.ts';
 import { CARD_URIS } from './cards.ts';
 import {
   guideFirst,
@@ -43,7 +43,7 @@ export interface FiveZeroTool {
   profile?: true;
   /** The card that draws its result. */
   card?: CardName;
-  /** No card draws it, but on a card host only a card's press calls it, so the card holds its result's tokens. */
+  /** No card draws it, but on a card host a card's press can call it, so the card holds its result's tokens, never the model. */
   holdsTokens?: true;
   /** No card draws it and the model calls it too, but a card also calls it. */
   cardCalls?: true;
@@ -273,7 +273,7 @@ export const FIVE_ZERO_TOOLS = {
   }),
   show_test_report: tool({
     title: 'Show a test report',
-    description: 'Show the person one card for a round of practice runs: each question with your verdict, opening to the Agent\'s answer. Send each practice_agent runToken with your verdict, an optional note, and before for its first-round verdict. The card shows every row, so reply after it in a line or two, unless the result says no card is drawn. Verdicts and notes are not stored. Reads only; changes nothing.',
+    description: 'Show the person one card for a test drive: each question with your verdict, opening to the Agent\'s answer. Call it after round 1 and after each change you test, each time with every question so far, before for earlier verdicts, round, changes with a why, and final on the last call. Reply after it in a line. Verdicts, notes and changes are not stored. Reads only; changes nothing.',
     input: schemas.showTestReportInput,
     output: schemas.showTestReportOutput,
     card: 'report-card',
@@ -309,12 +309,17 @@ export const FIVE_ZERO_TOOLS = {
   }),
   update_agent: tool({
     title: 'Update an Agent',
-    description: `Change one Agent's name, description, handle, instructions, on or off, chat model, effort, image model or who can edit it. ${guideFirst('edit')} Send the version get_agent returned. It overwrites those fields and applies at once, except turning off an Agent that answers in Channels, which returns needs_confirmation. propose_agent_change previews it.`,
+    description: `Change one Agent's name, description, handle, instructions, on or off, chat model, effort, image model or who can edit it. ${guideFirst('edit')} Send the version get_agent returned. It overwrites those fields and applies at once, except turning off an Agent that answers in Channels, which returns needs_confirmation. On a client that shows cards, propose_agent_change's card confirms that one.`,
     input: schemas.updateAgentInputSchema,
     output: schemas.changeResultOutput,
     write: writeHints({ destructive: true }),
-    card: 'agent-card',
-    run: (deps, args) => writes.updateAgent(deps, args),
+    // No card draws it: a save the model makes is a line of text, and the test report shows the change.
+    // A preview card's Save calls it too, so on a card host that card holds its tokens.
+    holdsTokens: true,
+    run: async (deps, args, call) => {
+      const saved = await writes.updateAgent(deps, args);
+      return call.cardHost && saved.status === 'needs_confirmation' ? { ...saved, nextStep: CONFIRM_ON_A_PREVIEW } : saved;
+    },
   }),
   update_agent_memory: tool({
     title: 'Update Agent memory',
@@ -409,7 +414,7 @@ export const FIVE_ZERO_TOOLS = {
   }),
   reconnect_service: tool({
     title: 'Reconnect a service',
-    description: 'Get a Chickpea setup link that signs one of an Agent\'s connections in again or replaces its saved key, by its connectionId from get_agent: for one that needs attention, or to change what a service shares with it. Never ask for the key. To drop an optional key, like Exa\'s, remove_connection, then connect_service with the key left empty. Each call makes a new link.',
+    description: 'Get a Chickpea setup link that signs one of an Agent\'s connections in again or replaces its saved key, by its connectionId from get_agent: for one that needs attention, or to change what a service shares with it. Never ask for the key. Each call makes a new link.',
     input: schemas.reconnectServiceInput,
     output: schemas.connectServiceOutput,
     write: writeHints({ destructive: true, idempotent: false }),
