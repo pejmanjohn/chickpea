@@ -166,13 +166,14 @@ function cardActsOn(result: Partial<ChangeResult>): boolean {
 /**
  * The card waits for the person's press: a proposal, whose Create or Save
  * makes it (`create` or `save` holds the call); a change to confirm; or a
- * setup link to open. Any other card shows what is already done.
+ * setup link to open (one the card can open, by `cardActsOn`). Any other
+ * card shows what is already done.
  */
 function waitsForPress(result: Record<string, unknown>): boolean {
-  const { status, confirmation, setup } = result as Partial<ChangeResult>;
+  const { status, confirmation } = result as Partial<ChangeResult>;
   return 'create' in result || 'save' in result
     || confirmation?.confirmToken !== undefined
-    || (status === 'needs_setup' && setup?.setupToken !== undefined);
+    || status === 'needs_setup';
 }
 
 /** Where else the person can make the change, should the card not show: only a way that exists. */
