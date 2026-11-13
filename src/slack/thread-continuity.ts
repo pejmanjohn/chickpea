@@ -1,4 +1,5 @@
 import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
+import type { PromptMemory } from '../memory/thread-memory.ts';
 import { atOrBeforeSlackWatermark, type SlackTurnContext } from './thread-context.ts';
 import type { SlackThreadContinuation } from './turn-job-types.ts';
 import type { NormalizedSlackTurn } from './types.ts';
@@ -41,6 +42,8 @@ export function threadContinuityNote(input: {
   turn: Pick<NormalizedSlackTurn, 'userId'>;
   /** A channel or group DM thread, where several people can speak. */
   sharedThread: boolean;
+  /** Where this turn's memory goes. A block in the prompt says itself that it replaces earlier ones. */
+  memory: PromptMemory['placement'];
 }): string | undefined {
   const { previous, plan, turn } = input;
   const lines: string[] = [];
@@ -64,8 +67,10 @@ export function threadContinuityNote(input: {
     } else if (!speakerChanged && !sameMembers(before.connectionAccountIds, plan.connectionAccountIds)) {
       lines.push('- The connected accounts available to you changed since your previous turn. Use only the connections your current instructions list.');
     }
-    if (before.memoryEpoch !== plan.memoryEpoch) {
+    if (input.memory === 'instructions') {
       lines.push('- Your Agent memory was updated since your previous turn. The memory in your current instructions is authoritative.');
+    } else if (input.memory === 'cleared') {
+      lines.push('- Your Agent memory was cleared since your previous turn. Earlier Agent memory blocks in this thread no longer apply.');
     }
   }
   if (lines.length === 0) return undefined;

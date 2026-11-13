@@ -9,6 +9,7 @@ import { openStateDb } from '../src/state/node-state-db.ts';
 import { runTurn } from '../src/slack/run-turn.ts';
 import { TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
+import { promptMemoryText } from '../src/slack/web-client-context.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 
 // Two people talk to one Agent in one channel thread. The Agent keeps one
@@ -209,13 +210,18 @@ test('a second speaker continues the thread transcript with only what it lacks',
     assert.match(second.message, /personal connected accounts/);
 
     for (const turn of [first, second]) {
-      assert.match(turn.memoryBlock ?? '', /Invoices live in the Finance folder/, 'memory is rendered, not prompted');
-      assert.doesNotMatch(turn.message, /Invoices live in the Finance folder/);
+      assert.match(turn.memoryBlock ?? '', /Invoices live in the Finance folder/, 'staged for the Agent object either way');
     }
+    assert.match(first.message, /<agent_memory>\nUse this durable Agent context[\s\S]*Invoices live in the Finance folder[\s\S]*Final response check for advisory memory/,
+      'the thread\'s first turn carries the memory after its Slack context');
+    assert.doesNotMatch(first.message, /replaces earlier Agent memory blocks/);
+    assert.ok(first.message.includes(promptMemoryText(first.memoryBlock!)),
+      'the prompt holds the staged block as the Agent object looks for it (useThreadMemoryInstruction)');
+    assert.doesNotMatch(second.message, /Invoices live in the Finance folder/, 'the transcript already holds it');
   } finally { t.close(); }
 });
 
-test('a memory write between turns keeps the transcript and narrates the update', async () => {
+test('a memory write between turns keeps the transcript and sends the new memory once', async () => {
   const t = await fixture();
   try {
     t.rows.push({ ts: THREAD_TS, user: t.alice.userId, text: 'Kickoff', thread_ts: THREAD_TS });
@@ -224,7 +230,13 @@ test('a memory write between turns keeps the transcript and narrates the update'
     const second = await t.speak(t.alice, '1800000100.000005', 'When are invoices due?');
     assert.equal(second.instanceId, first.instanceId);
     assert.notEqual(second.plan.memoryEpoch, first.plan.memoryEpoch);
-    assert.match(second.message, /Agent memory was updated/);
+    assert.doesNotMatch(first.message, /<agent_memory>/, 'no memory yet');
+    assert.match(second.message, /This Agent memory block replaces earlier Agent memory blocks in this thread\.\n<agent_memory>[\s\S]*Invoices are due Fridays\./);
+    assert.doesNotMatch(second.message, /Agent memory was updated/, 'the block says it, not the continuity note');
+    assert.ok(second.message.includes(promptMemoryText(second.memoryBlock!, true)),
+      'the replacing prompt holds the staged block as the Agent object looks for it');
+    const third = await t.speak(t.alice, '1800000100.000008', 'And the late fee?');
+    assert.doesNotMatch(third.message, /Invoices are due Fridays\./, 'sent once');
     assert.doesNotMatch(second.message, /This message is from/, 'the same speaker is not announced');
   } finally { t.close(); }
 });

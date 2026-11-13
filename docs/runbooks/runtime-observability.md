@@ -720,8 +720,13 @@ channel IDs, settings keys or values, or error text. Emission never throws.
   `toolsBytes` are their UTF-8 sizes. They say that a part changed, never
   what it holds. A step with `cacheWriteTokens` above 0 whose
   `systemPromptHash` differs from the same Agent object's previous step is a
-  rewrite after the system prompt changed, as when the Agent's memory did.
-  Each pair is absent when the request has no such part.
+  rewrite after the system prompt changed, as when the Agent's instructions
+  did. The Agent's memory usually is not in it: a thread's first turn and
+  the turn after a memory change carry the memory in their Slack message
+  (`src/memory/thread-memory.ts`). The system prompt carries it, and changes
+  once, only after a compaction, after a change to a memory over 16 KiB, or
+  in a thread that started before this placement. Each pair is absent when
+  the request has no such part.
 - `toolResultBytes` and `toolResultTopBytes` size the tool results a request
   carries, the reading a bound on one result is chosen from. A result's size
   is the UTF-8 bytes of its text as the request carries it, so a result its

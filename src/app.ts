@@ -25,6 +25,7 @@ import { lazyRoutes } from './http/lazy-routes.ts';
 import { recoveryOnlyGate } from './auth/request-auth-control.ts';
 import { activityStatusForObservation } from './activity/status.ts';
 import { noteAgentAuthoringActivation } from './management/workspace-change-tools.ts';
+import { threadCompactionInstrumentation } from './memory/thread-compaction.ts';
 import {
   observeProviderAuthRoute,
   providerAuthRouteInterceptor,
@@ -111,6 +112,8 @@ instrument({
   },
   dispose() {},
 });
+
+instrument(threadCompactionInstrumentation);
 
 // Response metadata is the one durable usage-of-record consumed by both the
 // interactive Slack relay and routines. It contains token counts and bounded

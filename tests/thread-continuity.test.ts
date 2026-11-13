@@ -549,18 +549,29 @@ test('the continuity note names a new speaker, guards personal results in shared
     plan: now,
     turn: { userId: 'U_BOB' },
     sharedThread: true,
+    memory: 'instructions',
   });
   assert.ok(note);
   assert.match(note, /from <@U_BOB>.*answered <@U_ALICE>/);
   assert.match(note, /personal connected accounts/);
   assert.match(note, /configuration was changed/);
-  assert.match(note, /memory was updated/);
+  assert.match(note, /memory was updated since your previous turn\. The memory in your current instructions is authoritative/);
+  const memoryLine = (memory: Parameters<typeof threadContinuityNote>[0]['memory']) => threadContinuityNote({
+    previous: { messageTs: '1788000000.000200', slackUserId: 'U_ALICE', runtimePlan: before },
+    plan: plan({ memoryEpoch: 2 }),
+    turn: { userId: 'U_ALICE' },
+    sharedThread: false,
+    memory,
+  });
+  assert.match(memoryLine('cleared') ?? '', /memory was cleared since your previous turn\. Earlier Agent memory blocks in this thread no longer apply/);
+  assert.equal(memoryLine('prompt'), undefined, 'the block in the prompt says that it replaces earlier ones');
 
   const direct = threadContinuityNote({
     previous: { messageTs: '1788000000.000200', slackUserId: 'U_ALICE', runtimePlan: before },
     plan: before,
     turn: { userId: 'U_ALICE' },
     sharedThread: false,
+    memory: 'held',
   });
   assert.equal(direct, undefined, 'nothing changed, nothing is said');
   const dmSpeaker = threadContinuityNote({
@@ -568,6 +579,7 @@ test('the continuity note names a new speaker, guards personal results in shared
     plan: before,
     turn: { userId: 'U_BOB' },
     sharedThread: false,
+    memory: 'held',
   });
   assert.doesNotMatch(dmSpeaker ?? '', /personal connected accounts/);
 });
