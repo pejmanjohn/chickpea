@@ -2,8 +2,9 @@ import { APIError } from 'better-auth/api';
 import { Hono } from 'hono';
 
 import { InstallationContextError, requireInstallationScope } from '../config/installation-scope.ts';
-import { getIdentityStore, type PlatformEnv } from '../config/state-backend.ts';
+import { getIdentityStore, getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
 import type { BetterAuthPrincipalRecord, IdentityStore } from '../identity/types.ts';
+import { SLACK_SETTING_KEYS } from '../slack/credentials.ts';
 import {
   BETTER_AUTH_SLACK_PROVIDER_ID,
   createBetterAuthSessionReader,
@@ -28,8 +29,11 @@ import {
   mcpAccessForbidden,
   mcpAuthorizationChallenge,
   mcpBearerToken,
+  mcpConsentAccount,
   mountMcpOAuthBrowserRoutes,
   verifyMcpAccessToken,
+  type McpConsentAccount,
+  type WorkspaceNameSettings,
 } from './mcp-oauth-routes.ts';
 
 /** A host's Better Auth and registry for one request. */
@@ -53,6 +57,8 @@ export interface HostedRouting<E extends PlatformEnv> {
   readLogin?(betterAuthUserId: string): Promise<HostedLoginRead>;
   /** The installation's identity store; by default its TagStateStore. */
   identity?: (env: E) => IdentityStore;
+  /** The installation's settings, where consent reads its workspace name; by default its TagStateStore. */
+  settings?: (env: E) => WorkspaceNameSettings;
   /**
    * The host's per-source limit on new MCP clients, a dynamic registration
    * or the first sign-in of a client known by its metadata document: a
@@ -91,6 +97,7 @@ const SHARED_PATHS = new Set([
   '/.well-known/oauth-authorization-server/api/auth',
   '/auth/mcp/login',
   '/auth/mcp/consent',
+  '/auth/mcp/switch',
 ]);
 
 /** Whether serveHostedSharedAuth answers `pathname`, whatever the method. */
@@ -127,8 +134,29 @@ export async function serveHostedSharedAuth<E extends PlatformEnv>(
   });
   const app = new Hono();
   app.route('/', betterAuthPublicRoutes((c) => handler(c.req.raw)));
-  mountMcpOAuthBrowserRoutes(app, async () => environment);
+  // Sign-in here names no workspace, so Slack's page offers another one: consent may offer Switch.
+  mountMcpOAuthBrowserRoutes(app, async () => ({
+    environment,
+    workspaceSwitch: true,
+    describe: (betterAuthUserId) => describeHostedAccount(routing, logins, betterAuthUserId),
+  }));
   return app.fetch(request);
+}
+
+/**
+ * What consent says about a Better Auth user: their installation, found and
+ * fenced as routing finds it, and what it stored. Nothing without one.
+ */
+async function describeHostedAccount<E extends PlatformEnv>(
+  routing: HostedRouting<E>,
+  logins: HostedLogins,
+  betterAuthUserId: string,
+): Promise<McpConsentAccount | undefined> {
+  const presented = await logins.forUser(betterAuthUserId);
+  const routed = presented ? await installationFor(routing, presented.login) : undefined;
+  if (!routed) return undefined;
+  const settings = routing.settings ? routing.settings(routed.env) : getSettingsStore(routed.env);
+  return mcpConsentAccount(routed.principal, await settings.getSetting(SLACK_SETTING_KEYS.teamName));
 }
 
 /**
