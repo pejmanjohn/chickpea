@@ -120,6 +120,13 @@ export function resolvedAssignmentFromEffectiveConfig(
 }
 
 /**
+ * How the identity line opens. In every run's instructions it follows the
+ * saved instructions, and what follows it (names, handles, teammates) is
+ * not reviewed text, so links are read only from before it (`agentPathSpaces`).
+ */
+export const IDENTITY_OPENING = 'You are assigned to Slack workspace ';
+
+/**
  * The Agent must recognize itself: its saved name, its Slack handle, and the
  * user-group id Slack substitutes for that handle in message text. Without
  * this, a request such as "show me @handle's instructions" reads as a question
@@ -129,7 +136,7 @@ export function runtimeIdentityInstruction(
   assignment: Pick<ResolvedAssignment, 'workspaceId' | 'channelId' | 'agent'>,
 ): string {
   const parts = [
-    `You are assigned to Slack workspace ${assignment.workspaceId} channel ${assignment.channelId}.`,
+    `${IDENTITY_OPENING}${assignment.workspaceId} channel ${assignment.channelId}.`,
     `Your Agent ID is ${assignment.agent.id} and your name is ${assignment.agent.name}.`,
   ];
   const presence = assignment.agent.slackPresence;
@@ -144,9 +151,6 @@ export function runtimeIdentityInstruction(
   parts.push('Questions about your own name, handle, instructions, or configuration are about you; answer them from your saved configuration, using the workspace inspection tool when available, never from Slack subteam lookups.');
   return parts.join(' ');
 }
-
-/** How the teammates block opens: after it, the tenant instructions hold other Agents' names. */
-export const TEAMMATES_OPENING = 'Teammates: you can ask other Chickpea Agents here.';
 
 type TeammateAssignment = Pick<ResolvedAssignment, 'teammates'> & {
   agent: Pick<CustomAgentConfig, 'kind'>;
@@ -171,7 +175,7 @@ export function agentTeammateInstructions(
   const example = teammates[0]!.handle;
   const guest = assignment.threadGuest === true;
   return [
-    `${TEAMMATES_OPENING} To ask one of them something, mention their handle as plain text in your reply, for example @${example}. They answer in this thread after your reply, and everyone in the thread sees the exchange. ${guest
+    `Teammates: you can ask other Chickpea Agents here. To ask one of them something, mention their handle as plain text in your reply, for example @${example}. They answer in this thread after your reply, and everyone in the thread sees the exchange. ${guest
       ? 'You get no turn after their answer unless you ask them to mention you: when you must use the answer yourself, end the ask with "Mention me when you have it." (never your own handle).'
       : 'Once they have answered, you get a turn to finish the person\'s request with their answers.'}`,
     '- Ask only when the person\'s request needs that teammate\'s answer or work, with one clear question.',

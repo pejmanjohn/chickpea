@@ -251,6 +251,7 @@ import {
 } from './discovery.ts';
 import type { ManagementStore } from './store.ts';
 import { requesterTypedUrls } from '../slack/typed-urls.ts';
+import { addedInstructionLinks } from '../web/instruction-links.ts';
 import { changeSetAccessFits } from './change-set-presentation.ts';
 import {
   formatMarkdownChangeSetProposal,
@@ -6347,6 +6348,8 @@ export class WorkspaceManagementService {
         capabilityScopeExpanded: capabilityScopeExpanded(currentAgent, patch),
         connectionRemoved: connectionRemoved(currentAgent, patch),
         requesterTypedNewKeyedConnections: newKeyedConnectionsTypedByRequester(actor, currentAgent, patch),
+        addsUntypedInstructionLink: patch.instructions !== undefined &&
+          addsUntypedInstructionLink(actor, currentAgent.instructions, patch.instructions),
         agentEditable: true,
         ...(options.approvalBasis || requesterAuthorized
           ? { approvalBasis: 'explicit_requester_command' as const }
@@ -6400,6 +6403,9 @@ export class WorkspaceManagementService {
           ? { trustedSlackOriginGrant: true }
           : {}),
       };
+    }
+    if (operation.kind === 'create_agent') {
+      return { actor, operation, addsUntypedInstructionLink: addsUntypedInstructionLink(actor, '', operation.agent.instructions) };
     }
     return { actor, operation };
   }
@@ -10148,6 +10154,17 @@ const BASIC_PREFIX = 'Basic ';
 
 function sendsBasicCredentials(policy: ApiConnectionScope): boolean {
   return policy.headerName.toLowerCase() === 'authorization' && policy.headerValuePrefix === BASIC_PREFIX;
+}
+
+/**
+ * Whether saving `after` over `before` adds a link the requester did not
+ * type in this Slack message to this Agent. A click's text, a message
+ * addressed to someone else, or another door vouches for none; the policy
+ * reviews the result in Slack only.
+ */
+function addsUntypedInstructionLink(actor: LiveManagementActor, before: string, after: string): boolean {
+  const requestText = requestAddressedHere(actor);
+  return addedInstructionLinks(before, after, requestText ? requesterTypedUrls(requestText) : []).length > 0;
 }
 
 /** A typed URL covers `url` when it has the same origin and `url`'s path sits inside the typed path. */

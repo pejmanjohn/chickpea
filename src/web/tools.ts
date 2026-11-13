@@ -7,8 +7,9 @@ import {
   type SemanticActivityDescriptor,
 } from '../activity/semantic.ts';
 import { BROWSER_TOOL_NAMES } from '../browser/tools.ts';
-import { TEAMMATES_OPENING } from '../config/effective-config.ts';
+import { IDENTITY_OPENING } from '../config/effective-config.ts';
 import { requesterTypedUrls } from '../slack/typed-urls.ts';
+import { instructionLinkSpaces } from './instruction-links.ts';
 import {
   admitWebUrl,
   MAX_WEB_URL_CHARS,
@@ -69,25 +70,18 @@ export function connectionPathSpaces(plan: {
 }
 
 /**
- * Each link in the Agent's saved instructions, and the pages below its path,
- * so an Agent told to answer from a docs site can open it. An editor of the
- * Agent wrote these; a page the model reads never adds one. A link's own
- * path, not its host, is its space, as a connection's is. Admission still
- * refuses any URL that is not public https.
- */
-export function instructionPathSpaces(instructions: string): WebPathSpace[] {
-  return requesterTypedUrls(instructions).map((url) => ({ host: url.hostname, pathPrefixes: [url.pathname] }));
-}
-
-/**
  * Where a URL the model writes may go besides a typed host: the Agent's
- * connections and the links its own editors wrote. A plan's instructions
- * end with its teammates' names, which other people chose, so links are
- * taken only from the text before them.
+ * connections and the links in its saved instructions. A Slack edit can add
+ * such a link only through the person's Approve, unless they typed it
+ * (`instruction_link_expansion`). A plan's instructions hold the saved
+ * instructions, after Chickpea's own constant text, up to the identity line;
+ * from there on come the Agent's name and its teammates' names, which a
+ * rename or another person sets without that review, so no link is taken
+ * from them. Without the identity line, none is taken.
  */
 export function agentPathSpaces(plan: Parameters<typeof connectionPathSpaces>[0] & { instructions: string }): WebPathSpace[] {
-  const own = plan.instructions.split(TEAMMATES_OPENING, 1)[0]!;
-  return [...connectionPathSpaces(plan), ...instructionPathSpaces(own)];
+  const end = plan.instructions.indexOf(IDENTITY_OPENING);
+  return [...connectionPathSpaces(plan), ...(end < 0 ? [] : instructionLinkSpaces(plan.instructions.slice(0, end)))];
 }
 
 export interface WebToolsInput {

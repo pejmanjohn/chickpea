@@ -209,6 +209,32 @@ test('new keyed connections the requester typed apply at once only for a user Ag
   assert.equal(posture(decide({ apiConnections: [connection] }, { requesterTypedNewKeyedConnections: false })), 'confirmation');
 });
 
+test('an instruction link the requester did not type is reviewed in Slack, as a connection host is', () => {
+  const agent: CustomAgentConfig = {
+    id: 'agent_policy', kind: 'user', name: 'Policy', instructions: 'Answer.', enabled: true, revision: 1,
+    skills: [], mcpServers: [], apiConnections: [], repositories: [],
+  };
+  const edit: ManagementOperation = {
+    itemId: 'u', kind: 'update_agent', agentId: agent.id, expectedRevision: 1,
+    patch: { instructions: 'Answer from https://docs.vendor.example.' },
+  };
+  const create: ManagementOperation = {
+    itemId: 'c', kind: 'create_agent',
+    agent: { id: 'agent_new', name: 'New', instructions: 'Answer from https://docs.vendor.example.', enabled: true, skills: [], mcpServers: [], apiConnections: [], repositories: [] },
+  };
+  for (const operation of [edit, create]) {
+    const facts = { operation, currentAgent: agent, agentEditable: true, addsUntypedInstructionLink: true };
+    assert.deepEqual(classifyManagementOperation({ actor, ...facts }),
+      { allowed: true, posture: 'confirmation', reason: 'instruction_link_expansion' }, operation.kind);
+    for (const kind of ['mcp', 'admin'] as const) {
+      const other: LiveManagementActor = { ...actor, origin: kind === 'mcp' ? { kind, clientId: 'client_policy' } : { kind, sessionId: 'session_policy' } };
+      assert.equal(posture(classifyManagementOperation({ actor: other, ...facts })), 'immediate', `${operation.kind} over ${kind}`);
+    }
+    assert.equal(posture(classifyManagementOperation({ actor, ...facts, addsUntypedInstructionLink: false })), 'immediate',
+      `${operation.kind} without a new link`);
+  }
+});
+
 test('direct apply over MCP creates Agents immediately, including workspace-wide edit authority', async () => {
   const f = await createManagementAdapterFixture('create-edit-authority-policy');
   const context = {

@@ -44,6 +44,13 @@ interface ManagementPolicyFacts {
    * requester typed in this Slack message.
    */
   requesterTypedNewKeyedConnections?: boolean;
+  /**
+   * The Agent's new instructions link somewhere its saved instructions do
+   * not, and the requester did not type it in this message. A link in the
+   * instructions is a place the Agent may later open pages on its own
+   * (`agentPathSpaces`), as a connection host is.
+   */
+  addsUntypedInstructionLink?: boolean;
 }
 
 type ManagementPosture = 'immediate' | 'confirmation';
@@ -81,6 +88,7 @@ const POSTURE = {
   recipe_overwrite: REVIEWED_IN_SLACK,
   capability_scope_expansion: REVIEWED_IN_SLACK,
   capability_or_authority_change: REVIEWED_IN_SLACK,
+  instruction_link_expansion: REVIEWED_IN_SLACK,
   compound_agent_change: REVIEWED_IN_SLACK,
   skill_change: REVIEWED_IN_SLACK,
   base_agent_creation: IMMEDIATE,
@@ -150,6 +158,9 @@ function managementPolicyReason(
     if (operation.agent.editPolicy === 'all_workspace_members') {
       return { allowed: true, reason: 'workspace_wide_agent_edit_authority' };
     }
+    if (facts.addsUntypedInstructionLink) {
+      return { allowed: true, reason: 'instruction_link_expansion' };
+    }
     return { allowed: true, reason: 'base_agent_creation' };
   }
   if (operation.kind === 'save_routine' || operation.kind === 'run_routine') {
@@ -205,6 +216,9 @@ function managementPolicyReason(
       'apiConnections', 'mcpServers', 'repositories', 'editPolicy', 'slackPresence',
     ].includes(field))) {
       return { allowed: true, reason: 'capability_or_authority_change' };
+    }
+    if (facts.addsUntypedInstructionLink) {
+      return { allowed: true, reason: 'instruction_link_expansion' };
     }
     // A model change that restores or sets its effort is one change.
     const changes = fields.filter((field) => field !== 'modelEffort' || !fields.includes('model'));

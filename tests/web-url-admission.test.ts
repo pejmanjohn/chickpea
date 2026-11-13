@@ -9,11 +9,11 @@ import {
   agentPathSpaces,
   connectionPathSpaces,
   createWebTools,
-  instructionPathSpaces,
   readWebPageInTurn,
   webRequest,
   type WebToolsInput,
 } from '../src/web/tools.ts';
+import { instructionLinkSpaces } from '../src/web/instruction-links.ts';
 import { createWebTurn } from '../src/web/turn.ts';
 
 const REQUEST = 'Our incident codename is Bluebird42, and the vendor is Statusboard';
@@ -177,12 +177,21 @@ test('an MCP connection\'s space is its server URL\'s path', async () => {
   assert.deepEqual(reader.fetched, ['https://mcp.proxy.example/tenants/acme/mcp/tools']);
 });
 
+/** A run's instructions as Chickpea lays them out, for an Agent with these saved instructions. */
+function planInstructions(saved: string, extra: { name?: string; teammates?: Array<{ name: string; handle: string }> } = {}): string {
+  return slackTenantInstructions({
+    workspaceId: 'T1', channelId: 'C1',
+    agent: { id: 'agent_docs', kind: 'user', name: extra.name ?? 'Docs', instructions: saved } as never,
+    teammates: (extra.teammates ?? []).map((teammate) => ({ agentId: `agent_${teammate.handle}`, ...teammate })) as never,
+  });
+}
+
 test('a link in the Agent\'s instructions is a space the model may write URLs in, at or below its path', async () => {
   // A docs Agent asked a question that names no URL: a practice run's question counts as typed by no one.
-  const instructions = 'Answer questions from https://docs.chickpea.example. Our guide: <https://wiki.shared.example/acme/guide|guide>. ' +
+  const saved = 'Answer questions from https://docs.chickpea.example. Our guide: <https://wiki.shared.example/acme/guide|guide>. ' +
     'Never cite http://intranet.local/notes.';
-  const spaces = agentPathSpaces({ apiConnections: [], mcpConnections: [], instructions });
-  assert.deepEqual(spaces, instructionPathSpaces(instructions));
+  const spaces = agentPathSpaces({ apiConnections: [], mcpConnections: [], instructions: planInstructions(saved) });
+  assert.deepEqual(spaces, instructionLinkSpaces(saved), 'the saved instructions\' links, once');
   const reader = recordingReader('How do I add an Agent to a Channel?', spaces);
   const inside = ['https://docs.chickpea.example/llms.txt', 'https://docs.chickpea.example/agents/index.md', 'https://wiki.shared.example/acme/guide/setup'];
   for (const url of inside) assert.equal((await reader.read(url)).outcome, 'unreadable', url);
@@ -193,16 +202,17 @@ test('a link in the Agent\'s instructions is a space the model may write URLs in
   assert.deepEqual(reader.fetched, inside);
 });
 
-test('a teammate\'s name in the plan\'s instructions gives no space; the Agent\'s own instructions do', () => {
-  // Another member names their Agent with a link; it reaches this Agent's turn only in the teammates line.
-  const instructions = slackTenantInstructions({
-    workspaceId: 'T1', channelId: 'C1',
-    agent: { id: 'agent_docs', kind: 'user', name: 'Docs', instructions: 'Answer from https://docs.chickpea.example.' } as never,
-    teammates: [{ agentId: 'agent_other', name: 'Other https://evil.example/collect', handle: 'other' }] as never,
+test('the Agent\'s own name and its teammates\' names give no space; only its saved instructions do', () => {
+  // A rename needs no review, and another member names their own Agent: both reach this Agent's run after its instructions.
+  const instructions = planInstructions('Answer from https://docs.chickpea.example.', {
+    name: 'Docs https://evil.example/renamed',
+    teammates: [{ name: 'Other https://evil.example/collect', handle: 'other' }],
   });
-  assert.match(instructions, /evil\.example/, 'the teammate\'s name is in the plan\'s instructions');
+  assert.match(instructions, /evil\.example\/renamed[\s\S]*evil\.example\/collect/, 'both names are in the run\'s instructions');
   assert.deepEqual(agentPathSpaces({ apiConnections: [], mcpConnections: [], instructions }).map(({ host }) => host),
-    ['docs.chickpea.example', 'docs.chickpea.example'], 'the saved instructions appear twice; the teammate never');
+    ['docs.chickpea.example']);
+  assert.deepEqual(agentPathSpaces({ apiConnections: [], mcpConnections: [], instructions: 'Answer from https://docs.chickpea.example.' }), [],
+    'without the identity line, Chickpea cannot tell where the saved instructions end, so it takes none');
 });
 
 test('a URL the model writes on a host the requester typed may take any path, even on a connection\'s host', async () => {
