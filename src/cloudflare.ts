@@ -19,6 +19,7 @@ import { emitRuntimeCorrelation } from './work/trace-correlation.ts';
 import {
   emitGatewayDelivery,
   emitRelayAlarm,
+  emitResidencyHold,
   emitRuntimeLatency,
   startRelayAlarmMetrics,
   StateRpcSummary,
@@ -830,10 +831,9 @@ const RELAY_BATCH_WINDOW_MS = 250;
  * memory: a store that left it made the next message pay 1.5-2.4 s at ingress
  * for its first state read (production, 2026-11-10). Where the deployment
  * sets a residency hold (ResidencyHold), the store holds itself for its
- * window (hold()), which may outlast this one, and a store that restarted
- * inside it holds itself again at its next alarm (drainRelayAlarm). The tick
- * is that alarm only inside this window: a store that restarts later in a
- * longer hold stays unheld until another alarm or the next person's turn.
+ * window (hold()), which may outlast this one. A store that restarted inside
+ * it holds itself again at its first call or alarm (call(), drainRelayAlarm),
+ * which the scheduled tick's maintenance call makes within a minute.
  * Constants, not settings; Node has no alarms.
  */
 const KEEP_WARM_WINDOW_MS = 10 * 60_000;
@@ -1831,7 +1831,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     const { agentAsk, setupWake } = turnJob.turn;
     if (!agentAsk && !setupWake) {
       this.lastHumanTurnAt = Date.now();
-      this.hold().holdFrom(this.lastHumanTurnAt);
+      this.hold().holdFrom(this.lastHumanTurnAt, 'admission');
     }
     const ready = this.runnerMode()
       ? this.call((stores) => stores.turnJobs.dispatchableNow(turnJob.id))
@@ -2803,7 +2803,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     // object's count from it; for a person's turn only, as at admission.
     if (result.ok && (op.kind === 'markDelivered' || op.kind === 'markError') && this.hold().active) {
       const person = this.call((stores) => stores.turnJobs.isPersonTurn(op.id));
-      if (person.ok && person.value) this.hold().holdFrom(Date.now());
+      if (person.ok && person.value) this.hold().holdFrom(Date.now(), 'turn_end');
     }
     if (op.kind === 'begin' && result.ok && servingVersion !== undefined) {
       return { ok: true, value: { ...(result.value as RunnerTurnBegin), servingVersion } as ThreadRunnerTurnResult<K> };
@@ -2850,7 +2850,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     // A store woken cold learns from its newest turn row whether a
     // conversation is live, and holds itself for the rest of it.
     this.lastHumanTurnAt ??= stores.turnJobs.newestEnqueuedAt() ?? 0;
-    this.hold().holdFrom(this.lastHumanTurnAt);
+    this.hold().holdFrom(this.lastHumanTurnAt, 'alarm');
     const productTelemetry = createPlatformProductTelemetry({
       env: this.env as PlatformEnv,
       settings: localSettingsStore(stores),
@@ -3396,10 +3396,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
    * This store's residency hold, for the store's window the deployment sets
    * (STORE_RESIDENCY_HOLD_VARIABLE, else RESIDENCY_HOLD_VARIABLE): from a
    * person's admitted turn, and again from its end, which the runner reports
-   * (threadRunnerTurn).
+   * (threadRunnerTurn). Each change is logged as `residency_hold`.
    */
   private hold(): ResidencyHold {
-    this.conversationHold ??= new ResidencyHold(storeResidencyHoldMs(this.env as PlatformEnv));
+    this.conversationHold ??= new ResidencyHold(storeResidencyHoldMs(this.env as PlatformEnv), {
+      report: (change) => emitResidencyHold('store', change),
+    });
     return this.conversationHold;
   }
 
@@ -3485,6 +3487,17 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
           message: `state store unavailable: init failed (${this.initError ?? 'unknown'})`,
         },
       };
+    }
+    // A store that restarted inside a person's window holds itself again at
+    // its first call, from that person's newest turn, as an alarm would
+    // (drainRelayAlarm). A failed read leaves the hold for the next call.
+    if (this.lastHumanTurnAt === undefined && this.hold().active) {
+      try {
+        this.lastHumanTurnAt = this.stores.turnJobs.newestEnqueuedAt() ?? 0;
+        this.hold().holdFrom(this.lastHumanTurnAt, 'first_call');
+      } catch {
+        // The call goes on unheld.
+      }
     }
     try {
       return { ok: true, value: fn(this.stores) };

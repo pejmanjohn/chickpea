@@ -84,6 +84,7 @@ class StoreProbe { ${[
     ConversationOrder,
     ResidencyHold,
     storeResidencyHoldMs,
+    emitResidencyHold: () => undefined,
     StateRpcSummary,
     emitRuntimeLatency,
     deploymentTenancy,
@@ -153,7 +154,7 @@ export function directStore(stores: TagStateStores, env: PlatformEnv): DirectSto
   const probe = Object.assign(new StoreProbe(), {
     env: storeEnv,
     stores,
-    conversationHold: new ResidencyHold(storeResidencyHoldMs(storeEnv), timers),
+    conversationHold: new ResidencyHold(storeResidencyHoldMs(storeEnv), { timers }),
     directAdmissions: new ConversationOrder(),
     firstHandoffs: new Set<string>(),
     boot: { call() {} },

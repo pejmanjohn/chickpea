@@ -249,6 +249,7 @@ class HandoffProbe { ${[
     Promise,
     ResidencyHold,
     storeResidencyHoldMs,
+    emitResidencyHold: () => undefined,
     console: { warn() {} },
     frontDeskHandoffRunnerWake,
     threadRunnerStub,

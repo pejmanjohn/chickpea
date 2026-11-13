@@ -94,6 +94,7 @@ class ReceiptProbe { ${[
     Promise,
     ResidencyHold,
     storeResidencyHoldMs,
+    emitResidencyHold: () => undefined,
     console: { warn() {} },
     receiptRunnerWake,
     threadRunnerStub,

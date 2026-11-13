@@ -311,7 +311,15 @@ nothing for a refused `CHICKPEA_RESIDENCY_HOLD_MS`, and gives the store the
 `CHICKPEA_RESIDENCY_HOLD_MS` window for a refused
 `CHICKPEA_STORE_RESIDENCY_HOLD_MS`. Upgrades keep both variables.
 
-Before you turn it on, check these five points:
+A state store that restarts inside its window, after a deploy or an
+eviction, holds itself again at its first call or alarm. It holds until the
+window after the newest person's turn, never later. The scheduled tick calls
+the store every minute, so a restarted store is held again within a minute.
+Each change of the store's hold logs a `residency_hold` record (see
+[runtime observability](runtime-observability.md#turn-latency-and-relay-alarm-logs)).
+The runner and the Agent object log none.
+
+Before you turn it on, check these six points:
 
 - **The thread's objects, and a store window over 10 minutes, need a
   compatibility date of 2026-10-01 or later.**
@@ -329,6 +337,14 @@ Before you turn it on, check these five points:
   so the rest of a window after a long turn, or a window over 10 minutes, is
   not covered. The runner and the Agent object are evicted 70 to 140 seconds
   after a turn.
+- **A hold makes cold starts rarer. It does not prevent them.** Cloudflare
+  can close a held object while its timer is pending. On staging on
+  2026-11-13, it closed two held state stores 39 and 47 minutes into a
+  60-minute window. Each close came about 27 seconds after a call from the
+  scheduled tick, and the stores had survived 28 to 40 such calls before.
+  The platform's rule for this is not known. A closed store is held again at
+  its next call, so it loses about a minute of its window, and a message in
+  that minute meets a cold store.
 - **A held object is billed.** Cloudflare bills duration at 128 MB for as
   long as an object cannot hibernate
   ([pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/)).

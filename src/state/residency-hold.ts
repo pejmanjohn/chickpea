@@ -108,6 +108,35 @@ const platformTimers: HoldTimers = {
 };
 
 /**
+ * Why a hold moved its deadline later: a person's turn was admitted, or it
+ * ended, or the state store's alarm or its first call on a new instance found
+ * a person's window still open.
+ */
+export type HoldReason = 'admission' | 'turn_end' | 'alarm' | 'first_call';
+
+/**
+ * One change of a hold: a deadline moved later (`reason`), a timer of a run
+ * set the next (`chain`), or the last timer fired (`expired`).
+ */
+export interface ResidencyHoldChange {
+  reason: HoldReason | 'chain' | 'expired' | undefined;
+  windowMs: number | undefined;
+  /** When the hold lets the object go, in epoch milliseconds. */
+  holdEndsAt: number;
+  holdLeftMs: number;
+  /** The timer this change set; absent on `expired`. */
+  timerMs?: number;
+  /** A deadline moved while a timer was pending. */
+  renewed?: boolean;
+}
+
+export interface ResidencyHoldOptions {
+  timers?: HoldTimers;
+  /** Told each change of the hold; the state store logs them. */
+  report?: (change: ResidencyHoldChange) => void;
+}
+
+/**
  * Keeps a Durable Object in memory for a window after a turn. Cloudflare
  * hibernates an idle object after 10 seconds unless it has a pending timer;
  * a scheduled alarm does not stop that. So the hold is one pending timer at a
@@ -123,18 +152,22 @@ const platformTimers: HoldTimers = {
  *   alarm. A thread's runner and Agent object have none, so their hold ends
  *   there.
  * Once the last timer fires, the object hibernates on the platform's
- * ordinary rules. The object pays duration charges while held. Without a
- * window it holds nothing.
+ * ordinary rules. The platform can also close a held object while its timer
+ * is pending (staging, 2026-11-13), so a hold makes cold starts rarer but
+ * cannot rule them out. The object pays duration charges while held. Without
+ * a window it holds nothing.
  */
 export class ResidencyHold {
   private readonly windowMs: number | undefined;
   private readonly timers: HoldTimers;
+  private readonly report: ((change: ResidencyHoldChange) => void) | undefined;
   private timer: unknown;
   private until = 0;
 
-  constructor(windowMs: number | undefined, timers: HoldTimers = platformTimers) {
+  constructor(windowMs: number | undefined, options: ResidencyHoldOptions = {}) {
     this.windowMs = windowMs;
-    this.timers = timers;
+    this.timers = options.timers ?? platformTimers;
+    this.report = options.report;
   }
 
   /** Whether this deployment holds objects at all. */
@@ -142,22 +175,45 @@ export class ResidencyHold {
     return this.windowMs !== undefined;
   }
 
-  /** Hold until the window after `from`. A deadline already past, or no later than the current one, changes nothing. */
-  holdFrom(from: number): void {
+  /**
+   * Hold until the window after `from`. A deadline already past, or no later
+   * than the current one, changes nothing. `reason` names the change it
+   * reports.
+   */
+  holdFrom(from: number, reason?: HoldReason): void {
     if (this.windowMs === undefined) return;
     const at = from + this.windowMs;
     const now = this.timers.now();
     if (at <= now || at <= this.until) return;
+    const renewed = this.timer !== undefined;
     this.until = at;
-    this.arm(now);
+    this.tell(reason, now, { timerMs: this.arm(now), renewed });
   }
 
-  private arm(now: number): void {
+  /** Sets the one pending timer, at most HOLD_TIMER_MS ahead; returns its delay. */
+  private arm(now: number): number {
     if (this.timer !== undefined) this.timers.clear(this.timer);
+    const timerMs = Math.min(this.until - now, HOLD_TIMER_MS);
     this.timer = this.timers.set(() => {
       this.timer = undefined;
       const firedAt = this.timers.now();
-      if (firedAt < this.until) this.arm(firedAt);
-    }, Math.min(this.until - now, HOLD_TIMER_MS));
+      if (firedAt < this.until) this.tell('chain', firedAt, { timerMs: this.arm(firedAt) });
+      else this.tell('expired', firedAt);
+    }, timerMs);
+    return timerMs;
+  }
+
+  private tell(
+    reason: ResidencyHoldChange['reason'],
+    now: number,
+    rest: Pick<ResidencyHoldChange, 'timerMs' | 'renewed'> = {},
+  ): void {
+    this.report?.({
+      reason,
+      windowMs: this.windowMs,
+      holdEndsAt: this.until,
+      holdLeftMs: Math.max(0, this.until - now),
+      ...rest,
+    });
   }
 }

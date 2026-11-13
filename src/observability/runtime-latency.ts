@@ -8,6 +8,7 @@ import type { HostReleaseRecord } from '../slack/host-release-relay.ts';
 import type { GatewayInboundDelivery } from '../slack/gateway/protocol.ts';
 import type { GatewaySessionRunnerHealthSnapshot } from '../slack/gateway/session-runner.ts';
 import type { SlackThreadRunnerRpc } from '../slack/thread-runner-rpc.ts';
+import type { ResidencyHoldChange } from '../state/residency-hold.ts';
 
 /**
  * Content-free latency logs for the turn relay (see
@@ -35,6 +36,7 @@ export type RuntimeLatencyEvent =
   | 'runner_boot'
   | 'agent_boot'
   | 'store_boot'
+  | 'residency_hold'
   | 'slack_read'
   | 'interaction_judgment'
   | 'model_step'
@@ -100,6 +102,7 @@ const STRING_FIELDS: Readonly<Record<string, RegExp>> = {
   versionId: VERSION_ID,
   supersededBy: VERSION_ID,
   agentClass: TOKEN,
+  object: TOKEN,
   agentWakeSource: TOKEN,
   modelToken: MODEL_TOKEN,
   scope: TOKEN,
@@ -410,6 +413,15 @@ export class StoreBootMarks extends ObjectBootMarks<StoreBootMethod> {
     this.fields.versionChanged = versionChanged;
     this.constructed();
   }
+}
+
+/**
+ * One change of an object's residency hold, logged as `residency_hold`.
+ * `object` names the kind; Workers Logs adds the object's id. Only the state
+ * store logs its hold.
+ */
+export function emitResidencyHold(object: 'store', change: ResidencyHoldChange, sink?: RuntimeLatencySink): void {
+  emitRuntimeLatency('residency_hold', { object, ...change }, sink);
 }
 
 /** Focused tests only: the next activation of each kind is this isolate's first. */
