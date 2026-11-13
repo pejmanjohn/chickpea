@@ -20,6 +20,10 @@ type Output = z.infer<typeof schemas.showTestReportOutput>;
 
 /** The longest question a row shows: one line, cut. */
 const QUESTION_CHARS = 300;
+/** What a row's verdict chip, a note or next, and the summary show; the tool takes more. */
+const VERDICT_CHARS = 40;
+const LINE_CHARS = 160;
+const SUMMARY_CHARS = 200;
 
 export async function showTestReport(deps: FiveZeroDeps, input: Input, cardHost: boolean): Promise<Output> {
   const store = await testRunStore(deps);
@@ -58,14 +62,15 @@ export async function showTestReport(deps: FiveZeroDeps, input: Input, cardHost:
   const handle = agent.slackPresence?.normalizedHandle || undefined;
   return {
     agent: { agentId: agent.id, name: agent.name, ...(handle ? { handle } : {}), ...agentAvatar(deps, agent) },
+    // The model's words are cut to what the card shows, so a few characters over never refuses the report.
     runs: input.runs.map(({ verdict, note, before }, index) => ({
       question: shortLine(settled[index]!.question ?? firstAsk ?? ''),
-      verdict,
-      ...(note ? { note } : {}),
-      ...(before ? { before } : {}),
+      verdict: clip(verdict, VERDICT_CHARS),
+      ...(note ? { note: clip(note, LINE_CHARS) } : {}),
+      ...(before ? { before: clip(before, VERDICT_CHARS) } : {}),
     })),
-    summary: input.summary,
-    ...(input.next ? { next: input.next } : {}),
+    summary: clip(input.summary, SUMMARY_CHARS),
+    ...(input.next ? { next: clip(input.next, LINE_CHARS) } : {}),
     answers: settled.map(({ status, result }) => status === 'answered' && result?.reply ? result.reply : null),
     nextStep: cardHost
       ? 'The card shows the person this report, and each answer when they open its row. Don\'t repeat it in your reply. It needs no press, so carry on.'
@@ -74,6 +79,11 @@ export async function showTestReport(deps: FiveZeroDeps, input: Input, cardHost:
 }
 
 function shortLine(text: string): string {
+  return clip(text, QUESTION_CHARS);
+}
+
+/** One line of at most `max` characters, cut with an ellipsis. */
+function clip(text: string, max: number): string {
   const line = text.replace(/\s+/g, ' ').trim();
-  return line.length > QUESTION_CHARS ? `${line.slice(0, QUESTION_CHARS - 1)}…` : line;
+  return line.length > max ? `${line.slice(0, max - 1).trimEnd()}…` : line;
 }
