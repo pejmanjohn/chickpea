@@ -1557,7 +1557,7 @@ try {
     assert.equal(await subtitle(), '@quiet · Right page 3 of 3 · Short enough 2 of 3');
     assert.deepEqual(await buttons(), [], 'nothing to press but the rows');
     assert.deepEqual(await browser.inCard('[...document.querySelectorAll(".cp-row-detail")].map((node) => node.textContent)'),
-      ['Passes was: Too long', 'Too long was: Too long', 'Passes was: Passes'], 'each verdict as a chip, and the first round\'s');
+      ['Passes was: Too long', 'Too long', 'Passes'], 'each verdict as a chip, and the first round\'s only where it differs');
     await plain('The report card');
     await shot('9-report');
     await browser.click('toggle:1');
