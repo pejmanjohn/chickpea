@@ -29,7 +29,7 @@ async function fixture(t: TestContext) {
   const auth = await createBetterAuth({ ...environment, privateSeam: { async resolveAdmissionOperation() { return admission; } } });
   const handler = createBetterAuthPublicHandler(environment);
   const browser = new Hono();
-  mountMcpOAuthBrowserRoutes(browser, async () => environment);
+  mountMcpOAuthBrowserRoutes(browser, async () => ({ environment }));
   const person = await auth.chickpea.reconcileSlackIdentity({
     slackTeamId: 'T12345678', slackUserId: 'U12345678', displayName: 'Fixture Owner',
     organization: { name: 'Fixture', slug: 'fixture' },

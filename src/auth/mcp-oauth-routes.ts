@@ -1,14 +1,17 @@
 import { createLocalJWKSet, jwtVerify, type JWK, type JWTPayload } from 'jose';
 import { Hono, type Context } from 'hono';
+import { isAPIError } from 'better-auth/api';
 import { constantTimeEqual, makeSignature } from 'better-auth/crypto';
 
 import { escapeHtml } from '../security/html-escape.ts';
 import { deploymentTenancy } from '../config/installation-scope.ts';
 import {
   getIdentityStore,
+  getSettingsStore,
   type PlatformEnv,
 } from '../config/state-backend.ts';
-import type { IdentityStore, OrganizationRole } from '../identity/types.ts';
+import type { BetterAuthPrincipalRecord, IdentityStore, OrganizationRole } from '../identity/types.ts';
+import { SLACK_SETTING_KEYS } from '../slack/credentials.ts';
 import {
   BETTER_AUTH_BASE_PATH,
   createBetterAuth,
@@ -28,6 +31,7 @@ import {
 } from './mcp-oauth.ts';
 import { clientMetadataHost } from './mcp-client-metadata.ts';
 import { displayMcpClientName, knownMcpAppName, returnAppName } from './mcp-client-name.ts';
+import { setCookieValues } from './cookies.ts';
 import { BetterAuthMcpOAuthContinuationStore } from './mcp-oauth-continuation.ts';
 import { challengeRedeemed } from './mcp-oauth-redemption.ts';
 import { hostedLoginFence, type HostedLoginFence } from './hosted-login.ts';
@@ -72,9 +76,37 @@ interface McpAuthenticatedRequestHandlerInput {
 
 interface McpOAuthRuntimeOptions {
   identity?: IdentityStore;
+  /** Where consent reads the workspace's stored name; the deployment's settings by default. */
+  settings?: WorkspaceNameSettings;
   authSecret?: string;
   createServer?: McpServerFactory;
   productTelemetry?: (c: Context) => ProductTelemetryCapture;
+}
+
+/** The one setting consent reads: the workspace name Admin stores. */
+export interface WorkspaceNameSettings {
+  getSetting(key: string): Promise<string | undefined> | string | undefined;
+}
+
+/** Who a browser session signs in as, in the words the consent page shows. */
+export interface McpConsentAccount {
+  workspaceName?: string;
+  personName?: string;
+  /** Only while the membership is active. */
+  role?: OrganizationRole;
+}
+
+/** The Better Auth the MCP sign-in and consent pages run on, and what consent may say about the person. */
+export interface McpOAuthBrowserSite {
+  environment: BetterAuthEnvironment;
+  /** The workspace and person a Better Auth user signs in as here; undefined names nothing. */
+  describe?(betterAuthUserId: string): Promise<McpConsentAccount | undefined>;
+  /**
+   * Whether consent offers "Not this workspace? Switch". Only where sign-in
+   * names no Slack workspace, so Slack's page lets the person choose another:
+   * the hosted shared sign-in. A self-hosted sign-in is pinned to its one.
+   */
+  workspaceSwitch?: boolean;
 }
 
 /**
@@ -188,9 +220,19 @@ export function createMcpOAuthRuntimeRoutes(options: McpOAuthRuntimeOptions = {}
   });
   // Under installation tenancy these pages are shared by every installation,
   // and a host serves them before resolving one (serveHostedSharedAuth).
-  mountMcpOAuthBrowserRoutes(app, async (c) => deploymentTenancy(c.env as PlatformEnv | undefined) === 'installation'
-    ? undefined
-    : (await resolveMcpRuntime(c, options))?.environment);
+  mountMcpOAuthBrowserRoutes(app, async (c) => {
+    const platformEnv = c.env as PlatformEnv | undefined;
+    if (deploymentTenancy(platformEnv) === 'installation') return undefined;
+    const runtime = await resolveMcpRuntime(c, options);
+    if (!runtime) return undefined;
+    return {
+      environment: runtime.environment,
+      describe: async (betterAuthUserId) => mcpConsentAccount(
+        await runtime.identity.resolveBetterAuthPrincipal(betterAuthUserId),
+        await (options.settings ?? getSettingsStore(platformEnv)).getSetting(SLACK_SETTING_KEYS.teamName),
+      ),
+    };
+  });
   app.all('/mcp', async (c) => {
     try {
       return await dispatchMcp(c, options);
@@ -206,26 +248,47 @@ export function createMcpOAuthRuntimeRoutes(options: McpOAuthRuntimeOptions = {}
 }
 
 /**
- * The MCP OAuth browser pages (sign-in continuation and consent) on the
- * Better Auth `environmentFor` gives a request; none answers 404.
+ * The MCP OAuth browser pages (sign-in continuation, consent and Switch) on
+ * the site `siteFor` gives a request; none answers 404.
  */
 export function mountMcpOAuthBrowserRoutes(
   app: Hono,
-  environmentFor: (c: Context) => Promise<BetterAuthEnvironment | undefined>,
+  siteFor: (c: Context) => Promise<McpOAuthBrowserSite | undefined>,
 ): void {
-  const withEnvironment = (page: (c: Context, environment: BetterAuthEnvironment) => Promise<Response>) =>
+  const withSite = (page: (c: Context, site: McpOAuthBrowserSite) => Promise<Response>) =>
     async (c: Context) => {
-      const environment = await environmentFor(c);
-      return environment ? page(c, environment) : c.notFound();
+      const site = await siteFor(c);
+      return site ? page(c, site) : c.notFound();
     };
-  app.use('/auth/mcp/consent', actualBodyLimit({
+  const bodyLimit = actualBodyLimit({
     maxSize: MCP_BROWSER_BODY_LIMIT_BYTES,
     onError: (c) => c.json({ error: 'request_too_large' }, 413),
-  }));
-  app.get('/auth/mcp/login', withEnvironment(beginMcpLogin));
-  app.get('/auth/mcp/resume/:continuation', withEnvironment(resumeMcpLogin));
-  app.get('/auth/mcp/consent', withEnvironment(showMcpConsent));
-  app.post('/auth/mcp/consent', withEnvironment(submitMcpConsent));
+  });
+  app.use('/auth/mcp/consent', bodyLimit);
+  app.use('/auth/mcp/switch', bodyLimit);
+  app.get('/auth/mcp/login', withSite((c, site) => beginMcpLogin(c, site.environment)));
+  app.get('/auth/mcp/resume/:continuation', withSite((c, site) => resumeMcpLogin(c, site.environment)));
+  app.get('/auth/mcp/consent', withSite(showMcpConsent));
+  app.post('/auth/mcp/consent', withSite((c, site) => submitMcpConsent(c, site.environment)));
+  app.post('/auth/mcp/switch', withSite(switchMcpWorkspace));
+}
+
+/**
+ * What consent shows for a principal and the workspace name its installation
+ * stored. A role only while the membership is active.
+ */
+export function mcpConsentAccount(
+  principal: BetterAuthPrincipalRecord | undefined,
+  storedWorkspaceName: string | undefined,
+): McpConsentAccount {
+  const workspaceName = storedWorkspaceName?.trim();
+  const personName = principal?.user?.displayName?.trim();
+  const membership = principal?.membership?.status === 'active' ? principal.membership : undefined;
+  return {
+    ...(workspaceName ? { workspaceName } : {}),
+    ...(personName ? { personName } : {}),
+    ...(membership ? { role: membership.role } : {}),
+  };
 }
 
 async function readMcpProtocolBody(
@@ -247,12 +310,24 @@ async function beginMcpLogin(c: Context, environment: BetterAuthEnvironment): Pr
   if (!await verifySignedOAuthQuery(query, environment.secret)) {
     return invalidBrowserRequest();
   }
+  return signInThenResume(environment, query);
+}
+
+/**
+ * Sends the browser to Slack sign-in with a single-use continuation back to
+ * this exact signed authorization request.
+ */
+async function signInThenResume(
+  environment: BetterAuthEnvironment,
+  query: URLSearchParams,
+  setCookies: readonly string[] = [],
+): Promise<Response> {
   const store = new BetterAuthMcpOAuthContinuationStore({ backend: environment.backend });
   const continuation = await store.issue({
     authorizationPath: `${BETTER_AUTH_BASE_PATH}/oauth2/authorize?${query.toString()}`,
   });
   const destination = `/auth/mcp/resume/${continuation.id}`;
-  return noStoreRedirect(`/auth/slack/sign-in?${new URLSearchParams({ destination })}`);
+  return noStoreRedirect(`/auth/slack/sign-in?${new URLSearchParams({ destination })}`, setCookies);
 }
 
 async function resumeMcpLogin(c: Context, environment: BetterAuthEnvironment): Promise<Response> {
@@ -264,7 +339,8 @@ async function resumeMcpLogin(c: Context, environment: BetterAuthEnvironment): P
   return noStoreRedirect(continuation.authorizationPath);
 }
 
-async function showMcpConsent(c: Context, environment: BetterAuthEnvironment): Promise<Response> {
+async function showMcpConsent(c: Context, site: McpOAuthBrowserSite): Promise<Response> {
+  const { environment } = site;
   const query = new URL(c.req.url).searchParams;
   if (!await verifySignedOAuthQuery(query, environment.secret)) {
     return invalidBrowserRequest();
@@ -274,26 +350,25 @@ async function showMcpConsent(c: Context, environment: BetterAuthEnvironment): P
   if (await alreadyRedeemed(environment, query)) return alreadyConnectedResponse(clientId, clientName);
   const clientHost = clientMetadataHost(clientId);
   const scope = query.get('scope') ?? MCP_WORKSPACE_SCOPE;
-  return new Response(renderMcpConsentPage({ clientId, clientName, clientHost, scope, oauthQuery: query.toString() }), {
+  // A page that cannot read the session names no one, and its Allow asks to review again.
+  const signedIn = await readBrowserSession(environment, c.req.raw.headers).catch(() => undefined);
+  const account = signedIn && site.describe
+    ? await site.describe(signedIn.betterAuthUserId).catch(() => undefined)
+    : undefined;
+  return new Response(renderMcpConsentPage({
+    clientId, clientName, clientHost, scope, oauthQuery: query.toString(),
+    ...(account ? { account } : {}),
+    ...(signedIn ? { sessionCheck: await consentSessionCheck(signedIn.sessionId, environment.secret) } : {}),
+    workspaceSwitch: site.workspaceSwitch === true && signedIn !== undefined,
+  }), {
     status: 200,
     headers: browserHeaders('text/html; charset=utf-8'),
   });
 }
 
 async function submitMcpConsent(c: Context, environment: BetterAuthEnvironment): Promise<Response> {
-  const provenance = validateBrowserMutationProvenance(c.req.raw, {
-    canonicalOrigin: environment.baseURL,
-    maxBodyBytes: MCP_BROWSER_BODY_LIMIT_BYTES,
-    requireJson: false,
-    allowOpaqueOriginFormNavigation: true,
-  });
-  if (!provenance.ok) {
-    const status = provenance.code === 'body_too_large' ? 413 : 403;
-    return Response.json({ error: provenance.code }, {
-      status,
-      headers: browserHeaders('application/json'),
-    });
-  }
+  const refused = refusedBrowserForm(c.req.raw, environment);
+  if (refused) return refused;
   const form = await c.req.parseBody();
   const oauthQuery = typeof form.oauth_query === 'string' ? form.oauth_query : '';
   const query = new URLSearchParams(oauthQuery);
@@ -306,6 +381,22 @@ async function submitMcpConsent(c: Context, environment: BetterAuthEnvironment):
     return alreadyConnectedResponse(clientId, clientName);
   }
   const accept = form.decision === 'allow';
+  if (accept && typeof form.session_check === 'string') {
+    // Better Auth grants to whichever session the browser holds now; the page
+    // named the one it held then. A page that named no one (it read no
+    // session, or predates the check) has no name to keep true, and only this
+    // origin can submit the form. Without a session Better Auth refuses alone.
+    let signedIn: BrowserSession | undefined;
+    try {
+      signedIn = await readBrowserSession(environment, c.req.raw.headers);
+    } catch {
+      return browserError('Chickpea could not check your sign-in. Try again in a moment.', 503);
+    }
+    if (signedIn &&
+        !constantTimeEqual(form.session_check, await consentSessionCheck(signedIn.sessionId, environment.secret))) {
+      return signInChangedResponse(oauthQuery);
+    }
+  }
   const handler = createBetterAuthPublicHandler(environment);
   const body = JSON.stringify({ accept, oauth_query: oauthQuery });
   const headers = new Headers(c.req.raw.headers);
@@ -324,6 +415,108 @@ async function submitMcpConsent(c: Context, environment: BetterAuthEnvironment):
     return createMcpConsentRedirectResponse(response.url, query.get('client_id') ?? undefined);
   }
   return result;
+}
+
+/**
+ * "Not this workspace? Switch": ends this browser's session, then signs in
+ * again at Slack and resumes the same signed authorization request once. A
+ * tampered or expired request, or one the client already redeemed, ends
+ * nothing.
+ */
+async function switchMcpWorkspace(c: Context, site: McpOAuthBrowserSite): Promise<Response> {
+  if (site.workspaceSwitch !== true) return c.notFound();
+  const { environment } = site;
+  const refused = refusedBrowserForm(c.req.raw, environment);
+  if (refused) return refused;
+  const form = await c.req.parseBody();
+  const query = new URLSearchParams(typeof form.oauth_query === 'string' ? form.oauth_query : '');
+  if (!await verifySignedOAuthQuery(query, environment.secret)) {
+    return invalidBrowserRequest();
+  }
+  if (await alreadyRedeemed(environment, query)) {
+    const clientId = query.get('client_id') ?? '';
+    return alreadyConnectedResponse(clientId, await lookupMcpClientName(environment, clientId, c.req.raw.headers));
+  }
+  return signInThenResume(environment, query, await endBrowserSession(c.req.raw, environment));
+}
+
+/** The browser-form provenance consent and Switch both require, or the response that refuses it. */
+function refusedBrowserForm(request: Request, environment: BetterAuthEnvironment): Response | undefined {
+  const provenance = validateBrowserMutationProvenance(request, {
+    canonicalOrigin: environment.baseURL,
+    maxBodyBytes: MCP_BROWSER_BODY_LIMIT_BYTES,
+    requireJson: false,
+    allowOpaqueOriginFormNavigation: true,
+  });
+  if (provenance.ok) return undefined;
+  return Response.json({ error: provenance.code }, {
+    status: provenance.code === 'body_too_large' ? 413 : 403,
+    headers: browserHeaders('application/json'),
+  });
+}
+
+interface BrowserSession {
+  sessionId: string;
+  betterAuthUserId: string;
+}
+
+/** The browser's Better Auth session, read without refreshing it; undefined when it has none. */
+async function readBrowserSession(
+  environment: BetterAuthEnvironment,
+  headers: Headers,
+): Promise<BrowserSession | undefined> {
+  if (!headers.get('cookie')) return undefined;
+  let result: { session?: { id?: unknown }; user?: { id?: unknown } } | null;
+  try {
+    result = await (await createBetterAuthSessionReader(environment)).api.getSession({
+      headers,
+      query: { disableRefresh: true },
+    }) as unknown as typeof result;
+  } catch (error) {
+    // Better Auth refused the session; any other failure is not a sign-out.
+    if (isAPIError(error) && error.status === 'UNAUTHORIZED') return undefined;
+    throw error;
+  }
+  const sessionId = result?.session?.id;
+  const betterAuthUserId = result?.user?.id;
+  return typeof sessionId === 'string' && typeof betterAuthUserId === 'string'
+    ? { sessionId, betterAuthUserId }
+    : undefined;
+}
+
+/** Binds a consent form to the session its page named, without showing the session's ID. */
+function consentSessionCheck(sessionId: string, secret: string): Promise<string> {
+  return makeSignature(`chickpea:mcp-consent:${sessionId}`, secret);
+}
+
+const SESSION_COOKIE_NAMES = ['__Secure-better-auth.session_token', 'better-auth.session_token'] as const;
+
+/**
+ * Ends the browser's session: Better Auth deletes it and expires its cookies,
+ * and the session cookie is expired here too, as Admin's sign-out does, so
+ * the browser holds nothing even if Better Auth could not answer.
+ */
+async function endBrowserSession(request: Request, environment: BetterAuthEnvironment): Promise<string[]> {
+  const expired = SESSION_COOKIE_NAMES.map((name) =>
+    `${name}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax${name.startsWith('__Secure-') ? '; Secure' : ''}`);
+  const cookie = request.headers.get('cookie');
+  if (!cookie) return expired;
+  try {
+    const signedOut = await createBetterAuthPublicHandler(environment)(new Request(
+      `${environment.baseURL}${BETTER_AUTH_BASE_PATH}/sign-out`,
+      {
+        method: 'POST',
+        headers: {
+          cookie, origin: environment.baseURL, 'sec-fetch-site': 'same-origin',
+          'content-type': 'application/json', 'content-length': '2',
+        },
+        body: '{}',
+      },
+    ));
+    return [...setCookieValues(signedOut.headers), ...expired];
+  } catch {
+    return expired;
+  }
 }
 
 async function dispatchMcp(c: Context, options: McpOAuthRuntimeOptions): Promise<Response> {
@@ -511,6 +704,13 @@ button[value=allow]:active{transform:translateY(1px);box-shadow:0 1px 0 var(--go
 button[value=deny]{background:transparent;color:var(--text-2);border:1px solid var(--line)}
 a{color:#8a6410}
 p.foot{margin:18px 0 0;font-size:14px}
+.account{display:flex;align-items:center;gap:12px;margin:0 0 16px;padding:12px 14px;background:var(--well);border:1px solid var(--line);border-radius:12px}
+p.account{display:block;color:var(--text)}
+.account .mark{flex:none;display:grid;place-items:center;width:38px;height:38px;border-radius:10px;background:var(--gold);color:#3b3220;font-weight:700;font-size:18px}
+.account b{display:block;overflow-wrap:anywhere}
+.account small{display:block;color:var(--text-2);font-size:13px;overflow-wrap:anywhere}
+form.switch{display:block;margin:16px 0 0;font-size:15px;color:var(--text-2)}
+form.switch button{padding:0;background:none;border:0;border-radius:0;font-size:15px;color:#8a6410;text-decoration:underline}
 `.trim();
 
 function brandPage(title: string, body: string): string {
@@ -555,6 +755,12 @@ export function renderMcpConsentPage(input: {
   clientHost?: string | undefined;
   scope: string;
   oauthQuery: string;
+  /** Who the browser's session signs in as, when the page could read it. */
+  account?: McpConsentAccount | undefined;
+  /** Binds Allow to the session this page names (consentSessionCheck). */
+  sessionCheck?: string | undefined;
+  /** Offer "Not this workspace? Switch". */
+  workspaceSwitch?: boolean | undefined;
 }): string {
   const known = knownMcpAppName(input.clientId);
   const name = displayMcpClientName(input.clientName);
@@ -567,25 +773,58 @@ export function renderMcpConsentPage(input: {
     if (scope === MCP_OFFLINE_SCOPE) return 'stay signed in';
     return scope;
   }).join(' and ');
+  // Stored names are a person's or a workspace's own text: cleaned and bounded like an app's name.
+  const workspace = displayMcpClientName(input.account?.workspaceName);
   const [heading, line] = known
-    ? [`Allow ${known} to manage your workspace?`, `${known} will act as you in this Chickpea workspace. It can do only what you can do.`]
+    ? [`Allow ${known} to manage ${workspace ? escapeHtml(workspace) : 'your workspace'}?`, `${known} will act as you in this Chickpea workspace. It can do only what you can do.`]
     : ['Allow workspace management?', 'An app is asking to manage this Chickpea workspace as you. It signs in as you and can only do what you can do.'];
   const reader = known ?? 'The app';
+  const sessionCheck = input.sessionCheck === undefined
+    ? ''
+    : `\n        <input type="hidden" name="session_check" value="${escapeHtml(input.sessionCheck)}">`;
+  const switchForm = input.workspaceSwitch ? `
+      <form method="post" action="/auth/mcp/switch" class="switch">
+        <input type="hidden" name="oauth_query" value="${escapeHtml(input.oauthQuery)}">
+        Not this workspace? <button type="submit">Switch</button>
+      </form>` : '';
   return brandPage('Authorize Chickpea', `      <h1>${heading}</h1>
-      <p>${line}</p>
+${signedInLine(workspace, input.account)}      <p>${line}</p>
       <p>${reader} can read practice answers, your own direct messages with Agents, and Agents' conversations in public Slack Channels. These can include information from services your team connected. ${reader} keeps what it reads under your account's settings there.</p>
       <dl><dt>App</dt><dd>${app}</dd>${domain}<dt>Permission</dt><dd>${escapeHtml(permission)}</dd></dl>
       <form method="post" action="/auth/mcp/consent">
-        <input type="hidden" name="oauth_query" value="${escapeHtml(input.oauthQuery)}">
+        <input type="hidden" name="oauth_query" value="${escapeHtml(input.oauthQuery)}">${sessionCheck}
         <button type="submit" name="decision" value="allow">Allow</button>
         <button type="submit" name="decision" value="deny">Deny</button>
-      </form>
-${disconnectLine(known ?? 'the app')}`);
+      </form>${switchForm}
+${disconnectLine(known ?? 'the app', input.workspaceSwitch
+    ? 'Switch signs you out here and takes you to Slack to choose another workspace. '
+    : '')}`);
+}
+
+const ROLE_LABELS: Record<OrganizationRole, string> = { owner: 'Owner', admin: 'Admin', member: 'Member' };
+
+/** The workspace and person the session signs in as, or nothing when the page knows neither. */
+function signedInLine(workspace: string | undefined, account: McpConsentAccount | undefined): string {
+  const person = displayMcpClientName(account?.personName);
+  const who = person ? `${escapeHtml(person)}${account?.role ? `, ${ROLE_LABELS[account.role]}` : ''}` : undefined;
+  if (!workspace) return who ? `      <p class="account">Signed in as ${who}.</p>\n` : '';
+  const initial = escapeHtml([...workspace][0]!.toLocaleUpperCase());
+  return `      <div class="account"><span class="mark" aria-hidden="true">${initial}</span><span><b>${escapeHtml(workspace)}</b><small>Slack workspace${who ? ` · signed in as ${who}` : ''}</small></span></div>\n`;
 }
 
 /** Where the person disconnects the app later; a new tab, so a consent in progress stays open. */
-function disconnectLine(app: string): string {
-  return `      <p class="foot">You can disconnect ${escapeHtml(app)} any time from <a href="${ADMIN_CONNECTED_APPS_PATH}" target="_blank" rel="noopener noreferrer">Connected apps</a> in Chickpea.</p>`;
+function disconnectLine(app: string, before = ''): string {
+  return `      <p class="foot">${before}You can disconnect ${escapeHtml(app)} any time from <a href="${ADMIN_CONNECTED_APPS_PATH}" target="_blank" rel="noopener noreferrer">Connected apps</a> in Chickpea.</p>`;
+}
+
+/** Allow from a page that named another session: nothing was granted. */
+function signInChangedResponse(oauthQuery: string): Response {
+  return new Response(brandPage('Sign-in changed', `      <h1>Your sign-in changed</h1>
+      <p>You signed in again after this page opened, so nothing was allowed. Check which workspace you're signed in to now before you allow access.</p>
+      <p><a href="/auth/mcp/consent?${escapeHtml(oauthQuery)}">Review the request</a></p>`), {
+    status: 409,
+    headers: browserHeaders('text/html; charset=utf-8'),
+  });
 }
 
 /**
@@ -647,11 +886,10 @@ export function createMcpConsentRedirectResponse(location: string, clientId?: st
   });
 }
 
-function noStoreRedirect(location: string): Response {
-  return new Response(null, {
-    status: 303,
-    headers: { 'Cache-Control': 'no-store', Location: location, 'Referrer-Policy': 'no-referrer' },
-  });
+function noStoreRedirect(location: string, setCookies: readonly string[] = []): Response {
+  const headers = new Headers({ 'Cache-Control': 'no-store', Location: location, 'Referrer-Policy': 'no-referrer' });
+  for (const cookie of setCookies) headers.append('Set-Cookie', cookie);
+  return new Response(null, { status: 303, headers });
 }
 
 function invalidBrowserRequest(): Response {

@@ -517,7 +517,7 @@ test('a signed-out person who signs in with Slack lands on the MCP consent scree
     betterAuthMembershipId: f.person.membershipId,
   });
   const browser = new Hono();
-  mountMcpOAuthBrowserRoutes(browser, async () => f.options);
+  mountMcpOAuthBrowserRoutes(browser, async () => ({ environment: f.options }));
   const slack: SlackOidcProvider = {
     authorizationUrl: ({ state }) => `https://slack.com/openid/connect/authorize?state=${state}`,
     async exchangeAndVerify({ code }) {

@@ -120,6 +120,12 @@ async function hostedDeployment(t: TestContext) {
     assert.ok(store, 'the env names a known installation');
     return store;
   };
+  const settingsStores = new Map<string, SqliteSettingsStore>();
+  const settingsOf = (env: PlatformEnv) => {
+    const settings = settingsStores.get(installationScopeOf(env)?.installationId ?? '');
+    assert.ok(settings, 'the env names a known installation');
+    return settings;
+  };
   const routing: HostedRouting<PlatformEnv> = {
     environment,
     throttleRegistration: async () => undefined,
@@ -129,6 +135,7 @@ async function hostedDeployment(t: TestContext) {
       { slackTeamId: login.slackTeamId },
     ),
     identity: storeOf,
+    settings: settingsOf,
   };
 
   async function install(slackTeamId: string, organizationId: string, ownerSlackUserId: string) {
@@ -136,6 +143,9 @@ async function hostedDeployment(t: TestContext) {
     const identity = new SqliteIdentityStore(':memory:', { installation: () => ({ organizationId, installationId }) });
     defer(() => identity.close());
     stores.set(installationId, identity);
+    const settings = new SqliteSettingsStore(':memory:');
+    defer(() => settings.close());
+    settingsStores.set(installationId, settings);
     const record: { -readonly [K in keyof InstallationRecord]: InstallationRecord[K] } = {
       identity: { organizationId, installationId }, slackTeamId, status: 'active',
     };
@@ -148,7 +158,7 @@ async function hostedDeployment(t: TestContext) {
       request: new Request(`${ORIGIN}/start/install/callback`),
     }));
     return {
-      identity, record, installationId, ownerCookie,
+      identity, settings, record, installationId, ownerCookie,
       /** A Member Slack provisioned, signed in through the host. */
       async member(slackUserId: string) {
         const provisioned = await identity.provisionSlackMember({ slackTeamId, slackUserId, displayName: 'Member' });
@@ -1089,6 +1099,73 @@ test('Codex signs in to a hosted installation by its metadata document on a rand
   const clients = await hosted.backend.pool.query('SELECT "clientId", "userId", "clientSecret", name FROM "oauthClient"');
   assert.deepEqual(clients.rows, [{ clientId: codex, userId: null, clientSecret: null, name: 'Codex' }]);
   assert.deepEqual(documents.requests, [codex]);
+});
+
+test('hosted consent names the session\'s own workspace, and Switch resumes the same request into another one', { timeout: 120_000 }, async (t) => {
+  const hosted = await hostedDeployment(t);
+  if (!hosted) return;
+  const codex = CODEX_DOCUMENT.url;
+  hosted.routing.environment.fetchClientMetadataResource = metadataDocumentServer({ [codex]: CODEX_DOCUMENT.body }).fetch;
+  const acme = await hosted.install('TACME', 'org_acme', 'UOWNERA');
+  const beta = await hosted.install('TBETA', 'org_beta', 'UOWNERB');
+  await acme.settings.setSetting('slack.teamName', 'Acme Corp');
+  await beta.settings.setSetting('slack.teamName', 'Beta Labs');
+
+  const verifier = randomBytes(32).toString('base64url');
+  const callbackUrl = 'http://127.0.0.1:52247/callback';
+  const query = new URLSearchParams({
+    response_type: 'code', client_id: codex, redirect_uri: callbackUrl, scope: RENEWABLE_SCOPE,
+    state: 'codex-state', resource: RESOURCE,
+    code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256',
+  });
+  const form = (cookie: string, body: Record<string, string>, path = '/auth/mcp/consent') => hosted.shared(new Request(`${ORIGIN}${path}`, {
+    method: 'POST',
+    headers: { cookie, origin: ORIGIN, 'sec-fetch-site': 'same-origin', 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(body),
+  }));
+  const consentPage = async (consent: URL, cookie: string) => {
+    const html = await (await hosted.shared(new Request(consent, { headers: { cookie } }))).text();
+    return { html, sessionCheck: /name="session_check" value="([^"]*)"/.exec(html)![1]!.replaceAll('&amp;', '&') };
+  };
+
+  const authorized = await hosted.shared(new Request(`${ORIGIN}/api/auth/oauth2/authorize?${query}`, { headers: { cookie: acme.ownerCookie } }));
+  const consent = new URL(authorized.headers.get('location')!, ORIGIN);
+  assert.equal(consent.pathname, '/auth/mcp/consent');
+  const acmePage = await consentPage(consent, acme.ownerCookie);
+  assert.ok(acmePage.html.includes('<b>Acme Corp</b><small>Slack workspace · signed in as Owner, Owner</small>'), acmePage.html);
+  assert.ok(acmePage.html.includes('<form method="post" action="/auth/mcp/switch" class="switch">'));
+  assert.ok(!acmePage.html.includes('Beta Labs'));
+
+  const switched = await form(acme.ownerCookie, { oauth_query: consent.search.slice(1) }, '/auth/mcp/switch');
+  assert.equal(switched.status, 303, await switched.clone().text());
+  assert.deepEqual(await routeHostedRequest(hosted.adminRequest('/admin/api/team', acme.ownerCookie), hosted.routing),
+    { kind: 'unauthenticated' }, 'Switch ended the session');
+  const signIn = new URL(switched.headers.get('location')!, ORIGIN);
+  assert.equal(signIn.pathname, '/auth/slack/sign-in');
+  const resume = signIn.searchParams.get('destination')!;
+  assert.ok(isHostedSharedAuthPath('/auth/mcp/switch') && isHostedSharedAuthPath(resume));
+
+  // The host's sign-in lands the person, now in Beta, on the continuation.
+  const resumed = new URL((await hosted.shared(new Request(`${ORIGIN}${resume}`))).headers.get('location')!, ORIGIN);
+  assert.equal(`${resumed.pathname}${resumed.search}`, `/api/auth/oauth2/authorize${consent.search}`);
+  assert.equal((await hosted.shared(new Request(`${ORIGIN}${resume}`))).status, 410);
+  const betaConsent = new URL((await hosted.shared(new Request(resumed, { headers: { cookie: beta.ownerCookie } }))).headers.get('location')!, ORIGIN);
+  const betaPage = await consentPage(betaConsent, beta.ownerCookie);
+  assert.ok(betaPage.html.includes('<h1>Allow workspace management?</h1>'));
+  assert.ok(betaPage.html.includes('<b>Beta Labs</b>'));
+
+  const stale = await form(beta.ownerCookie, { oauth_query: consent.search.slice(1), decision: 'allow', session_check: acmePage.sessionCheck });
+  assert.equal(stale.status, 409, 'the page that named Acme grants nothing to Beta');
+  const allowed = await form(beta.ownerCookie, { oauth_query: betaConsent.search.slice(1), decision: 'allow', session_check: betaPage.sessionCheck });
+  const callback = new URL(/url=([^"]+)"/.exec(await allowed.text())![1]!.replaceAll('&amp;', '&'));
+  const exchanged = await hosted.token({
+    grant_type: 'authorization_code', client_id: codex, code: callback.searchParams.get('code')!,
+    code_verifier: verifier, redirect_uri: callbackUrl, resource: RESOURCE,
+  });
+  assert.equal(exchanged.status, 200, await exchanged.clone().text());
+  const { response } = await hosted.serve(hosted.mcpRequest((await exchanged.json() as { access_token: string }).access_token));
+  assert.equal(response?.status, 200, await response?.clone().text() ?? 'no response');
+  assert.equal((await response!.json() as { organizationId: string }).organizationId, 'org_beta', 'the grant serves the workspace chosen');
 });
 
 test('VS Code, Zed and Goose each sign in to a hosted installation by their metadata documents, asked for consent every time', { timeout: 120_000 }, async (t) => {
