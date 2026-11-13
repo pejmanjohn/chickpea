@@ -101,7 +101,7 @@ test('the report fills each question and answer from the caller\'s own runs, and
   }, 'the model gets its own verdicts back, never the answers again');
   assert.deepEqual(result._meta?.['chickpea/answers'], [LONG, SHORT], 'the answers, as the store kept them, for the card');
   assert.equal(result._meta?.['chickpea/tool'], 'show_test_report');
-  const text = result.content!.map(({ text }) => text).join('\n');
+  const text = (result as { content: Array<{ text: string }> }).content.map(({ text }) => text).join('\n');
   assert.equal(text.includes('billed at your carrier rate'), false, 'nor in the text block');
   assert.equal(text.includes('The card above shows this'), false, 'no card-host stop text: the card waits for nothing');
 });

@@ -185,7 +185,7 @@ test('a Create anyway after a near-duplicate carries the proposal\'s continues',
   if (card.state.view.kind !== 'similar') return t.skip('the fixture made no near-duplicate');
   assert.equal(card.state.view.continues, true);
   await card.press('create_anyway');
-  const { agentId } = card.state.view as { agentId: string };
+  const { agentId } = card.state.view as unknown as { agentId: string };
   await card.dispatch({
     type: 'reply', call: { tool: 'get_creation_status', args: { agentId }, seq: card.state.seq },
     result: { structuredContent: { stage: 'ready', agent: { name: 'Research', handle: 'research-two' }, channels: 'none' } }, now: clock.now,
