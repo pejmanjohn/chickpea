@@ -71,7 +71,8 @@ test('Create in Slack sends the proposal\'s create_agent arguments unchanged, th
   await agentCard.result(proposal);
   const shown = agentCard.shown;
   assert.equal(shown.title, 'Invoice Chaser');
-  assert.deepEqual(shown.subtitle, [{ text: '@invoices' }], 'the handle, and no "handle is free"');
+  assert.deepEqual(shown.subtitle, [{ text: 'In Acme\'s Slack' }, { text: ' · ' }, { text: '@invoices' }],
+    'the workspace it joins, before the press, and the handle, with no "handle is free"');
   assert.deepEqual(shown.blocks.map(words), [
     `You: ${PROPOSAL.sampleAsk} / Invoice Chaser: ${PROPOSAL.promisedAnswer}`,
     'Answers in **your DMs**. Only you can message it until it joins a Channel.',
@@ -561,7 +562,7 @@ test('the proposal shows it by example: no labels, Needs only for a service, and
   });
   await agentCard.result(proposal);
   const shown = agentCard.shown;
-  assert.deepEqual(shown.subtitle, [{ text: '@invoices' }]);
+  assert.deepEqual(shown.subtitle, [{ text: 'In Acme\'s Slack' }, { text: ' · ' }, { text: '@invoices' }]);
   assert.deepEqual(shown.blocks, [
     { kind: 'exchange', ask: 'who is overdue this week?', answer, agent: 'Invoice Chaser' },
     { kind: 'line', parts: [{ text: 'Answers in ' }, { text: 'your DMs and #finance', strong: true }, { text: '. Everyone in its Channels can ask it there.' }] },
@@ -575,6 +576,7 @@ test('the proposal shows it by example: no labels, Needs only for a service, and
   const elsewhere = card(call, clock);
   await elsewhere.result({ ...proposal, structuredContent: { ...proposal.structuredContent, proposal: unnamed } });
   assert.equal(words(elsewhere.shown.blocks[1]), 'Answers in **your DMs and #finance**. Everyone in its Channels can ask it there.');
+  assert.deepEqual(elsewhere.shown.subtitle, [{ text: '@invoices' }], 'no workspace name, no line for it');
 
   const needing = card(call, clock);
   await needing.result(await call('propose_agent', { ...PROPOSAL, services: ['Stripe', 'HubSpot'] }));
@@ -588,7 +590,9 @@ test('the proposal says "handle is taken" only when another Agent has the handle
     slackPresence: { requestedHandle: 'invoices', normalizedHandle: 'invoices', desiredState: 'active', health: 'healthy', avatar: { kind: 'generated', revision: 1, seed: 'billing' } },
   });
   await agentCard.result(await call('propose_agent', PROPOSAL));
-  assert.deepEqual(agentCard.shown.subtitle, [{ text: '@invoices' }, { text: ' · ' }, { text: 'handle is taken', tone: 'warn' }]);
+  assert.deepEqual(agentCard.shown.subtitle, [
+    { text: 'In Acme\'s Slack' }, { text: ' · ' }, { text: '@invoices' }, { text: ' · ' }, { text: 'handle is taken', tone: 'warn' },
+  ]);
   assert.ok(agentCard.shown.blocks.some((block) => block.kind === 'note' && block.tone === 'warn' && block.text.includes('@invoices already belongs to Billing Bot')),
     'the server\'s issue still shows below');
 });

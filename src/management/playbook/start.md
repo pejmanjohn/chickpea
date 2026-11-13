@@ -29,7 +29,7 @@ Draft one Agent for the chore with the fields `propose_agent` takes. Every Agent
 - `instructions`: about 200 to 400 words on who it serves, what it answers or does, which tools it uses, what it does when it doesn't know, and what it must never do.
 - `sampleAsk`: a message the person would really send it in Slack, in their words. `promisedAnswer`: your draft of its answer. Label it an example, and never invent order numbers, names or figures in it.
 
-Call `propose_agent` with that draft. It saves nothing. Then:
+Call `propose_agent` with that draft and `continues: true`, since setup goes on after Create. It saves nothing. Then:
 
 - **If your client shows Chickpea cards** and a card shows the proposal: say one short sentence, such as what you based it on, and stop. The card shows the name, the job, the example and where it answers, and its Create button creates it. Don't list them, and don't say whether the Agent exists yet.
 - **No card shows,** as in a terminal: show the person
@@ -48,7 +48,7 @@ If the person changes something, call `propose_agent` again with the new draft b
 
 ## 4. After it's created
 
-1. For each service in the proposal, call `connect_service` with the new `agentId`, the service's `service` from `list_services`, and `owner` `team` (or `me` if it should act as the person). Give the person each `setup.url`: they sign in on Chickpea's page and finish there. When they're done, check it with `get_setup_status` or `check_agent` (`get_guide` topic `connect`).
+1. For each service in the proposal, call `connect_service` with the new `agentId`, the service's `service` from `list_services`, `owner` `team` (or `me` if it should act as the person), and `continues: true`. Give the person each `setup.url`: they sign in on Chickpea's page and finish there. When they're done, check it with `get_setup_status` or `check_agent` (`get_guide` topic `connect`).
 2. Scope the new Agent with the person (`get_guide` topic `scope`): draft its brief and test questions from this conversation, then test drive it on them. The person can answer its questions while a sign-in is still open.
 3. If the chore happens on a schedule ("every Monday"), offer to set that up next (`get_guide` topic `schedule`).
 4. Close with the hand-off (the ground rules): the first message to send the Agent in its direct messages, or in its Channel.

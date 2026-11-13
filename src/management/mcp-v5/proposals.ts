@@ -17,7 +17,7 @@ import {
   type ManagementWorkspaceSnapshot,
 } from '../types.ts';
 import { fail } from './conventions.ts';
-import { agentAvatar, agentVersion, readWorkspace, requireAgent, slackDirectory, type FiveZeroDeps } from './reads.ts';
+import { agentAvatar, agentStatus, agentVersion, readWorkspace, requireAgent, slackDirectory, type FiveZeroDeps } from './reads.ts';
 import {
   createAgentInputSchema,
   updateAgentInputSchema,
@@ -53,6 +53,12 @@ export async function proposeAgent(
   if (takenBy) issues.push(`@${handle} already belongs to ${takenBy.name}. Choose another handle.`);
   const sameName = snapshot.agents.find(({ name }) => name.trim().toLowerCase() === input.name.trim().toLowerCase());
   if (sameName) issues.push(`An Agent named ${sameName.name} already exists. Choose another name, or change that one.`);
+  // Slack says so only when it refuses a handle, and keeps no answer for the workspace: an Agent it refused one is the record.
+  const unhandled = snapshot.agents.find((agent) => agentStatus(agent) !== 'archived' &&
+    agent.slackPresence?.health === 'needs_attention' && agent.slackPresence.errorCode === 'paid_plan_required');
+  if (unhandled) {
+    issues.push(`Slack gave ${unhandled.name} no handle because this workspace needs a paid Slack plan, so @${handle} likely won't work either. It would still answer you in your DMs.`);
+  }
   if (!input.instructions.trim()) issues.push('The instructions are empty, so the Agent would not know its job.');
 
   const needs: Out<typeof proposeAgentOutput>['proposal']['needs'] = [];
@@ -106,6 +112,7 @@ export async function proposeAgent(
     },
     create: { tool: 'create_agent', arguments: create },
     issues,
+    ...(input.continues ? { continues: true as const } : {}),
   };
 }
 
@@ -197,6 +204,8 @@ export async function proposeAgentChange(
     changes,
     save: { tool: 'update_agent', arguments: save },
     needsConfirmation,
+    ...(input.reason ? { reason: input.reason } : {}),
+    ...(input.continues ? { continues: true as const } : {}),
   };
 }
 

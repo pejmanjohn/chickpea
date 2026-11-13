@@ -34,7 +34,7 @@ Read the whole result before you decide.
 
 To ask the Agent why it did something, such as "Why didn't you check the order in Shopify?", call `practice_agent` again with the `practiceId` from the last result and the question. If Chickpea refuses it, skip the follow-up. Its explanation is a clue, not proof: it sees a one-line note of what it read in earlier turns, not the results. If the result has `droppedTurns`, it didn't see the oldest turns at all. Check the explanation against `steps`.
 
-Tell the person the result in a line or two, quoting only the part of the answer that matters.
+Tell the person one line of progress per round, not each answer: the report shows them.
 
 ## 4. Change one thing
 
@@ -63,12 +63,7 @@ When every test is done, if you changed the Agent's instructions, practice once 
 
 ## 6. Report
 
-Give the person a short table with one row per test question:
-
-| Test question | Result | What changed | Still needs you |
-| --- | --- | --- | --- |
-
-Use exactly these four columns, and write each result as "passes", "fails" or "can't be checked in practice". Practice each test question at least once before you give it a result, even one you expect can't be checked. Under the table, if you changed its instructions, offer to put them back as they were. Then close with the hand-off (the ground rules). If the Agent posts on a schedule or acts in a service, say that those parts are checked in Slack.
+After the last round, call `show_test_report` once: each test's last `runToken`, its verdict ("passes", "fails" or "can't be checked in practice") with a short note, and `before`, its round 1 verdict. Practice each one at least once before you give it a verdict. If you changed its instructions, offer to put them back as they were, then close with the hand-off (the ground rules). If the Agent posts on a schedule or acts in a service, say that those parts are checked in Slack.
 
 If the person keeps the test questions in a file, offer to add today's results to it. Chickpea doesn't keep them.
 

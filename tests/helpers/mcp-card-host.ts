@@ -167,7 +167,8 @@ function setupUrlOf(result: ToolResult): unknown {
  * open that link, ask the chat for the fix instead. And while the card is
  * still busy with a press, a timer may send that press's call again, with
  * exactly its arguments, for a write the card `replays`. A state that follows
- * up a press may also tell the model how it ended.
+ * up a press may also tell the model how it ended, and send the message
+ * that carries the job on.
  */
 function onlyReads<V extends { kind: string }>(
   from: CardState<V>,
@@ -184,6 +185,8 @@ function onlyReads<V extends { kind: string }>(
     if (effect.type === 'call' && event.type === 'tick' && from.busy && model.replays?.has(effect.call.tool) === true &&
       pressedCalls.has(callKey(effect.call))) continue;
     if (effect.type === 'context' && (pressReply || model.followsPress?.(from) === true)) continue;
+    // The message that carries the job on, once what a press started is through.
+    if (effect.type === 'message' && effect.continues === true && (pressReply || model.followsPress?.(from) === true)) continue;
     if (event.type === 'reply' && pressReply &&
       ((effect.type === 'open' && effect.url === setupUrlOf(event.result)) || effect.type === 'message')) continue;
     assert.fail(`${event.type} made ${effect.type === 'call' ? `the write ${effect.call.tool}` : `a ${effect.type}`}`);

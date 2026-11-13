@@ -896,6 +896,7 @@ export async function getCreationStatus(
         : grants.includes('pending') ? 'joining' : 'joined',
     ...(slackUrl ? { slackUrl } : {}),
     ...(problem ? { problem } : {}),
+    ...(health === 'needs_attention' && progress.presence?.errorCode === 'paid_plan_required' ? { paidPlanNeeded: true as const } : {}),
     ...(hello ? { hello } : {}),
   };
 }

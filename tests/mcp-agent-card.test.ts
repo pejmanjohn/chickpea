@@ -27,7 +27,8 @@ const BASE_URL = 'https://chickpea.example.test';
  * The tools whose result a card draws. The Agent card: the proposal, the
  * creation, the change and its save, and every tool that can return
  * needs_confirmation, whose card is the "Are you sure?". The connect card:
- * the two tools that hand out a connection's setup link. No tool draws the
+ * the two tools that hand out a connection's setup link. The report card:
+ * show_test_report. No tool draws the
  * health card any more: check_agent reports in text, and a chat that drew
  * the card before still reads its resource and presses Check again.
  */
@@ -38,6 +39,7 @@ const CARD_TOOLS: Record<string, CardName> = {
   ].map((tool) => [tool, 'agent-card' as const])),
   connect_service: 'connect-card',
   reconnect_service: 'connect-card',
+  show_test_report: 'report-card',
 };
 
 /** The card-only tools: hidden from the model, called by a card. */
@@ -204,7 +206,9 @@ test('a retired card version reads as one static card that asks the person to as
   assert.match(retired, /^<!doctype html>/);
   assert.equal(retired.match(/<p>([^<]*)<\/p>/)?.[1], 'This card is from an older version of Chickpea. Ask again to see it.');
   assert.doesNotMatch(retired, /<(?:script|button|a|form|input|img|link|iframe)\b|\bon\w+=|url\(/i, 'no buttons, calls, links, pictures or loads');
-  for (const card of CARD_NAMES) {
+  // The report card is new in contract 5.1.0: its first version is its oldest, and none is retired.
+  assert.deepEqual(CARD_NAMES.filter((card) => cardVersions(card)[0] === 1), ['report-card']);
+  for (const card of CARD_NAMES.filter((name) => name !== 'report-card')) {
     const oldest = cardVersions(card)[0]!;
     // Agent card v1 to v11, connect card v1 to v9 and health card v1 to v6 never reached a production chat.
     assert.ok(oldest > 1, `${card} has retired versions`);

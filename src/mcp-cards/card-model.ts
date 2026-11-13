@@ -53,17 +53,20 @@ export interface CardState<V extends { kind: string }> {
    * result it first had. Each card says what it keeps; never a token.
    */
   outcome?: unknown;
+  /** The card sent its message that carries the job on (`carryOn`), here or before it mounted again. */
+  continued?: true;
   /** The card mounted, and this many of its first reads are out: every button waits until each answers or fails. */
   checking?: number;
 }
 
 /**
  * What a card keeps in the host's widget state: what it already told the
- * host's model, and its outcome.
+ * host's model, its outcome, and whether it carried the job on.
  */
 export interface Memory {
   told: string[];
   outcome?: unknown;
+  continued?: true;
 }
 
 /**
@@ -76,8 +79,14 @@ export interface Memory {
  * no instructions, and one token only: a practice run's, while it is still
  * going (first-answer.ts `stillAnswering`).
  */
-export function keptState({ told = [], outcome }: { told?: string[] | undefined; outcome?: unknown }, version: number) {
-  return { modelContent: told.join('\n'), privateContent: { card: { version, told, ...outcome === undefined ? {} : { outcome } } } };
+export function keptState(
+  { told = [], outcome, continued }: { told?: string[] | undefined; outcome?: unknown; continued?: true | undefined },
+  version: number,
+) {
+  return {
+    modelContent: told.join('\n'),
+    privateContent: { card: { version, told, ...outcome === undefined ? {} : { outcome }, ...continued ? { continued } : {} } },
+  };
 }
 
 /** A sentence a host kept that is longer than any a card writes is not one. */
@@ -89,7 +98,11 @@ export function keptMemory(saved: unknown, version: number): Memory | undefined 
   const card = isRecord(content) && isRecord(content.card) ? content.card : undefined;
   if (card?.version !== version || !Array.isArray(card.told)) return undefined;
   const told = card.told.filter((line): line is string => typeof line === 'string' && line.length <= TOLD_SENTENCE_MAX);
-  return { told: boundedTold(told), ...card.outcome === undefined ? {} : { outcome: card.outcome } };
+  return {
+    told: boundedTold(told),
+    ...card.outcome === undefined ? {} : { outcome: card.outcome },
+    ...card.continued === true ? { continued: true as const } : {},
+  };
 }
 
 /** What a card sends its host after a step, besides its calls, timers, links and messages. */
@@ -116,7 +129,7 @@ export function hostWrites<V extends { kind: string }>(
   host: { keepsState: boolean; version: number },
 ): HostWrite[] {
   if (!host.keepsState) return next.effects.flatMap((effect): HostWrite[] => effect.type === 'context' ? [{ type: 'context', text: effect.text }] : []);
-  const moved = next.state.told !== before.told || next.state.outcome !== before.outcome;
+  const moved = next.state.told !== before.told || next.state.outcome !== before.outcome || next.state.continued !== before.continued;
   return moved && event.type !== 'result' ? [{ type: 'state', state: keptState(next.state, host.version) }] : [];
 }
 
@@ -131,8 +144,11 @@ export type Effect =
   | { type: 'call'; call: Call }
   /** Fire one `tick` after this long, replacing any earlier timer. */
   | { type: 'timer'; inMs: number }
-  /** Put `draft` in the composer when the host can; otherwise send `sent`. */
-  | { type: 'message'; draft?: string; sent: string }
+  /**
+   * Put `draft` in the composer when the host can; otherwise send `sent`.
+   * `continues`: a message that carries the job on (`carryOn`).
+   */
+  | { type: 'message'; draft?: string; sent: string; continues?: true }
   | { type: 'open'; url: string }
   /**
    * What the card did, for the host's model on its next turn. A model's
@@ -190,6 +206,25 @@ export const call = (tool: string, args: Record<string, unknown>): Effect => ({ 
 export const tell = <V extends { kind: string }>(next: Next<V>, text: string): Next<V> =>
   ({ ...next, effects: [{ type: 'context', text }, ...next.effects] });
 
+/**
+ * The same step, and the card sends `text` in the chat as the person, so the
+ * host's model carries the job on after a press that succeeded. A card sends
+ * one such message in its life: `sequenced` drops any after the first, and
+ * the host keeps that it sent one, so a chat that reopens never sends it again.
+ */
+export const carryOn = <V extends { kind: string }>(next: Next<V>, text: string): Next<V> =>
+  ({ ...next, effects: [...next.effects, { type: 'message', sent: text, continues: true }] });
+
+/**
+ * A name in a message the card sends as the person, which the host's model
+ * reads as the person's own words: quoted, on one line and cut short, since
+ * a member chose it, so it reads as a name and never as an instruction.
+ */
+export function nameInMessage(name: string): string {
+  const line = name.replace(/\s+/g, ' ').trim();
+  return JSON.stringify(line.length > NAMED_MAX ? `${line.slice(0, NAMED_MAX - 1)}…` : line);
+}
+
 /** How one card remembers its presses' outcomes and comes back to them. */
 export interface Remembering<V extends { kind: string }> {
   /** What a view a press's outcome left means for a card that mounts again; undefined keeps the last. */
@@ -209,6 +244,9 @@ export const TOLD_CHARS = 1_500;
  * its buttons wait until each of those reads answers or fails. Everything
  * the card told the host's model goes with each new sentence, and a
  * sentence told again moves to the end instead of taking a second place.
+ * A message that carries the job on goes once: one after it, or one from a
+ * card that mounts again having sent it, is dropped, and so is the host's
+ * refusal of it, since the press it follows did what it should.
  */
 export function sequenced<V extends { kind: string }, A extends string>(
   transition: (state: CardState<V>, event: CardEvent<A>) => Next<V>,
@@ -216,11 +254,12 @@ export function sequenced<V extends { kind: string }, A extends string>(
 ): (state: CardState<V>, event: CardEvent<A>) => Step<V> {
   return (state, event) => {
     if (state.checking && event.type === 'press') return { state, effects: [] };
+    if (event.type === 'refused' && event.effect.type === 'message' && event.effect.continues) return { state, effects: [] };
     let next = transition(state, event.type === 'result' || event.type === 'reply' ? { ...event, result: withHeld(event.result) } : event);
-    let { told = [], outcome } = state;
+    let { told = [], outcome, continued } = state;
     let checking = 0;
     if (event.type === 'result') {
-      ({ told, outcome } = event.kept ?? { told: [] });
+      ({ told, outcome, continued } = event.kept ?? { told: [] });
       const resumed = outcome === undefined ? undefined : remembering.resume?.(next.state.view, outcome);
       if (resumed) next = { state: { view: resumed, busy: false }, effects: [] };
       const reread = transition({ ...next.state, seq: state.seq }, { type: 'reread', now: event.now });
@@ -238,14 +277,25 @@ export function sequenced<V extends { kind: string }, A extends string>(
       outcome = remembering.remember?.(next.state.view) ?? outcome;
     }
     const seq = next.state.view === state.view ? state.seq : state.seq + 1;
-    const { told: _told, outcome: _outcome, checking: _checking, ...rest } = next.state;
+    const { told: _told, outcome: _outcome, continued: _continued, checking: _checking, ...rest } = next.state;
+    const effects = next.effects.flatMap((effect): Effect[] => {
+      if (effect.type === 'context') return [];
+      if (effect.type === 'call') return [{ ...effect, call: { ...effect.call, seq } }];
+      if (effect.type !== 'message' || !effect.continues) return [effect];
+      if (continued) return [];
+      continued = true;
+      return [effect];
+    });
     return {
-      state: { ...rest, seq, ...told.length ? { told } : {}, ...outcome === undefined ? {} : { outcome }, ...checking > 0 ? { checking } : {} },
-      effects: [
-        ...sentences.length > 0 ? [{ type: 'context' as const, text: told.join('\n') }] : [],
-        ...next.effects.flatMap((effect): Effect[] => effect.type === 'context' ? []
-          : effect.type === 'call' ? [{ ...effect, call: { ...effect.call, seq } }] : [effect]),
-      ],
+      state: {
+        ...rest,
+        seq,
+        ...told.length ? { told } : {},
+        ...outcome === undefined ? {} : { outcome },
+        ...continued ? { continued } : {},
+        ...checking > 0 ? { checking } : {},
+      },
+      effects: [...sentences.length > 0 ? [{ type: 'context' as const, text: told.join('\n') }] : [], ...effects],
     };
   };
 }
@@ -445,8 +495,15 @@ export interface Row<A extends string = string> {
   title: string;
   detail?: string | undefined;
   tone?: Tone;
-  /** A small button at the end of the row, or a text link: one that goes somewhere, or one that shows more. */
-  control?: { label: string; action: A; style: 'primary' | 'secondary' | 'link' | 'toggle' };
+  /** A short label, such as a verdict, drawn as a chip before its detail. */
+  chip?: string;
+  /**
+   * A small button at the end of the row, or a text link: one that goes
+   * somewhere, or one that shows more. `expanded`: a toggle's state.
+   */
+  control?: { label: string; action: A; style: 'primary' | 'secondary' | 'link' | 'toggle'; expanded?: boolean };
+  /** What the row shows under itself while its toggle has it open. */
+  open?: Array<Block<A>>;
 }
 
 export type Block<A extends string = string> =
@@ -456,9 +513,10 @@ export type Block<A extends string = string> =
   | { kind: 'note'; text: string; tone?: Tone }
   /**
    * A question and the Agent's answer as Slack would show them, by picture
-   * alone; a screen reader hears who says each. Long ones show their start.
+   * alone; a screen reader hears who says each. Long ones show their start,
+   * or with `whole`, all of it.
    */
-  | { kind: 'exchange'; ask: string; answer: string; agent: string }
+  | { kind: 'exchange'; ask: string; answer: string; agent: string; whole?: true }
   /** A line of small print: words, a stressed part, and services as chips. */
   | { kind: 'line'; parts: Array<{ text: string; strong?: true } | { chip: string }> }
   | { kind: 'steps'; steps: Array<{ label: string; state: 'done' | 'now' | 'todo' | 'failed' }> }

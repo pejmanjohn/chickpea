@@ -84,7 +84,7 @@ function block(item: Block, avatarKind: 'agent' | 'alert', avatarUrl: string | u
     case 'exchange': {
       const said = (who: string, text: string, lines: 2 | 5) => {
         const body = element('div');
-        body.append(element('span', 'sr-only', `${who}: `), element('div', `cp-said cp-clamp-${lines}`, text));
+        body.append(element('span', 'sr-only', `${who}: `), element('div', `cp-said ${item.whole ? 'cp-said-whole' : `cp-clamp-${lines}`}`, text));
         return body;
       };
       const initial = element('span', 'cp-init', 'Y');
@@ -117,7 +117,7 @@ function block(item: Block, avatarKind: 'agent' | 'alert', avatarUrl: string | u
     }
     case 'rows': {
       const list = element('ul', 'cp-rows');
-      list.append(...item.rows.map(row));
+      list.append(...item.rows.map((each) => row(each, avatarKind, avatarUrl)));
       return list;
     }
     case 'panes': {
@@ -132,7 +132,7 @@ function block(item: Block, avatarKind: 'agent' | 'alert', avatarUrl: string | u
   }
 }
 
-function row(item: Row): HTMLElement {
+function row(item: Row, avatarKind: 'agent' | 'alert', avatarUrl: string | undefined): HTMLElement {
   const line = element('li', 'cp-row');
   if (item.icon === 'tile') {
     const tile = element('span', 'cp-tile', item.tile ?? '');
@@ -148,11 +148,24 @@ function row(item: Row): HTMLElement {
   const title = element('div', 'cp-row-title', item.title);
   if (item.icon !== 'tile') title.append(element('span', 'sr-only', ` (${ROW_MARKS[item.icon].words})`));
   body.append(title);
-  if (item.detail) body.append(element('div', `cp-row-detail${item.tone ? ` cp-${item.tone}` : ''}`, item.detail));
+  if (item.chip) {
+    const detail = element('div', `cp-row-detail${item.tone ? ` cp-${item.tone}` : ''}`);
+    detail.append(element('span', 'cp-chip', item.chip), ...item.detail ? [' ', item.detail] : []);
+    body.append(detail);
+  } else if (item.detail) {
+    body.append(element('div', `cp-row-detail${item.tone ? ` cp-${item.tone}` : ''}`, item.detail));
+  }
   line.append(body);
   if (item.control) {
-    const { label, action, style } = item.control;
-    line.append(control(label, action, style === 'link' ? 'cp-link cp-link-go' : style === 'toggle' ? 'cp-link' : `btn btn-sm cp-btn-${style}`));
+    const { label, action, style, expanded } = item.control;
+    const node = control(label, action, style === 'link' ? 'cp-link cp-link-go' : style === 'toggle' ? 'cp-link' : `btn btn-sm cp-btn-${style}`);
+    if (expanded !== undefined) node.setAttribute('aria-expanded', String(expanded));
+    line.append(node);
+  }
+  if (item.open) {
+    const open = element('div', 'cp-row-open');
+    open.append(...item.open.map((each) => block(each, avatarKind, avatarUrl)));
+    line.append(open);
   }
   return line;
 }
@@ -173,7 +186,8 @@ export interface CardRoot {
  * while they stay the same: a press that also focuses the card's frame
  * re-reads it, and a button replaced between mousedown and mouseup never
  * gets its click. When a redraw takes away the node that had focus, focus
- * moves to the title, so a keyboard or screen reader stays on the card.
+ * moves to the button that does the same thing, such as a row's toggle, or
+ * else to the title, so a keyboard or screen reader stays on the card.
  */
 export function mountCard(root: HTMLElement, onAction: (action: string) => void): CardRoot {
   const status = element('p', 'sr-only');
@@ -199,6 +213,7 @@ export function mountCard(root: HTMLElement, onAction: (action: string) => void)
       if (key === drawn) return;
       drawn = key;
       const focused = card.contains(document.activeElement);
+      const focusedAction = focused && document.activeElement instanceof HTMLButtonElement ? document.activeElement.dataset.action : undefined;
       const announce = presentation.announce ?? presentation.title;
       if (status.textContent !== announce) status.textContent = announce;
 
@@ -244,7 +259,10 @@ export function mountCard(root: HTMLElement, onAction: (action: string) => void)
       }
       error.textContent = presentation.error ?? '';
       error.hidden = !presentation.error;
-      if (focused && !card.contains(document.activeElement)) title.focus({ preventScroll: true });
+      if (focused && !card.contains(document.activeElement)) {
+        const same = [...card.querySelectorAll<HTMLButtonElement>('button[data-action]')].find((node) => node.dataset.action === focusedAction);
+        (same ?? title).focus({ preventScroll: true });
+      }
     },
   };
 }

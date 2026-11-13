@@ -246,7 +246,7 @@ async function follow(deps: FiveZeroDeps, runToken: string, timing: TestRunTimin
 }
 
 /** Node and a standalone Cloudflare deployment serve none: the run's instance is erased with the host erase. */
-async function testRunStore(deps: FiveZeroDeps): Promise<TestRunStore> {
+export async function testRunStore(deps: FiveZeroDeps): Promise<TestRunStore> {
   return await deps.service.testRunStore(await deps.context()) ??
     fail('test_run_unavailable', 'Practice runs aren\'t available on this workspace yet.', {
       nextStep: 'Tell the person to ask the Agent in Slack instead.',
