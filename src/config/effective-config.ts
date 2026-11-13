@@ -145,6 +145,9 @@ export function runtimeIdentityInstruction(
   return parts.join(' ');
 }
 
+/** How the teammates block opens: after it, the tenant instructions hold other Agents' names. */
+export const TEAMMATES_OPENING = 'Teammates: you can ask other Chickpea Agents here.';
+
 type TeammateAssignment = Pick<ResolvedAssignment, 'teammates'> & {
   agent: Pick<CustomAgentConfig, 'kind'>;
 };
@@ -168,7 +171,7 @@ export function agentTeammateInstructions(
   const example = teammates[0]!.handle;
   const guest = assignment.threadGuest === true;
   return [
-    `Teammates: you can ask other Chickpea Agents here. To ask one of them something, mention their handle as plain text in your reply, for example @${example}. They answer in this thread after your reply, and everyone in the thread sees the exchange. ${guest
+    `${TEAMMATES_OPENING} To ask one of them something, mention their handle as plain text in your reply, for example @${example}. They answer in this thread after your reply, and everyone in the thread sees the exchange. ${guest
       ? 'You get no turn after their answer unless you ask them to mention you: when you must use the answer yourself, end the ask with "Mention me when you have it." (never your own handle).'
       : 'Once they have answered, you get a turn to finish the person\'s request with their answers.'}`,
     '- Ask only when the person\'s request needs that teammate\'s answer or work, with one clear question.',

@@ -368,7 +368,7 @@ function WebProbe() {
   for (const tool of createWebTools({
     turn,
     request: webRequest(DOCS_ASKED),
-    connectionSpaces: [],
+    agentSpaces: [],
     readPage: (url) => readWebPage(url, { cloudflare: true, fetch: docsWeb }),
     searchProvider: async () => searchService,
   })) useTool(tool);

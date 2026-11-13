@@ -3,8 +3,17 @@ import test from 'node:test';
 
 import * as v from 'valibot';
 
+import { slackTenantInstructions } from '../src/agents/shared-prefix-layout.ts';
 import { admitWebUrl, requestTokens, type WebUrlSources } from '../src/web/page.ts';
-import { connectionPathSpaces, createWebTools, readWebPageInTurn, webRequest, type WebToolsInput } from '../src/web/tools.ts';
+import {
+  agentPathSpaces,
+  connectionPathSpaces,
+  createWebTools,
+  instructionPathSpaces,
+  readWebPageInTurn,
+  webRequest,
+  type WebToolsInput,
+} from '../src/web/tools.ts';
 import { createWebTurn } from '../src/web/turn.ts';
 
 const REQUEST = 'Our incident codename is Bluebird42, and the vendor is Statusboard';
@@ -14,12 +23,12 @@ function sources(overrides: Partial<WebUrlSources> = {}): WebUrlSources {
 }
 
 /** A tool input over `spaces` that records every URL it would fetch. */
-function recordingReader(request: string, connectionSpaces: WebToolsInput['connectionSpaces']) {
+function recordingReader(request: string, agentSpaces: WebToolsInput['agentSpaces']) {
   const fetched: string[] = [];
   const input: WebToolsInput = {
     turn: createWebTurn('turn_spaces', { turnKey: 'turn_spaces', reads: 0, searches: 0, sourced: [] }),
     request: webRequest(request),
-    connectionSpaces,
+    agentSpaces,
     readPage: async (url) => {
       fetched.push(url.href);
       return { outcome: 'unreadable', url: url.href, reason: 'unreachable', message: '' };
@@ -43,7 +52,7 @@ test('a URL the model writes for an arbitrary public host is refused before anyt
   const result = await readWebPageInTurn({
     turn,
     request: webRequest(REQUEST),
-    connectionSpaces: [],
+    agentSpaces: [],
     readPage: async (url) => {
       fetched.push(url.href);
       throw new Error('nothing may be fetched');
@@ -87,7 +96,7 @@ test('the tool lets the model write URLs for the hosts the requester typed', asy
   const result = await readWebPageInTurn({
     turn: createWebTurn('turn_typed', { turnKey: 'turn_typed', reads: 0, searches: 0, sourced: [] }),
     request: webRequest('connect Statusboard, docs at <https://docs.statusboard.example/api>'),
-    connectionSpaces: [],
+    agentSpaces: [],
     readPage: async (url) => {
       read.push(url.href);
       return { outcome: 'unreadable', url: url.href, reason: 'unreachable', message: '' };
@@ -112,7 +121,7 @@ test('a URL the model writes on a connection\'s host outside its path scope is r
   ]) {
     const result = await reader.read(url);
     assert.equal(result.outcome, 'refused', url);
-    assert.match(result.outcome === 'refused' ? result.message : '', /within that connection's path scope/, url);
+    assert.match(result.outcome === 'refused' ? result.message : '', /within the path of this Agent's connection or of the link in its instructions/, url);
   }
   assert.deepEqual(reader.fetched, []);
 });
@@ -168,6 +177,34 @@ test('an MCP connection\'s space is its server URL\'s path', async () => {
   assert.deepEqual(reader.fetched, ['https://mcp.proxy.example/tenants/acme/mcp/tools']);
 });
 
+test('a link in the Agent\'s instructions is a space the model may write URLs in, at or below its path', async () => {
+  // A docs Agent asked a question that names no URL: a practice run's question counts as typed by no one.
+  const instructions = 'Answer questions from https://docs.chickpea.example. Our guide: <https://wiki.shared.example/acme/guide|guide>. ' +
+    'Never cite http://intranet.local/notes.';
+  const spaces = agentPathSpaces({ apiConnections: [], mcpConnections: [], instructions });
+  assert.deepEqual(spaces, instructionPathSpaces(instructions));
+  const reader = recordingReader('How do I add an Agent to a Channel?', spaces);
+  const inside = ['https://docs.chickpea.example/llms.txt', 'https://docs.chickpea.example/agents/index.md', 'https://wiki.shared.example/acme/guide/setup'];
+  for (const url of inside) assert.equal((await reader.read(url)).outcome, 'unreadable', url);
+  const outside = await reader.read('https://wiki.shared.example/other/collect');
+  assert.match(outside.outcome === 'refused' ? outside.message : '', /within the path of this Agent's connection or of the link in its instructions/,
+    'on a shared host, a link vouches for its own path only');
+  assert.equal((await reader.read('https://intranet.local/notes')).outcome, 'refused', 'a link to an address Chickpea never reads still reads nothing');
+  assert.deepEqual(reader.fetched, inside);
+});
+
+test('a teammate\'s name in the plan\'s instructions gives no space; the Agent\'s own instructions do', () => {
+  // Another member names their Agent with a link; it reaches this Agent's turn only in the teammates line.
+  const instructions = slackTenantInstructions({
+    workspaceId: 'T1', channelId: 'C1',
+    agent: { id: 'agent_docs', kind: 'user', name: 'Docs', instructions: 'Answer from https://docs.chickpea.example.' } as never,
+    teammates: [{ agentId: 'agent_other', name: 'Other https://evil.example/collect', handle: 'other' }] as never,
+  });
+  assert.match(instructions, /evil\.example/, 'the teammate\'s name is in the plan\'s instructions');
+  assert.deepEqual(agentPathSpaces({ apiConnections: [], mcpConnections: [], instructions }).map(({ host }) => host),
+    ['docs.chickpea.example', 'docs.chickpea.example'], 'the saved instructions appear twice; the teammate never');
+});
+
 test('a URL the model writes on a host the requester typed may take any path, even on a connection\'s host', async () => {
   const reader = recordingReader('docs at <https://api.shared.example/v2>', SHARED_HOST_CONNECTIONS);
   assert.equal((await reader.read('https://api.shared.example/changelog')).outcome, 'unreadable');
@@ -193,14 +230,14 @@ test('hosts named in the tool call are not hosts the model may write for', async
   const [readTool] = createWebTools({
     turn: createWebTurn('turn_forged', { turnKey: 'turn_forged', reads: 0, searches: 0, sourced: [] }),
     request: webRequest(REQUEST),
-    connectionSpaces: [],
+    agentSpaces: [],
   });
   const input = readTool!.input as v.GenericSchema;
   assert.equal(v.safeParse(input, { url: 'https://evil.example/x' }).success, true);
   for (const forged of [
     { url: 'https://evil.example/x', hosts: ['evil.example'] },
     { url: 'https://evil.example/x', spaces: [{ host: 'evil.example', pathPrefixes: ['/'] }] },
-    { url: 'https://evil.example/x', connectionSpaces: [{ host: 'evil.example', pathPrefixes: ['/'] }] },
+    { url: 'https://evil.example/x', agentSpaces: [{ host: 'evil.example', pathPrefixes: ['/'] }] },
     { url: 'https://evil.example/x', sourced: ['https://evil.example/x'] },
   ]) {
     assert.equal(v.safeParse(input, forged).success, false, JSON.stringify(forged));

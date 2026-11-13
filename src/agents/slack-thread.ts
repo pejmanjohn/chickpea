@@ -325,7 +325,7 @@ import {
 } from '../management/agent-authoring/index.ts';
 import { useChickpeaResponseMetadata } from '../usage/response-metadata.ts';
 import {
-  connectionPathSpaces,
+  agentPathSpaces,
   createWebTools,
   recordingPageRead,
   WEB_TOOL_DESCRIPTORS,
@@ -1412,7 +1412,7 @@ export function useRuntimePlanAgent(
     ? createWebTools({
         turn: options.web.turn,
         request: options.web.request,
-        connectionSpaces: connectionPathSpaces(plan),
+        agentSpaces: agentPathSpaces(plan),
         ...(plan.webSearch ? { searchProvider: resolveWebSearchProvider } : {}),
       })
     : [];
