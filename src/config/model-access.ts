@@ -46,6 +46,12 @@ import {
 } from './platform-funding.ts';
 import { PROVIDER_KEY_IDS } from './provider-key-ids.ts';
 import type { PlatformEnv } from './state-backend.ts';
+import {
+  clearedToolResults,
+  toolResultClearing,
+  withToolResultClearing,
+  type ToolResultClearing,
+} from './tool-result-clearing.ts';
 import type { PromptCacheScope } from '../agents/openai-prompt-cache.ts';
 import type { SharedPrefixDecision, SharedPrefixId } from '../agents/shared-prefix.ts';
 import {
@@ -731,11 +737,18 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
   const payloadMode = platformGrant
     ? listPriced && LIST_PRICE_MODES[listPriced]
     : bound && CUSTOMER_PAYLOAD_MODES[bound.grant.providerId];
-  const payloadHook = payloadMode && requestPayload(options?.onPayload, payloadMode, {
+  // An Agent's own steps only: a compaction or a stateless call is one request with no tool history to clear.
+  const clearing = bound?.grant.providerId === 'anthropic' && model.api === 'anthropic-messages' && cell.purpose === 'reply'
+    ? toolResultClearing(cell.env)
+    : undefined;
+  const payloadHook = (payloadMode || clearing) && requestPayload(options?.onPayload, payloadMode || {}, clearing, {
     requestId: request.requestId,
     scope: { installationId: cell.attribution.installationId },
     purpose: cell.purpose,
   });
+  const streamEvents = clearing && probe
+    ? readClearing(onProviderStreamEvent ?? options?.onProviderStreamEvent, probe)
+    : onProviderStreamEvent;
   const send = (start: (model: TModel) => AssistantMessageEventStream) =>
     sendRequest(cell, sent, request, platformGrant, reader, payloadHook, probe, start);
   if (!bound) return { model, options, redact: (stream) => stream, send };
@@ -748,7 +761,7 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
       ...(access.headers ? { headers: { ...options?.headers, ...access.headers } } : {}),
       ...(sentFetch ? { fetch: sentFetch } : {}),
       ...(payloadHook ? { onPayload: payloadHook.onPayload } : {}),
-      ...(onProviderStreamEvent ? { onProviderStreamEvent } : {}),
+      ...(streamEvents ? { onProviderStreamEvent: streamEvents } : {}),
     } as TOptions,
     redact: (stream) => withoutKeyInErrors(stream, access.apiKey),
     send,
@@ -904,6 +917,7 @@ interface RequestPayload {
 function requestPayload(
   callerHook: StreamOptions['onPayload'],
   mode: PayloadMode,
+  clearing: ToolResultClearing | undefined,
   request: Omit<PayloadRequest, 'model'>,
 ): RequestPayload {
   let sharedPrefix: SharedPrefixId | null | undefined;
@@ -913,13 +927,27 @@ function requestPayload(
       const composed = returned === undefined ? payload : returned;
       if (!isRecord(composed)) throw new Error('A model request payload is not an object.');
       const pinned = mode.pin ? mode.pin(composed) : composed;
+      // Without a sharing hook no prefix was looked for, so none is reported, not a miss.
       const decision = mode.sharePrefix
         ? await mode.sharePrefix(pinned, { ...request, model })
-        : { payload: pinned, sharedPrefix: null };
+        : { payload: pinned, sharedPrefix: undefined };
       sharedPrefix = decision.sharedPrefix;
-      return decision.payload;
+      return clearing ? withToolResultClearing(decision.payload, clearing) : decision.payload;
     },
     sharedPrefix: () => sharedPrefix,
+  };
+}
+
+/** Reports the provider's clearing to the step's probe, after the caller's own observer. */
+function readClearing(
+  callerHook: StreamOptions['onProviderStreamEvent'],
+  probe: ModelStepProbe,
+): NonNullable<StreamOptions['onProviderStreamEvent']> {
+  return (event, model) => {
+    const observed = callerHook?.(event, model);
+    const cleared = clearedToolResults(event);
+    if (cleared) probe.toolResultsCleared(cleared);
+    return observed;
   };
 }
 

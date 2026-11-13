@@ -1203,6 +1203,8 @@ export interface ModelStepProbe {
    * report replaces an earlier one.
    */
   inputTransformations(reported: readonly unknown[]): void;
+  /** The provider reported the tool results it cleared from the request's prompt, earlier clearings included. */
+  toolResultsCleared(cleared: { toolUses: number; inputTokens: number }): void;
 }
 
 interface ThinkingDrops {
@@ -1219,6 +1221,7 @@ interface OpenModelStep {
   sincePreviousRequestMs?: number;
   settled?: SettledModelRequest & { chargeWaitMs: number };
   thinkingDrops?: ThinkingDrops;
+  cleared?: { toolUses: number; inputTokens: number };
 }
 
 function readTurnJobId(turnJobIdOf: () => string | undefined): string | undefined {
@@ -1264,10 +1267,11 @@ function cacheWriteSplit(usage: SettledModelRequest['usage'] | undefined) {
  * `turn` ends, with the request's size measured at `turn_request` and the
  * time since its Agent object's previous request. What only the proxy sees
  * (the 1-hour cache writes, the shared prefix, the charge's hold, the thinking
- * blocks the provider dropped) arrives through `modelStepProbe` before the
- * step ends. `inputTokens` excludes the cached input that `cachedInputTokens`
- * counts. Each compaction of an Agent object's context is one `compaction`
- * record, from Flue's `compaction_start` and `compaction`.
+ * blocks the provider dropped, the tool results it cleared) arrives through
+ * `modelStepProbe` before the step ends. `inputTokens` excludes the cached
+ * input that `cachedInputTokens` counts. Each compaction of an Agent object's
+ * context is one `compaction` record, from Flue's `compaction_start` and
+ * `compaction`.
  */
 export class ModelStepMarks {
   private readonly open = new Map<string, OpenModelStep>();
@@ -1301,6 +1305,9 @@ export class ModelStepMarks {
         } catch {
           // Observability is best effort and never changes the model request.
         }
+      },
+      toolResultsCleared: (cleared) => {
+        open.cleared = cleared;
       },
     }, next);
   }
@@ -1384,6 +1391,8 @@ export class ModelStepMarks {
         sharedPrefix: open?.settled?.sharedPrefix === null ? 'none' : open?.settled?.sharedPrefix,
         chargeWaitMs: open?.settled?.chargeWaitMs,
         ...open?.thinkingDrops,
+        clearedToolUses: open?.cleared?.toolUses,
+        clearedInputTokens: open?.cleared?.inputTokens,
       }, this.sink);
     } catch {
       // Observability is best effort and never changes the model request.

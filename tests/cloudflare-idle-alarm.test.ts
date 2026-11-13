@@ -13,10 +13,10 @@ import { StopAbortFence } from '../src/slack/runner-stops.ts';
 import { slackTurnExecutor } from '../src/slack/turn-executor-flag.ts';
 import { TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
-import { residencyHoldMs } from '../src/state/residency-hold.ts';
+import { storeResidencyHoldMs } from '../src/state/residency-hold.ts';
 import { localTurnEnqueue } from '../src/state/tag-state-stores.ts';
 import { turnJob as maintenanceTurnJob } from './fixtures/state-db/maintenance.ts';
-import { HOLD_ENV, HOLD_MS, holdOn, ScriptedTimers } from './helpers/residency-hold.ts';
+import { HOLD_ENV, HOLD_MS, holdOn, ScriptedTimers, STORE_HOLD_ENV, STORE_HOLD_MS } from './helpers/residency-hold.ts';
 
 // The production alarm(), its idle drain (no turn pending) and the admission
 // RPC, over stubbed stores: the idle drains advance a scripted clock, so each
@@ -128,7 +128,7 @@ function newProbe(costs: PartCosts, duringDrain?: (armAt: (at: number) => void) 
     setTimeout,
     clearTimeout,
     ResidencyHold: holdOn(timers),
-    residencyHoldMs,
+    storeResidencyHoldMs,
     cloudflareWorkerVersionId: () => undefined,
     applyThreadRunnerTurnOp: () => null,
     ALARM_ADMISSION_RECHECK_MS: 2_000,
@@ -174,6 +174,8 @@ function newProbe(costs: PartCosts, duringDrain?: (armAt: (at: number) => void) 
     alarm: () => alarm,
     /** The deadlines of the store's pending timers, which keep it in memory. */
     heldUntil: () => timers.pending(),
+    /** Whether a pending timer still blocks the store's eviction. */
+    blocksEviction: () => timers.blocksEviction(),
     /** How many times the alarm drained the gateway inbox, admitting turns. */
     gatewayDrains: () => gatewayDrains,
     /** The platform fires the alarm: it is cleared, then alarm() runs. */
@@ -390,6 +392,40 @@ test("a person's turn ending renews the store's hold from its end, as the runner
   assert.deepEqual(store.heldUntil(), [ended + 60_000 + HOLD_MS], 'a failed turn ends too');
   store.advance(HOLD_MS);
   assert.deepEqual(store.heldUntil(), []);
+});
+
+// Defects caught: a store window read as the conversation's, so the store
+// leaves memory with the thread's objects; one 60-minute timer, which blocks
+// eviction for only its first 15 minutes; a run of timers that stops early or
+// outlives the window; and a turn's end that renews from the shorter window.
+test("the store's own window holds it through the hour after a person's turn, past the 15 minutes one timer blocks eviction", async () => {
+  const store = admissionStore(undefined, STORE_HOLD_ENV, endingRows());
+  await store.probe.admitSlackTurn({ turnJob: { id: 'turn_person', turn: {} } });
+  store.advance(2 * 60_000);
+  await store.probe.threadRunnerTurn({ kind: 'markDelivered', id: 'turn_person' });
+  const ended = NOW + 2 * 60_000;
+  for (let minute = 1; minute < STORE_HOLD_MS / 60_000; minute += 1) {
+    store.advance(60_000);
+    assert.equal(store.heldUntil().length, 1, `one timer ${minute} min after the turn's end`);
+    assert.equal(store.blocksEviction(), true, `held ${minute} min after the turn's end`);
+  }
+  assert.deepEqual(store.heldUntil(), [ended + STORE_HOLD_MS], "the last timer ends with the window, from the turn's end");
+  store.advance(60_000);
+  assert.deepEqual(store.heldUntil(), [], "let go when the store's window ends");
+  assert.equal(store.blocksEviction(), false);
+});
+
+// Defects caught: a store held on a deployment whose store window is 0, and
+// a store window that needs the conversation's to be set.
+test("a store window of 0 turns only the store's hold off; set alone, it holds the store", async () => {
+  const off = admissionStore(undefined, { ...HOLD_ENV, CHICKPEA_STORE_RESIDENCY_HOLD_MS: '0' });
+  await off.probe.admitSlackTurn({ turnJob: { id: 'turn_person', turn: {} } });
+  assert.deepEqual(off.heldUntil(), [], '0 turns the store hold off');
+  const alone = admissionStore(undefined, { CHICKPEA_STORE_RESIDENCY_HOLD_MS: String(STORE_HOLD_MS) });
+  await alone.probe.admitSlackTurn({ turnJob: { id: 'turn_person', turn: {} } });
+  assert.equal(alone.blocksEviction(), true, 'the store window needs no conversation window');
+  alone.advance(30 * 60_000);
+  assert.equal(alone.blocksEviction(), true, 'still held half an hour on');
 });
 
 // Defects caught: a hold on a deployment that sets no window, sets 0, or

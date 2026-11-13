@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { createDeploymentInspector } from '../scripts/lib/inspect-deployment.mjs';
 // @ts-expect-error Release tooling JavaScript helper.
 import { validateTarget, validateInstallation, assertCompatibleRelease, assertSameInstallation, inventoryDigest, normalizeStoredInstallation, overlayInstallation } from '../scripts/lib/upgrade-installation.mjs';
+import { TOOL_RESULT_CLEARING_SETTING_VARIABLES, TOOL_RESULT_CLEARING_VARIABLE } from '../src/config/tool-result-clearing.ts';
 
 function fixture() {
   return {
@@ -76,13 +77,16 @@ test('installation preserves supported vars and resources without copying secret
   }
   assert.throws(() => overlayInstallation({ ...config, kv_namespaces: [{ binding: 'NEW_CACHE', id: 'new' }] }, installation, { worker: 'custom', profile: 'core' }), /unsupported resource/);
 });
-// Defect caught: an upgrade that refuses, or drops, an installation's residency hold window.
-test('an upgrade keeps the residency hold window an installation set', () => {
+// Defect caught: an upgrade that refuses, or drops, an installation's residency hold windows.
+test('an upgrade keeps the residency hold windows an installation set', () => {
   const remote: any = fixture();
   remote.bindings.push({ name: 'CHICKPEA_RESIDENCY_HOLD_MS', type: 'plain_text', text: '600000' });
+  remote.bindings.push({ name: 'CHICKPEA_STORE_RESIDENCY_HOLD_MS', type: 'plain_text', text: '3600000' });
   const installation = validateInstallation(remote);
   const config = { name: 'custom', vars: { CHICKPEA_APP_VERSION: '0.1.1', CHICKPEA_SOURCE_COMMIT: 'b'.repeat(40) }, d1_databases: [{ binding: 'AUTH_DB', database_name: 'auth', database_id: '' }], durable_objects: { bindings: [{ name: 'TAG_STATE', class_name: 'TagStateStore' }] }, ai: { binding: 'AI' }, assets: { binding: 'ASSETS' }, version_metadata: { binding: 'CF_VERSION_METADATA' } };
-  assert.equal(overlayInstallation(config, installation, { worker: 'custom', profile: 'core' }).vars.CHICKPEA_RESIDENCY_HOLD_MS, '600000');
+  const { vars } = overlayInstallation(config, installation, { worker: 'custom', profile: 'core' });
+  assert.equal(vars.CHICKPEA_RESIDENCY_HOLD_MS, '600000');
+  assert.equal(vars.CHICKPEA_STORE_RESIDENCY_HOLD_MS, '3600000');
 });
 // Defect caught: an upgrade that refuses, or drops, an installation's Slack admission path.
 test('an upgrade keeps the Slack admission path an installation set', () => {
@@ -101,6 +105,21 @@ test('an upgrade keeps the host answer release and its hold an installation set'
   const config = { name: 'custom', vars: { CHICKPEA_APP_VERSION: '0.1.1', CHICKPEA_SOURCE_COMMIT: 'b'.repeat(40) }, d1_databases: [{ binding: 'AUTH_DB', database_name: 'auth', database_id: '' }], durable_objects: { bindings: [{ name: 'TAG_STATE', class_name: 'TagStateStore' }] }, ai: { binding: 'AI' }, assets: { binding: 'ASSETS' }, version_metadata: { binding: 'CF_VERSION_METADATA' } };
   const { vars } = overlayInstallation(config, installation, { worker: 'custom', profile: 'core' });
   assert.deepEqual([vars.CHICKPEA_SLACK_ANSWER_RELEASE, vars.CHICKPEA_SLACK_ANSWER_RELEASE_CHARS], ['host', '600']);
+});
+// Defect caught: an upgrade that refuses, or drops, an installation's Anthropic tool result clearing or one of its settings.
+test('an upgrade keeps the Anthropic tool result clearing and its settings an installation set', () => {
+  const remote: any = fixture();
+  const set: Record<string, string> = {
+    [TOOL_RESULT_CLEARING_VARIABLE]: 'on',
+    [TOOL_RESULT_CLEARING_SETTING_VARIABLES.triggerTokens]: '40000',
+    [TOOL_RESULT_CLEARING_SETTING_VARIABLES.keepToolUses]: '4',
+    [TOOL_RESULT_CLEARING_SETTING_VARIABLES.clearAtLeastTokens]: '10000',
+  };
+  for (const [name, text] of Object.entries(set)) remote.bindings.push({ name, type: 'plain_text', text });
+  const installation = validateInstallation(remote);
+  const config = { name: 'custom', vars: { CHICKPEA_APP_VERSION: '0.1.1', CHICKPEA_SOURCE_COMMIT: 'b'.repeat(40) }, d1_databases: [{ binding: 'AUTH_DB', database_name: 'auth', database_id: '' }], durable_objects: { bindings: [{ name: 'TAG_STATE', class_name: 'TagStateStore' }] }, ai: { binding: 'AI' }, assets: { binding: 'ASSETS' }, version_metadata: { binding: 'CF_VERSION_METADATA' } };
+  const { vars } = overlayInstallation(config, installation, { worker: 'custom', profile: 'core' });
+  for (const [name, text] of Object.entries(set)) assert.equal(vars[name], text, name);
 });
 test('a retired variable does not block an upgrade and is not carried forward', () => {
   const value: any = fixture();

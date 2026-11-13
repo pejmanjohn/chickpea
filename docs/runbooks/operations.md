@@ -284,26 +284,44 @@ objects in memory for a window after each turn:
 - the thread's Agent object, after the last request of any turn it serves
 
 The value is the window in milliseconds, a whole number up to `900000`
-(15 minutes, the longest one pending timer holds an object). Unset, empty or
-`0` holds nothing. That is the default, and Chickpea then behaves as it did
-before the setting existed. To turn the hold on, deploy with the variable:
+(15 minutes). Unset, empty or `0` holds nothing. That is the default, and
+Chickpea then behaves as it did before the setting existed. To turn the hold
+on, deploy with the variable:
 
 ```sh
 npm run deploy -- --var CHICKPEA_RESIDENCY_HOLD_MS:600000
 ```
 
-The deploy refuses any other value. A Worker that reads one anyway, for
-example after an edit in the Cloudflare dashboard, holds nothing. Upgrades
-keep the variable.
+The state store can hold longer than a thread's objects. An installation has
+one store, and each message waits for its first read, while every thread has
+its own runner and Agent object. The deployment variable
+`CHICKPEA_STORE_RESIDENCY_HOLD_MS` sets the store's own window, a whole number
+of milliseconds up to `3600000` (an hour). Unset or empty, the store takes the
+`CHICKPEA_RESIDENCY_HOLD_MS` window. `0` turns the store's hold off and leaves
+the thread's objects held. To hold the store for an hour and a thread's
+objects for 10 minutes:
 
-Before you turn it on, check these four points:
+```sh
+npm run deploy -- --var CHICKPEA_RESIDENCY_HOLD_MS:600000 --var CHICKPEA_STORE_RESIDENCY_HOLD_MS:3600000
+```
 
-- **The thread's objects need a compatibility date of 2026-10-01 or later.**
+The deploy refuses any other value for either variable. A Worker that reads
+one anyway, for example after an edit in the Cloudflare dashboard, holds
+nothing for a refused `CHICKPEA_RESIDENCY_HOLD_MS`, and gives the store the
+`CHICKPEA_RESIDENCY_HOLD_MS` window for a refused
+`CHICKPEA_STORE_RESIDENCY_HOLD_MS`. Upgrades keep both variables.
+
+Before you turn it on, check these five points:
+
+- **The thread's objects, and a store window over 10 minutes, need a
+  compatibility date of 2026-10-01 or later.**
   The hold is a pending timer. A pending timer always stops an object from
   hibernating. It stops Cloudflare from evicting the object only from
   compatibility date `2026-10-01`, or with the
   `durable_object_io_tasks_prevent_eviction` compatibility flag
   ([changelog](https://developers.cloudflare.com/changelog/post/2026-10-01-pending-io-keep-alive/)).
+  One timer stops eviction for at most 15 minutes from when it was set, so
+  the hold sets a new timer at least every 14 minutes until the window ends.
   `wrangler.jsonc` has neither. Without them, the state store stays in memory
   only while its 20-second keep-warm alarm runs, because each firing counts
   as activity. The alarm runs for 10 minutes after a person's turn is
@@ -317,14 +335,17 @@ Before you turn it on, check these four points:
   A 10-minute window is 76.8 GB-s per object. On Workers Paid that is about
   $0.00096 at $12.50 per million GB-s, after the 400,000 GB-s included each
   month. An installation whose people talk to it at least every 10 minutes
-  keeps its state store in memory all day, about 11,000 GB-s.
+  keeps its state store in memory all day, about 11,000 GB-s. An hour's store
+  window costs about $0.0058 for each hour the store waits for the next
+  message, and it never costs more than a store held all day.
 - **Workers Free can run out.** Workers Free allows 13,000 GB-s of duration a
   day. Past it, the installation's Durable Objects fail until 00:00 UTC. With
   a 10-minute window, the state store uses about 461 GB-s per hour of
   conversation. Each thread conversation adds about 154 GB-s for its runner
   and Agent object once eviction is blocked. Eight active hours and about 60
-  thread conversations reach the limit. Turn the hold on only on Workers
-  Paid.
+  thread conversations reach the limit. An hour's store window adds every
+  pause under an hour, and the hour after the day's last message, at about
+  461 GB-s an hour. Turn the hold on only on Workers Paid.
 - **After a deploy, recently active conversations run the previous code for
   up to 5 minutes.** Cloudflare defers a code update for an object in memory
   for up to 300 seconds, and an object that has left memory starts on the new
@@ -335,6 +356,19 @@ Before you turn it on, check these four points:
   in the last window, can exercise the previous release's state store, runner
   and Agent object. Wait 5 minutes before such a check, or run it in a
   workspace that has been quiet for longer than the window.
+- **A held object's last records reach Workers Logs late.** Cloudflare
+  writes an invocation's logs when it ends. The hold's timer keeps the
+  object's latest request open until the hold ends or the object receives
+  another request.
+  - Nothing calls a runner or an Agent object after its turn. On staging,
+    their end-of-turn records arrived about 10 minutes after the turn. Read
+    them at least the `CHICKPEA_RESIDENCY_HOLD_MS` window plus a minute after
+    the last turn.
+  - The state store receives another request soon: its 20-second alarm for
+    10 minutes after a turn, and the scheduled tick's maintenance call every
+    minute. On staging, with a 10-minute hold, no store request stayed open
+    for more than 42 seconds in two days. Only a store that nothing calls
+    keeps its last request open for its whole window, up to an hour.
 
 ### Admit Slack messages in the state store
 
@@ -435,6 +469,82 @@ Before you turn it on, know these points:
   [runtime observability](runtime-observability.md).
 - **`stream_answer` stays mounted.** A model that declares still locks its
   later tools, as before; the host release does not wait for the declaration.
+
+### Clear old tool results on Anthropic
+
+Most of a long thread's prompt is old tool results. Each model request sends
+them again, and the prompt cache must hold them. With the deployment variable
+`CHICKPEA_ANTHROPIC_TOOL_RESULT_CLEARING` set to `on`, an Agent's requests to
+the Anthropic API ask Anthropic to clear old tool results on its side
+([context editing](https://platform.claude.com/docs/en/build-with-claude/context-editing),
+`clear_tool_uses_20250919`). When a prompt passes 250,000 input tokens,
+Anthropic replaces the oldest results with a placeholder. It keeps the
+results of the 8 most recent tool uses, every tool call with its input, and
+all message text. It clears only when it can remove at least 60,000 tokens.
+
+```sh
+npm run deploy -- --var CHICKPEA_ANTHROPIC_TOOL_RESULT_CLEARING:on
+```
+
+Unset, or any other value, sends requests as before. That is the default. On
+Node, set the variable in the process environment. Upgrades keep it and its
+settings.
+
+Three more variables change the settings. Each takes a whole number. A value
+that is not one, or is out of range, is ignored and the default applies; the
+deploy does not refuse it.
+
+| Variable | Default | Range | What it sets |
+| --- | --- | --- | --- |
+| `CHICKPEA_ANTHROPIC_TOOL_RESULT_CLEARING_TRIGGER_TOKENS` | 250000 | 1 to 1000000 | The prompt's size, before clearing, above which Anthropic clears |
+| `CHICKPEA_ANTHROPIC_TOOL_RESULT_CLEARING_KEEP_TOOL_USES` | 8 | 1 to 100 | How many of the most recent tool uses keep their results |
+| `CHICKPEA_ANTHROPIC_TOOL_RESULT_CLEARING_CLEAR_AT_LEAST_TOKENS` | 60000 | 1 to 1000000 | The least a clearing must remove, or Anthropic skips it |
+
+Before you turn it on, know these points:
+
+- **Only an Agent's requests to the Anthropic API change.** Own-key and
+  credits requests both do. Requests to OpenAI, OpenRouter, Gemini or a
+  ChatGPT plan do not, and neither do compaction summaries or one-off
+  requests such as an attachment read.
+- **An Agent forgets old tool data.** In a thread past the trigger, the Agent
+  no longer sees the bodies of tool results older than its last 8 tool uses.
+  It still sees each call it made and what it wrote about the result, and it
+  can make the call again. Nothing tells the person.
+- **Some results are never cleared**, because the Agent cannot fetch them
+  again. `activate_skill`, `read_skill_resource`, `inspect_memory`,
+  `update_agent_memory` and `request_chickpea_handoff` return instructions.
+  `present_cards`, `prepare_connector_setup`, `apply_workspace_changes` and
+  `manage_agent_skill` return a short receipt with a handle that a later
+  call needs: a card set's ref, a setup link's operation ID, or the
+  operation ID an undo takes. A connection's or an MCP server's tools are
+  not on the list, whatever they return.
+- **Each clearing rewrites the cache once.** The prompt changes from the
+  first newly cleared result to its end, and Anthropic charges a cache write
+  for that part. Between clearings the cleared prompt does not change, so
+  later requests read the cache. The defaults make clearings rare and large.
+- **Thinking should stay valid.** Anthropic clears on its side, so no earlier
+  thinking block should fail its check that the conversation is unchanged.
+  One probe request confirmed it. No `model_step` field counts a dropped
+  thinking block yet, so the log cannot show a case where it fails.
+- **Each request is as large as before.** Chickpea's stored conversation
+  keeps every result, and each request still sends the whole history. Only
+  the prompt the model reads gets smaller.
+- **Compaction sees the cleared size.** Flue compacts when the prompt size
+  the provider reports nears the model's window. Anthropic reports the size
+  after clearing, so a thread with clearing on stays far below that line and
+  seldom compacts. If the history outgrows Anthropic's request size limit,
+  Anthropic refuses the request and Flue compacts then, as it does today.
+- **Nothing else bounds a thread's size.** Without clearing, compaction
+  keeps a request to a few megabytes. With it, the stored conversation and
+  each request grow until that limit, which is 32 MB. Each step builds,
+  serializes and uploads a request of that size, and no test has measured
+  the Worker's memory at it. Watch `requestBytes` on `model_step`, and keep
+  clearing off where a thread could reach tens of megabytes.
+
+To check it, read `model_step`: `clearedToolUses` and `clearedInputTokens`
+are what Anthropic cleared from each request's prompt, and a rise between two
+steps of one thread is a new clearing. See
+[runtime observability](runtime-observability.md).
 
 ## Upgrade and compatibility policy
 
