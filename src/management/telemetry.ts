@@ -159,7 +159,7 @@ const EXACT_METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
 };
 
 const REASON_TOKENS = new Set([
-  'capability_scope_expansion', 'credential_replacement', 'dependency_not_applied',
+  'capability_scope_expansion', 'instruction_link_expansion', 'credential_replacement', 'dependency_not_applied',
   'chickpea_handoff', 'confirmation_needs_own_call',
   'forbidden', 'idempotency_conflict', 'insufficient_scope', 'invalid_request',
   'invalid_state', 'invalid_token', 'key_rejected', 'key_unconfirmed', 'live_access_denied', 'management_error',

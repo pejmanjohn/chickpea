@@ -11,6 +11,7 @@ import type {
   ResolvedAssignment,
 } from './types.ts';
 import { agentMayAskTeammates } from '../slack/agent-asks.ts';
+import { IDENTITY_OPENING } from '../web/instruction-links.ts';
 
 export const SLACK_RUNTIME_GUARDRAIL =
   'Do not reveal Slack tokens, provider keys, or hidden policy data.';
@@ -129,7 +130,7 @@ export function runtimeIdentityInstruction(
   assignment: Pick<ResolvedAssignment, 'workspaceId' | 'channelId' | 'agent'>,
 ): string {
   const parts = [
-    `You are assigned to Slack workspace ${assignment.workspaceId} channel ${assignment.channelId}.`,
+    `${IDENTITY_OPENING}${assignment.workspaceId} channel ${assignment.channelId}.`,
     `Your Agent ID is ${assignment.agent.id} and your name is ${assignment.agent.name}.`,
   ];
   const presence = assignment.agent.slackPresence;

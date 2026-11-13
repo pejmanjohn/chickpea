@@ -5,6 +5,7 @@ import type {
   RepositoryGrant,
 } from '../config/types.ts';
 import type { MembershipStatus } from '../identity/types.ts';
+import { addedInstructionLinks } from '../web/instruction-links.ts';
 import { describeTextChange } from './text-change-wording.ts';
 import { summarizeTextChange } from './text-changes.ts';
 import type {
@@ -227,10 +228,27 @@ function proposalParts(
         ...formatNewAgentParts(after, dialect, creation?.originGrant !== undefined),
         ...formatSkillChangeSections(recordName(undefined, after) ?? 'New Agent', undefined, after?.skills, false, dialect)
           .map((text) => fieldPart('skills', after?.skills, text)),
+        ...instructionLinkParts(change, dialect),
       ];
     }
-    return formatChangeSections(change, dialect, connectionTables);
+    return [...formatChangeSections(change, dialect, connectionTables), ...instructionLinkParts(change, dialect)];
   })];
+}
+
+/**
+ * The links new instructions add, which the Agent may then open pages under
+ * on its own: pinned, so a long instructions change cut short still shows them.
+ */
+function instructionLinkParts(change: PreviewChange, dialect: ChangeSetPresentationDialect): PreviewPart[] {
+  if (change.operationKind !== 'update_agent' && change.operationKind !== 'create_agent') return [];
+  const before = stringValue(presentationRecord(change.operationKind, change.before)?.instructions) ?? '';
+  const after = stringValue(presentationRecord(change.operationKind, change.after)?.instructions);
+  const added = after === undefined ? [] : addedInstructionLinks(before, after);
+  if (added.length === 0) return [];
+  return [{
+    text: [dialect.bold('New links it may open pages under'), ...added.map((link) => quoteValue(link, dialect))].join('\n'),
+    pinned: true,
+  }];
 }
 
 function truncationSuffix(dialect: ChangeSetPresentationDialect): string {

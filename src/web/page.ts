@@ -4,6 +4,7 @@ import { McpBlockedUrlError } from '../config/mcp-errors.ts';
 import { createMcpGuardedFetch, type McpGuardedFetchOptions } from '../config/mcp-url.ts';
 import { readTruncatedText } from '../http/bounded-body.ts';
 import { hasCredentialLikeContent, redactCredentialLikeContent } from '../security/content-validation.ts';
+import { requesterTypedUrls } from '../slack/typed-urls.ts';
 import { htmlDocText, type HtmlDocText } from './page-text.ts';
 
 export const WEB_PAGE_MAX_TEXT_CHARS = 24_000;
@@ -76,9 +77,9 @@ export interface WebUrlSources {
   sourced: readonly string[];
   /**
    * Where a URL the model writes may go: any path on a host the requester
-   * typed in this turn's message, and the hosts and paths of the Agent's own
-   * API and MCP connections in the trusted runtime plan. Never from model
-   * input.
+   * typed in this turn's message, the hosts and paths of the Agent's own API
+   * and MCP connections, and the links in its saved instructions, from the
+   * trusted runtime plan. Never from model input.
    */
   spaces: readonly WebPathSpace[];
   /**
@@ -100,8 +101,8 @@ export const WEB_URL_REFUSALS: Record<WebUrlRefusal, string> = {
   not_public: 'Nothing was read: read_web_page reads only public https pages on the standard port, never a local, private or internal address.',
   query: 'Nothing was read: a URL you write yourself may not have a query string. Pass a URL from this turn\'s search results or page links exactly as given, or one the requester typed.',
   long_path: `Nothing was read: a URL you write yourself may have a path of at most ${MAX_COMPOSED_PATH_CHARS} characters.`,
-  host: 'Nothing was read: a URL you write yourself must be on a host the requester typed or one of this Agent\'s connections. To read another site, search for the page and pass a result\'s URL as given, or ask the requester for the link.',
-  path: 'Nothing was read: on a connection\'s host, a URL you write yourself must stay within that connection\'s path scope. To read another page there, search for it and pass a result\'s URL as given, or ask the requester for the link.',
+  host: 'Nothing was read: a URL you write yourself must be on a host the requester typed, one of this Agent\'s connections, or a link in this Agent\'s instructions. To read another site, search for the page and pass a result\'s URL as given, or ask the requester for the link.',
+  path: 'Nothing was read: on that host, a URL you write yourself must stay within the path of this Agent\'s connection or of the link in its instructions. To read another page there, search for it and pass a result\'s URL as given, or ask the requester for the link.',
   encoded_path: 'Nothing was read: a URL you write yourself may not have a percent-escape, a semicolon or two dots in a row in its path. Pass a URL from this turn\'s search results or page links exactly as given, or one the requester typed.',
   request_text: 'Nothing was read: a URL you write yourself may not contain words from the requester\'s message in its path. Use a URL from this turn\'s search results or page links, or ask the requester to send the link.',
 };
@@ -292,9 +293,10 @@ async function readPage(url: URL, response: Response, signal: AbortSignal): Prom
     return unreadable(url, signal.aborted ? 'timeout' : 'unreachable');
   }
   const html = kind === 'html' || (kind === 'unknown' && /<html[\s>]|<!doctype html/i.test(body.text.slice(0, 2_048)));
+  // A text page's links are its written URLs: an llms.txt index is a list of them.
   const page: HtmlDocText = html
     ? htmlDocText(body.text, WEB_PAGE_MAX_TEXT_CHARS + REDACTION_MARGIN_CHARS)
-    : { text: body.text, hrefs: [], overflowed: false };
+    : { text: body.text, hrefs: requesterTypedUrls(body.text).map(({ href }) => href), overflowed: false };
   const scanned = redactCredentialLikeContent(page.text.slice(0, WEB_PAGE_MAX_TEXT_CHARS + REDACTION_MARGIN_CHARS));
   const title = page.title ? redactCredentialLikeContent(page.title).slice(0, MAX_TITLE_CHARS) : '';
   return {

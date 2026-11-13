@@ -86,7 +86,7 @@ function freshTurn(turnKey = 'turn_1', saved?: WebTurnState[]): WebTurn {
 /** read_web_page in one turn answering `requesterText`, over the synthetic web. */
 function turnReader(site: ReturnType<typeof web>, requesterText: string | undefined, turn = freshTurn(), source?: 'click') {
   const request = webRequest(requesterText, source);
-  return { turn, read: (url: string) => readWebPageInTurn({ turn, request, connectionSpaces: [], readPage: (target) => readWebPage(target, site.options) }, url) };
+  return { turn, read: (url: string) => readWebPageInTurn({ turn, request, agentSpaces: [], readPage: (target) => readWebPage(target, site.options) }, url) };
 }
 
 function page(result: WebPageResult | WebRefusal): WebPage {
@@ -151,6 +151,22 @@ test('a page\'s same-host links, query strings and all, may be read next in the 
   assert.deepEqual(site.requests.map(({ url }) => url), [DOCS, tabbed]);
 });
 
+test('a text page\'s same-host URLs are its links, so an llms.txt index found by search can be followed', async () => {
+  const index = 'https://docs.statusboard.example/llms.txt';
+  const agents = 'https://docs.statusboard.example/agents/llms.txt';
+  const site = web({
+    [index]: () => new Response(`# Statusboard\n\n- [Agents](${agents})\n- [Status](https://status.other.example/now).\n`,
+      { headers: { 'content-type': 'text/plain' } }),
+    [agents]: () => new Response('# Agents\n\nAn Agent answers in a Channel once added.', { headers: { 'content-type': 'text/markdown' } }),
+  });
+  const turn = freshTurn('turn_index');
+  turn.addSourced([index]);
+  const reader = turnReader(site, 'how do agents work', turn);
+  assert.deepEqual(page(await reader.read(index)).links, [agents], 'same host only');
+  assert.match(page(await reader.read(agents)).text, /answers in a Channel/);
+  assert.deepEqual(site.requests.map(({ url }) => url), [index, agents]);
+});
+
 test('a turn reads at most six pages; a refused read takes none of them', async () => {
   const saved: WebTurnState[] = [];
   const turn = freshTurn('turn_budget', saved);
@@ -158,7 +174,7 @@ test('a turn reads at most six pages; a refused read takes none of them', async 
   const input = {
     turn,
     request: webRequest('read the vendor docs'),
-    connectionSpaces: [{ host: 'docs.vendor.example', pathPrefixes: ['/'] }],
+    agentSpaces: [{ host: 'docs.vendor.example', pathPrefixes: ['/'] }],
     readPage: async (url: URL): Promise<WebPageResult> => {
       sent.push(url.href);
       return { outcome: 'read', url: url.href, status: 200, untrusted: true, instruction: '', truncated: false, links: [], text: '' };
@@ -460,7 +476,7 @@ async function connectionFixture(site: ReturnType<typeof web>) {
     const request = webRequest(requesterText);
     return {
       web,
-      read: (url: string) => readWebPageInTurn({ turn: web, request, connectionSpaces: [], readPage: (target) => readWebPage(target, site.options) }, url),
+      read: (url: string) => readWebPageInTurn({ turn: web, request, agentSpaces: [], readPage: (target) => readWebPage(target, site.options) }, url),
       connect: async (): Promise<ManagementApplyResult> => {
         const result = await invokeSlackWorkspaceManagementTool({
           signal: signalAfterPageRead(asked, web.pageRead()),
