@@ -461,7 +461,7 @@ test('a client without cards hears one line a round, and lists the results with 
   assert.equal(await step({}), list, 'a single check is its own last report');
 });
 
-test('each change is cut to what the card shows, like a note, and more than eight are refused', async (t) => {
+test('each change is cut to what the card shows, like a note; twenty draw and more are refused', async (t) => {
   const w = await world(t, 'report-change-cut');
   const run = await w.practice('How do I add a second warehouse?');
   const long = (word: string) => `${word} `.repeat(Math.floor(390 / (word.length + 1))).trim();
@@ -472,9 +472,15 @@ test('each change is cut to what the card shows, like a note, and more than eigh
   const [change] = report.structuredContent!.changes as Array<{ what: string; why: string; effect: string }>;
   assert.deepEqual([change!.what.length, change!.why.length, change!.effect.length], [160, 160, 100]);
   assert.ok([change!.what, change!.why, change!.effect].every((text) => text.endsWith('…')));
-  const nine = await w.call('show_test_report', {
-    agentId: AGENT, runs: [{ runToken: run, verdict: 'passes' }], summary: 'All pass.', round: 2,
-    changes: Array.from({ length: 9 }, () => CHANGE_ONE),
+  // A loop of one change a round reaches round 20 without the report refusing it.
+  const twenty = await w.call('show_test_report', {
+    agentId: AGENT, runs: [{ runToken: run, verdict: 'passes' }], summary: 'All pass.', round: 20,
+    changes: Array.from({ length: 20 }, () => CHANGE_ONE),
   });
-  assert.equal(nine.structuredContent!.error.code, 'invalid_input');
+  assert.equal((twenty.structuredContent!.changes as unknown[]).length, 20);
+  const more = await w.call('show_test_report', {
+    agentId: AGENT, runs: [{ runToken: run, verdict: 'passes' }], summary: 'All pass.', round: 20,
+    changes: Array.from({ length: 21 }, () => CHANGE_ONE),
+  });
+  assert.equal(more.structuredContent!.error.code, 'invalid_input');
 });

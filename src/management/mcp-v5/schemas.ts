@@ -883,7 +883,7 @@ export const showTestReportInput = z.strictObject({
     what: zText(400).describe('The change in a few words, such as "Give conditional checks before a fix". The card shows about 160 characters.'),
     why: zText(400).describe('One line on why you made it. The card shows about 160 characters.'),
     effect: zText(400).optional().describe('What it did once you tested it, such as "question 4: fails → passes". The card shows about 100 characters.'),
-  })).max(8).optional().describe('Each change saved so far, oldest first.'),
+  })).max(20).optional().describe('Each change saved so far, oldest first.'),
   final: z.boolean().optional()
     .describe('true on the last call, when the testing is done: the card says Tested in place of Testing, and lists the changes after the questions.'),
 });
