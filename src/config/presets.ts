@@ -1179,6 +1179,17 @@ export function mcpPresetKeyOptional(auth: McpPresetLane['auth'] | undefined): b
   return auth?.kind === 'header' && auth.optional === true && !isCloudflareTarget();
 }
 
+/**
+ * A preset as this deployment's Admin offers it. Admin reads `auth.optional` in
+ * the browser, so a deployment that needs the key sends the preset without it.
+ */
+export function presetForDeployment<T extends object>(preset: T): T {
+  const auth = (preset as { auth?: McpPresetLane['auth'] }).auth;
+  if (auth?.kind !== 'header' || auth.optional !== true || mcpPresetKeyOptional(auth)) return preset;
+  const { optional: _optional, ...keyed } = auth;
+  return { ...preset, auth: keyed };
+}
+
 export function getConnectorPreset(id: string): ConnectorPreset | undefined {
   return CONNECTOR_PRESETS.find((preset) => preset.id === id);
 }
