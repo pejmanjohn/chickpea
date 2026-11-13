@@ -273,7 +273,7 @@ export const FIVE_ZERO_TOOLS = {
   }),
   show_test_report: tool({
     title: 'Show a test report',
-    description: 'Show the person one card for a round of practice runs: each question with your verdict, opening to the Agent\'s answer. Send each run\'s runToken from practice_agent with your verdict, an optional note, and before for its first-round verdict. Chickpea fills in each question and answer from its own records. Verdicts and notes are not stored. Reads only; changes nothing.',
+    description: 'Show the person one card for a round of practice runs: each question with your verdict, opening to the Agent\'s answer. Send each run\'s runToken from practice_agent with your verdict, an optional note, and before for its first-round verdict. Chickpea fills in each question and answer from its own records. The card shows every row, so after it write a line or two: what changes next, or the hand-off. Never list the questions or verdicts again. Verdicts and notes are not stored. Reads only; changes nothing.',
     input: schemas.showTestReportInput,
     output: schemas.showTestReportOutput,
     card: 'report-card',
@@ -289,7 +289,7 @@ export const FIVE_ZERO_TOOLS = {
   }),
   check_agent: tool({
     title: 'Check on an Agent\'s health',
-    description: `How one Agent is doing, for "check on it" or a health check: its connections, model, Slack, Channels, schedules, repositories, website logins, and whether a message from a person in a place reaches it. ${guideFirst('check-in')} Report each failing check in text, with its fix: a tool call or a link. Tests custom connections with one request each; changes nothing.`,
+    description: `How one Agent is doing, for "check on it" or a health check: its connections, model, Slack, Channels, schedules, repositories, website logins, and whether a message from a person in a place reaches it. ${guideFirst('check-in')} Report in plain text, never a table: each failing check with its fix (a tool call or a link), and when all pass, one line saying so. Tests custom connections with one request each; changes nothing.`,
     input: schemas.checkAgentInput,
     output: schemas.checkAgentOutput,
     openWorld: true,
