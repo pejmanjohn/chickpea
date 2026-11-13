@@ -273,7 +273,7 @@ export const FIVE_ZERO_TOOLS = {
   }),
   show_test_report: tool({
     title: 'Show a test report',
-    description: 'Show the person one card for a round of practice runs: each question with your verdict, opening to the Agent\'s answer. Send each run\'s runToken from practice_agent with your verdict, an optional note, and before for its first-round verdict. Chickpea fills in each question and answer from its own records. The card shows every row, so after it write a line or two: what changes next, or the hand-off. Never list the questions or verdicts again. Verdicts and notes are not stored. Reads only; changes nothing.',
+    description: 'Show the person one card for a round of practice runs: each question with your verdict, opening to the Agent\'s answer. Send each run\'s runToken from practice_agent with your verdict, an optional note, and before for its first-round verdict. Chickpea fills in each question and answer from its own records. The card shows every row, so after it write a line or two: what changes next, or the hand-off. Never list the questions or verdicts again, unless the result says your client draws no card. Verdicts and notes are not stored. Reads only; changes nothing.',
     input: schemas.showTestReportInput,
     output: schemas.showTestReportOutput,
     card: 'report-card',
