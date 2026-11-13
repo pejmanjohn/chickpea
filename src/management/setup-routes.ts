@@ -87,8 +87,10 @@ import { deploymentServesManyInstallations } from '../config/installation-scope.
 import { sameMcpServerUrl, validateMcpUrl } from '../config/mcp-url.ts';
 import type { OAuthAuthorizationAuthority } from '../config/oauth-authorization.ts';
 import { discoverMcpConnectionIdentity } from '../config/mcp-identity.ts';
+import { classifyMcpError, mcpDebugText } from '../config/mcp-errors.ts';
 import { discoverMcpTools } from '../config/mcp-test.ts';
 import {
+  mcpPresetKeyOptional,
   resolveConnectorCatalogPreset,
   type ConnectorPreset,
 } from '../config/presets.ts';
@@ -2340,7 +2342,8 @@ async function prepareCatalogConnection(
     if (!validated.ok) throw new Error('blocked_url');
     const credential = fields.credential?.trim() ?? '';
     const auth = preset.auth;
-    if ((auth.kind === 'bearer' || auth.kind === 'header' && !auth.optional) && !credential) {
+    const keyOptional = mcpPresetKeyOptional(auth);
+    if ((auth.kind === 'bearer' || auth.kind === 'header' && !keyOptional) && !credential) {
       throw new Error('credential_required');
     }
     const authMode = auth.kind === 'oauth' ? 'oauth' as const
@@ -2362,7 +2365,12 @@ async function prepareCatalogConnection(
         transport: preset.transport,
         headers,
       };
-      discoveredTools = (await (options.discoverMcp ?? discoverMcpTools)(discoveryInput)).tools;
+      try {
+        discoveredTools = (await (options.discoverMcp ?? discoverMcpTools)(discoveryInput)).tools;
+      } catch (error) {
+        console.warn(`[chickpea] MCP setup discovery failed (${preset.id}): ${mcpDebugText(error)}`);
+        throw new SetupMcpDiscoveryError(error);
+      }
       identity = await (options.identifyMcp ?? discoverMcpConnectionIdentity)({
         ...discoveryInput,
         presetId: preset.id,
@@ -2390,7 +2398,7 @@ async function prepareCatalogConnection(
         ? {
             credentialHeaderName: auth.headerName,
             ...(auth.valuePrefix ? { credentialValuePrefix: auth.valuePrefix } : {}),
-            ...(auth.optional ? { credentialOptional: true } : {}),
+            ...(keyOptional ? { credentialOptional: true } : {}),
           }
         : {}),
       discoveredTools: [],
@@ -3121,6 +3129,18 @@ class SetupSaveRaceError extends Error {
   }
 }
 
+/** Setup could not list an MCP server's tools. The code names the class of failure, never the server's words. */
+class SetupMcpDiscoveryError extends Error {
+  readonly code: `mcp_${string}`;
+
+  constructor(cause: unknown) {
+    const kind = classifyMcpError(cause);
+    const code = kind === 'mcp_connection_failed' ? kind : `mcp_${kind}` as const;
+    super(code);
+    this.code = code;
+  }
+}
+
 /** The setups whose page asks the person to type a secret. */
 const KEY_FORM_ACTIONS: ReadonlySet<ManagementSetupRecord['action']> = new Set([
   'provider_credential',
@@ -3671,6 +3691,7 @@ function digest(value: string): string {
 export function safeFailureCode(error: unknown): string {
   if (error instanceof SetupKeyRejectedError) return 'key_rejected';
   if (error instanceof SetupSaveRaceError) return 'setup_failed';
+  if (error instanceof SetupMcpDiscoveryError) return error.code;
   if (error instanceof ManagementError) return error.code;
   if (error instanceof McpOAuthError) return error.code;
   // The connection or Agent the setup writes changed under it.

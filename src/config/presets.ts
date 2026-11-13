@@ -5,6 +5,7 @@ import {
   META_ADS_OAUTH_DEFAULT_SCOPE,
   META_ADS_OAUTH_MANAGEMENT_SCOPE,
 } from './mcp-oauth-clients.ts';
+import { isCloudflareTarget } from './runtime-target.ts';
 
 type ConnectorCategory = 'project' | 'dev' | 'data' | 'search' | 'docs' | 'business';
 
@@ -38,7 +39,7 @@ interface McpPresetLane {
         headerName: string;
         valuePrefix?: string;
         placeholder: string;
-        /** The server also accepts anonymous requests, usually at lower limits. */
+        /** The server also accepts anonymous requests at lower limits. Read it through `mcpPresetKeyOptional`. */
         optional?: boolean;
       };
 }
@@ -479,7 +480,6 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
     },
     tokenDocsUrl: 'https://dashboard.exa.ai/api-keys',
     tokenDocsHint: 'Exa → Dashboard → API keys',
-    notes: 'Also works without a key at lower limits.',
   },
   {
     id: 'firecrawl',
@@ -1169,6 +1169,25 @@ export function presetLanes(preset: ConnectorPreset): { mcp: boolean; api: boole
     mcp: 'url' in preset && typeof preset.url === 'string',
     api: 'api' in preset && preset.api !== undefined,
   };
+}
+
+/**
+ * Whether this deployment may connect an MCP preset without its key. Exa answers
+ * HTTP 403 to a Cloudflare Worker's request that has no key, so a Worker asks for one.
+ */
+export function mcpPresetKeyOptional(auth: McpPresetLane['auth'] | undefined): boolean {
+  return auth?.kind === 'header' && auth.optional === true && !isCloudflareTarget();
+}
+
+/**
+ * A preset as this deployment's Admin offers it. Admin reads `auth.optional` in
+ * the browser, so a deployment that needs the key sends the preset without it.
+ */
+export function presetForDeployment<T extends object>(preset: T): T {
+  const auth = (preset as { auth?: McpPresetLane['auth'] }).auth;
+  if (auth?.kind !== 'header' || auth.optional !== true || mcpPresetKeyOptional(auth)) return preset;
+  const { optional: _optional, ...keyed } = auth;
+  return { ...preset, auth: keyed };
 }
 
 export function getConnectorPreset(id: string): ConnectorPreset | undefined {

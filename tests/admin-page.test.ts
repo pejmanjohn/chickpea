@@ -10818,6 +10818,36 @@ test('Agent-owned Exa accounts support anonymous limits without an API key', asy
   assert.equal(testedHeaders?.['x-api-key'], undefined);
 });
 
+
+test('on Cloudflare Workers, Admin asks for Exa\'s key, because Exa refuses a Worker\'s request without one', async (t) => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { userAgent: 'Cloudflare-Workers' } });
+  t.after(() => {
+    if (descriptor) Object.defineProperty(globalThis, 'navigator', descriptor);
+    else Reflect.deleteProperty(globalThis, 'navigator');
+  });
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: { attached: [] },
+    mcpTestResult: { ok: true, tools: [{ name: 'web_search_exa' }] },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'exa' }) });
+  assert.doesNotMatch(harness.app.innerHTML, /\(optional\)|anonymous limits/);
+  chooseConnectionOwner(harness);
+  click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Enter the credential for this connection\./);
+  assert.equal(harness.connectionAccountPosts.length, 0, 'no account is saved without a key');
+});
+
 test('a focus revalidation keeps focus and caret in the add-connection credential field', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],

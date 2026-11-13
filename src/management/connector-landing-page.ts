@@ -2,7 +2,7 @@ import { CONNECTOR_PAGE_FONTS, fontFaceCss } from '../assets/fonts.ts';
 import { escapeHtml } from '../security/html-escape.ts';
 import { CHICKPEA_FAVICON_HTML, CHICKPEA_WORDMARK_CSS, CHICKPEA_WORDMARK_HTML } from '../brand/chickpea-mark.ts';
 import { CONNECTOR_LOGOS } from '../config/connector-logos.ts';
-import { resolveConnectorCatalogPreset } from '../config/presets.ts';
+import { mcpPresetKeyOptional, resolveConnectorCatalogPreset } from '../config/presets.ts';
 import type { CustomAgentConfig } from '../config/types.ts';
 import {
   managedConnectorReadCopy,
@@ -202,7 +202,7 @@ export function renderCatalogConnectionSetupPage(input: ConnectorLandingPageInpu
   const credential = mcpAuth?.kind === 'bearer' || mcpAuth?.kind === 'header'
     ? {
         placeholder: mcpAuth.placeholder,
-        optional: mcpAuth.kind === 'header' && mcpAuth.optional === true,
+        optional: mcpPresetKeyOptional(mcpAuth),
       }
     : 'api' in preset && !preset.api.oauth
     ? { placeholder: preset.api.placeholder, optional: false }
@@ -225,6 +225,8 @@ export function renderCatalogConnectionSetupPage(input: ConnectorLandingPageInpu
     ? `${preset.notes} No tools are enabled until you save your choices after sign-in.`
     : mcpAuth?.kind === 'oauth'
     ? `${connector} requests native ${/\bwrite\b/i.test(mcpAuth.scope ?? '') ? 'read and write' : 'account'} access. Selected tools can carry out your requests; Agent instructions can require confirmation.`
+    : credential?.optional
+    ? 'Also works without a key at lower limits.'
     : preset.notes ?? preset.description;
   const failureMessage = input.failureMessage ?? '';
   return pageShell({

@@ -7,6 +7,7 @@ import {
   GOOGLE_WORKSPACE_SERVICE_PRESETS,
   MANAGED_CONNECTOR_PRESETS,
   CONNECTION_CATALOG_PRESETS,
+  presetForDeployment,
 } from '../config/presets.ts';
 import { GOOGLE_WORKSPACE_SCOPE_OPTIONS } from '../config/api-oauth-policy.ts';
 import {
@@ -100,10 +101,10 @@ export function adminUiConfig(input: {
     ...(input.onboarding ? { onboarding: input.onboarding } : {}),
     ...(input.firstRun ? { firstRun: input.firstRun } : {}),
     starterAgents: STARTER_AGENTS,
-    connectorPresets: CONNECTOR_PRESETS,
+    connectorPresets: CONNECTOR_PRESETS.map(presetForDeployment),
     googleWorkspaceServicePresets: GOOGLE_WORKSPACE_SERVICE_PRESETS,
     managedConnectorPresets: MANAGED_CONNECTOR_PRESETS,
-    connectionCatalogPresets: CONNECTION_CATALOG_PRESETS,
+    connectionCatalogPresets: CONNECTION_CATALOG_PRESETS.map(presetForDeployment),
     connectorLogos: CONNECTOR_LOGOS,
     modelProviderLogos: MODEL_PROVIDER_LOGOS,
     suggestedSkillCategories: SUGGESTED_SKILL_CATEGORIES,

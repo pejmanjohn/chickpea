@@ -1,7 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 
 import type { AuthPrincipal } from '../auth/types.ts';
-import { resolveConnectorCatalogPreset, type ConnectorPreset } from '../config/presets.ts';
+import { mcpPresetKeyOptional, resolveConnectorCatalogPreset, type ConnectorPreset } from '../config/presets.ts';
 import { isQaTarget } from '../config/qa-targets.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { sha256HexNode } from '../security/digest.ts';
@@ -203,8 +203,7 @@ async function seedOne(
             adminUrl: dependencies.adminSetupUrl({ agentId, presetId: preset.id }),
           };
     }
-    const credentialOptional = typeof tokenPreset.url === 'string' &&
-      tokenPreset.auth?.kind === 'header' && tokenPreset.auth.optional === true;
+    const credentialOptional = typeof tokenPreset.url === 'string' && mcpPresetKeyOptional(tokenPreset.auth);
     if (!connection.credential && !credentialOptional) {
       return existing
         ? { ...base, status: 'missing_credential', connectionId: existing.connectionId }

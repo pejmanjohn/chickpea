@@ -170,6 +170,9 @@ const REASON_TOKENS = new Set([
   'base_agent_capabilities_require_setup',
   'setup_failed', 'setup_not_found', 'setup_session_mismatch', 'setup_unavailable',
   'target_changed', 'undo_unavailable', 'validation_failed', 'mcp_client_not_found',
+  // A catalog setup's MCP discovery failure, by classifyMcpError's class.
+  'mcp_blocked_url', 'mcp_unauthorized', 'mcp_timeout', 'mcp_network', 'mcp_tool_name_collision',
+  'mcp_discovery_failed', 'mcp_connection_failed',
   'routines_unavailable_on_target', 'schedule_authority_missing',
   'archive_agent_reach', 'restore_agent_reach',
   'schedule_agent_reassignment',

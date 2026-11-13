@@ -261,3 +261,21 @@ test('the models route answers only the lane seed token on a QA target', async (
   });
   assert.equal(production.status, 404);
 });
+
+test('seeds Exa without a key on Node, and reports its key missing on Cloudflare Workers, where Exa refuses requests without one', async (t) => {
+  const node = dependencies();
+  const onNode = await seed({ agentId: 'qa-agent', connections: [{ connector: 'exa' }] }, { deps: node.deps });
+  assert.equal(onNode.body.connections[0].status, 'created');
+  assert.deepEqual(node.created, [{ presetId: 'exa', fields: {} }]);
+
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { userAgent: 'Cloudflare-Workers' } });
+  t.after(() => {
+    if (descriptor) Object.defineProperty(globalThis, 'navigator', descriptor);
+    else Reflect.deleteProperty(globalThis, 'navigator');
+  });
+  const workers = dependencies();
+  const onWorkers = await seed({ agentId: 'qa-agent', connections: [{ connector: 'exa' }] }, { deps: workers.deps });
+  assert.equal(onWorkers.body.connections[0].status, 'missing_credential');
+  assert.deepEqual(workers.created, []);
+});
