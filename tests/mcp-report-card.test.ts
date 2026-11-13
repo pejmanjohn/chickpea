@@ -161,6 +161,48 @@ test('the report reads runs as the caller only: another person\'s runToken is no
   assert.equal(JSON.stringify(refused).includes('second warehouse'), false);
 });
 
+// Defect caught: on staging (11-13) Codex wrote a first-round verdict of 43 characters and a next of 162, and the
+// report was refused on length; the model's own words are cut to what the card shows instead.
+test('a report a few characters over what the card shows is drawn, cut, not refused', async (t) => {
+  const w = await world(t, 'report-long-words');
+  const result = await w.call('practice_agent', { agentId: AGENT, question: 'How do I add a second warehouse?' });
+  const longBefore = 'Fails: accurate and sourced, but 129 words.';
+  const longNext = `${'Tighten the length rule again, then ask all three questions once more. '.repeat(3)}`.trim();
+  const report = await w.call('show_test_report', {
+    agentId: AGENT,
+    runs: [{ runToken: result.structuredContent!.runToken, verdict: 'Passes: accurate and sourced, in 49 words.', before: longBefore }],
+    summary: 'All three pass.', next: longNext,
+  });
+  assert.notEqual(report.isError, true, JSON.stringify(report));
+  const row = (report.structuredContent!.runs as { verdict: string; before?: string }[])[0]!;
+  assert.equal(row.before!.length, 40);
+  assert.ok(row.before!.endsWith('…'));
+  assert.equal(row.verdict.length, 40);
+  assert.ok((report.structuredContent!.next as string).length <= 160);
+  assert.ok((report.structuredContent!.next as string).endsWith('…'));
+});
+
+// Defect caught: a cut that lands inside an emoji left half a surrogate pair, which a card draws as a broken glyph.
+test('a cut that lands inside an emoji drops the whole emoji', async (t) => {
+  const w = await world(t, 'report-emoji-cut');
+  const result = await w.call('practice_agent', { agentId: AGENT, question: 'How do I add a second warehouse?' });
+  const report = await w.call('show_test_report', {
+    agentId: AGENT,
+    // The emoji's first half is the 39th UTF-16 unit, the last one the cut keeps.
+    runs: [{ runToken: result.structuredContent!.runToken, verdict: `${'a'.repeat(38)}\u{1F600} and more`, note: `${'b'.repeat(400)}` }],
+    // The joiner between two emoji is the 199th unit: the cut keeps the first emoji and drops the joiner.
+    summary: `${'c'.repeat(196)}\u{1F468}\u200D\u{1F469} ${'d'.repeat(60)}`,
+  });
+  assert.notEqual(report.isError, true, JSON.stringify(report));
+  const row = (report.structuredContent!.runs as { verdict: string; note?: string }[])[0]!;
+  assert.equal(row.verdict, `${'a'.repeat(38)}…`);
+  assert.equal(row.note, `${'b'.repeat(159)}…`);
+  const summary = report.structuredContent!.summary as string;
+  assert.equal(summary, `${'c'.repeat(196)}\u{1F468}…`);
+  assert.equal(summary.isWellFormed(), true);
+  assert.equal(row.verdict.isWellFormed(), true);
+});
+
 test('a failed run draws as a row that says it did not finish', async (t) => {
   const w = await world(t, 'report-failed');
   w.runs.outcome = { status: 'failed', failure: 'deadline', result: {} };

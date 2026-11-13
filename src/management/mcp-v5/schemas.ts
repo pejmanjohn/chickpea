@@ -869,14 +869,14 @@ export const showTestReportInput = z.strictObject({
   agentId: zAgentId,
   runs: z.array(z.strictObject({
     runToken: zText(64).describe('The runToken practice_agent returned for this question.'),
-    verdict: zText(40).describe('Your verdict in a few words, such as Good or Too long.'),
-    note: zText(160).optional().describe('One line on why, such as "Right page, 14 lines."'),
-    before: zText(40).optional().describe('The verdict this question got in the first round, when this is a later round.'),
+    verdict: zText(120).describe('Your verdict in a few words, such as Good or Too long. The card shows about 40 characters.'),
+    note: zText(400).optional().describe('One line on why, such as "Right page, 14 lines." The card shows about 160 characters.'),
+    before: zText(120).optional().describe('The first round\'s verdict for this question, in a few words like verdict, when this is a later round. The card shows about 40 characters.'),
   })).min(1).max(10)
     .refine((runs) => new Set(runs.map(({ runToken }) => runToken)).size === runs.length, 'Send each runToken once.')
     .describe('Each question of the last round, in the order asked.'),
-  summary: zText(200).describe('The round in one line, such as "Right page 5 of 5 · Short enough 1 of 5".'),
-  next: zText(160).optional().describe('What happens next, if anything, such as "Shorten the answers, then ask all five again."'),
+  summary: zText(400).describe('The round in one line, such as "Right page 5 of 5 · Short enough 1 of 5". The card shows about 200 characters.'),
+  next: zText(400).optional().describe('What happens next, if anything, such as "Shorten the answers, then ask all five again." The card shows about 160 characters.'),
 });
 
 export const showTestReportOutput = z.strictObject({
