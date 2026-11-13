@@ -228,11 +228,19 @@ test('Allow from a page that named another session grants nothing and offers the
     'and its Allow grants');
 });
 
-test('a consent form that named no session (opened before the check existed) is granted as before', async (t) => {
+// Defect caught: a page that named no one (opened before the check, or one that could not read the session) granted to whatever session the browser held at Allow.
+test('a consent form that named no session grants nothing and offers the request again', async (t) => {
   const f = await fixture(t);
   const cookie = await f.signIn(f.acme);
   const consent = await f.consentFor(verifier(), cookie);
-  assert.ok(await f.callbackCode(await f.allow(consent.search.slice(1), cookie, undefined)));
+  const before = f.codes();
+  const response = await f.allow(consent.search.slice(1), cookie, undefined);
+  assert.equal(response.status, 409);
+  assert.ok((await response.text()).includes('<h1>Your sign-in changed</h1>'));
+  assert.equal(f.codes(), before, 'no authorization code is stored');
+  const again = await f.page(consent, cookie);
+  assert.ok(await f.callbackCode(await f.allow(consent.search.slice(1), cookie, again.sessionCheck)),
+    'the page shown again names the session, and its Allow grants');
 });
 
 test('consent offers Switch only where sign-in can choose another workspace', async (t) => {

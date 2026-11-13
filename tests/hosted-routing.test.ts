@@ -48,6 +48,9 @@ import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { REAL_MCP_CLIENT_REGISTRATIONS } from './helpers/mcp-client-registrations.ts';
 import { startPostgresTestCluster, type PostgresTestClusterStart } from './helpers/postgres-cluster.ts';
 
+/** The session check a consent page binds its Allow to, as a browser would send it back. */
+const sessionCheckOf = (html: string) => /name="session_check" value="([^"]*)"/.exec(html)?.[1]?.replaceAll('&amp;', '&') ?? '';
+
 const ORIGIN = 'https://hosted.example';
 const SECRET = randomBytes(32).toString('base64url');
 const HOSTED = { CHICKPEA_TENANCY: 'installation', CHICKPEA_AUTH_SECRET: SECRET };
@@ -217,14 +220,16 @@ async function hostedDeployment(t: TestContext) {
     const location = new URL(authorize.headers.get('location')!, ORIGIN);
     if (location.pathname === '/callback') return { code: location.searchParams.get('code')!, verifier };
     assert.equal(location.pathname, '/auth/mcp/consent');
-    assert.equal((await shared(new Request(location, { headers: { cookie } }))).status, 200);
+    const shown = await shared(new Request(location, { headers: { cookie } }));
+    assert.equal(shown.status, 200);
+    const shownPage = await shown.text();
     const consent = await shared(new Request(`${ORIGIN}/auth/mcp/consent`, {
       method: 'POST',
       headers: {
         cookie, origin: ORIGIN, 'sec-fetch-site': 'same-origin',
         'content-type': 'application/x-www-form-urlencoded',
       },
-      body: new URLSearchParams({ oauth_query: location.search.slice(1), decision: 'allow' }),
+      body: new URLSearchParams({ oauth_query: location.search.slice(1), decision: 'allow', session_check: sessionCheckOf(shownPage) }),
     }));
     assert.equal(consent.status, 200, await consent.clone().text());
     const destination = /url=([^"]+)"/.exec(await consent.text())![1]!.replaceAll('&amp;', '&');
@@ -1004,7 +1009,7 @@ test('Claude, and an app no list names, sign in to a hosted installation by thei
         cookie: acme.ownerCookie, origin: ORIGIN, 'sec-fetch-site': 'same-origin',
         'content-type': 'application/x-www-form-urlencoded',
       },
-      body: new URLSearchParams({ oauth_query: consent.search.slice(1), decision: 'allow' }),
+      body: new URLSearchParams({ oauth_query: consent.search.slice(1), decision: 'allow', session_check: sessionCheckOf(page) }),
     }));
     const callback: URL = new URL(/url=([^"]+)"/.exec(await allowed.text())![1]!.replaceAll('&amp;', '&'));
     assert.equal(`${callback.origin}${callback.pathname}`, callbackUrl);
@@ -1075,7 +1080,7 @@ test('Codex signs in to a hosted installation by its metadata document on a rand
       cookie: acme.ownerCookie, origin: ORIGIN, 'sec-fetch-site': 'same-origin',
       'content-type': 'application/x-www-form-urlencoded',
     },
-    body: new URLSearchParams({ oauth_query: consent.search.slice(1), decision: 'allow' }),
+    body: new URLSearchParams({ oauth_query: consent.search.slice(1), decision: 'allow', session_check: sessionCheckOf(page) }),
   }));
   const callback = new URL(/url=([^"]+)"/.exec(await allowed.text())![1]!.replaceAll('&amp;', '&'));
   assert.equal(`${callback.origin}${callback.pathname}`, callbackUrl);
@@ -1212,7 +1217,7 @@ test('VS Code, Zed and Goose each sign in to a hosted installation by their meta
           cookie: acme.ownerCookie, origin: ORIGIN, 'sec-fetch-site': 'same-origin',
           'content-type': 'application/x-www-form-urlencoded',
         },
-        body: new URLSearchParams({ oauth_query: consent.search.slice(1), decision: 'allow' }),
+        body: new URLSearchParams({ oauth_query: consent.search.slice(1), decision: 'allow', session_check: sessionCheckOf(page) }),
       }));
       const callback = new URL(/url=([^"]+)"/.exec(await allowed.text())![1]!.replaceAll('&amp;', '&'));
       assert.equal(`${callback.origin}${callback.pathname}`, redirect);
@@ -1279,7 +1284,7 @@ async function chatgptCode(hosted: HostedDeployment, cookie: string) {
   const allowed = await hosted.shared(new Request(`${ORIGIN}/auth/mcp/consent`, {
     method: 'POST',
     headers: { cookie, origin: ORIGIN, 'sec-fetch-site': 'same-origin', 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ oauth_query: consent.search.slice(1), decision: 'allow' }),
+    body: new URLSearchParams({ oauth_query: consent.search.slice(1), decision: 'allow', session_check: sessionCheckOf(page) }),
   }));
   assert.equal(allowed.status, 200, await allowed.clone().text());
   const returned = await allowed.text();

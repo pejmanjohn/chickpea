@@ -377,11 +377,13 @@ async function submitMcpConsent(c: Context, environment: BetterAuthEnvironment):
     return alreadyConnectedResponse(clientId, clientName);
   }
   const accept = form.decision === 'allow';
-  if (accept && typeof form.session_check === 'string') {
+  if (accept) {
     // Better Auth grants to whichever session the browser holds now; the page
     // named the one it held then. A page that named no one (it read no
-    // session, or predates the check) has no name to keep true, and only this
-    // origin can submit the form. Without a session Better Auth refuses alone.
+    // session, or predates the check) carries no check, so a session held now
+    // was never shown: it gets the page again with names. Without a session
+    // Better Auth refuses alone.
+    const sessionCheck = typeof form.session_check === 'string' ? form.session_check : '';
     let signedIn: BrowserSession | undefined;
     try {
       signedIn = await readBrowserSession(environment, c.req.raw.headers);
@@ -389,7 +391,7 @@ async function submitMcpConsent(c: Context, environment: BetterAuthEnvironment):
       return browserError('Chickpea could not check your sign-in. Try again in a moment.', 503);
     }
     if (signedIn &&
-        !constantTimeEqual(form.session_check, await consentSessionCheck(signedIn.sessionId, environment.secret))) {
+        !constantTimeEqual(sessionCheck, await consentSessionCheck(signedIn.sessionId, environment.secret))) {
       return signInChangedResponse(oauthQuery);
     }
   }

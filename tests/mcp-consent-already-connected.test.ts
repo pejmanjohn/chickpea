@@ -61,13 +61,21 @@ async function fixture(t: TestContext) {
   const showConsent = (consent: URL) => browser.request(`${ORIGIN}${consent.pathname}${consent.search}`, {
     headers: { cookie },
   });
-  const submitConsent = (consent: URL) => browser.request(`${ORIGIN}/auth/mcp/consent`, {
-    method: 'POST',
-    headers: {
-      cookie, origin: ORIGIN, 'sec-fetch-site': 'same-origin', 'content-type': 'application/x-www-form-urlencoded',
-    },
-    body: new URLSearchParams({ oauth_query: consent.search.slice(1), decision: 'allow' }),
-  });
+  /** Allow as a browser does: from the page, sending back the session check it shows, if any. */
+  const submitConsent = async (consent: URL) => {
+    const page = await (await showConsent(consent)).text();
+    const sessionCheck = /name="session_check" value="([^"]*)"/.exec(page)?.[1]?.replaceAll('&amp;', '&');
+    return browser.request(`${ORIGIN}/auth/mcp/consent`, {
+      method: 'POST',
+      headers: {
+        cookie, origin: ORIGIN, 'sec-fetch-site': 'same-origin', 'content-type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({
+        oauth_query: consent.search.slice(1), decision: 'allow',
+        ...(sessionCheck === undefined ? {} : { session_check: sessionCheck }),
+      }),
+    });
+  };
   /** The code a consent POST's callback document sends the browser to, if it sends it anywhere. */
   async function callbackCode(response: Response): Promise<string | undefined> {
     const destination = /url=([^"]+)"/.exec(await response.clone().text())?.[1]?.replaceAll('&amp;', '&');
