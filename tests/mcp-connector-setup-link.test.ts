@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+
 import type { BetterAuthMcpOAuthClient, BetterAuthMcpOAuthClients } from '../src/auth/better-auth-backend.ts';
 import type { AuthPrincipal } from '../src/auth/types.ts';
 import { completeMcpOAuthAuthorization, startMcpOAuthAuthorization } from '../src/config/mcp-oauth.ts';
@@ -17,7 +19,7 @@ import { connectService, reconnectService } from '../src/management/mcp-v5/conne
 import { getSetupStatus } from '../src/management/mcp-v5/reads.ts';
 import type { SetupWakeRequest } from '../src/management/receipts.ts';
 import { WorkspaceManagementService } from '../src/management/service.ts';
-import { createManagementSetupRoutes } from '../src/management/setup-routes.ts';
+import { createManagementSetupRoutes, type ManagementSetupRoutesOptions } from '../src/management/setup-routes.ts';
 import { SqliteManagementStore } from '../src/management/store.ts';
 import {
   ManagementError,
@@ -25,6 +27,7 @@ import {
   type ManagementReceiptOutboxRecord,
 } from '../src/management/types.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
+import { SqliteUsageStore } from '../src/usage/store.ts';
 import { fakeMcpOAuthProvider } from './helpers/fake-mcp-oauth-provider.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 
@@ -37,7 +40,11 @@ const WAIT_FOR_PERSON = 'Give the person this link. Test the connection only aft
 
 type Person = Pick<IdentityResolution, 'user' | 'membership'>;
 
-async function harness(t: { after: (fn: () => void) => void }, suffix: string) {
+async function harness(
+  t: { after: (fn: () => void) => void },
+  suffix: string,
+  options: { discoverMcp?: ManagementSetupRoutesOptions['discoverMcp'] } = {},
+) {
   const identity = new SqliteIdentityStore(':memory:');
   const owner = await createSlackOwner(identity, { suffix });
   // A colleague who may edit the Agent too: only the link's person decides who uses an MCP link.
@@ -49,11 +56,13 @@ async function harness(t: { after: (fn: () => void) => void }, suffix: string) {
   const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
+  const usage = new SqliteUsageStore(':memory:');
   t.after(() => {
     identity.close();
     config.close();
     management.close();
     settings.close();
+    usage.close();
   });
   const agent = await config.createAgent({
     id: 'agent_project_guide',
@@ -116,13 +125,14 @@ async function harness(t: { after: (fn: () => void) => void }, suffix: string) {
     config,
     management,
     settings,
+    usage,
     authenticatePrincipal: async () => principal,
     managedConnectionProviders: createManagedConnectionProviderRegistry([composio]),
     startMcpOAuth: (input, dependencies) =>
       startMcpOAuthAuthorization(input, { ...dependencies, fetchFn: oauthProvider.fetchFn }),
     completeMcpOAuth: (input, dependencies) =>
       completeMcpOAuthAuthorization(input, { ...dependencies, fetchFn: oauthProvider.fetchFn }),
-    discoverMcp: async () => ({ tools: [{ name: 'search_issues' }] }),
+    discoverMcp: options.discoverMcp ?? (async () => ({ tools: [{ name: 'search_issues' }] })),
     identifyMcp: async () => ({ workspaceName: 'Acme Linear' }),
     mcpOAuthClients: async () => mcpOAuthClients,
     wakeAgent: async (request) => {
@@ -325,6 +335,112 @@ test('an MCP catalog link finishes through /oauth/callback for its person only, 
 
   h.as(h.colleague);
   assert.equal((await h.page(setupId)).status, 410, 'the colleague does not see the finished link either');
+});
+
+/** Exa's keyless tools/list (protocol 2025-06-18), as Chickpea's discovery stores it. */
+const EXA_TOOLS = [
+  {
+    name: 'web_search_exa',
+    title: 'Web Search',
+    readOnlyHint: true,
+    inputSchema: { accountFields: [], propertyNames: ['numResults', 'objective', 'query'], ambiguous: true, fingerprint: 'a'.repeat(64) },
+  },
+  {
+    name: 'web_fetch_exa',
+    title: 'Fetch Web Pages',
+    readOnlyHint: true,
+    inputSchema: { accountFields: [], propertyNames: ['maxCharacters', 'urls'], ambiguous: true, fingerprint: 'b'.repeat(64) },
+  },
+];
+const EXA_KEY_INPUT = /<input class="text-input" id="connection-credential" name="credential" type="password" autocomplete="off" placeholder="Exa API key"( required)?>/;
+
+function onCloudflareWorkers(t: { after: (fn: () => void) => void }): void {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { userAgent: 'Cloudflare-Workers' } });
+  t.after(() => {
+    if (descriptor) Object.defineProperty(globalThis, 'navigator', descriptor);
+    else Reflect.deleteProperty(globalThis, 'navigator');
+  });
+}
+
+async function openExaLink(h: Awaited<ReturnType<typeof harness>>) {
+  const prepared = await h.service.prepareConnectorSetup(h.mcp(h.owner), {
+    agentId: h.agent.id,
+    connector: 'Exa',
+    ownerKind: 'team',
+  });
+  const setupId = prepared.setupOperationId!;
+  const cookie = cookieOf(await h.exchange(prepared.handoffUrl));
+  return { setupId, cookie, html: (await h.page(setupId, cookie)).html };
+}
+
+test('on Node, Exa connects without a key, as its server takes anonymous requests there', async (t) => {
+  const sent: Array<Record<string, string>> = [];
+  const h = await harness(t, 'exa-keyless-node', {
+    discoverMcp: async (input) => {
+      sent.push(input.headers);
+      return { tools: EXA_TOOLS };
+    },
+  });
+  const { setupId, cookie, html } = await openExaLink(h);
+  assert.equal(EXA_KEY_INPUT.exec(html)?.[1], undefined, 'the key field is optional');
+  assert.match(html, /Also works without a key at lower limits\./);
+
+  const completed = await h.post(setupId, 'authorize', cookie, { ownerKind: 'team', credential: '' });
+  assert.equal(completed.status, 200, await completed.clone().text());
+  assert.deepEqual(await completed.json(), { completed: true });
+  assert.deepEqual(sent, [{}], 'discovery asked Exa with no key');
+  const [account] = await h.config.listConnectionAccounts(h.owner.user.slackTeamId);
+  assert.equal(account?.lifecycle, 'ready');
+  assert.ok(account?.policy.kind === 'mcp');
+  assert.equal(account.policy.credentialOptional, true);
+  assert.deepEqual(account.policy.allowedTools, ['web_search_exa', 'web_fetch_exa']);
+});
+
+test('on Cloudflare Workers, Exa asks for its key, because Exa refuses a Worker\'s request without one', async (t) => {
+  onCloudflareWorkers(t);
+  const sent: Array<Record<string, string>> = [];
+  const h = await harness(t, 'exa-keyless-workers', {
+    discoverMcp: async (input) => {
+      sent.push(input.headers);
+      return { tools: EXA_TOOLS };
+    },
+  });
+  const { setupId, cookie, html } = await openExaLink(h);
+  assert.equal(EXA_KEY_INPUT.exec(html)?.[1], ' required', 'the key field is required');
+  assert.doesNotMatch(html, /without a key/);
+
+  const keyless = await h.post(setupId, 'authorize', cookie, { ownerKind: 'team', credential: '' });
+  assert.equal(keyless.status, 422);
+  assert.equal((await keyless.json() as { error: string }).error, 'validation_failed');
+  assert.deepEqual(sent, [], 'no request without a key reaches Exa');
+  assert.deepEqual(await h.config.listConnectionAccounts(h.owner.user.slackTeamId), []);
+  assert.equal((await h.management.getSetup(setupId))?.status, 'failed', 'the person can add a key and try again');
+});
+
+test('a server that refuses setup discovery leaves its class of failure, never the server\'s words', async (t) => {
+  const h = await harness(t, 'exa-refused', {
+    discoverMcp: async () => {
+      throw new StreamableHTTPError(403, 'Error POSTing to endpoint: <!DOCTYPE html><title>Attention Required! | Cloudflare</title>');
+    },
+  });
+  const metrics: unknown[] = [];
+  const warnings: string[] = [];
+  t.mock.method(console, 'info', (record: unknown) => { metrics.push(record); });
+  t.mock.method(console, 'warn', (...parts: unknown[]) => { warnings.push(parts.map(String).join(' ')); });
+  const { setupId, cookie } = await openExaLink(h);
+
+  const refused = await h.post(setupId, 'authorize', cookie, { ownerKind: 'team', credential: 'exa-test-key' });
+  assert.equal(refused.status, 422);
+  assert.equal((await refused.json() as { error: string }).error, 'mcp_unauthorized');
+  assert.equal((await h.management.getSetup(setupId))?.failureCode, 'mcp_unauthorized');
+  assert.deepEqual(
+    metrics.filter((record) => (record as { event?: string }).event === 'setup.lifecycle' &&
+      (record as { outcome?: string }).outcome === 'failed'),
+    [{ component: 'management', event: 'setup.lifecycle', action: 'catalog_connection', outcome: 'failed', reason: 'mcp_unauthorized' }],
+  );
+  assert.deepEqual(warnings.filter((line) => line.includes('exa')), ['[chickpea] MCP setup discovery failed (exa): unauthorized: HTTP 403']);
+  assert.ok(!warnings.some((line) => line.includes('Attention Required')), 'no server text reaches the log');
 });
 
 const CANCEL_FORM = (setupId: string) =>
