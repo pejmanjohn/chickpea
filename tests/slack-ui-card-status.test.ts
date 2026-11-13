@@ -331,7 +331,10 @@ test('update_card refuses another Agent, another thread, an expired set, an unkn
   await state.executeUiSurface!({ kind: 'put_surface', record: expired });
   await assert.rejects(tool().run({ data: { cards: expired.id.slice(0, 8), card: '1', ...outcome } }), /has expired/);
 
-  const unposted = cardSet({ id: displaySurfaceId('job-now', 0), turnJobId: 'job-now', status: 'pending_delivery', createdAt: Date.now() });
+  const unposted = cardSet({
+    id: displaySurfaceId('job-now', 0), turnJobId: 'job-now', status: 'pending_delivery',
+    createdAt: Date.now(), updatedAt: Date.now(), expiresAt: Date.now() + WEEK,
+  });
   delete (unposted as Partial<UiSurfaceRecord>).messageTs;
   await state.executeUiSurface!({ kind: 'put_surface', record: unposted });
   await assert.rejects(tool().run({ data: { cards: unposted.id.slice(0, 8), card: '1', ...outcome } }), /not posted yet/);
