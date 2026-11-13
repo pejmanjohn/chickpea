@@ -37,7 +37,8 @@ export type RuntimeLatencyEvent =
   | 'store_boot'
   | 'slack_read'
   | 'interaction_judgment'
-  | 'model_step';
+  | 'model_step'
+  | 'compaction';
 
 type RuntimeLatencyValue = number | boolean | string;
 
@@ -53,6 +54,11 @@ const VERSION_ID = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 const MODEL_TOKEN = /^[a-z][a-z0-9_]{0,63}$/;
 /** The first 8 hex characters of a SHA-256: says that a part changed, never what it holds. */
 const SHORT_HASH = /^[0-9a-f]{8}$/;
+/** A provider's reason code, as `thinkingDropReasons` lists it. */
+const REASON_CODE = /^[a-z][a-z0-9_]{0,63}$/;
+const REASON_CODE_LIMIT = 8;
+/** The largest tool result sizes a step lists. */
+const TOOL_RESULT_TOP_LIMIT = 10;
 
 /** The only string fields any event may carry, and their allowed shapes. */
 const STRING_FIELDS: Readonly<Record<string, RegExp>> = {
@@ -100,6 +106,9 @@ const STRING_FIELDS: Readonly<Record<string, RegExp>> = {
   slowestMethod: TOKEN,
   purpose: TOKEN,
   largestToolResultTool: /^[A-Za-z][A-Za-z0-9_-]{0,127}$/,
+  toolResultTopBytes: /^\d{1,15}(?:,\d{1,15}){0,9}$/,
+  thinkingDropReasons: /^[a-z][a-z0-9_]{0,63}(?:,[a-z][a-z0-9_]{0,63}){0,7}$/,
+  trigger: TOKEN,
   sharedPrefix: /^(?:none|[a-z]+\/[a-z_]{1,63})$/,
   systemPromptHash: SHORT_HASH,
   toolsHash: SHORT_HASH,
@@ -1127,7 +1136,13 @@ interface ModelRequestSize {
   /** UTF-8 bytes of the model input as JSON, as Flue assembled it: system prompt, messages and tools. */
   requestBytes: number;
   toolResults: number;
-  /** UTF-8 bytes of the largest tool result's text, and an image's base64 characters. */
+  /**
+   * UTF-8 bytes of each tool result's text: the sum, the 10 largest sizes in
+   * descending order, and the largest one's tool. Flue's events carry no
+   * image data, so an image counts nothing.
+   */
+  toolResultBytes: number;
+  toolResultTopBytes?: string;
   largestToolResultBytes?: number;
   largestToolResultTool?: string;
   /** The system prompt's short hash and UTF-8 bytes: a changed hash is a prompt cache rewrite. */
@@ -1138,8 +1153,6 @@ interface ModelRequestSize {
   toolsBytes?: number;
 }
 
-const utf8 = new TextEncoder();
-
 function partDigest(text: string | undefined): { hash: string; bytes: number } | undefined {
   return text === undefined ? undefined : { hash: sha256(text).slice(0, 8), bytes: Buffer.byteLength(text) };
 }
@@ -1148,20 +1161,23 @@ function partDigest(text: string | undefined): { hash: string; bytes: number } |
 function modelRequestSize(input: ModelRequestInput): ModelRequestSize {
   const systemPrompt = partDigest(input.systemPrompt);
   const tools = partDigest(input.tools && JSON.stringify(input.tools));
-  let toolResults = 0;
+  const sizes: number[] = [];
   let largest: { bytes: number; tool: string } | undefined;
   for (const message of input.messages) {
     if (message.role !== 'toolResult') continue;
-    toolResults += 1;
-    const bytes = message.content.reduce((sum, part) =>
-      sum + (part.type === 'text' ? utf8.encode(part.text).byteLength : part.data.length), 0);
+    const bytes = message.content.reduce((sum, part) => sum + (part.type === 'text' ? Buffer.byteLength(part.text) : 0), 0);
+    sizes.push(bytes);
     if (!largest || bytes > largest.bytes) largest = { bytes, tool: message.toolName };
   }
   return {
-    // Counted without a second copy of the input: it can hold megabytes of image data.
     requestBytes: Buffer.byteLength(JSON.stringify(input)),
-    toolResults,
-    ...(largest ? { largestToolResultBytes: largest.bytes, largestToolResultTool: largest.tool } : {}),
+    toolResults: sizes.length,
+    toolResultBytes: sizes.reduce((sum, bytes) => sum + bytes, 0),
+    ...(largest ? {
+      toolResultTopBytes: sizes.sort((a, b) => b - a).slice(0, TOOL_RESULT_TOP_LIMIT).join(','),
+      largestToolResultBytes: largest.bytes,
+      largestToolResultTool: largest.tool,
+    } : {}),
     ...(systemPrompt ? { systemPromptHash: systemPrompt.hash, systemPromptBytes: systemPrompt.bytes } : {}),
     ...(tools ? { toolsHash: tools.hash, toolsBytes: tools.bytes } : {}),
   };
@@ -1181,8 +1197,19 @@ export interface ModelStepProbe {
   upstreamFirstText(): void;
   /** The proxy starts holding the step's terminal event for its charge; the returned call ends the hold. */
   holdForCharge(): (settled: SettledModelRequest) => void;
+  /**
+   * What the provider changed in the request before the model read it
+   * (Anthropic's `input_transformations`), each time it reports it: a later
+   * report replaces an earlier one.
+   */
+  inputTransformations(reported: readonly unknown[]): void;
   /** The provider reported the tool results it cleared from the request's prompt, earlier clearings included. */
   toolResultsCleared(cleared: { toolUses: number; inputTokens: number }): void;
+}
+
+interface ThinkingDrops {
+  thinkingBlocksDropped: number;
+  thinkingDropReasons?: string;
 }
 
 interface OpenModelStep {
@@ -1193,7 +1220,31 @@ interface OpenModelStep {
   size?: ModelRequestSize;
   sincePreviousRequestMs?: number;
   settled?: SettledModelRequest & { chargeWaitMs: number };
+  thinkingDrops?: ThinkingDrops;
   cleared?: { toolUses: number; inputTokens: number };
+}
+
+function readTurnJobId(turnJobIdOf: () => string | undefined): string | undefined {
+  try {
+    return turnJobIdOf();
+  } catch {
+    // A record whose turn cannot be read is still logged, without its turn.
+    return undefined;
+  }
+}
+
+/** The thinking blocks the provider dropped, and their reason codes only: never a block or its path. */
+function thinkingDrops(reported: readonly unknown[]): ThinkingDrops {
+  const reasons = new Set<string>();
+  let dropped = 0;
+  for (const entry of reported) {
+    if (typeof entry !== 'object' || entry === null || (entry as { type?: unknown }).type !== 'thinking_dropped') continue;
+    dropped += 1;
+    const { reason } = entry as { reason?: unknown };
+    reasons.add(typeof reason === 'string' && REASON_CODE.test(reason) ? reason : 'other');
+  }
+  const codes = [...reasons].sort().slice(0, REASON_CODE_LIMIT);
+  return { thinkingBlocksDropped: dropped, ...(codes.length ? { thinkingDropReasons: codes.join(',') } : {}) };
 }
 
 const modelStepProbes = new AsyncLocalStorage<ModelStepProbe>();
@@ -1215,15 +1266,19 @@ function cacheWriteSplit(usage: SettledModelRequest['usage'] | undefined) {
  * served it, Flue's duration, its token counts and its tool calls when its
  * `turn` ends, with the request's size measured at `turn_request` and the
  * time since its Agent object's previous request. What only the proxy sees
- * (the 1-hour cache writes, the shared prefix, the charge's hold, the tool
- * results the provider cleared) arrives through `modelStepProbe` before the
- * step ends.
- * `inputTokens` excludes the cached input that `cachedInputTokens` counts.
+ * (the 1-hour cache writes, the shared prefix, the charge's hold, the thinking
+ * blocks the provider dropped, the tool results it cleared) arrives through
+ * `modelStepProbe` before the step ends. `inputTokens` excludes the cached
+ * input that `cachedInputTokens` counts. Each compaction of an Agent object's
+ * context is one `compaction` record, from Flue's `compaction_start` and
+ * `compaction`.
  */
 export class ModelStepMarks {
   private readonly open = new Map<string, OpenModelStep>();
   /** Each Agent object's last request start, in memory only: an isolate that restarts starts empty. */
   private readonly lastRequestAt = new Map<string, number>();
+  /** Each Agent object's compaction that started and has not ended. */
+  private readonly compacting = new Map<string, { trigger: string; tokensBefore: number }>();
 
   constructor(
     private readonly now: () => number = Date.now,
@@ -1244,15 +1299,45 @@ export class ModelStepMarks {
           open.settled = { ...settled, chargeWaitMs: this.now() - heldAt };
         };
       },
+      inputTransformations: (reported) => {
+        try {
+          open.thinkingDrops = thinkingDrops(reported);
+        } catch {
+          // Observability is best effort and never changes the model request.
+        }
+      },
       toolResultsCleared: (cleared) => {
         open.cleared = cleared;
       },
     }, next);
   }
 
-  /** `turnJobIdOf`: the Slack turn the request belongs to, read only when a request ends. */
+  /** `turnJobIdOf`: the Slack turn the request belongs to, read only when a request or a compaction ends. */
   observe(event: FlueObservation, turnJobIdOf: () => string | undefined = () => undefined): void {
     try {
+      if (event.type === 'compaction_start') {
+        const key = event.instanceId ?? '';
+        this.compacting.delete(key);
+        this.compacting.set(key, { trigger: event.reason, tokensBefore: event.estimatedTokens });
+        if (this.compacting.size > MODEL_STEP_THREAD_LIMIT) this.compacting.delete(this.compacting.keys().next().value!);
+        return;
+      }
+      if (event.type === 'compaction') {
+        const key = event.instanceId ?? '';
+        const started = this.compacting.get(key);
+        this.compacting.delete(key);
+        emitRuntimeLatency('compaction', {
+          turnRef: opaqueTurnRef(readTurnJobId(turnJobIdOf)),
+          trigger: started?.trigger,
+          outcome: event.isError ? 'error' : 'ok',
+          durationMs: event.durationMs,
+          tokensBefore: started?.tokensBefore,
+          summaryOutputTokens: event.usage?.output,
+          messagesBefore: event.messagesBefore,
+          messagesAfter: event.messagesAfter,
+        }, this.sink);
+        return;
+      }
       const { turnId } = event;
       if (turnId === undefined) return;
       if (event.type === 'turn_request') {
@@ -1284,16 +1369,10 @@ export class ModelStepMarks {
       if (event.type !== 'turn') return;
       const open = this.open.get(turnId);
       this.open.delete(turnId);
-      let turnJobId: string | undefined;
-      try {
-        turnJobId = turnJobIdOf();
-      } catch {
-        // A step whose turn cannot be read is still logged, without its turn.
-      }
       const { usage, output, finishReason } = event.response;
       const { request } = event;
       emitRuntimeLatency('model_step', {
-        turnRef: opaqueTurnRef(turnJobId),
+        turnRef: opaqueTurnRef(readTurnJobId(turnJobIdOf)),
         modelToken: modelToken(request && `${request.providerId}/${request.requestedModel}`),
         purpose: event.purpose,
         outcome: event.isError ? 'error' : finishReason,
@@ -1311,6 +1390,7 @@ export class ModelStepMarks {
         sincePreviousRequestMs: open?.sincePreviousRequestMs,
         sharedPrefix: open?.settled?.sharedPrefix === null ? 'none' : open?.settled?.sharedPrefix,
         chargeWaitMs: open?.settled?.chargeWaitMs,
+        ...open?.thinkingDrops,
         clearedToolUses: open?.cleared?.toolUses,
         clearedInputTokens: open?.cleared?.inputTokens,
       }, this.sink);

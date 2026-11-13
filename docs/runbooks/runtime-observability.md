@@ -330,7 +330,8 @@ channel IDs, settings keys or values, or error text. Emission never throws.
 | `state_rpc_summary` | Once per scope: a direct Slack delivery on Cloudflare (`slack_delivery`, from Core's handler to the end of its admission chain), or a relay attempt of one turn (`turn`) | `scope`, `turnRef` (`turn` only), `calls`, `rounds`, `totalMs`, `busyMs`, `failed`, `slowestMethod`, `slowestMs`, `spanMs`, `receiptToStartMs` (`slack_delivery` only), `path` (`slack_delivery` only: `store` when the state store admitted it in one call, `worker` when this Worker admitted it, `fallback` when the store could not take the call or its admission failed), `reason` (with `fallback`: the `state_rpc_fallback` reason, or `store_failed` when the store answered a failure or the call was never sent: the Worker does not admit the delivery, "Slack event intake failed" is logged beside it, and `turns` on the store's `slack_store_admission` record says whether it committed a turn before it failed), `callsBeforeModelStart`, `roundsBeforeModelStart`, `busyMsBeforeModelStart` (`turn` only: see below) |
 | `slack_store_admission` | Once per Slack delivery a state store admits itself (`CHICKPEA_SLACK_ADMISSION=store`, Cloudflare) | `outcome` (`processed`, `refused`, `failed`), `reason` (with `refused`: `recovery_only`, `installation`), `turns` (the turns its canonical admissions committed; one admitted without one, such as an edit's or a legacy turn, is not counted), `rpcCalls` (calls the store made to itself over RPC while admitting: 0, or admission built a store from its env), `orderWaitMs` (the wait for its thread's earlier messages), `rateLimited` (Slack calls rate-limited while admitting; the store fails them at once instead of waiting out `Retry-After`), `receiptToStartMs`, `durationMs` (through the first status and the hand-off) |
 | `state_rpc_fallback` | When a Worker's call to a state store method added in a later release rejects, and the Worker takes the older path once (`withStoreFallback`). A deploy leaves a store on its old code for up to 5 minutes, so `method_missing` is expected only then | `method` (the newer RPC), `reason` (`method_missing`: the store's code lacks it; `disconnected`: the store was replaced mid-call; `rejected`: any other rejection) |
-| `model_step` | Once per model request an agent makes, logged by the object that makes it (both lanes) | `turnRef` (a Slack thread's request), `modelToken` (the model that served the request), `purpose` (`agent`, `compaction`, `compaction_prefix`), `outcome` (the provider's finish reason, such as `stop` or `toolUse`, or `error`), `durationMs`, `firstTokenMs`, `firstTextMs`, `upstreamFirstTextMs`, `inputTokens`, `cachedInputTokens`, `cacheWriteTokens`, `outputTokens`, `toolCalls`, and the request's size: `requestBytes` (UTF-8 bytes of the model input as JSON, as Flue assembled it), `toolResults` (tool results in it), `largestToolResultBytes` (UTF-8 bytes of the largest one's text) and `largestToolResultTool` (its tool's name), `systemPromptHash`, `systemPromptBytes`, `toolsHash` and `toolsBytes` (see below), and `cacheWrite1hTokens` and `cacheWrite5mTokens` (`cacheWriteTokens` split by cache lifetime), `sincePreviousRequestMs`, `sharedPrefix`, `chargeWaitMs`, `clearedToolUses` and `clearedInputTokens` (see below) |
+| `model_step` | Once per model request an agent makes, logged by the object that makes it (both lanes) | `turnRef` (a Slack thread's request), `modelToken` (the model that served the request), `purpose` (`agent`, `compaction`, `compaction_prefix`), `outcome` (the provider's finish reason, such as `stop` or `toolUse`, or `error`), `durationMs`, `firstTokenMs`, `firstTextMs`, `upstreamFirstTextMs`, `inputTokens`, `cachedInputTokens`, `cacheWriteTokens`, `outputTokens`, `toolCalls`, and the request's size: `requestBytes` (UTF-8 bytes of the model input as JSON, as Flue assembled it), `toolResults` (tool results in it), `toolResultBytes` and `toolResultTopBytes` (their sizes: see below), `largestToolResultBytes` (UTF-8 bytes of the largest one's text) and `largestToolResultTool` (its tool's name), `systemPromptHash`, `systemPromptBytes`, `toolsHash` and `toolsBytes` (see below), and `cacheWrite1hTokens` and `cacheWrite5mTokens` (`cacheWriteTokens` split by cache lifetime), `sincePreviousRequestMs`, `sharedPrefix`, `chargeWaitMs`, `thinkingBlocksDropped` and `thinkingDropReasons`, `clearedToolUses` and `clearedInputTokens` (see below) |
+| `compaction` | Once per compaction of an agent's context by Flue, when it ends, logged by the object that holds the context (both lanes) | `turnRef` (a Slack thread's), `trigger` (`threshold`, `overflow`, `manual`), `outcome` (`ok`, `error`), `durationMs`, `tokensBefore`, `summaryOutputTokens`, `messagesBefore`, `messagesAfter` (see below) |
 | `gateway_delivery` | Once per authenticated gateway delivery at Worker admission (Cloudflare) | `transport` (`http`, `socket`), `deliveryKind` (`event`, `agent_selected`, `channel_agent_add`), `eventType` and `subtype` (Slack's event vocabulary), `outcome` (`accepted`, `duplicate`, `rejected`, `failed`, `filtered`), `lagMs`, `slackLagMs`, socket only: `source` (`store`, `recent`, `filter`), `filterReason`, `queueMs`, `admitMs`, `inFlight`, `sessionPhase`, `sessionHealth`, `sessionAttempt`, `sessionGeneration`, `sessionAgeMs` |
 | `slack_read` | Once per Slack `conversations.history` or `conversations.replies` read for context or a read tool | `source` (`prefetch`, `tool`), `method` (`history`, `replies`), `outcome` (`ok`, `refused` by the shared read budget, `rate_limited`), `gated` (the shared app's one-a-minute budget applies), `limit`, `returned`, `includesRoot`, `reachesAnchor` (the page reached the triggering message), `hasCursor`, `order` (`oldest_first`, `newest_first`, `mixed`) |
 | `interaction_judgment` | Once per guaranteed Slack turn (a DM or a mention) the turn judged itself, after its classifier settled (both lanes) | `turnRef`, `recordedBy` (`shortcut`, `clef`, `model`, `unrecorded`), `basis` (the recorded disposition), `basisMs` (from the judgment's start in the attempt to the recorded basis: see below), `earlyMs` (the judgment adopted Clef calls its executor started this long before it), `rejudged` (Clef calls started before the fold asked about a request the fold then changed, so the judgment dropped them and asked Clef again), `clef` (`read`, `unavailable`, `timeout`, `error`, `unparseable`, `skipped`), `clefMs`, `clefInputTokens` (Clef is platform infrastructure, so this is where its cost is counted), `clefChoice`, `clefTop`, `clefTextMass` (P(reply) + P(work)) and `clefMemory` (each in thousandths), `gate` (`dispatch`, `await_model`), `clefLate` (Clef would have dispatched but the model recorded first), `model` (the classifier's disposition), `modelFailed`, `modelMs`, `refinement` (after a Clef basis: `none`, `labels`, `disagreed`, `model_unavailable`), `agreed` (Clef's disposition equals the model's), and from Clef's separate management call (absent after a shortcut): `management` (`read`, `unavailable`, `timeout`, `error`, `unparseable`), `managementMs`, `managementInputTokens`, `managementTop` (its noul, in thousandths), `managementFired` (at or above 0.5, so the turn's first request mounts the workspace change tools) |
@@ -721,6 +722,16 @@ channel IDs, settings keys or values, or error text. Emission never throws.
   `systemPromptHash` differs from the same Agent object's previous step is a
   rewrite after the system prompt changed, as when the Agent's memory did.
   Each pair is absent when the request has no such part.
+- `toolResultBytes` and `toolResultTopBytes` size the tool results a request
+  carries, the reading a bound on one result is chosen from. A result's size
+  is the UTF-8 bytes of its text as the request carries it, so a result its
+  tool already cut counts at its cut size. Flue's events replace an image's
+  data with a placeholder, so an image counts 0. `toolResultBytes` is the
+  sum, 0 when the request has no tool results. `toolResultTopBytes` lists the
+  largest 10 sizes, largest first and comma-separated, such as
+  `108601,31022,2048`, and is absent when the request has none. Each request
+  of a thread sends its earlier results again, so read a thread's last step,
+  not a sum over its steps.
 - More `model_step` fields say why a step's prompt cache missed and what
   held its end. The model access proxy reports all but
   `sincePreviousRequestMs` as the request settles, so a request it refused
@@ -752,6 +763,24 @@ channel IDs, settings keys or values, or error text. Emission never throws.
     `error` event) to build its usage record and settle a platform-funded
     request's charge, at most 2 s. It is 0 on a customer-funded request,
     which holds nothing for a charge.
+  - `thinkingBlocksDropped` counts the thinking blocks the provider dropped
+    from the request before the model read it: the `thinking_dropped`
+    entries of Anthropic's `input_transformations`. `thinkingDropReasons`
+    lists their reason codes, sorted and comma-separated, never a block or
+    its path: `prefix_binding_mismatch` (the system prompt, the tools or an
+    earlier message changed after the block was written, as when the Agent's
+    memory did), `model_binding_mismatch` (the thread moved to a model that
+    cannot read the block), `organization_binding_mismatch` (another account
+    wrote it), any later code as sent, or `other` for a value that is not a
+    code. Anthropic reports the list only to a request that sends the
+    `thinking-binding-controls-2026-08-01` beta, which pi-ai sends where it
+    asks the provider to drop a block that no longer matches. Such a step
+    carries 0 when nothing was dropped. A step without the field got no
+    report: another provider, a model pi-ai sends no such beta for, or a
+    request refused before it was sent. The proxy reads the list from pi-ai's
+    parsed stream events (`onProviderStreamEvent`): on `message_start`, and
+    again on the last `message_delta` after a mid-stream fallback, which
+    replaces it. Flue's `turn` observation does not carry it.
   - `clearedToolUses` and `clearedInputTokens` are the tool uses, and the
     input tokens of their results, that Anthropic cleared from the request's
     prompt with tool result clearing on (`CHICKPEA_ANTHROPIC_TOOL_RESULT_CLEARING`,
@@ -764,6 +793,39 @@ channel IDs, settings keys or values, or error text. Emission never throws.
     clearing, and its `cacheWriteTokens` is the cache rewrite that cost.
     `inputTokens` and the cache fields already count the prompt after
     clearing.
+- `compaction` is logged when Flue's compaction of an agent's context ends,
+  from its `compaction_start` and `compaction` events.
+  - `tokensBefore` is Flue's estimate of the context it compacted
+    (`compaction_start`'s `estimatedTokens`): the last successful response's
+    reported usage, plus about 4 characters a token for any message after
+    it.
+  - `trigger` is `threshold` when the last response's reported usage passed
+    the model's window less Flue's reserve after a turn (980,000 tokens for
+    a 1,000,000-token window, Flue's default), `overflow` when the provider
+    refused a request as too large, or answered one with usage above the
+    window, and Flue compacted before any retry, or `manual`.
+  - Flue compares the response's usage alone with its line, so after
+    `threshold` `tokensBefore` is that number unless messages follow the
+    response. After `overflow` Flue compared nothing. The refused request
+    reported no usage, so `tokensBefore` is the last successful response's
+    usage plus the 4-character estimate of what came after it, and it can
+    read below the window.
+  - `summaryOutputTokens` is the summary's output tokens across Flue's one or
+    two summary requests, whose `model_step` records carry `purpose`
+    `compaction` and `compaction_prefix`. A failed compaction (`outcome`
+    `error`) carries none.
+  - `messagesBefore` and `messagesAfter` are Flue's message counts. Both
+    count the leading system message, and `messagesAfter` also counts the
+    summary, so an Agent with a system prompt kept `messagesAfter` - 2
+    messages word for word.
+  - Flue does not count the tokens it kept. It walks back from the end with
+    the same estimate, keeps only the index where it cut, and puts no token
+    count in its events, so the record has no kept-token field. After an
+    `overflow` compaction, the next `agent` step of the same turn reports
+    the context the provider counted.
+  - Each isolate remembers a started compaction for up to 256 Agent objects.
+    A record whose start its isolate did not see has no `trigger` or
+    `tokensBefore`.
 - A Slack Agent's failed model step also logs `[chickpea] agent model turn
   failed:` with the provider's facts, never its message: `providerFailureKind`
   `http` with `providerHttpStatus` and the error body's `providerErrorType` and
@@ -832,7 +894,7 @@ To query a deployed Worker, discover the `event` key with `/telemetry/keys`
 alongside the verified service filter. For a percentile, use a calculations
 query with, for example, `{ operator: 'p95', key: '<verified admissionToFirstWriteMs key>', keyType: 'number' }`
 grouped by `lane`. During a bounded live capture, `wrangler tail --search turn_latency`
-(or `relay_alarm`, `thread_runner_alarm`, `state_rpc`, `state_rpc_summary`, `store_boot`, `model_step`, `gateway_delivery`) narrows the stream; `entrypoint` shows which
+(or `relay_alarm`, `thread_runner_alarm`, `state_rpc`, `state_rpc_summary`, `store_boot`, `model_step`, `compaction`, `gateway_delivery`) narrows the stream; `entrypoint` shows which
 Durable Object logged a `state_rpc`. `npm run diagnose` does not project these
 events; join them to a Run through `runRef` and the time window. On a Node
 install the same objects print to the process log, for example
