@@ -42,6 +42,7 @@ const CARD_TOOLS: Readonly<Record<string, string>> = {
   ].map((tool) => [tool, CARD_URIS['agent-card']])),
   connect_service: CARD_URIS['connect-card'],
   reconnect_service: CARD_URIS['connect-card'],
+  show_test_report: CARD_URIS['report-card'],
 };
 const READ_5 = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
 /** The fixture's clock; an older delivered receipt is past retention and swept. */

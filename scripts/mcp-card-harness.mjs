@@ -327,6 +327,45 @@ async function world() {
     readyQuiet: () => arrived.agent_quiet_desk,
     readySetup: () => arrived.agent_linear_helper,
     readyDocs: () => arrived.agent_docs_helper,
+    // Scene 9: the report card, for three practice questions the model judged, Chickpea filling in each question and answer.
+    report: async () => {
+      const asked = [];
+      for (const [question, reply] of REPORT_RUNS) {
+        runs.outcome = { status: 'answered', failure: null, result: { reply, read: ['Notion'] } };
+        asked.push((await call('practice_agent', { agentId: 'agent_quiet_desk', question })).structuredContent.runToken);
+      }
+      runs.outcome = ANSWERED;
+      return call('show_test_report', {
+        agentId: 'agent_quiet_desk',
+        runs: [
+          { runToken: asked[0], verdict: 'Passes', note: 'Right page, four lines.', before: 'Too long' },
+          { runToken: asked[1], verdict: 'Too long', note: 'Right page, 11 lines.', before: 'Too long' },
+          { runToken: asked[2], verdict: 'Passes', before: 'Passes' },
+        ],
+        summary: 'Right page 3 of 3 · Short enough 2 of 3',
+        next: 'Shorten the export answer, then ask all three again.',
+      });
+    },
+    // A change with its reason, made where the job goes on after Save.
+    changeContinues: async () => call('propose_agent_change', {
+      agentId: 'agent_quiet_desk', version: await version('agent_quiet_desk'),
+      change: { description: `Answers queue questions in five lines or fewer (${clock.now}).` },
+      reason: '2 of 3 answers ran past ten lines', continues: true,
+    }),
+    // An Agent Slack gave no handle, on a free plan: what works comes first.
+    readyFreePlan: async () => {
+      const agent = await f.config.getAgent('agent_free_desk').catch(() => undefined) ?? await createFixtureAgent(f, 'agent_free_desk', {
+        name: 'Free Desk',
+        slackPresence: {
+          requestedHandle: 'free-desk', normalizedHandle: 'free-desk', desiredState: 'active', health: 'needs_attention',
+          errorCode: 'paid_plan_required', errorDetail: 'paid_plan_required', avatar: { kind: 'generated', revision: 1, seed: 'free-desk' },
+        },
+      });
+      return {
+        structuredContent: { status: 'done', summary: 'Created Free Desk.', agent: { agentId: agent.id, name: agent.name, handle: 'free-desk', links: { admin: `${ORIGIN}/admin/agents/${agent.id}` } } },
+        _meta: { 'chickpea/tool': 'create_agent' },
+      };
+    },
   });
   /** What Slack does after create_agent: each Agent joins with a model that runs, and its hello is delivered. */
   async function arrive(...agentIds) {
@@ -455,7 +494,15 @@ const SCENE_CARDS = {
   connect: 'connect-card', reconnect: 'connect-card', cancelled: 'connect-card', custom: 'connect-card', connectRenewals: 'connect-card',
   connectChoose: 'connect-card',
   health: 'health-card', healthy: 'health-card',
+  report: 'report-card',
 };
+
+/** Scene 9's practice questions and the Agent's answers, one long enough to wrap. */
+const REPORT_RUNS = [
+  ['How do I add a second warehouse?', 'Settings, then **Locations**, then Add location. Give it an address and a default carrier.\n\nDetails: the Locations page.'],
+  ['Can I export orders to a spreadsheet?', 'Yes. Open Orders, filter what you need, and choose Export. You get a CSV with one row per line item.\n- Large exports arrive by email.\n- The Exports page has the full column list.\n- Each plan has its own limits.'],
+  ['What does the returns label cost?', 'Return labels are billed at your carrier rate with no markup. See Returns: Labels.'],
+];
 
 /** Two origins, like ChatGPT's page and its card sandbox. */
 async function serve(current) {
@@ -759,7 +806,7 @@ try {
       for (const state of states) {
         const written = JSON.stringify(state);
         assert.deepEqual([Object.keys(state), Object.keys(state.privateContent)], [['modelContent', 'privateContent'], ['card']], `${what}: ${written}`);
-        assert.ok(Object.keys(state.privateContent.card).every((key) => ['version', 'told', 'outcome'].includes(key)), `${what}: ${written}`);
+        assert.ok(Object.keys(state.privateContent.card).every((key) => ['version', 'told', 'outcome', 'continued'].includes(key)), `${what}: ${written}`);
         assert.equal(state.modelContent, state.privateContent.card.told.join('\n'), `${what}: the model reads what the card told it`);
         const { agentId, runToken, ...outcome } = state.privateContent.card.outcome ?? {};
         assert.ok(agentId === undefined || outcome.kind === 'created' || outcome.kind === 'checking', `${what}: an ID only for a created Agent or a run still going: ${written}`);
@@ -785,7 +832,7 @@ try {
     assert.equal(await browser.inCard('document.querySelectorAll(".cp-said")[1].innerText.split("\\n").length'), 4,
       'the example reply keeps its line breaks');
     assert.deepEqual((await said()).map(({ cut }) => cut), [false, false], 'a short example shows whole');
-    assert.equal(await subtitle(), '@invoices', 'the handle, and no "handle is free"');
+    assert.equal(await subtitle(), 'In Acme\'s Slack · @invoices', 'the workspace it joins, before the press, and the handle, with no "handle is free"');
     assert.deepEqual(await browser.inCard('[...document.querySelectorAll(".cp-msg .sr-only")].map((node) => node.textContent)'),
       ['You: ', 'Invoice Chaser: '], 'a screen reader hears who said each line of the example');
     assert.deepEqual(await smallPrint(), [
@@ -870,7 +917,7 @@ try {
     await shot('1-proposal-no-example');
     await open('proposalTaken');
     await browser.waitForTitle(/^Support Triage$/);
-    assert.equal(await subtitle(), '@support · handle is taken');
+    assert.equal(await subtitle(), 'In Acme\'s Slack · @support · handle is taken');
     await shot('1-proposal-taken');
     await browser.click('create');
     await browser.waitForTitle(/^An Agent like this already exists$/);
@@ -1462,6 +1509,54 @@ try {
     assert.equal((await browser.host('window.harness.messages')).at(-1)?.content?.[0]?.text, 'Turn it back on for Renewals Desk.');
     assert.deepEqual(await buttons(), ['Try again', 'Turn it back on']);
     await shot('5-try-again-turned-off-fixing');
+    // Scene 9: the report card. It calls nothing, tells the model nothing and keeps nothing; a row opens in place to the answer.
+    await open('report');
+    await browser.waitForTitle(/^Tested Quiet Desk · 3 questions$/);
+    assert.equal(await subtitle(), 'Right page 3 of 3 · Short enough 2 of 3');
+    assert.deepEqual(await buttons(), [], 'nothing to press but the rows');
+    assert.deepEqual(await browser.inCard('[...document.querySelectorAll(".cp-row-detail")].map((node) => node.textContent)'),
+      ['Passes was: Too long', 'Too long was: Too long', 'Passes was: Passes'], 'each verdict as a chip, and the first round\'s');
+    await plain('The report card');
+    await shot('9-report');
+    await browser.click('toggle:1');
+    await browser.waitFor('document.querySelector(".cp-row-open .cp-said-whole") !== null', 'the answer, opened in place');
+    assert.equal(await browser.inCard('document.querySelector(\'button[data-action="toggle:1"]\').getAttribute("aria-expanded")'), 'true');
+    assert.equal(await browser.inCard('document.activeElement?.dataset?.action ?? ""'), 'toggle:1', 'focus stays on the row it opened');
+    assert.match(await browser.inCard('document.querySelector(".cp-row-open").textContent'), /Large exports arrive by email\.[\s\S]*Each plan has its own limits\.[\s\S]*Right page, 11 lines\./,
+      'the whole answer, then the note');
+    const [reportCalls, reportMessages, reportContexts] = await Promise.all(['calls', 'messages', 'contexts'].map((field) => browser.host(`window.harness.${field}`)));
+    assert.deepEqual([reportCalls, reportMessages, reportContexts], [[], [], []], 'the report card waits for nothing');
+    if (host === 'chatgpt') assert.deepEqual(await browser.host('window.harness.widgetStates'), [], 'and keeps nothing');
+    await shot('9-report-open');
+
+    // Scene 5b: a change that says why, saved where the job goes on: the card sends one sentence, once.
+    await open('changeContinues');
+    await browser.waitForTitle(/^Change Quiet Desk$/);
+    assert.equal(await browser.inCard('document.querySelector(".cp-note")?.textContent'), 'Why: 2 of 3 answers ran past ten lines');
+    await shot('5-change-reason');
+    await browser.waitFor('document.querySelectorAll(".cp-acts button:enabled").length === 2', 'Save, once the read answers');
+    await browser.click('save');
+    await browser.waitForTitle(/^✓ Saved Quiet Desk$/);
+    for (let tries = 0; tries < 50 && (await browser.host('window.harness.messages.length')) === 0; tries += 1) {
+      await new Promise((done) => setTimeout(done, 100));
+    }
+    assert.deepEqual((await browser.host('window.harness.messages')).map((message) => message.content?.[0]?.text),
+      ['I saved the change to "Quiet Desk". Carry on.'], 'one sentence, as the person, after the save');
+    if (host === 'chatgpt') {
+      await keptOnlyTold('Saved, carrying on');
+      assert.equal((await browser.host('window.harness.widgetStates')).at(-1).privateContent.card.continued, true, 'it keeps that it carried on');
+      await browser.host('window.harness.reload()');
+      await browser.waitForTitle(/^✓ Saved Quiet Desk$/);
+      await new Promise((done) => setTimeout(done, 1_000));
+      assert.equal(await browser.host('window.harness.messages.length'), 1, 'a reopened chat never sends it again');
+    }
+
+    // Scene 2b: created on a free Slack plan, with no handle: it answers in DMs, said first.
+    await open('readyFreePlan');
+    await browser.waitForTitle(/^Free Desk is ready in your DMs$/);
+    assert.equal(await subtitle(), 'Its handle needs a paid Slack plan');
+    await shot('2-ready-free-plan');
+
     await current.f.config.updateAgent('agent_renewals_desk', { enabled: true });
     current.close();
   }
