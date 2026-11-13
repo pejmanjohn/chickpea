@@ -23,7 +23,7 @@
     {
       "version": 16,
       "sha256": "6a7e8144c5769bac9e1781dd8bcff1457f733aa9b7dc6b9dbef84c9efd2e1823",
-      "released": false
+      "released": true
     }
   ],
   "connect-card": [
@@ -50,7 +50,7 @@
     {
       "version": 14,
       "sha256": "3f9ce88fbd8942a51e084aa54437f6856ff3715e4224b9eab2eb8359719cd8d5",
-      "released": false
+      "released": true
     }
   ],
   "health-card": [
@@ -67,7 +67,7 @@
     {
       "version": 9,
       "sha256": "d064f32435b6d8401329e82b842b5a2c802fb71f1528b9a65300ee2ca25fc1a7",
-      "released": false
+      "released": true
     }
   ],
   "report-card": [
