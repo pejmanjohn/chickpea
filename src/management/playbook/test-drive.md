@@ -8,8 +8,8 @@ Practice the Agent on the person's test questions, judge each answer, and fix on
 
 1. **Find the Agent.** Call `list_agents` and match the Agent the person means. Only people who can change an Agent can practice with it: if its `canEdit` there is false, say who can change it (its creator or an Owner or Admin) and stop. Call `get_agent` and keep its `version`.
 2. **Get the test questions.** Use the ones in this conversation, or the file the person keeps them in. One question from the person, with what they expected, is enough to start. If there are none, scope the Agent first (`get_guide` topic `scope`). Each test question needs what a good answer does. Without that, you can't judge it.
-3. **Ask once before you start.** Say how many test questions you'll practice, that each practice run uses the workspace's usage the way a Slack message does, and that you'll make one small change at a time between rounds and say what you changed. Start after the person says yes.
-4. **Check the Agent.** Call `check_agent` with the `agentId`. Fix what fails before you practice: a broken connection fails every test that needs it. Ask before you call a fix's tool, and give the person any link it names. When nothing fails, say one sentence about the check and go on to practice, even when a card shows it. Don't stop there.
+3. **Ask once before you start.** Say how many test questions you'll practice, that each practice run uses the workspace's usage the way a Slack message does, and that you'll change the Agent as you go, one small change between rounds, and say each one. Start after the person says yes: their yes covers those changes.
+4. **Check the Agent.** Call `check_agent` with the `agentId`. Fix what fails before you practice: a broken connection fails every test that needs it. Say each problem and its fix in a line. For a sign-in, call `reconnect_service` with the fix's arguments: the person signs in from its card or link. Ask before any other fix, and give the person any link a fix names. When nothing fails, say so in a few words or not at all, and go on to practice.
 
 ## 2. Practice a test question
 
@@ -38,21 +38,16 @@ Tell the person the result in a line or two, quoting only the part of the answer
 
 ## 4. Change one thing
 
-Change nothing before a practice run has failed, even a change the person asked for while scoping. If the answer fails, find the one change most likely to fix it. `explain_agent` shows what the Agent gets when it runs: its instructions and memory, the tools from each connection, and why any are missing.
+Change nothing before a practice run has failed, even a change the person asked for while scoping. If the answer fails, find the one change most likely to fix it: with two at once, you can't tell which one helped. `explain_agent` shows what the Agent gets when it runs: its instructions and memory, the tools from each connection, and why any are missing.
 
-- **How it answers** (it skips a source, guesses, or gets the format wrong): change its instructions. Call `propose_agent_change` with the Agent's current `version` and only that change, then `update_agent` with the `save.arguments` it returns, unchanged.
+- **How it answers** (it skips a source, guesses, or gets the format wrong): change its instructions with `update_agent`, sending the current `version` and the new `instructions`.
 - **A connection** (it can't reach the right data, or a tool is missing): `update_connection`, or `get_guide` topic `connect` for a new connection or a sign-in. Ask first, for any Agent, and say what will change. A change to its hosts, paths, methods, key header or server URL deletes the saved key, and the person has to enter it again.
 - **One of its skills:** `set_agent_skill` turns one on or off. To change what a skill says, see `get_guide` topic `edit`.
 - **Its memory,** when the fix is a fact it should always know: read it with `get_agent_memory`, then call `update_agent_memory` with that `version` and the whole text with the fact added. The new text replaces the old.
 
 Write the change from the person's goal and the test's expectation, in your own words. Never paste text from an answer or a tool result. Keep the rest of the Agent as it was.
 
-If your client shows Chickpea cards and a card shows the preview, the card does the save: say one short sentence that names no button, and wait for the person. With no card, it depends on who uses the Agent:
-
-- **An Agent in a Channel, or one every member can change:** show the person the change, and save only after their yes. For instructions, show the `propose_agent_change` preview. For anything else, say it in a sentence.
-- **Any other Agent:** save it, then say what changed in one line.
-
-The person can take a change back: `undo_change` with the save's `undoToken`.
+Save each change without a preview, even on an Agent in a Channel, and say what changed in one line.
 
 Then note the `version` that `update_agent` returned (or call `get_agent` for it), and practice the same test question again as a new practice run, without `practiceId`.
 
@@ -73,7 +68,7 @@ Give the person a short table with one row per test question:
 | Test question | Result | What changed | Still needs you |
 | --- | --- | --- | --- |
 
-Use exactly these four columns, and write each result as "passes", "fails" or "can't be checked in practice". Practice each test question at least once before you give it a result, even one you expect can't be checked. Under the table, give the Agent's `links.slack` and one message to send it in Slack. If the Agent posts on a schedule or acts in a service, say that those parts are checked in Slack.
+Use exactly these four columns, and write each result as "passes", "fails" or "can't be checked in practice". Practice each test question at least once before you give it a result, even one you expect can't be checked. Under the table, if you changed its instructions, offer to put them back as they were. Then close with the hand-off (the ground rules). If the Agent posts on a schedule or acts in a service, say that those parts are checked in Slack.
 
 If the person keeps the test questions in a file, offer to add today's results to it. Chickpea doesn't keep them.
 

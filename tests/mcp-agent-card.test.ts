@@ -27,8 +27,9 @@ const BASE_URL = 'https://chickpea.example.test';
  * The tools whose result a card draws. The Agent card: the proposal, the
  * creation, the change and its save, and every tool that can return
  * needs_confirmation, whose card is the "Are you sure?". The connect card:
- * the two tools that hand out a connection's setup link. The health card:
- * check_agent.
+ * the two tools that hand out a connection's setup link. No tool draws the
+ * health card any more: check_agent reports in text, and a chat that drew
+ * the card before still reads its resource and presses Check again.
  */
 const CARD_TOOLS: Record<string, CardName> = {
   ...Object.fromEntries([
@@ -37,7 +38,6 @@ const CARD_TOOLS: Record<string, CardName> = {
   ].map((tool) => [tool, 'agent-card' as const])),
   connect_service: 'connect-card',
   reconnect_service: 'connect-card',
-  check_agent: 'health-card',
 };
 
 /** The card-only tools: hidden from the model, called by a card. */

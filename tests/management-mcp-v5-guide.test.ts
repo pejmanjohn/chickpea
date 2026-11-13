@@ -292,6 +292,28 @@ test('a check-in checks every Agent the person can edit, and no section is quote
   }
 });
 
+test('a card stops the job only when it waits for the person, a goal is consent, and each job ends with a hand-off', () => {
+  for (const topic of PLAYBOOK_TOPICS) {
+    const section = playbookSection(topic, 'chat-app').guide;
+    assert.doesNotMatch(section, /and stop\. Write it so|Wait for their press or their next message/, `${topic}: a card that waits for nothing never stops the job`);
+    assert.ok(section.includes('After a card, carry on with the job, unless the card waits for the person: a proposal to create or save, a change to confirm, or a sign-in.'), topic);
+    assert.ok(section.includes('So in one turn, show at most one card that waits, and show it last.'), `${topic}: a client draws a turn's cards before its text`);
+    assert.ok(section.includes('- **A goal is consent.**') && section.includes('Outside a goal, preview each change to it'), `${topic}: a direct edit to a shared Agent keeps its preview`);
+    assert.ok(section.includes('- **End a job with a hand-off.**') && section.includes('- Never send a Slack message for the person.'), topic);
+    // The model once named Codex inside ChatGPT, and told someone who never connected to connect "again".
+    assert.ok(section.includes('connect Chickpea in this app\'s settings or plugin page and sign in with Slack') && section.includes('Name no app'), topic);
+    assert.doesNotMatch(section, /connect Chickpea again/, topic);
+  }
+  for (const topic of ['start', 'edit', 'test-drive'] as const) {
+    assert.match(playbookSection(topic).guide, /hand-off \(the ground rules\)/, `${topic} ends with the hand-off`);
+  }
+  for (const topic of ['check-in', 'test-drive'] as const) {
+    const section = playbookSection(topic).guide;
+    assert.match(section, /call `reconnect_service` with (?:its|the) fix's arguments/, `${topic}: a sign-in fix shows its connect card`);
+    assert.doesNotMatch(section, /a card shows its result|even when a card shows it/, `${topic}: no card draws a check`);
+  }
+});
+
 test('the server instructions end by sending a client without a skill to get_guide, within 512 characters', async (t) => {
   const { rpc } = await harness(t, 'guide-instructions', false);
   const { instructions } = await rpc('initialize', {
@@ -343,8 +365,9 @@ test('each section names only 5.0 tools, and the fields, values and topics they 
 test('the playbook is host-neutral, and keeps the research and roll-out boundaries', () => {
   for (const topic of PLAYBOOK_TOPICS) {
     const section = playbookSection(topic).guide;
-    // The plugin vendors these files into skills that must stay provider-neutral.
-    assert.doesNotMatch(section, /\bthis skill\b|\bClaude\b|\bplugin\b|\bmarketplace\b|\binstall\b/i, topic);
+    // The plugin vendors these files into skills that must stay provider-neutral. A host's own
+    // "plugin page" is where a person connects Chickpea, so the sign-in rule may name it.
+    assert.doesNotMatch(section, /\bthis skill\b|\bClaude\b|\bplugin\b(?! page)|\bmarketplace\b|\binstall\b/i, topic);
     assert.ok(section.includes('**If your client shows Chickpea cards**'), `${topic}: cards are conditional`);
     assert.ok(section.includes('Never send a Slack message for the person.'), `${topic}: carries the ground rules`);
   }
