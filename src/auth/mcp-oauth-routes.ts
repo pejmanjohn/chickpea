@@ -310,24 +310,20 @@ async function beginMcpLogin(c: Context, environment: BetterAuthEnvironment): Pr
   if (!await verifySignedOAuthQuery(query, environment.secret)) {
     return invalidBrowserRequest();
   }
-  return signInThenResume(environment, query);
+  return noStoreRedirect(await signInThenResumePath(environment, query));
 }
 
 /**
- * Sends the browser to Slack sign-in with a single-use continuation back to
- * this exact signed authorization request.
+ * The Slack sign-in path that returns, through a single-use continuation it
+ * issues, to this exact signed authorization request.
  */
-async function signInThenResume(
-  environment: BetterAuthEnvironment,
-  query: URLSearchParams,
-  setCookies: readonly string[] = [],
-): Promise<Response> {
+async function signInThenResumePath(environment: BetterAuthEnvironment, query: URLSearchParams): Promise<string> {
   const store = new BetterAuthMcpOAuthContinuationStore({ backend: environment.backend });
   const continuation = await store.issue({
     authorizationPath: `${BETTER_AUTH_BASE_PATH}/oauth2/authorize?${query.toString()}`,
   });
   const destination = `/auth/mcp/resume/${continuation.id}`;
-  return noStoreRedirect(`/auth/slack/sign-in?${new URLSearchParams({ destination })}`, setCookies);
+  return `/auth/slack/sign-in?${new URLSearchParams({ destination })}`;
 }
 
 async function resumeMcpLogin(c: Context, environment: BetterAuthEnvironment): Promise<Response> {
@@ -350,7 +346,7 @@ async function showMcpConsent(c: Context, site: McpOAuthBrowserSite): Promise<Re
   if (await alreadyRedeemed(environment, query)) return alreadyConnectedResponse(clientId, clientName);
   const clientHost = clientMetadataHost(clientId);
   const scope = query.get('scope') ?? MCP_WORKSPACE_SCOPE;
-  // A page that cannot read the session names no one, and its Allow asks to review again.
+  // A page that cannot read the session names no one and binds its Allow to none.
   const signedIn = await readBrowserSession(environment, c.req.raw.headers).catch(() => undefined);
   const account = signedIn && site.describe
     ? await site.describe(signedIn.betterAuthUserId).catch(() => undefined)
@@ -437,7 +433,9 @@ async function switchMcpWorkspace(c: Context, site: McpOAuthBrowserSite): Promis
     const clientId = query.get('client_id') ?? '';
     return alreadyConnectedResponse(clientId, await lookupMcpClientName(environment, clientId, c.req.raw.headers));
   }
-  return signInThenResume(environment, query, await endBrowserSession(c.req.raw, environment));
+  // The way back exists before the session ends: a continuation that cannot be issued signs no one out.
+  const signIn = await signInThenResumePath(environment, query);
+  return noStoreRedirect(signIn, await endBrowserSession(c.req.raw, environment));
 }
 
 /** The browser-form provenance consent and Switch both require, or the response that refuses it. */

@@ -343,6 +343,26 @@ test('Switch refuses a tampered, expired, cross-site or unsigned request before 
   assert.equal(f.continuations(), continuations, 'no continuation is issued');
 });
 
+// Defect caught: Switch ended the session first, so a request whose continuation could not be issued left the person signed out with nowhere to go.
+test('Switch ends no session when it cannot issue the way back', async (t) => {
+  const f = await fixture(t);
+  const cookie = await f.signIn(f.acme);
+  const consent = await f.consentFor(verifier(), cookie);
+  // Signed and in date, but too long to carry as a continuation's authorization path.
+  const padded = new URLSearchParams(consent.search);
+  const exp = Number(padded.get('exp'));
+  padded.set('state', 'x'.repeat(4_090 - padded.toString().length + padded.get('state')!.length));
+  const oauthQuery = await resigned(padded, f.environment.secret, exp);
+  assert.ok(oauthQuery.length <= 4_096 && oauthQuery.length > 4_070, String(oauthQuery.length));
+
+  const continuations = f.continuations();
+  const response = await f.switchFrom(oauthQuery, cookie);
+  assert.equal(response.status, 500);
+  assert.ok(!expiresSessionCookie(response));
+  assert.equal(await f.sessionUser(cookie), f.acme.userId, 'the session is untouched');
+  assert.equal(f.continuations(), continuations);
+});
+
 test('consent wording names the workspace for a known app and stays generic without one', () => {
   const base = { scope: 'chickpea:workspace', oauthQuery: 'sig=test' };
   const named = renderMcpConsentPage({
