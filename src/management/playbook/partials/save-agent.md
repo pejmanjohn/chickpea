@@ -1,6 +1,6 @@
 ### Save the change
 
-Save only after the person says yes to the preview. Call `update_agent` with the `save.arguments` that `propose_agent_change` returned, unchanged. When a card shows the preview, its Save button does this step: don't save again after the person used it. Turning off an Agent that answers in Channels comes back as `needs_confirmation` (below).
+Save only after the person says yes to the preview. Call `update_agent` with the `save.arguments` that `propose_agent_change` returned, unchanged. When a card shows the preview, its Save button does this step: don't save again after the person used it. Toward a goal the person gave you, skip the preview: call `update_agent` with `agentId`, the latest `version` and only the fields you change. Turning off an Agent that answers in Channels comes back as `needs_confirmation` (below).
 
 Other parts of an Agent. Each applies at once, so say what will change and ask first:
 

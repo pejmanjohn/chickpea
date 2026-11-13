@@ -100,18 +100,27 @@ export interface HeldTokens {
 }
 
 /**
- * What a card host's model hears with a result a card shows. The card
- * changes when the person presses, and the model's own words would not, so
- * it says one sentence and waits instead of listing what the card shows.
+ * What a card host's model hears with a result a card shows, when the card
+ * waits for the person's press. The card changes when they press, and the
+ * model's own words would not, so it says one sentence and waits instead of
+ * listing what the card shows.
  */
-export const CARD_SHOWS_IT = 'The card above shows this to the person, and they act on it there. Reply in one short sentence: don\'t restate what the card shows, don\'t name its buttons, and don\'t say whether anything was created, saved, connected or changed, because the card replaces itself when they press. Then wait for them.';
+export const CARD_WAITS = 'The card shows this to the person, and it waits for them to act on it there. Reply in one short sentence that says what they can do: don\'t restate what the card shows, don\'t name its buttons, and don\'t say whether anything was created, saved, connected or changed, because the card replaces itself when they press. Then wait for them.';
+
+/**
+ * What a card host's model hears with a result a card shows that waits for
+ * no press, such as the Saved card after the model's own save: the job goes
+ * on, so a stop here would leave the person to restart it.
+ */
+export const CARD_SHOWS_IT = 'The card shows this to the person, and it waits for nothing. Don\'t restate what it shows or name its buttons. Carry on with the job.';
 
 /**
  * A result as a card host's model sees it: no token it could use without
  * the person's press, and words that send the person to the card, or,
  * should the host fail to draw it, to Admin or to a new chat. `drawn`: a
  * card draws this tool's result, so the model is told the card shows it,
- * in the result's next step and in a text block before its JSON.
+ * in the result's next step and in a text block before its JSON, and
+ * whether to wait for a press or carry on.
  */
 export function forCardHost(
   result: Record<string, unknown>,
@@ -123,6 +132,7 @@ export function forCardHost(
   const { undoToken } = change;
   const shows = drawn && cardActsOn(change);
   if (confirmToken === undefined && undoToken === undefined && !shows) return { structured: result };
+  const lead = waitsForPress(result) ? CARD_WAITS : CARD_SHOWS_IT;
   const { undoToken: _undo, ...rest } = change;
   const structured: Partial<ChangeResult> = rest;
   if (confirmToken !== undefined) {
@@ -132,19 +142,19 @@ export function forCardHost(
   }
   structured.nextStep = shows
     ? [
-        CARD_SHOWS_IT,
+        lead,
         confirmToken !== undefined ? 'Only the card can confirm it: it holds the confirmToken.' : undefined,
         undoToken !== undefined ? 'They can undo it on the card.' : undefined,
         change.status === 'done' && change.agent?.status === 'off' ? offNextStep(change.agent.name) : undefined,
       ].filter(Boolean).join(' ')
     : confirmToken !== undefined
       ? 'The person confirms on the card, which holds the confirmToken. Wait for them.'
-      : [change.nextStep, 'The person can undo it on the card above.'].filter(Boolean).join(' ');
+      : [change.nextStep, 'The person can undo it on the card.'].filter(Boolean).join(' ');
   const held = { ...confirmToken !== undefined ? { confirmToken } : {}, ...undoToken !== undefined ? { undoToken } : {} };
   return {
     structured,
     ...Object.keys(held).length ? { held } : {},
-    ...shows ? { lead: CARD_SHOWS_IT } : {},
+    ...shows ? { lead } : {},
   };
 }
 
@@ -153,10 +163,22 @@ function cardActsOn(result: Partial<ChangeResult>): boolean {
   return !(result.status === 'needs_setup' && !result.setup?.setupToken);
 }
 
+/**
+ * The card waits for the person's press: a proposal, whose Create or Save
+ * makes it (`create` or `save` holds the call); a change to confirm; or a
+ * setup link to open. Any other card shows what is already done.
+ */
+function waitsForPress(result: Record<string, unknown>): boolean {
+  const { status, confirmation, setup } = result as Partial<ChangeResult>;
+  return 'create' in result || 'save' in result
+    || confirmation?.confirmToken !== undefined
+    || (status === 'needs_setup' && setup?.setupToken !== undefined);
+}
+
 /** Where else the person can make the change, should the card not show: only a way that exists. */
 function elsewhere(inAdmin: boolean, admin: string | undefined): string {
-  if (!inAdmin) return 'Confirm on the card above. If the card doesn\'t show, ask again in a new chat.';
-  return `Confirm on the card above, or in Admin${admin ? `: ${admin}` : ''}.`;
+  if (!inAdmin) return 'Confirm on the card. If the card doesn\'t show, ask again in a new chat.';
+  return `Confirm on the card, or in Admin${admin ? `: ${admin}` : ''}.`;
 }
 
 function workspaceAdmin(baseUrl: string | undefined): string | undefined {

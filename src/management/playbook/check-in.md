@@ -6,7 +6,7 @@ Give the person a short report on their Agents: what needs attention, how the te
 
 ## 1. Health
 
-**One Agent** ("check on Ops", "how is Ops doing", "is Ops healthy", a health check of one): find its `agentId` with `list_agents`, then call `check_agent` with it. Don't stop at `list_agents` or `get_agent`: `check_agent` checks every part (connections, model, Slack presence, Channels, schedules, repositories, website logins) and returns each problem with a `fix`. It tests each custom connection once and changes nothing. If your client shows Chickpea cards and a card shows its result, say one short sentence and go on to use.
+**One Agent** ("check on Ops", "how is Ops doing", "is Ops healthy", a health check of one): find its `agentId` with `list_agents`, then call `check_agent` with it. Don't stop at `list_agents` or `get_agent`: `check_agent` checks every part (connections, model, Slack presence, Channels, schedules, repositories, website logins) and returns each problem with a `fix`. It tests each custom connection once and changes nothing. Report it in text: when every check passes, say so in a line or two that name what was checked, then go on to use.
 
 **All of them:**
 
@@ -31,15 +31,15 @@ A real ask the Agent got wrong makes the best test question. For each one:
 
 ## 4. Report
 
-Lead with what needs attention, one line each: the check's `name`, its `plain` words (or its `detail` when it has none), and its fix. A fix is either a link to give the person, or a tool and arguments. Never call a fix's tool until the person says yes. If it names a tool you don't have here, give the person the Agent's `links.admin` from `get_agent` instead. When the fix is `reconnect_service` or a setup link, see `get_guide` topic `connect`.
+Lead with what needs attention, one line each: the check's `name`, its `plain` words (or its `detail` when it has none), and its fix. A fix is either a link to give the person, or a tool and arguments. A sign-in changes nothing until the person finishes it, so call `reconnect_service` with its fix's arguments, one sign-in at a time: the person signs in from its card or its link. Never call any other fix's tool until the person says yes. If it names a tool you don't have here, give the person the Agent's `links.admin` from `get_agent` instead. For a setup link, see `get_guide` topic `connect`.
 
 Then the use, in two or three lines: runs in the window, how many people asked, and what the failures had in common.
 
-Then one line for everything that's fine, such as "4 other Agents and 3 schedules look healthy." Don't list healthy items one by one unless the person asks.
+Then one line for everything that's fine, such as "4 other Agents and 3 schedules look healthy." Don't list healthy items one by one unless the person asks. When the person asks which Agents need attention, give a short list: one line for each Agent that needs something.
 
 End with the fixes and new test questions you'd suggest, and let the person choose. Make no change until they say which.
 
-After a fix, call `check_agent` again. If the check passes and the Agent still gets the person's ask wrong, offer to test drive it (`get_guide` topic `test-drive`).
+After a fix, call `check_agent` again, and say in a few words whether it passes. If it passes and the Agent still gets the person's ask wrong, offer to test drive it (`get_guide` topic `test-drive`).
 
 **Why didn't it answer?** Call `check_agent` with the `place` where the person wrote: omit it for their direct messages, or pass the Channel's `channelId` from `get_agent`. The `admission` check says whether a message from them there reaches this Agent, and why not.
 

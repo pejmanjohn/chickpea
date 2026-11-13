@@ -98,7 +98,7 @@ test('what needs attention comes first, each with its fix as a link; the healthy
   const { f, teamId, call, card, clock } = await harness(t, 'health-card', BROKEN);
   await seedOps(f, teamId);
   const result = await call('check_agent', { agentId: 'agent_ops' });
-  assert.equal(result._meta?.['chickpea/tool'], 'check_agent');
+  assert.equal(result._meta, undefined, 'no card draws check_agent now; a chat that drew the health card before still draws it from this result');
   assert.deepEqual(JSON.parse((result as { content: Array<{ text: string }> }).content[0]!.text), result.structuredContent, 'a client without cards gets it all');
   assert.equal(result.structuredContent!.agent.agentId, 'agent_ops');
 
