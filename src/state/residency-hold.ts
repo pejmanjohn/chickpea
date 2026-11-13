@@ -2,13 +2,45 @@
  * The Cloudflare deployment variable that turns the residency hold on: how
  * long, in milliseconds, a conversation keeps its Durable Objects in memory.
  * That is the state store after a person's turn is admitted and after it
- * ends, and a thread's runner and Agent object after the last turn they
- * served. Unset, empty or 0, nothing is held.
+ * ends, unless STORE_RESIDENCY_HOLD_VARIABLE sets the store's own window, and
+ * a thread's runner and Agent object after the last turn they served. Unset,
+ * empty or 0, nothing is held.
  */
 export const RESIDENCY_HOLD_VARIABLE = 'CHICKPEA_RESIDENCY_HOLD_MS';
 
-/** The longest one pending timer holds an object (see ResidencyHold). */
+/**
+ * The longest window RESIDENCY_HOLD_VARIABLE sets. It holds a runner and an
+ * Agent object for every thread a person talked in, so it stays short.
+ */
 export const MAX_RESIDENCY_HOLD_MS = 15 * 60_000;
+
+/**
+ * The deployment variable that sets the state store's own window, in
+ * milliseconds after a person's turn is admitted and after it ends. There is
+ * one store per installation, so it can hold longer than a thread's objects.
+ * Unset or empty, the store takes RESIDENCY_HOLD_VARIABLE's window; 0, it
+ * holds nothing whatever that window is.
+ */
+export const STORE_RESIDENCY_HOLD_VARIABLE = 'CHICKPEA_STORE_RESIDENCY_HOLD_MS';
+
+/** The longest window STORE_RESIDENCY_HOLD_VARIABLE sets. */
+export const MAX_STORE_RESIDENCY_HOLD_MS = 60 * 60_000;
+
+/**
+ * Cloudflare lets one pending timer block eviction for 15 minutes from when it
+ * was set. A hold's timer waits at most a minute less, so it fires, and sets
+ * the next, while it still holds the object.
+ */
+const HOLD_TIMER_MS = 14 * 60_000;
+
+function parseWindowMs(value: unknown, variable: string, max: number, unset: string): number | undefined {
+  if (value === undefined || value === '') return undefined;
+  const digits = typeof value === 'number' ? String(value) : value;
+  if (typeof digits !== 'string' || !/^[0-9]+$/.test(digits) || Number(digits) > max) {
+    throw new Error(`${variable} must be a whole number of milliseconds up to ${max}, ${unset}.`);
+  }
+  return Number(digits);
+}
 
 /**
  * The hold window a RESIDENCY_HOLD_VARIABLE value sets; undefined for none.
@@ -16,20 +48,29 @@ export const MAX_RESIDENCY_HOLD_MS = 15 * 60_000;
  * MAX_RESIDENCY_HOLD_MS. The guarded deploy refuses such a value with it.
  */
 export function parseResidencyHoldMs(value: unknown): number | undefined {
-  if (value === undefined || value === '') return undefined;
-  const digits = typeof value === 'number' ? String(value) : value;
-  if (typeof digits !== 'string' || !/^[0-9]+$/.test(digits) || Number(digits) > MAX_RESIDENCY_HOLD_MS) {
-    throw new Error(
-      `${RESIDENCY_HOLD_VARIABLE} must be a whole number of milliseconds up to ${MAX_RESIDENCY_HOLD_MS}, or 0 or unset for no hold.`,
-    );
-  }
-  return Number(digits) || undefined;
+  return parseWindowMs(value, RESIDENCY_HOLD_VARIABLE, MAX_RESIDENCY_HOLD_MS, 'or 0 or unset for no hold') || undefined;
 }
 
 /**
- * The hold window this Worker's env sets. A value the deploy would refuse
- * holds nothing: an object that cannot read its setting behaves as before
- * the setting existed, rather than failing the turn that reads it.
+ * The window a STORE_RESIDENCY_HOLD_VARIABLE value sets: undefined when it is
+ * unset or empty, so the store takes the conversation's window, and 0 for no
+ * hold. Throws for anything but a whole number of milliseconds up to
+ * MAX_STORE_RESIDENCY_HOLD_MS. The guarded deploy refuses such a value with it.
+ */
+export function parseStoreResidencyHoldMs(value: unknown): number | undefined {
+  return parseWindowMs(
+    value,
+    STORE_RESIDENCY_HOLD_VARIABLE,
+    MAX_STORE_RESIDENCY_HOLD_MS,
+    `0 for no hold, or unset for ${RESIDENCY_HOLD_VARIABLE}'s window`,
+  );
+}
+
+/**
+ * The hold window this Worker's env sets for a thread's runner and Agent
+ * object. A value the deploy would refuse holds nothing: an object that
+ * cannot read its setting behaves as before the setting existed, rather than
+ * failing the turn that reads it.
  */
 export function residencyHoldMs(env: Record<string, unknown> | undefined): number | undefined {
   try {
@@ -37,6 +78,20 @@ export function residencyHoldMs(env: Record<string, unknown> | undefined): numbe
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The state store's hold window in this Worker's env. A store value the
+ * deploy would refuse counts as unset, as before the setting existed.
+ */
+export function storeResidencyHoldMs(env: Record<string, unknown> | undefined): number | undefined {
+  let window: number | undefined;
+  try {
+    window = parseStoreResidencyHoldMs(env?.[STORE_RESIDENCY_HOLD_VARIABLE]);
+  } catch {
+    window = undefined;
+  }
+  return window === undefined ? residencyHoldMs(env) : window || undefined;
 }
 
 /** The clock and timer a hold runs on. */
@@ -55,19 +110,21 @@ const platformTimers: HoldTimers = {
 /**
  * Keeps a Durable Object in memory for a window after a turn. Cloudflare
  * hibernates an idle object after 10 seconds unless it has a pending timer;
- * a scheduled alarm does not stop that. So the hold is one pending timer,
- * moved only later. Whether the timer also blocks eviction depends on the
- * Worker's compatibility date:
+ * a scheduled alarm does not stop that. So the hold is one pending timer at a
+ * time, moved only later. Whether the timer also blocks eviction depends on
+ * the Worker's compatibility date:
  * - From 2026-10-01, or with the `durable_object_io_tasks_prevent_eviction`
- *   flag, it does, until it fires or 15 minutes after it was set.
+ *   flag, it does, until it fires or 15 minutes after it was set. A window
+ *   longer than HOLD_TIMER_MS is a run of timers, each set as the one before
+ *   fires.
  * - Before that date and without the flag, as in wrangler.jsonc today, an
  *   object that cannot hibernate is still evicted after 70 to 140 seconds
  *   with no request or alarm. The state store's keep-warm tick is such an
  *   alarm. A thread's runner and Agent object have none, so their hold ends
  *   there.
- * Once the timer fires, the object hibernates on the platform's ordinary
- * rules. The object pays duration charges while held. Without a window
- * (RESIDENCY_HOLD_VARIABLE unset) it holds nothing.
+ * Once the last timer fires, the object hibernates on the platform's
+ * ordinary rules. The object pays duration charges while held. Without a
+ * window it holds nothing.
  */
 export class ResidencyHold {
   private readonly windowMs: number | undefined;
@@ -91,10 +148,16 @@ export class ResidencyHold {
     const at = from + this.windowMs;
     const now = this.timers.now();
     if (at <= now || at <= this.until) return;
-    if (this.timer !== undefined) this.timers.clear(this.timer);
     this.until = at;
+    this.arm(now);
+  }
+
+  private arm(now: number): void {
+    if (this.timer !== undefined) this.timers.clear(this.timer);
     this.timer = this.timers.set(() => {
       this.timer = undefined;
-    }, at - now);
+      const firedAt = this.timers.now();
+      if (firedAt < this.until) this.arm(firedAt);
+    }, Math.min(this.until - now, HOLD_TIMER_MS));
   }
 }
