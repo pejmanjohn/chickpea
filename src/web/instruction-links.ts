@@ -7,6 +7,26 @@ export interface InstructionLinkSpace {
 }
 
 /**
+ * How the identity line opens (`runtimeIdentityInstruction`). In every run's
+ * instructions it follows the saved instructions, and what follows it
+ * (names, handles, teammates) is not reviewed text.
+ */
+export const IDENTITY_OPENING = 'You are assigned to Slack workspace ';
+
+/**
+ * The text a run reads links from: everything before the first identity
+ * line, or nothing without one. Saved instructions that hold that sentence
+ * themselves are cut there too, in a run and in the review of a save
+ * (`addedInstructionLinks`), so both read the same text. Were the review to
+ * read past the cut, a link label closed after it could hide a link the run
+ * then reads.
+ */
+export function textBeforeIdentityLine(instructions: string): string | undefined {
+  const end = instructions.indexOf(IDENTITY_OPENING);
+  return end < 0 ? undefined : instructions.slice(0, end);
+}
+
+/**
  * Each link in an Agent's saved instructions, and the pages below its path,
  * so an Agent told to answer from a docs site can open it. A link's own
  * path, not its host, is its space, as a connection's is. Admission still
@@ -16,13 +36,18 @@ export function instructionLinkSpaces(instructions: string): InstructionLinkSpac
   return requesterTypedUrls(instructions).map((url) => ({ host: url.hostname, pathPrefixes: [url.pathname] }));
 }
 
+/** The links a run would read from these saved instructions. */
+function runLinks(saved: string): URL[] {
+  return requesterTypedUrls(textBeforeIdentityLine(saved) ?? saved);
+}
+
 /**
  * The links `after` holds that no link in `before`, and no URL in `vouched`,
  * already covers: the reach a save of `after` would add.
  */
 export function addedInstructionLinks(before: string, after: string, vouched: readonly URL[] = []): string[] {
-  const known = [...requesterTypedUrls(before), ...vouched];
-  return [...new Set(requesterTypedUrls(after)
+  const known = [...runLinks(before), ...vouched];
+  return [...new Set(runLinks(after)
     .filter((link) => !known.some((url) => covers(url, link)))
     .map(({ href }) => href))];
 }

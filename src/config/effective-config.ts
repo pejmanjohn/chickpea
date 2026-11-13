@@ -11,6 +11,7 @@ import type {
   ResolvedAssignment,
 } from './types.ts';
 import { agentMayAskTeammates } from '../slack/agent-asks.ts';
+import { IDENTITY_OPENING } from '../web/instruction-links.ts';
 
 export const SLACK_RUNTIME_GUARDRAIL =
   'Do not reveal Slack tokens, provider keys, or hidden policy data.';
@@ -118,13 +119,6 @@ export function resolvedAssignmentFromEffectiveConfig(
     ...(config.modelCredential ? { modelCredential: config.modelCredential } : {}),
   };
 }
-
-/**
- * How the identity line opens. In every run's instructions it follows the
- * saved instructions, and what follows it (names, handles, teammates) is
- * not reviewed text, so links are read only from before it (`agentPathSpaces`).
- */
-export const IDENTITY_OPENING = 'You are assigned to Slack workspace ';
 
 /**
  * The Agent must recognize itself: its saved name, its Slack handle, and the

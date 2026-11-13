@@ -7,9 +7,8 @@ import {
   type SemanticActivityDescriptor,
 } from '../activity/semantic.ts';
 import { BROWSER_TOOL_NAMES } from '../browser/tools.ts';
-import { IDENTITY_OPENING } from '../config/effective-config.ts';
 import { requesterTypedUrls } from '../slack/typed-urls.ts';
-import { instructionLinkSpaces } from './instruction-links.ts';
+import { instructionLinkSpaces, textBeforeIdentityLine } from './instruction-links.ts';
 import {
   admitWebUrl,
   MAX_WEB_URL_CHARS,
@@ -80,8 +79,8 @@ export function connectionPathSpaces(plan: {
  * from them. Without the identity line, none is taken.
  */
 export function agentPathSpaces(plan: Parameters<typeof connectionPathSpaces>[0] & { instructions: string }): WebPathSpace[] {
-  const end = plan.instructions.indexOf(IDENTITY_OPENING);
-  return [...connectionPathSpaces(plan), ...(end < 0 ? [] : instructionLinkSpaces(plan.instructions.slice(0, end)))];
+  const saved = textBeforeIdentityLine(plan.instructions);
+  return [...connectionPathSpaces(plan), ...(saved === undefined ? [] : instructionLinkSpaces(saved))];
 }
 
 export interface WebToolsInput {
