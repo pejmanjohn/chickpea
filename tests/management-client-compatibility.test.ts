@@ -236,7 +236,7 @@ test('server instructions are the 5.0 text: short, linkless, and naming only 5.0
 test('workspace management MCP publishes the version 5 server contract', () => {
   assert.deepEqual(WORKSPACE_MANAGEMENT_SERVER_INFO, {
     name: 'chickpea-workspace',
-    version: '5.1.0',
+    version: '5.2.0',
   });
 });
 
