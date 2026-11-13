@@ -85,5 +85,6 @@ function shortLine(text: string): string {
 /** One line of at most `max` characters, cut with an ellipsis. */
 function clip(text: string, max: number): string {
   const line = text.replace(/\s+/g, ' ').trim();
-  return line.length > max ? `${line.slice(0, max - 1).trimEnd()}…` : line;
+  // A cut never leaves half an emoji: not the first half of a surrogate pair, nor a joiner with nothing after it.
+  return line.length > max ? `${line.slice(0, max - 1).replace(/[\uD800-\uDBFF]$/, '').replace(/\u200D$/, '').trimEnd()}…` : line;
 }
