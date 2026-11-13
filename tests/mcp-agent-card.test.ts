@@ -25,16 +25,18 @@ const BASE_URL = 'https://chickpea.example.test';
 
 /**
  * The tools whose result a card draws. The Agent card: the proposal, the
- * creation, the change and its save, and every tool that can return
+ * creation, the change, and every tool but update_agent that can return
  * needs_confirmation, whose card is the "Are you sure?". The connect card:
  * the two tools that hand out a connection's setup link. The report card:
  * show_test_report. No tool draws the
  * health card any more: check_agent reports in text, and a chat that drew
- * the card before still reads its resource and presses Check again.
+ * the card before still reads its resource and presses Check again. Nor
+ * does any draw a Saved card for the model's own update_agent: a save in a
+ * test drive is a line of text, and the report shows the change.
  */
 const CARD_TOOLS: Record<string, CardName> = {
   ...Object.fromEntries([
-    'propose_agent', 'propose_agent_change', 'create_agent', 'update_agent', 'undo_change',
+    'propose_agent', 'propose_agent_change', 'create_agent', 'undo_change',
     'delete_agent', 'remove_connection', 'remove_website_login', 'delete_schedule', 'remove_model_provider_key', 'update_member',
   ].map((tool) => [tool, 'agent-card' as const])),
   connect_service: 'connect-card',
@@ -112,7 +114,7 @@ test('each card tool links its card; a card-only tool and every other tool do no
   }
 });
 
-test('a tool that can ask "Are you sure?" draws the Agent card, which is its confirmation', () => {
+test('a tool that can ask "Are you sure?" draws the Agent card, which is its confirmation, or holds its tokens for the preview card', () => {
   const confirming = Object.entries(FIVE_ZERO_TOOLS)
     .filter(([, tool]) => /\breturns needs_confirmation\b/.test(tool.description))
     .map(([name]) => name);
@@ -120,9 +122,13 @@ test('a tool that can ask "Are you sure?" draws the Agent card, which is its con
     'delete_agent', 'delete_schedule', 'remove_connection', 'remove_model_provider_key', 'remove_website_login',
     'undo_change', 'update_agent', 'update_member',
   ]);
-  for (const name of confirming) {
+  for (const name of confirming.filter((name) => name !== 'update_agent')) {
     assert.equal(CARD_TOOLS[name], 'agent-card', `${name} can return needs_confirmation, so it needs card: 'agent-card'`);
   }
+  // A preview card's Save calls update_agent and asks "Are you sure?" with the token it holds.
+  assert.equal(FIVE_ZERO_TOOLS.update_agent.holdsTokens, true);
+  assert.equal(CARD_TOOLS.propose_agent_change, 'agent-card');
+  assert.match(FIVE_ZERO_TOOLS.update_agent.description, /propose_agent_change's card confirms that one\.$/);
 });
 
 test('each card resource is an MCP App that loads only Chickpea\'s own pictures and links only to Chickpea and Slack', async (t) => {

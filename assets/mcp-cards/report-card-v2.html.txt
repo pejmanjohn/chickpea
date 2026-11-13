@@ -1,0 +1,863 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Chickpea test report card</title>
+<style>/*
+ * Framework-free MCP App styles.
+ */
+
+@layer base {
+  :root {
+    color-scheme: light dark;
+    --background: var(
+      --color-background-primary,
+      light-dark(rgb(255 255 255), rgb(24 24 24))
+    );
+    --foreground: var(
+      --color-text-primary,
+      light-dark(rgb(26 28 31), rgb(255 255 255))
+    );
+    --card: color-mix(in oklab, var(--foreground) 5%, var(--background));
+    --card-foreground: var(--color-text-primary, var(--foreground));
+    --primary: var(
+      --color-text-info,
+      light-dark(rgb(51 156 255), rgb(131 195 255))
+    );
+    --primary-foreground: var(
+      --color-text-inverse,
+      light-dark(rgb(255 255 255), rgb(13 13 13))
+    );
+    --secondary: var(
+      --color-background-secondary,
+      light-dark(rgb(255 255 255 / 96%), rgb(54 54 54 / 96%))
+    );
+    --secondary-foreground: var(--color-text-primary, var(--foreground));
+    --muted: color-mix(in srgb, var(--foreground) 10%, transparent);
+    --muted-foreground: var(
+      --color-text-secondary,
+      light-dark(rgb(26 28 31 / 49.4%), rgb(255 255 255 / 49.8%))
+    );
+    --accent: var(
+      --color-background-info,
+      light-dark(rgb(229 242 255), rgb(13 39 63))
+    );
+    --accent-foreground: var(--color-text-info, var(--primary));
+    --destructive: var(
+      --color-text-warning,
+      light-dark(rgb(226 85 7), rgb(255 133 73))
+    );
+    --border: var(
+      --color-border-secondary,
+      light-dark(rgb(26 28 31 / 8%), rgb(255 255 255 / 8.2%))
+    );
+    --input: var(
+      --color-border-primary,
+      light-dark(rgb(26 28 31 / 11.8%), rgb(255 255 255 / 12%))
+    );
+    --ring: var(--color-ring-primary, var(--primary));
+    --font-size-base: var(--font-text-md-size, 14px);
+    --radius: var(--border-radius-lg, 12.5px);
+  }
+
+  :root[data-theme="light"] {
+    color-scheme: light;
+  }
+
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+  }
+
+  body {
+    margin: 0;
+    color: var(--foreground);
+    background: var(--background);
+    font-size: max(11px, var(--font-size-base));
+    font-weight: var(--font-weight-normal, 430);
+    line-height: 1.5;
+  }
+
+  /* MCP sandboxes can force their own font on body, so restore the host font below it. */
+  body,
+  body > * {
+    font-family: var(
+      --font-sans,
+      -apple-system,
+      system-ui,
+      "Segoe UI",
+      sans-serif
+    );
+  }
+
+  h1,
+  h2,
+  h3,
+  p {
+    margin-block: 0;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-weight: var(--font-weight-medium, 500);
+    line-height: 1.25;
+  }
+
+  h1 {
+    font-size: calc(var(--font-size-base) * 1.7142857143);
+  }
+
+  h2 {
+    font-size: calc(var(--font-size-base) * 1.4285714286);
+  }
+
+  h3 {
+    font-size: calc(var(--font-size-base) * 1.2857142857);
+  }
+}
+
+@layer components {
+  .cursor-interaction {
+    cursor: var(--cursor-interaction, pointer);
+  }
+
+  .card {
+    min-width: 0;
+    padding: 12px;
+    overflow-wrap: break-word;
+    border-radius: calc(var(--radius) * 1.6);
+    corner-shape: superellipse(1.5);
+    color: var(--card-foreground);
+    background: var(--card);
+  }
+
+  .btn,
+  .form-check-input,
+  .form-control,
+  .form-select {
+    box-sizing: border-box;
+    font: inherit;
+  }
+
+  .btn {
+    appearance: button;
+    display: inline-flex;
+    inline-size: fit-content;
+    max-inline-size: 100%;
+    min-height: 28px;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    margin: 0;
+    padding: 0 8px;
+    border: 1px solid var(--input);
+    border-radius: var(--radius);
+    corner-shape: superellipse(1.5);
+    color: var(--secondary-foreground);
+    background: var(--secondary);
+    cursor: var(--cursor-interaction, pointer);
+    text-align: center;
+    text-decoration: none;
+    white-space: nowrap;
+    user-select: none;
+  }
+
+  .btn:not(:disabled):hover {
+    background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+  }
+
+  .btn-primary {
+    border-color: transparent;
+    color: var(--primary-foreground);
+    background: var(--foreground);
+    background-clip: padding-box;
+  }
+
+  .btn-primary:not(:disabled):hover {
+    background: color-mix(in srgb, var(--foreground) 80%, transparent);
+    background-clip: padding-box;
+  }
+
+  .btn-ghost {
+    border-color: transparent;
+    color: var(--muted-foreground);
+    background: transparent;
+  }
+
+  .btn-ghost:not(:disabled):hover {
+    color: var(--foreground);
+    background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+  }
+
+  .btn:not(.btn-primary):is([aria-pressed="true"], [aria-selected="true"]) {
+    border-color: var(--primary);
+    color: var(--primary-foreground);
+    background: var(--primary);
+  }
+
+  .btn:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  .btn:disabled,
+  .form-check-input:disabled,
+  .form-control:disabled,
+  .form-select:disabled {
+    cursor: not-allowed;
+    opacity: 0.4;
+  }
+
+  .form-label {
+    display: block;
+    margin-bottom: 6px;
+    color: var(--foreground);
+  }
+
+  .form-control,
+  .form-select {
+    display: block;
+    width: 100%;
+    min-height: 28px;
+    padding: 0 8px;
+    outline: none;
+    border: 1px solid var(--input);
+    border-radius: var(--radius);
+    corner-shape: superellipse(1.5);
+    color: var(--foreground);
+    background: var(--secondary);
+  }
+
+  .form-control::placeholder {
+    color: var(--muted-foreground);
+  }
+
+  .form-select {
+    appearance: none;
+    padding-right: 32px;
+    background-image:
+      linear-gradient(45deg, transparent 50%, var(--muted-foreground) 50%),
+      linear-gradient(135deg, var(--muted-foreground) 50%, transparent 50%);
+    background-position:
+      calc(100% - 14px) 50%,
+      calc(100% - 10px) 50%;
+    background-repeat: no-repeat;
+    background-size: 4px 4px;
+    cursor: var(--cursor-interaction, pointer);
+  }
+
+  .form-select:not(:disabled):hover {
+    background-color: color-mix(
+      in srgb,
+      var(--foreground) 6%,
+      var(--secondary)
+    );
+  }
+
+  textarea.form-control {
+    min-height: 72px;
+    padding: 8px 10px;
+    resize: vertical;
+  }
+
+  .form-control:focus-visible,
+  .form-select:focus-visible {
+    border-color: var(--ring);
+    box-shadow: inset 0 0 0 1px var(--ring);
+  }
+
+  .form-check {
+    display: flex;
+    min-height: 20px;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .form-check-input {
+    appearance: none;
+    display: grid;
+    width: 16px;
+    height: 16px;
+    flex: 0 0 auto;
+    place-items: center;
+    margin: 0;
+    border: 1px solid var(--input);
+    border-radius: 5px;
+    corner-shape: superellipse(1.5);
+    color: var(--primary-foreground);
+    background: var(--secondary);
+    cursor: var(--cursor-interaction, pointer);
+  }
+
+  .form-check-input:checked {
+    border-color: var(--primary);
+    background: var(--primary);
+  }
+
+  .form-check-input:checked::after {
+    width: 7px;
+    height: 4px;
+    border-bottom: 2px solid currentColor;
+    border-left: 2px solid currentColor;
+    content: "";
+    transform: translateY(-1px) rotate(-45deg);
+  }
+
+  .form-check-input:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  .form-check-label {
+    color: var(--foreground);
+  }
+
+  svg.lucide {
+    display: block;
+    width: 16px;
+    height: 16px;
+    flex: none;
+    stroke-width: 1.6;
+  }
+
+  .text-small {
+    font-size: max(11px, calc(var(--font-size-base) - 2px));
+  }
+
+  .text-muted {
+    color: var(--muted-foreground);
+  }
+
+  .text-destructive {
+    color: var(--destructive);
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+}
+
+/*
+ * The Agent card in ChatGPT's own look: its type, colors and black primary
+ * buttons, from the host's style variables. Chickpea shows only in the avatar
+ * and the quote accent. Without host variables the colors fall back to the
+ * mockup's palette, and without a host theme to light.
+ */
+
+:root:not([data-theme]) {
+  color-scheme: light;
+}
+
+:root {
+  --cp-bg: var(--color-background-primary, light-dark(#ffffff, #181818));
+  --cp-fg: var(--color-text-primary, light-dark(#0d0d0d, #ededed));
+  /* Secondary text stays at AA contrast; the host's tertiary text does not. */
+  --cp-muted: var(--color-text-secondary, light-dark(#5d5d5d, #cdcdcd));
+  --cp-line: var(--color-border-primary, light-dark(#e5e5e5, rgb(255 255 255 / 20%)));
+  --cp-soft: light-dark(#f7f7f7, rgb(255 255 255 / 6%));
+  --cp-ok: light-dark(#1a7f37, #40c977);
+  --cp-warn: light-dark(#a15c00, #f0a050);
+  --cp-danger: #c62828;
+  --cp-danger-hover: #a31f1f;
+  --cp-accent: #e8901a;
+  --cp-size: var(--font-text-md-size, 14px);
+}
+
+html,
+body {
+  background: var(--cp-bg);
+  color: var(--cp-fg);
+}
+
+body {
+  font-size: var(--cp-size);
+  line-height: 1.45;
+}
+
+.cp-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 16px;
+  overflow-wrap: anywhere;
+}
+
+.cp-hdr {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.cp-avatar {
+  flex: none;
+  display: block;
+}
+
+.cp-avatar svg,
+.cp-avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* Slack's rounded square, cropped as Admin and the setup page crop it. */
+.cp-avatar img {
+  object-fit: cover;
+}
+
+.cp-avatar-lg {
+  width: 44px;
+  height: 44px;
+}
+
+.cp-avatar-lg img {
+  border-radius: 12px;
+}
+
+.cp-avatar-sm {
+  width: 26px;
+  height: 26px;
+}
+
+.cp-avatar-sm img {
+  border-radius: 7px;
+}
+
+/* On an alert card, an Agent's picture keeps the alert art's red. */
+.cp-avatar-alert img {
+  outline: 2px solid var(--cp-danger);
+  outline-offset: 1px;
+}
+
+.cp-heading {
+  min-width: 0;
+}
+
+.cp-title {
+  margin: 0;
+  font-size: calc(var(--cp-size) * 1.143);
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+/* Focus lands here after a redraw only so the keyboard stays on the card. */
+.cp-title:focus {
+  outline: none;
+}
+
+.cp-sub {
+  margin: 2px 0 0;
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.93);
+}
+
+.cp-ok {
+  color: var(--cp-ok);
+}
+
+.cp-warn {
+  color: var(--cp-warn);
+}
+
+.cp-text {
+  margin: 12px 0 0;
+  white-space: pre-line;
+}
+
+.cp-sect {
+  margin: 14px 0 6px;
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.79);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.cp-sect + .cp-text {
+  margin-top: 0;
+}
+
+.cp-quote {
+  margin: 6px 0;
+  padding: 2px 0 2px 10px;
+  border-left: 3px solid var(--cp-accent);
+  white-space: pre-line;
+}
+
+.cp-note {
+  margin: 6px 0 0;
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.93);
+}
+
+.cp-note.cp-warn {
+  color: var(--cp-warn);
+}
+
+.cp-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--cp-line);
+  border-radius: 12px;
+  background: var(--cp-soft);
+}
+
+.cp-msg {
+  display: grid;
+  grid-template-columns: 26px 1fr;
+  gap: 8px;
+  font-size: calc(var(--cp-size) * 0.964);
+}
+
+/*
+ * A host may pass an example's line breaks as they are; they show as written.
+ * A long one shows its start and an ellipsis: the tool's result holds it whole.
+ */
+.cp-said {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.cp-clamp-2 {
+  -webkit-line-clamp: 2;
+}
+
+.cp-clamp-5 {
+  -webkit-line-clamp: 5;
+}
+
+/* An answer the person opened shows whole. */
+.cp-said-whole {
+  display: block;
+}
+
+.cp-init {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border-radius: 7px;
+  background: #4a6cc4;
+  color: #ffffff;
+  font-size: calc(var(--cp-size) * 0.86);
+  font-weight: 600;
+}
+
+.cp-line {
+  margin: 10px 0 0;
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.964);
+}
+
+.cp-line b {
+  color: var(--cp-fg);
+  font-weight: 500;
+}
+
+.cp-chip {
+  display: inline-flex;
+  padding: 0 9px;
+  border: 1px solid var(--cp-line);
+  border-radius: 999px;
+  background: var(--cp-soft);
+  color: var(--cp-fg);
+  font-size: calc(var(--cp-size) * 0.9);
+}
+
+.cp-foot {
+  margin: 14px 0 0;
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.93);
+}
+
+.cp-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: calc(var(--cp-size) * 0.964);
+}
+
+.cp-steps li {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.cp-ic {
+  display: inline-grid;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  box-sizing: border-box;
+  place-items: center;
+  border-radius: 50%;
+  font-size: 11px;
+}
+
+.cp-ic-done {
+  background: color-mix(in srgb, var(--cp-ok) 14%, transparent);
+  color: var(--cp-ok);
+}
+
+.cp-ic-now {
+  border: 2px solid var(--cp-accent);
+  border-right-color: transparent;
+  animation: cp-spin 0.9s linear infinite;
+}
+
+.cp-ic-todo {
+  border: 1.5px solid var(--cp-line);
+}
+
+.cp-ic-failed {
+  background: color-mix(in srgb, var(--cp-danger) 14%, transparent);
+  color: light-dark(var(--cp-danger), #ff8a80);
+  font-weight: 700;
+}
+
+@keyframes cp-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cp-ic-now {
+    animation: none;
+  }
+}
+
+.cp-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 14px;
+}
+
+.cp-card .btn {
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: 999px;
+  font-size: calc(var(--cp-size) * 0.964);
+  font-weight: 600;
+}
+
+.cp-btn-primary {
+  border-color: transparent;
+  color: var(--color-text-inverse, light-dark(#ffffff, #0d0d0d));
+  background: var(--cp-fg);
+}
+
+.cp-btn-primary:not(:disabled):hover {
+  background: color-mix(in srgb, var(--cp-fg) 82%, var(--cp-bg));
+}
+
+.cp-btn-danger {
+  border-color: transparent;
+  color: #ffffff;
+  background: var(--cp-danger);
+}
+
+.cp-btn-danger:not(:disabled):hover {
+  background: var(--cp-danger-hover);
+}
+
+.cp-btn-secondary {
+  border-color: var(--cp-line);
+  color: var(--cp-fg);
+  background: var(--cp-bg);
+}
+
+.cp-card .btn:focus-visible {
+  outline: 2px solid var(--color-ring-primary, light-dark(#0169cc, #ffffff));
+  outline-offset: 2px;
+}
+
+.cp-acts[hidden],
+.cp-error[hidden] {
+  display: none;
+}
+
+.cp-error {
+  margin: 10px 0 0;
+  color: light-dark(#b42318, #ff8a80);
+  font-size: calc(var(--cp-size) * 0.93);
+}
+
+.cp-rows {
+  display: flex;
+  flex-direction: column;
+  container-type: inline-size;
+  margin: 12px 0 0;
+  padding: 0;
+  border: 1px solid var(--cp-line);
+  border-radius: 14px;
+  list-style: none;
+}
+
+.cp-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border-top: 1px solid var(--cp-line);
+  font-size: calc(var(--cp-size) * 0.964);
+}
+
+.cp-row:first-child {
+  border-top: 0;
+}
+
+/* A narrow card puts a row's link under its words instead of squeezing them. */
+@container (max-width: 520px) {
+  .cp-row:has(> .cp-link-go) {
+    grid-template-columns: 22px minmax(0, 1fr);
+    row-gap: 2px;
+  }
+
+  .cp-row > .cp-link-go {
+    grid-column: 2;
+    justify-self: start;
+    white-space: normal;
+    text-align: start;
+  }
+}
+
+.cp-row-detail {
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.893);
+  white-space: pre-line;
+}
+
+.cp-row-detail.cp-warn {
+  color: var(--cp-warn);
+}
+
+.cp-row-detail .cp-chip {
+  margin-inline-end: 2px;
+}
+
+/* What a row shows under itself once opened, beneath its words. */
+.cp-row-open {
+  grid-column: 2 / -1;
+  min-width: 0;
+}
+
+.cp-row-open > .cp-thread {
+  margin-top: 4px;
+}
+
+.cp-tile {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 6px;
+  background: var(--cp-fg);
+  color: var(--cp-bg);
+  font-size: calc(var(--cp-size) * 0.86);
+  font-weight: 700;
+}
+
+.cp-ic-warning {
+  background: color-mix(in srgb, var(--cp-warn) 16%, transparent);
+  color: var(--cp-warn);
+  font-weight: 700;
+}
+
+.cp-ic-unknown {
+  border: 1.5px solid var(--cp-line);
+  color: var(--cp-muted);
+  font-weight: 700;
+}
+
+.cp-card .btn-sm {
+  min-height: 30px;
+  padding: 0 12px;
+  font-size: calc(var(--cp-size) * 0.893);
+  white-space: nowrap;
+}
+
+.cp-link {
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--cp-fg);
+  font: inherit;
+  font-size: calc(var(--cp-size) * 0.93);
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: var(--cursor-interaction, pointer);
+}
+
+.cp-link-go::after {
+  content: " →" / "";
+}
+
+.cp-link:not(:disabled):hover {
+  text-decoration: underline;
+}
+
+.cp-link:disabled {
+  color: var(--cp-muted);
+}
+
+.cp-link:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid var(--color-ring-primary, light-dark(#0169cc, #ffffff));
+  outline-offset: 2px;
+}
+
+/* Two answers side by side where there is room, one above the other on a phone. */
+.cp-panes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 10px;
+  margin: 10px 0 0;
+}
+
+.cp-pane {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--cp-line);
+  border-radius: 12px;
+  font-size: calc(var(--cp-size) * 0.964);
+}
+
+.cp-pane-label {
+  margin: 0 0 4px;
+  color: var(--cp-muted);
+  font-size: calc(var(--cp-size) * 0.79);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.cp-pane-text {
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+</style></head>
+<body><div id="card"></div><script>"use strict";(()=>{function L(t){return f(t)?{..."code"in t?{code:t.code}:{},...f(t.data)?{data:t.data}:{}}:{}}function ae({told:t=[],outcome:e,continued:n},r){return{modelContent:t.join(`
+`),privateContent:{card:{version:r,told:t,...e===void 0?{}:{outcome:e},...n?{continued:n}:{}}}}}var de=1e3;function H(t,e){let n=f(t)?t.privateContent:void 0,r=f(n)&&f(n.card)?n.card:void 0;if(r?.version!==e||!Array.isArray(r.told))return;let s=r.told.filter(o=>typeof o=="string"&&o.length<=de);return{told:P(s),...r.outcome===void 0?{}:{outcome:r.outcome},...r.continued===!0?{continued:!0}:{}}}function B(t,e,n,r){return r.keepsState?(n.state.told!==t.told||n.state.outcome!==t.outcome||n.state.continued!==t.continued)&&e.type!=="result"?[{type:"state",state:ae(n.state,r.version)}]:[]:n.effects.flatMap(o=>o.type==="context"?[{type:"context",text:o.text}]:[])}var Le=2*6e4;var _=(t,e=[])=>({state:t,effects:e}),T=(t,e=[])=>({state:{view:t,busy:!1},effects:e});var ce=6,ue=1500;function q(t,e={}){return(n,r)=>{if(n.checking&&r.type==="press")return{state:n,effects:[]};if(r.type==="refused"&&r.effect.type==="message"&&r.effect.continues)return{state:n,effects:[]};let s=t(n,r.type==="result"||r.type==="reply"?{...r,result:le(r.result)}:r),{told:o=[],outcome:i,continued:a}=n,l=0;if(r.type==="result"){({told:o,outcome:i,continued:a}=r.kept??{told:[]});let p=i===void 0?void 0:e.resume?.(s.state.view,i);p&&(s={state:{view:p,busy:!1},effects:[]});let g=t({...s.state,seq:n.seq},{type:"reread",now:r.now});l=g.effects.filter(({type:x})=>x==="call").length;let A=new Set(g.effects.map(({type:x})=>x));s={state:g.state,effects:[...s.effects.filter(({type:x})=>!A.has(x)),...g.effects]}}else if(n.checking&&s.state.view===n.view){let p=(r.type==="reply"||r.type==="unreachable")&&r.call.seq===n.seq;l=n.checking-(p?1:0)}let y=s.effects.flatMap(p=>p.type==="context"?[p.text]:[]);y.length>0&&(o=P([...o.filter(p=>!y.includes(p)),...y]),i=e.remember?.(s.state.view)??i);let u=s.state.view===n.view?n.seq:n.seq+1,{told:w,outcome:h,continued:C,checking:b,...c}=s.state,k=s.effects.flatMap(p=>p.type==="context"?[]:p.type==="call"?[{...p,call:{...p.call,seq:u}}]:p.type!=="message"||!p.continues?[p]:a?[]:(a=!0,[p]));return{state:{...c,seq:u,...o.length?{told:o}:{},...i===void 0?{}:{outcome:i},...a?{continued:a}:{},...l>0?{checking:l}:{}},effects:[...y.length>0?[{type:"context",text:o.join(`
+`)}]:[],...k]}}}function P(t){let e=t.slice(-ce);for(;e.length>1&&e.join(`
+`).length>ue;)e=e.slice(1);return e}function le(t){let e=t._meta?.["chickpea/held"],n=t.structuredContent;if(!f(e)||!f(n))return t;let r=typeof e.confirmToken=="string"?e.confirmToken:void 0,s=typeof e.undoToken=="string"?e.undoToken:void 0;return{...t,structuredContent:{...n,...s?{undoToken:s}:{},...r&&f(n.confirmation)?{confirmation:{...n.confirmation,confirmToken:r}}:{}}}}var D="That did not work. Try again.";var R={kind:"notice",title:"Nothing to show here."};function F(t){return typeof t=="string"&&URL.parse(t)?.protocol==="https:"?t:void 0}function U(t,e){return typeof e!="object"||e===null||Array.isArray(e)?t:{...t,_meta:{...e,...t._meta}}}function f(t){return typeof t=="object"&&t!==null&&!Array.isArray(t)}function E(t){for(let e of pe(t)){let n=f(e.structuredContent)?e.structuredContent.error:void 0;if(f(n)&&typeof n.code=="string"&&typeof n.message=="string")return{code:n.code,message:n.message,retryable:n.retryable,fix:n.fix}}}function pe(t){let e=t.hostError?.data,n=r=>f(r)?[r.mcp_tool_result,r.call_tool_result].filter(f):[];return[t,...n(t._meta),...f(e)?[e,...n(e),...n(e._meta)]:[]]}function N(t){return E(t)?.message??(t.isError?D:void 0)}function j(t){return t.hostError!==void 0&&E(t)===void 0}function W(t){return e=>{let n;try{n=t(e)}catch{return{busy:e.busy,error:e.error,avatar:"none",title:R.title,blocks:[],buttons:[]}}return e.checking?{...n,busy:!0}:n}}var fe="2026-01-26",ge=6e4,$=class{constructor(e){this.appInfo=e;window.addEventListener("message",n=>{n.source===window.parent&&this.#o(n.data)}),this.on("ui/notifications/host-context-changed",n=>{let r=n,{styles:s,...o}=this.hostContext??{},i=r.theme!==void 0&&r.theme!==o.theme&&!r.styles;this.hostContext={...o,...s&&!i?{styles:s}:{},...r}})}appInfo;#s=1;#e=new Map;#n=new Map;hostContext;hostCapabilities;on(e,n){this.#n.set(e,[...this.#n.get(e)??[],n])}async connect(){let e=await this.#t("ui/initialize",{appInfo:this.appInfo,appCapabilities:{availableDisplayModes:["inline"]},protocolVersion:fe});this.hostContext=e?.hostContext,this.hostCapabilities=e?.hostCapabilities,this.#r("ui/notifications/initialized",{}),new ResizeObserver(()=>this.#r("ui/notifications/size-changed",{height:Math.ceil(document.body.getBoundingClientRect().height)})).observe(document.body)}async callTool(e,n,r){let s=(o,i)=>i===void 0?o:{isError:!0,hostError:L(i)};try{return s(await this.#t("tools/call",{name:e,arguments:n},(o,i)=>r(s(o,i))))}catch(o){if(o instanceof Error)throw o;return s(void 0,o)}}async sendMessage(e){let n=this.hostCapabilities?.experimental?.["openai/message"]?.draft!==void 0,r=e.draft!==void 0&&n?e.draft:e.sent;M(await this.#t("ui/message",{role:"user",content:[{type:"text",text:r}],...r===e.draft?{_meta:{"openai/message":{target:"active",send:!1}}}:{}}))}async updateModelContext(e){M(await this.#t("ui/update-model-context",{content:[{type:"text",text:e}]}))}async openLink(e){if(window.openai?.openExternal)try{await window.openai.openExternal({href:e,redirectUrl:!1});return}catch{}M(await this.#t("ui/open-link",{url:e}))}#r(e,n){window.parent.postMessage({jsonrpc:"2.0",method:e,params:n},"*")}#t(e,n,r){let s=this.#s++;return new Promise((o,i)=>{let a=setTimeout(()=>{r?this.#e.set(s,{resolve:l=>r(l),reject:l=>r(void 0,l??{})}):this.#e.delete(s),i(new Error(`${e} timed out`))},ge);this.#e.set(s,{resolve:l=>{clearTimeout(a),o(l)},reject:l=>{clearTimeout(a),i(l)}}),window.parent.postMessage({jsonrpc:"2.0",id:s,method:e,params:n},"*")})}#o(e){if(!(!e||e.jsonrpc!=="2.0")){if(e.method===void 0){let n=typeof e.id=="number"?this.#e.get(e.id):void 0;if(!n)return;this.#e.delete(e.id),e.error?n.reject(e.error):n.resolve(e.result);return}for(let n of this.#n.get(e.method)??[])n(e.params);e.id!==void 0&&window.parent.postMessage({jsonrpc:"2.0",id:e.id,result:{}},"*")}}};function M(t){if(t?.isError===!0)throw new Error("The host refused it")}function ye(t){document.documentElement.setAttribute("data-theme",t),document.documentElement.style.colorScheme=t}function ke(t){for(let[e,n]of Object.entries(t))n!==void 0&&document.documentElement.style.setProperty(e,n)}var z=[];function O(t){t?.theme&&ye(t.theme);let e=t?.["openai/interactionCursor"],n={...t?.styles?.variables,"--cursor-interaction":typeof e=="string"&&/^[a-z-]+$/.test(e)?e:void 0};for(let r of z)n[r]===void 0&&document.documentElement.style.removeProperty(r);ke(n),z=Object.keys(n).filter(r=>n[r]!==void 0)}var G=(t,e,n)=>`<svg viewBox="0 0 44 44" aria-hidden="true" focusable="false"><rect width="44" height="44" rx="12" fill="${t}"/><path d="M22 6c-9 0-14 8-14 18v14h28V24C36 14 31 6 22 6z" fill="${e}"/><path d="M22 12c-6 0-9.5 6-9.5 13.5S16 38 22 38s9.5-5 9.5-12.5S28 12 22 12z" fill="${n}"/><circle cx="18.5" cy="26" r="1.3" fill="#3a2a1e"/><circle cx="25.5" cy="26" r="1.3" fill="#3a2a1e"/><path d="M20.5 30.2q1.5 1.2 3 0" stroke="#3a2a1e" stroke-width="1.1" fill="none" stroke-linecap="round"/></svg>`,we={agent:G("#3a2a1e","#E8901A","#f3d9b1"),alert:G("#2a1f2e","#c2453a","#f1d3b8")},me={done:"done",now:"in progress",todo:"to do",failed:"failed"},K={done:{glyph:"\u2713",words:"done"},now:{glyph:"",words:"in progress"},failed:{glyph:"!",words:"needs attention"},warning:{glyph:"!",words:"warning"},unknown:{glyph:"?",words:"unknown"}};function d(t,e,n){let r=document.createElement(t);return e&&(r.className=e),n!==void 0&&(r.textContent=n),r}var J=new Set;function X(t,e,n){let r=d("span",`cp-avatar cp-avatar-${e}`),s=()=>{r.innerHTML=we[t]};if(!n||J.has(n))return s(),r;t==="alert"&&r.classList.add("cp-avatar-alert");let o=d("img");return o.alt="",o.decoding="async",o.addEventListener("error",()=>{J.add(n),s()},{once:!0}),o.src=n,r.append(o),r}function he(t){let e=d("p","cp-sub");for(let n of t)e.append(n.tone?d("span",`cp-${n.tone}`,n.text):n.text);return e}function Y(t,e,n){switch(t.kind){case"text":return d("p","cp-text",t.text);case"quote":return d("blockquote","cp-quote",t.text);case"section":return d("h3","cp-sect",t.label);case"note":return d("p",`cp-note${t.tone?` cp-${t.tone}`:""}`,t.text);case"exchange":{let r=(l,y,u)=>{let w=d("div");return w.append(d("span","sr-only",`${l}: `),d("div",`cp-said ${t.whole?"cp-said-whole":`cp-clamp-${u}`}`,y)),w},s=d("span","cp-init","Y");s.setAttribute("aria-hidden","true");let o=d("div","cp-msg");o.append(s,r("You",t.ask,2));let i=d("div","cp-msg");i.append(X(e,"sm",n),r(t.agent,t.answer,5));let a=d("div","cp-thread");return a.append(o,i),a}case"line":{let r=d("p","cp-line");for(let s of t.parts)r.append("chip"in s?d("span","cp-chip",s.chip):s.strong?d("b",void 0,s.text):s.text);return r}case"steps":{let r=d("ul","cp-steps");for(let{label:s,state:o}of t.steps){let i=d("li"),a=d("span",`cp-ic cp-ic-${o}`,o==="done"?"\u2713":o==="failed"?"!":"");a.setAttribute("aria-hidden","true"),i.append(a,s,d("span","sr-only",` (${me[o]})`)),r.append(i)}return r}case"rows":{let r=d("ul","cp-rows");return r.append(...t.rows.map(s=>xe(s,e,n))),r}case"panes":{let r=d("div","cp-panes");for(let{label:s,text:o}of t.panes){let i=d("section","cp-pane");i.append(d("h3","cp-pane-label",s),d("div","cp-pane-text",o)),r.append(i)}return r}}}function xe(t,e,n){let r=d("li","cp-row");if(t.icon==="tile"){let i=d("span","cp-tile",t.tile??"");i.setAttribute("aria-hidden","true"),r.append(i)}else{let i=K[t.icon],a=d("span",`cp-ic cp-ic-${t.icon}`,i.glyph);a.setAttribute("aria-hidden","true"),r.append(a)}let s=d("div","cp-row-body"),o=d("div","cp-row-title",t.title);if(t.icon!=="tile"&&o.append(d("span","sr-only",` (${K[t.icon].words})`)),s.append(o),t.chip){let i=d("div",`cp-row-detail${t.tone?` cp-${t.tone}`:""}`);i.append(d("span","cp-chip",t.chip),...t.detail?[" ",t.detail]:[]),s.append(i)}else t.detail&&s.append(d("div",`cp-row-detail${t.tone?` cp-${t.tone}`:""}`,t.detail));if(r.append(s),t.control){let{label:i,action:a,style:l,expanded:y}=t.control,u=Q(i,a,l==="link"?"cp-link cp-link-go":l==="toggle"?"cp-link":`btn btn-sm cp-btn-${l}`);y!==void 0&&u.setAttribute("aria-expanded",String(y)),r.append(u)}if(t.open){let i=d("div","cp-row-open");i.append(...t.open.map(a=>Y(a,e,n))),r.append(i)}return r}function Q(t,e,n){let r=d("button",`${n} cursor-interaction`,t);return r.type="button",r.dataset.action=e,r}function Z(t,e){let n=d("p","sr-only");n.setAttribute("aria-live","polite");let r=d("main","cp-card"),s=d("div","cp-content"),o=d("div","cp-acts"),i=d("p","cp-error");i.setAttribute("role","alert"),r.append(s,o,i),t.replaceChildren(n,r),r.addEventListener("click",u=>{let w=u.target?.closest("button[data-action]");w instanceof HTMLButtonElement&&!w.disabled&&e(w.dataset.action)});let a="",l="",y=new Map;return{render(u){let w=JSON.stringify(u);if(w===a)return;a=w;let h=r.contains(document.activeElement),C=h&&document.activeElement instanceof HTMLButtonElement?document.activeElement.dataset.action:void 0,b=u.announce??u.title;n.textContent!==b&&(n.textContent=b);let c=d("header","cp-hdr"),k=u.avatar==="none"?"agent":u.avatar,{avatarUrl:p}=u;u.avatar!=="none"&&c.append(X(u.avatar,"lg",p));let g=d("div","cp-heading"),A=d("h2","cp-title");if(A.tabIndex=-1,u.done){let m=d("span","cp-ok","\u2713 ");m.setAttribute("aria-hidden","true"),A.append(m)}A.append(u.title),g.append(A),u.subtitle&&g.append(he(u.subtitle)),c.append(g);let x=new Map,ie=u.blocks.map(m=>{let S=JSON.stringify([m,k,p]),V=!x.has(S)&&y.get(S)||Y(m,k,p);return x.has(S)||x.set(S,V),V});y=x,s.replaceChildren(c,...ie,...u.foot?[d("p","cp-foot",u.foot)]:[]);let v=JSON.stringify(u.buttons);v!==l&&(l=v,o.replaceChildren(...u.buttons.map(m=>Q(m.label,m.action,`btn cp-btn-${m.tone}`)))),o.hidden=u.buttons.length===0;for(let m of r.querySelectorAll("button"))m.disabled=u.busy,m.toggleAttribute("aria-busy",u.busy);i.textContent=u.error??"",i.hidden=!u.error,h&&!r.contains(document.activeElement)&&([...r.querySelectorAll("button[data-action]")].find(S=>S.dataset.action===C)??A).focus({preventScroll:!0})}}}var be=1e3;function te(t,e){let n=new $({name:t,version:String(2)}),r=e.initial,s,o=0,i,a=Z(document.getElementById("card"),c=>l({type:"press",action:c,now:Date.now()}));function l(c){let k=e.step(r,c),p=B(r,c,k,{keepsState:Ae(),version:2});r=k.state,c.type==="press"&&(i=void 0),a.render(e.present(r));for(let g of p)y(g);for(let g of k.effects)w(g)}function y(c){c.type==="state"?Promise.resolve(window.openai?.setWidgetState?.(c.state)).catch(()=>{}):n.updateModelContext(c.text).catch(()=>{})}function u(c,k){j(k)?l({type:"unreachable",call:c,now:Date.now()}):l({type:"reply",call:c,result:k,now:Date.now()})}function w(c){switch(c.type){case"call":{let k=g=>u(c.call,g),p=g=>{(!g.isError||E(g))&&k(g)};n.callTool(c.call.tool,c.call.args,p).then(k,()=>l({type:"unreachable",call:c.call,now:Date.now()}));return}case"timer":clearTimeout(s),s=setTimeout(()=>l({type:"tick",now:Date.now()}),c.inMs);return;case"message":n.sendMessage(c).catch(()=>l({type:"refused",effect:c,now:Date.now()}));return;case"open":n.openLink(c.url).catch(()=>l({type:"refused",effect:c,now:Date.now()}));return;case"context":return}}function h(){let c=Date.now();c-o<be||r.view.kind==="waiting"||(o=c,l({type:"reread",now:c}))}function C(c,k){i={result:c,kept:k!==void 0},o=Date.now(),l({type:"result",result:c,kept:k,now:Date.now()})}n.on("ui/notifications/tool-result",c=>{r.view.kind==="waiting"&&C(U(c,window.openai?.toolResponseMetadata),ee())}),n.on("ui/notifications/tool-cancelled",()=>l({type:"no_result",now:Date.now()})),n.on("ui/notifications/host-context-changed",()=>O(n.hostContext)),window.addEventListener("openai:set_globals",()=>{let c=i&&!i.kept?ee():void 0;i&&c&&C(i.result,c)}),window.addEventListener("focus",h),document.addEventListener("visibilitychange",()=>{document.visibilityState==="visible"&&h()});let b=!0;new IntersectionObserver(([c])=>{c?.isIntersecting&&!b&&h(),b=c?.isIntersecting??b}).observe(document.body),a.render(e.present(r)),n.connect().then(()=>O(n.hostContext),()=>l({type:"no_result",now:Date.now()}))}function Ae(){return typeof window.openai?.setWidgetState=="function"}function ee(){return H(window.openai?.widgetState,2)}var it=3*6e4;var at=60*6e4;function ne(t){let e=[],n=r=>`\0${e.push(r)-1}\0`;return t.replace(/\u0000/g,"").replace(/^[ \t]*```[^\n]*\n([\s\S]*?)^[ \t]*```[ \t]*$\n?/gm,(r,s)=>n(s)).replace(/^[ \t]*```.*$\n?/gm,"").replace(/`([^`\n]+)`/g,(r,s)=>n(s)).replace(/!?\[([^\]\n]*)\]\([^)\n]*\)/g,"$1").replace(/^[ \t]*\|?(?:[ \t]*:?-+:?[ \t]*\|)+(?:[ \t]*:?-+:?[ \t]*)?$\n?/gm,"").replace(/^[ \t]*\|(.*)\|[ \t]*$/gm,(r,s)=>s.split("|").map(o=>o.trim()).join(" \xB7 ")).replace(/^[ \t]*([-*_])(?:[ \t]*\1){2,}[ \t]*$\n?/gm,"").replace(/^[ \t]*(?:>[ \t]?)+/gm,"").replace(/^#{1,6}[ \t]+/gm,"").replace(/^([ \t]*)[-*+][ \t]+/gm,"$1\u2022 ").replace(/(\*\*|__|~~)(?=\S)([^\n]*?\S)\1/g,"$2").replace(/(^|[^\w*])\*(?=[^\s*])([^*\n]*?[^\s*])\*(?![\w*])/gm,"$1$2").replace(/(^|[^\w_])_(?=[^\s_])([^_\n]*?[^\s_])_(?![\w_])/gm,"$1$2").replace(/\u0000(\d+)\u0000/g,(r,s)=>e[Number(s)]??"")}var re={view:{kind:"waiting"},busy:!1,seq:0},se=q(Te);function Te(t,e){switch(e.type){case"result":return Se(e.result);case"press":return t.view.kind==="report"?_e(t,t.view,e.action):_(t);case"no_result":return t.view.kind==="waiting"?T(R):_(t);default:return _(t)}}function Se(t){let e=N(t);if(e)return T({kind:"notice",title:e});let n=t.structuredContent;if(!Re(n))return T(R);let r=Ee(t._meta?.["chickpea/answers"],n.runs.length);return T({kind:"report",report:n,...r?{answers:r}:{},open:[]})}function _e(t,e,n){if(!Ce(e,n))return _(t);let r=e.open.includes(n)?e.open.filter(s=>s!==n):[...e.open,n];return T({...e,open:r})}function Ce(t,e){let[n,r]=e.split(":"),s=Number(r);if(!Number.isInteger(s)||s<0)return!1;if(n==="why")return s<(t.report.changes?.length??0);let o=t.report.runs[s];return n==="toggle"&&t.answers!==void 0&&o!==void 0&&!o.gone}function Ee(t,e){if(!(!Array.isArray(t)||t.length!==e))return t.every(n=>n===null||typeof n=="string")?t:void 0}function Re(t){let e=a=>a===void 0||typeof a=="string",n=a=>a===void 0||a===!0;if(!f(t)||!f(t.agent))return!1;let{agent:r,runs:s,changes:o,round:i}=t;return typeof r.name=="string"&&e(r.handle)&&typeof t.summary=="string"&&e(t.next)&&Array.isArray(s)&&s.length>0&&s.every(a=>f(a)&&typeof a.question=="string"&&typeof a.verdict=="string"&&e(a.note)&&e(a.before)&&n(a.gone))&&(i===void 0||Number.isInteger(i))&&n(t.final)&&(o===void 0||Array.isArray(o)&&o.every(a=>f(a)&&typeof a.what=="string"&&typeof a.why=="string"&&e(a.effect)))}var oe=W($e);function $e(t){let e={busy:t.busy,error:t.error},{view:n}=t;switch(n.kind){case"waiting":return{...e,avatar:"none",title:"Loading\u2026",blocks:[],buttons:[]};case"notice":return{...e,avatar:"none",title:n.title,blocks:[],buttons:[]};case"report":return{...e,...Fe(n)}}}function Fe(t){let{report:e}=t,{name:n,handle:r}=e.agent,s=e.runs.length,o=e.changes??[],i=e.round!==void 0&&e.final!==!0,a=e.next?.trim().replace(/^next:\s*/i,""),l=e.round===void 0?"":` \xB7 ${I(e.round,"round")}`,y=[...o.length?[{kind:"section",label:"Questions"}]:[],{kind:"rows",rows:e.runs.map((w,h)=>Ne(t,w,h))}],u=o.length?[{kind:"section",label:i?"Changes so far":"What changed, in order"},{kind:"rows",rows:o.map((w,h)=>Oe(t,w,h))}]:[];return{avatar:"agent",avatarUrl:F(e.agent.avatarUrl),title:i?`Testing ${n} \xB7 round ${e.round}`:`Tested ${n} \xB7 ${I(s,"question")}${l}`,subtitle:[{text:[r?`@${r}`:void 0,e.summary,o.length?`${I(o.length,"change")} saved`:void 0].filter(Boolean).join(" \xB7 ")}],blocks:[...i?[...u,...y]:[...y,...u],...a?[{kind:"note",text:`Next: ${a}`}]:[]],buttons:[]}}function I(t,e){return`${t} ${t===1?e:`${e}s`}`}function Ne(t,e,n){let r=Ie(e.before,e.verdict)?Me(t.report,e.before):void 0,s=e.gone?"A question asked over an hour ago":e.question||"A practice question",o={icon:"tile",tile:String(n+1),title:s,chip:e.verdict};if(!t.answers||e.gone)return{...o,...r||e.note?{detail:[r,e.note].filter(Boolean).join(" \xB7 ")}:{}};let i=`toggle:${n}`,a=t.open.includes(i);return{...o,...r?{detail:r}:{},control:{label:a?"Hide answer":"Show answer",action:i,style:"toggle",expanded:a},...a?{open:ve(t,e,t.answers[n]??null)}:{}}}function Me(t,e){return t.round===void 0?`was: ${e.trim()}`:e.trim()}function Oe(t,e,n){let r=`why:${n}`,s=t.open.includes(r);return{icon:"tile",tile:String(n+1),title:e.what,...e.effect?{detail:e.effect}:{},control:{label:s?"Hide why":"Show why",action:r,style:"toggle",expanded:s},...s?{open:[{kind:"text",text:e.why}]}:{}}}function Ie(t,e){let n=t?.trim().toLowerCase();return n!==void 0&&n!==""&&n!==e.trim().toLowerCase()}function ve(t,e,n){return[n===null?{kind:"text",text:`${t.report.agent.name} didn't finish answering this one.`}:{kind:"exchange",ask:e.question,answer:Ve(n),agent:t.report.agent.name,whole:!0},...e.note?[{kind:"note",text:e.note}]:[]]}function Ve(t){return ne(t.replaceAll("&lt;","<")).trim()||"It gave no answer."}te("chickpea-report-card",{initial:re,step:se,present:oe});})();
+</script></body>
+</html>

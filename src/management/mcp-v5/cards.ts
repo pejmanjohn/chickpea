@@ -37,8 +37,8 @@ const CARD_TEXT: Record<CardName, { title: string; description: string; widgetDe
   },
   'report-card': {
     title: 'Chickpea test report card',
-    description: 'The card ChatGPT draws for a test report: each practice question with its verdict, opening to the Agent\'s answer.',
-    widgetDescription: 'Shows the test report from the last result: each practice question with the verdict you gave it, and the Agent\'s answer when the person opens its row. It waits for nothing, so do not repeat it, and carry on.',
+    description: 'The card ChatGPT draws for a test report: each practice question with its verdict, opening to the Agent\'s answer, and the changes made while testing.',
+    widgetDescription: 'Shows the test report from the last result, redrawn after each round: each practice question with the verdict you gave it, the Agent\'s answer when the person opens its row, and each change saved with its reason. It waits for nothing, so do not repeat it, and carry on.',
   },
 };
 

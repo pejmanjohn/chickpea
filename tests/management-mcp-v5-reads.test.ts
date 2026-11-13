@@ -37,7 +37,7 @@ const SCHEMES = [{ type: 'oauth2', scopes: ['chickpea:workspace'] }];
 /** The tools whose result a card draws (tests/mcp-agent-card.test.ts covers why). */
 const CARD_TOOLS: Readonly<Record<string, string>> = {
   ...Object.fromEntries([
-    'propose_agent', 'propose_agent_change', 'create_agent', 'update_agent', 'undo_change',
+    'propose_agent', 'propose_agent_change', 'create_agent', 'undo_change',
     'delete_agent', 'remove_connection', 'remove_website_login', 'delete_schedule', 'remove_model_provider_key', 'update_member',
   ].map((tool) => [tool, CARD_URIS['agent-card']])),
   connect_service: CARD_URIS['connect-card'],

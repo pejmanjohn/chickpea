@@ -109,8 +109,8 @@ export const CARD_WAITS = 'The card shows this to the person, and it waits for t
 
 /**
  * What a card host's model hears with a result a card shows that waits for
- * no press, such as the Saved card after the model's own save: the job goes
- * on, so a stop here would leave the person to restart it.
+ * no press, such as a created Agent: the job goes on, so a stop here would
+ * leave the person to restart it.
  */
 export const CARD_SHOWS_IT = 'The card shows this to the person, and it waits for nothing. Don\'t restate what it shows or name its buttons. Carry on with the job.';
 
@@ -123,12 +123,21 @@ export const CARD_SHOWS_IT = 'The card shows this to the person, and it waits fo
 export const CARD_SHOWS_QUESTION = 'The card shows this to the person. Don\'t restate what it shows or name its buttons.';
 
 /**
+ * What a card host's model hears when its own update_agent waits for a
+ * confirmation: no card draws that result, and only a card asks a card
+ * host's person to confirm, so the change goes through the preview's card.
+ */
+export const CONFIRM_ON_A_PREVIEW = 'Nothing has changed. On this client only a card asks the person to confirm, and none shows this one. Call propose_agent_change with the same change, and its card asks them.';
+
+/**
  * A result as a card host's model sees it: no token it could use without
  * the person's press, and words that send the person to the card, or,
  * should the host fail to draw it, to Admin or to a new chat. `drawn`: a
  * card draws this tool's result, so the model is told the card shows it,
  * in the result's next step and in a text block before its JSON, and
- * whether to wait for a press or carry on.
+ * whether to wait for a press or carry on. A result no card draws keeps
+ * its own next step and names no card: a card that called the tool reads
+ * only its tokens, and the model that called it sees no card.
  */
 export function forCardHost(
   result: Record<string, unknown>,
@@ -148,18 +157,18 @@ export function forCardHost(
   if (confirmToken !== undefined) {
     const { confirmToken: _confirm, ...confirmation } = change.confirmation!;
     structured.confirmation = confirmation;
-    structured.summary = `Nothing has changed yet. ${elsewhere(confirmation.inAdmin, change.agent?.links?.admin ?? workspaceAdmin(baseUrl))}`;
+    structured.summary = shows
+      ? `Nothing has changed yet. ${elsewhere(confirmation.inAdmin, change.agent?.links?.admin ?? workspaceAdmin(baseUrl))}`
+      : 'Nothing has changed yet.';
   }
-  structured.nextStep = shows
-    ? [
-        lead,
-        confirmToken !== undefined ? 'Only the card can confirm it: it holds the confirmToken.' : undefined,
-        undoToken !== undefined ? 'They can undo it on the card.' : undefined,
-        change.status === 'done' && change.agent?.status === 'off' ? offNextStep(change.agent.name) : undefined,
-      ].filter(Boolean).join(' ')
-    : confirmToken !== undefined
-      ? 'The person confirms on the card, which holds the confirmToken. Wait for them.'
-      : [change.nextStep, 'The person can undo it on the card.'].filter(Boolean).join(' ');
+  if (shows) {
+    structured.nextStep = [
+      lead,
+      confirmToken !== undefined ? 'Only the card can confirm it: it holds the confirmToken.' : undefined,
+      undoToken !== undefined ? 'They can undo it on the card.' : undefined,
+      change.status === 'done' && change.agent?.status === 'off' ? offNextStep(change.agent.name) : undefined,
+    ].filter(Boolean).join(' ');
+  }
   const held = { ...confirmToken !== undefined ? { confirmToken } : {}, ...undoToken !== undefined ? { undoToken } : {} };
   return {
     structured,

@@ -11,7 +11,8 @@ import { DISCOVERY_GUIDE_URI } from '../src/management/agent-authoring/index.ts'
 import { playbookSection } from '../src/management/playbook/index.ts';
 import { workspaceManagementMcpFetch } from '../src/management/mcp.ts';
 import { REMOVED_RESOURCE_URIS, REMOVED_TOOL_NAMES, removedToolResult, type RemovedToolName } from '../src/management/mcp-v5/removed-v4.ts';
-import { CARD_SHOWS_IT, CARD_SHOWS_QUESTION, CARD_WAITS, forCardHost } from '../src/management/mcp-v5/card-host.ts';
+import { CARD_SHOWS_IT, CARD_SHOWS_QUESTION, CARD_WAITS, CONFIRM_ON_A_PREVIEW, forCardHost } from '../src/management/mcp-v5/card-host.ts';
+import { CARD_URIS } from '../src/management/mcp-v5/cards.ts';
 import { writeHints } from '../src/management/mcp-v5/conventions.ts';
 import type { FiveZeroDeps } from '../src/management/mcp-v5/reads.ts';
 import { changeResultOutput, getWorkspaceInput } from '../src/management/mcp-v5/schemas.ts';
@@ -170,17 +171,16 @@ test('a client that draws cards never shows its model a confirm or undo token; i
   const { session, call } = await connect(CARDS);
   assert.match(session ?? '', /^chickpea-cards-[0-9a-f-]{36}$/, 'initialize names a session that draws cards');
 
+  // No card draws update_agent, but a preview card's Save calls it, and that card holds the tokens.
   const off = await call('update_agent', { agentId: 'agent_support', version: await version(call, 'agent_support'), on: false, idempotencyKey: 'off' });
   const held = off._meta?.['chickpea/held'] as { confirmToken?: string };
   assert.equal(typeof held?.confirmToken, 'string', 'the card holds the token');
   assert.equal(off.structuredContent!.status, 'needs_confirmation');
   assert.equal(off.structuredContent!.confirmation.confirmToken, undefined);
   assert.ok(!modelView(off).includes(held.confirmToken!), 'the model sees no confirm token');
-  assert.equal(off.structuredContent!.summary,
-    `Nothing has changed yet. Confirm on the card, or in Admin: ${BASE_URL}/admin/agents/agent_support.`);
-  assert.deepEqual(off.content.map(({ text }) => text), [CARD_WAITS, JSON.stringify(off.structuredContent)],
-    'the text leads with what the card shows, then says the same');
-  assert.equal(off.structuredContent!.nextStep, `${CARD_WAITS} Only the card can confirm it: it holds the confirmToken.`);
+  assert.equal(off.structuredContent!.summary, 'Nothing has changed yet.');
+  assert.deepEqual(off.content.map(({ text }) => text), [JSON.stringify(off.structuredContent)], 'no card draws it, so no word of one');
+  assert.equal(off.structuredContent!.nextStep, CONFIRM_ON_A_PREVIEW, 'the model\'s own turn-off goes through the preview\'s card');
   assert.equal((await f.config.getAgent('agent_support')).enabled, true);
 
   // The card's press confirms with the token it holds.
@@ -197,12 +197,11 @@ test('a client that draws cards never shows its model a confirm or undo token; i
   assert.equal(typeof undo, 'string', 'the card holds the undo token');
   assert.equal(renamed.structuredContent!.undoToken, undefined);
   assert.ok(!modelView(renamed).includes(undo!), 'the model sees no undo token');
-  // Mutation proof (review SHOULD 1): the card's sentence replacing the off Agent's next step.
   const name = renamed.structuredContent!.agent.name as string;
-  assert.equal(renamed.structuredContent!.nextStep,
-    `${CARD_SHOWS_IT} They can undo it on the card. ${name} is off, so it answers no one in Slack. Don't suggest trying it.`,
-    'the Agent is off since the confirmation, and a card host\'s model hears so too');
-  assert.equal(renamed.content[0]!.text, CARD_SHOWS_IT, 'a save the model made waits for no press, so the job carries on');
+  assert.equal(renamed.structuredContent!.nextStep, `${name} is off, so it answers no one in Slack. Don't suggest trying it.`,
+    'the Agent is off since the confirmation, and a card host\'s model hears so too, with no card named');
+  assert.deepEqual(renamed.content.map(({ text }) => text), [JSON.stringify(renamed.structuredContent)],
+    'a save the model made draws no card: it is a line of text, and the test report shows the change');
 
   // A write no card draws keeps its token where the model can use it.
   const memory = await call('get_agent_memory', { agentId: 'agent_support' });
@@ -240,6 +239,17 @@ test('a card host\'s model hears that a card shows the result, and waits only fo
   }
 });
 
+test('on a card host no card draws update_agent: its listing names no template, and the preview card still does', async (t) => {
+  const { connect } = await harness(t, 'card-update-listing');
+  const { request } = await connect(CARDS);
+  const { tools } = (await request('tools/list')).message.result as { tools: Array<{ name: string; _meta?: Record<string, any> }> };
+  const meta = (name: string) => tools.find((tool) => tool.name === name)!._meta;
+  assert.equal(meta('update_agent')?.ui?.resourceUri, undefined);
+  assert.equal(meta('update_agent')?.['openai/outputTemplate'], undefined);
+  assert.equal(meta('propose_agent_change')?.ui?.resourceUri, CARD_URIS['agent-card'], 'its Save is where a card host saves with a card');
+  assert.ok(CARD_REFUSAL_TOOL_NAMES.has('update_agent'), 'that Save still reads a refusal, such as a stale version, as a result');
+});
+
 test('the model waits only on a card that waits for a press, and carries on after any other', () => {
   const agent = { agentId: 'agent_support', name: 'Support Desk' };
   const proposal = { proposal: { name: 'Invoice Chaser' }, create: { tool: 'create_agent', arguments: {} }, issues: [] };
@@ -254,6 +264,12 @@ test('the model waits only on a card that waits for a press, and carries on afte
     assert.equal(lead, CARD_WAITS, `${name}: the card waits for the person's press`);
     assert.ok((structured.nextStep as string).startsWith(CARD_WAITS), name);
   }
+  assert.equal(forCardHost(confirmation, BASE_URL, true).structured.summary,
+    `Nothing has changed yet. Confirm on the card, or in Admin: ${BASE_URL}/admin.`, 'should the host not draw it, Admin can confirm it');
+  // A result no card draws keeps its own next step and names no card; its tokens still go to a card that called it.
+  const unseen = forCardHost({ ...confirmation, nextStep: 'Its own.' }, BASE_URL, false);
+  assert.deepEqual([unseen.structured.summary, unseen.structured.nextStep, unseen.lead, unseen.held],
+    ['Nothing has changed yet.', 'Its own.', undefined, { confirmToken: 'changeset_1' }]);
   const saved = { status: 'done', summary: 'Saved Support Desk.', agent, undoToken: 'changeset_2' };
   const created = { status: 'done', summary: 'Created Invoice Chaser.', agent: { agentId: 'agent_new', name: 'Invoice Chaser' } };
   const unchanged = { status: 'unchanged', summary: 'Support Desk already says that.', agent };
@@ -621,7 +637,7 @@ for (const [app, clientId] of [
     assert.equal(off.structuredContent!.confirmation.confirmToken, undefined);
     assert.ok(!modelView(off).includes(confirmToken), 'neither text nor structured content exposes the token');
     assert.equal(off.structuredContent!.confirmation.inAdmin, true);
-    assert.match(off.structuredContent!.summary, /Confirm on the card, or in Admin: https:\/\/chickpea\.example\.test\/admin/);
+    assert.equal(off.structuredContent!.nextStep, CONFIRM_ON_A_PREVIEW);
     assert.equal((await h.f.config.getAgent('agent_support')).enabled, true, 'the fallback leaves the change pending');
 
     const done = await call('confirm_change', { confirmToken });

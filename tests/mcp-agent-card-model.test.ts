@@ -11,6 +11,7 @@ import {
   type Effect,
   type ToolResult,
 } from '../src/mcp-cards/card-model.ts';
+import { CONFIRM_ON_A_PREVIEW } from '../src/management/mcp-v5/card-host.ts';
 import { createFixtureAgent } from './helpers/management-adapter-fixture.ts';
 import { BASE_URL, cardHost, cardServer, NOW, type CardModelUnderTest, type ServerCall } from './helpers/mcp-card-host.ts';
 
@@ -745,6 +746,32 @@ test('a session that draws cards confirms, keeps and undoes with tokens only the
   assert.equal(typeof saved.calls('undo_change')[0]!.args.undoToken, 'string');
   assert.equal(saved.shown.title, 'Undid the change');
   assert.equal(contexts(saved).at(-1), 'The person undid the change to the Agent "Research" from the card.');
+});
+
+test('on a card host the model\'s own turn-off draws no card, and goes through the preview card, which asks and confirms', async (t) => {
+  const { f, call, clock, teamId } = await cardServer(t, 'card-turn-off', {}, { cards: true });
+  await createFixtureAgent(f, 'agent_support', { slackPresence: { ...PRESENCE } });
+  await f.config.putChannel({ workspaceId: teamId, channelId: 'C_SUPPORT', label: 'support', lifecycle: 'active' });
+  await f.config.putAgentChannelGrant({
+    workspaceId: teamId, channelId: 'C_SUPPORT', agentId: 'agent_support', status: 'active',
+    createdByMembershipId: f.owner.membership.id, channelLabel: 'support',
+  });
+  const version = async () => (await call('get_agent', { agentId: 'agent_support' })).structuredContent!.version;
+  const own = await call('update_agent', { agentId: 'agent_support', version: await version(), on: false, idempotencyKey: 'own-off' });
+  assert.equal(own.structuredContent!.status, 'needs_confirmation');
+  assert.equal(own.structuredContent!.nextStep, CONFIRM_ON_A_PREVIEW);
+  assert.equal(JSON.stringify(own).includes('The card shows'), false, 'no card words for the model');
+
+  const preview = await call('propose_agent_change', { agentId: 'agent_support', version: await version(), change: { on: false } });
+  const change = card(call, clock);
+  await change.result(preview);
+  await change.press('save');
+  assert.deepEqual(change.calls('update_agent').map(({ args }) => args), [preview.structuredContent!.save.arguments]);
+  assert.equal((await f.config.getAgent('agent_support')).enabled, true, 'Save waits for the confirmation');
+  await change.press('confirm');
+  assert.equal(change.calls('confirm_change').length, 1, 'the card confirms with the token it holds');
+  assert.equal((await f.config.getAgent('agent_support')).enabled, false);
+  assert.equal(change.shown.title, 'Turned off Research');
 });
 
 test('a card whose Agent was archived or deleted since says so, and offers nothing to press', async (t) => {
