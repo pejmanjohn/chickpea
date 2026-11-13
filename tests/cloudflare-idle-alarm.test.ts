@@ -590,6 +590,22 @@ test("a store that restarts after a person's window, or with none, holds nothing
   }
 });
 
+// Defects caught: a re-hold or a record that waits for the store's own
+// variable. A deployment that sets only the conversation's window holds its
+// store for that window, so its restarted store reads the rows, holds and
+// logs as well.
+test("a store on the conversation's window alone holds itself again at its first call", async () => {
+  const turnAt = NOW - 4 * 60_000;
+  const store = idleStore(QUIET, { newestEnqueuedAt: turnAt, env: HOLD_ENV });
+  assert.equal(tick(store), 'tick');
+  assert.equal(store.reads(), 1);
+  assert.deepEqual(store.heldUntil(), [turnAt + HOLD_MS]);
+  assert.deepEqual(store.holds, [holdRecord({
+    reason: 'first_call', windowMs: HOLD_MS, holdEndsAt: turnAt + HOLD_MS, holdLeftMs: HOLD_MS - 4 * 60_000,
+    timerMs: HOLD_MS - 4 * 60_000, renewed: false,
+  })]);
+});
+
 // Defects caught: a first call that fails when the turn rows cannot be read,
 // and a failed read that stops the next call from holding.
 test("a store whose turn rows fail to read serves its first call unheld, and holds at the next", async () => {
