@@ -723,6 +723,22 @@ test('a connect link names whose account it is only when its page fixes that, so
   assert.deepEqual([radio(againPage, 'member'), radio(againPage, 'team')], [' disabled', ' checked disabled']);
 });
 
+// With no owner the link carries the first free account as a hint; the person may pick the other on the page.
+test('a finished link reports the connection of the account the person picked, not the one the call guessed', async (t) => {
+  const h = await harness(t, 'mcp-owner-picked');
+  const context = h.mcp(h.owner, CHATGPT_CLIENT);
+  const deps = { service: h.service, context: async () => context, baseUrl: ORIGIN };
+  const link = await connectService(deps, { agentId: h.agent.id, service: 'HubSpot', idempotencyKey: 'hubspot' });
+  const setupId = link.setup!.setupToken!;
+  const cookie = cookieOf(await h.exchange(link.setup!.url));
+  assert.equal((await h.post(setupId, 'authorize', cookie, { ownerKind: 'member', access: 'read' })).status, 200);
+  assert.equal((await h.post(setupId, 'managed/poll', cookie)).status, 200);
+  const [account] = await h.config.listConnectionAccounts(h.owner.user.slackTeamId);
+  assert.equal(account!.ownerKind, 'member');
+  const status = await getSetupStatus(deps, { setupToken: setupId });
+  assert.deepEqual([status.status, status.connection?.connectionId, status.connection?.status], ['done', account!.id, 'ready']);
+});
+
 type Harness = Awaited<ReturnType<typeof harness>>;
 
 /** The person asks for a HubSpot link over MCP from one app and finishes it. */
