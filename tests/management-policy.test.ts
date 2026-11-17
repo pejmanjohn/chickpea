@@ -118,7 +118,7 @@ test('base Agent creation and only its trusted source-Channel grant are immediat
   });
 });
 
-test('MCP and Admin confirm only what the Admin UI asks "Are you sure?" about', () => {
+test('MCP and Admin confirm only what the Admin UI asks "Are you sure?" about, and MCP an archive that quiets Channels', () => {
   const enabledAgent: CustomAgentConfig = {
     id: 'agent_policy',
     kind: 'user',
@@ -165,6 +165,10 @@ test('MCP and Admin confirm only what the Admin UI asks "Are you sure?" about', 
     ['overwrite from a recipe that drops a connection', { itemId: 'u', kind: 'update_agent', agentId: 'agent_policy', expectedRevision: 1, confirmationReason: 'recipe_overwrite', patch: { mcpServers: [] } }, { agentEditable: true, connectionRemoved: true }, 'confirmation'],
     ['overwrite from a recipe that disables an Agent in Channels', { itemId: 'u', kind: 'update_agent', agentId: 'agent_policy', expectedRevision: 1, confirmationReason: 'recipe_overwrite', patch: { enabled: false } }, { ...reached, currentAgent: enabledAgent }, 'confirmation'],
     ['archive an Agent', { itemId: 'a', kind: 'archive_agent', agentId: 'agent_policy', expectedRevision: 1 }, { agentEditable: true }, 'immediate'],
+    // "Delete every Agent" once archived each at once over MCP (2026-11-17).
+    ['archive an Agent in Channels', { itemId: 'a', kind: 'archive_agent', agentId: 'agent_policy', expectedRevision: 1 }, { ...reached, currentAgent: enabledAgent }, 'confirmation'],
+    ['archive an Agent in no Channel', { itemId: 'a', kind: 'archive_agent', agentId: 'agent_policy', expectedRevision: 1 }, { agentEditable: true, currentAgent: enabledAgent, agentReferences: { agentId: 'agent_policy', channelGrants: [] } }, 'immediate'],
+    ['archive an Agent that is off in Channels', { itemId: 'a', kind: 'archive_agent', agentId: 'agent_policy', expectedRevision: 1 }, { ...reached, currentAgent: { ...enabledAgent, enabled: false } }, 'immediate'],
     ['grant Channel reach', { itemId: 'g', kind: 'grant_agent_channel', workspaceId: 'T', channelId: 'C', agentId: 'agent_policy', expectedRevision: 0 }, { agentEditable: true }, 'immediate'],
     ['rewrite a skill', skillUpdate, { agentEditable: true }, 'immediate'],
   ];

@@ -45,19 +45,21 @@ export async function getService(
   }
   const described = describe(preset);
   const member = snapshot.caller.role === 'member';
-  const owner = member ? 'owner me (only an Owner or Admin connects a team account)' : 'owner team or me';
+  const owner = member
+    ? 'the person connects their own account on Chickpea\'s page (only an Owner or Admin connects a team one)'
+    : 'the person picks Personal or Team on Chickpea\'s page';
   const practice = described.reviewed ? REVIEWED_PRACTICE : PRACTICE[described.practice];
   return {
     service: preset.id,
     name: preset.name,
     description: preset.description,
     signIn: described.signIn,
-    // Every catalog service can be either; connect_service asks which.
+    // Every catalog service can be either; its setup page asks which.
     account: { team: true, own: true },
     ...(described.capabilities ? { capabilities: described.capabilities } : {}),
     capabilitiesKnown: described.capabilitiesKnown,
     practice: described.practice,
-    nextStep: `connect_service with service ${preset.id}, an agentId and ${owner} connects it. ${practice}${
+    nextStep: `connect_service with service ${preset.id} and an agentId connects it; ${owner}. ${practice}${
       member && !described.reviewed && described.practice === 'needs_read_marks' ? ` ${MEMBER_MARKS}` : ''}`,
   };
 }

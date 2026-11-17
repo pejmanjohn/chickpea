@@ -683,6 +683,16 @@ test('a connect link names whose account it is only when its page fixes that, so
   assert.equal(fresh.setup?.owner, undefined, 'no owner: the person chooses on the page');
   const freshPage = (await h.page(fresh.setup!.setupToken!, cookieOf(await h.exchange(fresh.setup!.url)))).html;
   assert.deepEqual([radio(freshPage, 'member'), radio(freshPage, 'team')], ['', ''], 'both choices are open');
+  const unasked = await connectService(deps, { agentId: h.agent.id, service: 'HubSpot', idempotencyKey: 'hubspot-unasked' });
+  assert.equal(unasked.setup?.owner, undefined, 'a call with no owner gets the same page');
+  const unaskedPage = (await h.page(unasked.setup!.setupToken!, cookieOf(await h.exchange(unasked.setup!.url)))).html;
+  assert.deepEqual([radio(unaskedPage, 'member'), radio(unaskedPage, 'team')], ['', '']);
+
+  // Admin's page, for a connector the setup page cannot serve, opens on the owner the call asked for, or names none.
+  assert.equal((await connectService(deps, { agentId: h.agent.id, service: 'Sentry', owner: 'team', idempotencyKey: 'sentry-team' })).setup?.owner, 'team');
+  const sentry = await connectService(deps, { agentId: h.agent.id, service: 'Sentry', idempotencyKey: 'sentry' });
+  assert.equal(sentry.setup?.owner, undefined);
+  assert.match(sentry.setup!.url, /\/admin\/agents\/[^/]+\/connections\/new\/sentry\/(team|member)$/);
 
   // A reconnect keeps its account's owner, and the page shows that one, locked.
   const account = await h.config.putConnectionAccount({

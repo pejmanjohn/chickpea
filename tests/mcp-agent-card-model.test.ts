@@ -932,7 +932,9 @@ test('a confirmation whose token never reached the card asks nothing, and says w
   assert.deepEqual(tokenless.effects.at(-1), { type: 'open', url: `${BASE_URL}/admin/agents/agent_support` });
 
   // Admin cannot delete an Agent, so the card never sends the person there for one.
-  const archived = await call('archive_agent', { agentId: 'agent_support', version: await version(), idempotencyKey: 'archive' });
+  // It answers in a Channel, so its archive waits on the card too.
+  const asked = await call('archive_agent', { agentId: 'agent_support', version: await version(), idempotencyKey: 'archive' });
+  const archived = await call('confirm_change', { confirmToken: (asked._meta!['chickpea/held'] as { confirmToken: string }).confirmToken });
   const deleting = await call('delete_agent', { agentId: 'agent_support', version: archived.structuredContent!.version, idempotencyKey: 'delete' });
   const deleteCard = card(call, clock);
   await deleteCard.result(bare(deleting));

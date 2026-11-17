@@ -100,7 +100,7 @@ const told = (card: { effects: ReadonlyArray<{ type: string }> }) =>
 test('on a card session the tools a card receives send a refusal as a result, which leads with it; every other tool keeps isError', async (t) => {
   const { call } = await world(t, 'refusal-card-session');
   assert.deepEqual([...CARD_REFUSAL_TOOL_NAMES].sort(), [
-    'check_agent', 'confirm_change', 'connect_model_provider', 'connect_service', 'create_agent', 'decline_change',
+    'archive_agent', 'check_agent', 'confirm_change', 'connect_model_provider', 'connect_service', 'create_agent', 'decline_change',
     'delete_agent', 'delete_schedule', 'get_agent', 'get_confirmation', 'get_creation_status', 'get_practice_run', 'get_setup_status',
     'practice_agent', 'propose_agent', 'propose_agent_change', 'reconnect_service', 'remove_connection',
     'remove_model_provider_key', 'remove_website_login', 'show_test_report', 'undo_change', 'update_agent', 'update_member',
@@ -115,10 +115,10 @@ test('on a card session the tools a card receives send a refusal as a result, wh
   const invalid = await call('get_confirmation', { confirmToken: '' });
   assert.deepEqual([invalid.isError, (invalid.structuredContent as { error: McpToolError }).error.code], [false, 'invalid_input']);
   assert.match((invalid as { content: Array<{ text: string }> }).content[0]!.text, /^Refused \(invalid_input\): Chickpea did not accept that request\.\n/);
-  // Only the model reads archive_agent's result, and ChatGPT tells its model an error is one.
-  const archive = await call('archive_agent', { agentId: 'agent_missing', version: '0123456789abcdef', idempotencyKey: 'archive' });
-  assert.equal(archive.isError, true);
-  assert.doesNotMatch((archive as { content: Array<{ text: string }> }).content[0]!.text, /^Refused/);
+  // Only the model reads restore_agent's result, and ChatGPT tells its model an error is one.
+  const restore = await call('restore_agent', { agentId: 'agent_missing', version: '0123456789abcdef', idempotencyKey: 'restore' });
+  assert.equal(restore.isError, true);
+  assert.doesNotMatch((restore as { content: Array<{ text: string }> }).content[0]!.text, /^Refused/);
 });
 
 test('outside a card session a refusal is what it was, byte for byte, and no listed schema changes', async (t) => {

@@ -387,7 +387,9 @@ test('a done card that mounts again after its Undo offers no Undo, even when its
 // Mutation proof (review SHOULD 3): a mount read that judges a confirmation replaces Delete with "is archived".
 test('a delete confirmation keeps its buttons after the mount read finds its Agent archived', async (t) => {
   const { call, version, card } = await world(t, 'memory-delete-archived');
-  const archived = await call('archive_agent', { agentId: 'agent_support', version: await version(), idempotencyKey: 'archive' });
+  // It answers in a Channel, so its archive waits for a confirmation of its own.
+  const asked = await call('archive_agent', { agentId: 'agent_support', version: await version(), idempotencyKey: 'archive' });
+  const archived = await call('confirm_change', { confirmToken: (asked._meta!['chickpea/held'] as { confirmToken: string }).confirmToken });
   const deleting = await call('delete_agent', { agentId: 'agent_support', version: (archived.structuredContent as { version: string }).version, idempotencyKey: 'delete' });
   const confirm = card();
   await confirm.result(deleting);

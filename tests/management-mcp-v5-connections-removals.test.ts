@@ -273,10 +273,45 @@ test('connect_service hands out exactly the link prepare_connector_setup makes, 
   errorOf(await call('connect_service', {
     agentId: 'agent_research', service: 'Nonexistent Service', owner: 'me', idempotencyKey: 'unknown',
   }), 'invalid_input');
-  errorOf(await call('connect_service', {
-    agentId: 'agent_research', service: 'gmail', idempotencyKey: 'no-owner',
-  }), 'invalid_input');
   assertNoInternalIds(JSON.stringify({ connected, team }), f);
+});
+
+// A model once asked "the team's or yours?" in the chat instead of calling connect_service, so no card showed (2026-11-17).
+test('without an owner, connect_service links the page that asks, and refuses only when each account the person may pick is taken', async (t) => {
+  const { f, teamId, call } = await harness(t, 'connect-no-owner');
+  await createFixtureAgent(f, 'agent_research');
+  const calls = spyConnectorSetup(f);
+
+  const fresh = structured(await call('connect_service', { agentId: 'agent_research', service: 'gmail', idempotencyKey: 'gmail' }));
+  assert.equal(fresh.status, 'needs_setup');
+  assertFocusedSetup(fresh.setup);
+  assert.equal(fresh.setup.owner, undefined, 'the page asks whose account it is');
+
+  // A team HubSpot leaves the Owner's own account to pick on the page.
+  const team = await bindTeamHubspot(f, teamId, 'agent_research');
+  const own = structured(await call('connect_service', { agentId: 'agent_research', service: 'HubSpot', idempotencyKey: 'hubspot' }));
+  assert.equal(own.setup.owner, undefined);
+  assert.equal((calls.at(-1)!.input as { ownerKind: string }).ownerKind, 'member', 'the account still free');
+
+  // With both taken, nothing is left to pick, so it is a reconnect.
+  const mine = await f.config.putConnectionAccount({
+    id: 'connection_hubspot_mine', workspaceId: teamId, ownerKind: 'member', ownerMembershipId: f.owner.membership.id,
+    providerId: 'hubspot', label: 'HubSpot · Personal', lifecycle: 'ready', createdByMembershipId: f.owner.membership.id,
+    secretRefId: 'secret_hubspot_mine',
+    policy: {
+      kind: 'managed', adapterId: 'composio', toolkit: 'hubspot', principalRef: 'chickpea:organization:test',
+      accountRef: 'account_hubspot_mine', allowedCapabilities: ['hubspot.contacts.search'],
+    },
+  } as Omit<ConnectionAccount, 'revision' | 'createdAt' | 'updatedAt'>);
+  await f.config.putAgentConnectionBinding({
+    agentId: 'agent_research', connectionAccountId: mine.id, providerId: mine.providerId, allowedCapabilities: [], enabled: true,
+  });
+  const linked = calls.length;
+  const refused = errorOf(await call('connect_service', { agentId: 'agent_research', service: 'HubSpot', idempotencyKey: 'both' }), 'invalid_input');
+  assert.deepEqual(refused.fix, {
+    label: 'Reconnect HubSpot · Team', tool: 'reconnect_service', arguments: { agentId: 'agent_research', connectionId: team.id },
+  });
+  assert.equal(calls.length, linked, 'no link was made');
 });
 
 test('connect_service refuses a service the Agent already has and names reconnect_service', async (t) => {
@@ -674,6 +709,10 @@ test('a member cannot connect or reconnect a team connection, or change an Agent
   })) errorOf(await member(name, { ...args, idempotencyKey: name }), 'not_found');
   errorOf(await member('reconnect_service', { agentId: 'agent_owner_only', connectionId: 'x' }), 'not_found');
   structured(await member('connect_service', { agentId: 'agent_shared', service: 'gmail', owner: 'me', idempotencyKey: 'mine' }));
+  // Without an owner the page asks, and a member's only pick there is their own account, which the team HubSpot leaves free.
+  const unasked = structured(await member('connect_service', { agentId: 'agent_shared', service: 'HubSpot', idempotencyKey: 'no-owner' }));
+  assert.equal(unasked.setup.owner, undefined);
+  assert.equal((calls.at(-1)!.input as { ownerKind: string }).ownerKind, 'member');
 
   // An Owner's custom connection is the team's: a member can neither link its key nor change it.
   await f.config.ensureWorkspaceInstallation({ workspaceId: teamId, transportMode: 'direct', defaultAgentId: 'agent_shared' });
@@ -1295,8 +1334,19 @@ test('delete_agent names what blocks it before any confirmation, then confirms t
   assert.deepEqual(Object.keys(blocked.fix.arguments).sort(), ['agentId', 'idempotencyKey', 'version']);
   assert.ok(await f.config.getAgent('agent_research'));
 
-  // The fix is a real call, as the person's click on it would make.
-  const archived = structured(await call('archive_agent', blocked.fix.arguments));
+  // The fix is a real call, as the person's click on it would make. Research answers in #support, so archiving it asks first.
+  const asked = structured(await call('archive_agent', blocked.fix.arguments));
+  assert.equal(asked.status, 'needs_confirmation');
+  assert.deepEqual(asked.confirmation.ask, {
+    question: 'Archive @research?',
+    consequence: 'It leaves #support and stops answering in Slack, and its schedules pause. Its settings are kept, and restoring it brings it back to its Channels.',
+    confirm: 'Archive',
+    keep: 'Keep it',
+  });
+  assert.equal((await f.config.getAgent('agent_research')).lifecycle, 'active', 'asking archives nothing');
+  const archived = structured(await call('confirm_change', { confirmToken: asked.confirmation.confirmToken }));
+  assert.equal(archived.summary, 'Archived Research; it no longer answers anywhere.');
+  assert.equal((await f.config.getAgent('agent_research')).lifecycle, 'archived');
   errorOf(await call('delete_agent', { agentId: 'agent_research', version: blocked.fix.arguments.version, idempotencyKey: 'stale' }), 'changed_since_read');
   const proposed = structured(await call('delete_agent', { agentId: 'agent_research', version: archived.version, idempotencyKey: 'delete' }));
   assert.equal(proposed.status, 'needs_confirmation');
