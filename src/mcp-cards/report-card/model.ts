@@ -218,16 +218,18 @@ function changeRow(view: Shown, change: NonNullable<Report['changes']>[number], 
 }
 
 /**
- * Earlier verdicts worth showing: a word in them, past their round labels,
- * that the verdict now lacks. "round 1: passes" beside "passes" says nothing.
+ * Earlier verdicts worth showing: one of them, between its round labels and
+ * arrows, is not the verdict now. "round 1: passes" beside "passes" says
+ * nothing; "good" beside "not good" does.
  */
 function changed(before: string | undefined, verdict: string): boolean {
-  const now = new Set(words(verdict));
-  return words(before ?? '').some((word) => !now.has(word));
+  const now = words(verdict);
+  return (before ?? '').split(/\bround\s*\d+|→/i).map(words).some((was) => was !== '' && was !== now);
 }
 
-function words(text: string): string[] {
-  return text.toLowerCase().replace(/\bround\s*\d+/g, ' ').match(/\p{L}+/gu) ?? [];
+/** A text's words, numbers and signs, without its case, spacing or punctuation. */
+function words(text: string): string {
+  return (text.toLowerCase().match(/[^\s\p{P}]+/gu) ?? []).join(' ');
 }
 
 function opened(view: Shown, run: Report['runs'][number], answer: string | null): Array<Block<Action>> {
