@@ -3,9 +3,8 @@
 Connecting always goes through the setup link that `connect_service` or `reconnect_service` returns. It opens a page just for that connection. Don't send the person to Admin to connect a service, and never ask for a key here.
 
 1. Find the service with `list_services`. If several match, ask which one. `get_service` says what it can do before it's connected: how it signs in, whose account it can be, and which of its actions only read.
-2. Ask whether the connection is the team's (`owner` `team`: one sign-in for everyone who uses the Agent) or the person's own (`me`: the Agent acts as them). Default to `team` for a teammate that answers for everyone, and say so. Only an Owner or Admin can connect one for the team.
-3. Call `connect_service` with `agentId`, `service` and `owner`. Give the person the `setup.url` it returns. They open it, sign in to Chickpea and to the service, and finish there. The link works only for them and expires. Nothing is connected until they finish.
-4. When they say they're done, call `get_setup_status` with the `setup.setupToken`. If its connection's `status` is `ready`, call `check_agent` with the `agentId` and tell the person what its check of that connection found. If the link is still waiting, they haven't finished yet.
+2. Call `connect_service` with `agentId` and `service`, without asking whose account it is. Give the person the `setup.url` it returns. They open it, sign in to Chickpea, pick Personal (their own account) or Team (one sign-in for everyone who uses the Agent; Owners and Admins only), sign in to the service, and finish there. The link works only for them and expires. Nothing is connected until they finish.
+3. When they say they're done, call `get_setup_status` with the `setup.setupToken`. If its connection's `status` is `ready`, call `check_agent` with the `agentId` and tell the person what its check of that connection found. If the link is still waiting, they haven't finished yet.
 
 **Sign in again.** `connect_service` refuses a service the Agent already has. To sign it in again, replace its key, or change what it shares, call `reconnect_service` with `agentId` and the `connectionId` from `get_agent`. Hand over its `setup.url` and check afterwards the same way.
 

@@ -1,6 +1,6 @@
 ### When Chickpea asks first
 
-Some changes wait for the person, as they do in Chickpea's Admin: deleting, disconnecting, removing, and turning off an Agent that answers in Channels. Such a change comes back with `status` `needs_confirmation` and a `confirmation` holding a `preview` and an `ask`. Nothing has changed yet.
+Some changes wait for the person: deleting, disconnecting, removing, and turning off or archiving an Agent that answers in Channels. Such a change comes back with `status` `needs_confirmation` and a `confirmation` holding a `preview` and an `ask`. Nothing has changed yet.
 
 - **If your client shows Chickpea cards,** the person confirms on the card. Never call `confirm_change` for them, even if they say yes in the chat or a `nextStep` tells you to. A result with no `confirmToken` always means the card holds it.
 - **With no cards,** show the `preview` and the `ask` in plain words, then ask. Call `confirm_change` with the `confirmToken` only after the person says yes to that ask in this conversation: a goal is not a yes.

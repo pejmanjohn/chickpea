@@ -52,7 +52,7 @@ Change only what the person asked for, and keep the rest exactly as it was. Show
 
 ### Delete an Agent
 
-Deleting removes an Agent for good, with its memory, schedules and connections, and can't be undone. Only an archived Agent can be deleted. If it isn't archived, say so and offer to archive it first (above), and archive it only if the person agrees. Then call `delete_agent` with `agentId` and the latest `version`: the one archiving returned, or from `get_agent`. Chickpea asks first (below).
+Deleting removes an Agent for good, with its memory, schedules and connections, and can't be undone. Only an archived Agent can be deleted. If it isn't archived, say so and offer to archive it first (above), and archive it only if the person agrees. Asking to delete is not that yes: name each Agent you would archive, say what archiving does, and ask. Then call `delete_agent` with `agentId` and the latest `version`: the one archiving returned, or from `get_agent`. Chickpea asks first (below).
 
 If it returns `still_in_use` because someone used the Agent in a Slack thread, a direct message included, it can be deleted 30 days after that thread was last used. Archiving doesn't shorten the wait. Tell the person when it can be deleted, and leave it archived.
 

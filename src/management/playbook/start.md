@@ -11,7 +11,7 @@ Call `get_workspace` for the workspace name and the person's role, and `list_age
 ## 2. Find the chore
 
 - **The chore is already stated** in this conversation (for example "sales keeps asking me whether orders shipped"): go straight to step 3. Don't ask anything first. If an existing Agent already does that job or nearly does, propose improving that Agent instead (`get_guide` topic `edit`).
-- **The person asks you to suggest one** ("look at what I do and suggest an Agent"): don't ask first, even when the workspace has Agents. Pick a chore no existing Agent already does, from this conversation and what you know of their work, and go to step 3. Only if you know nothing of their work, ask the question below that fits.
+- **The person asks you to suggest one** ("look at what I do and suggest an Agent"): don't ask first, even when the workspace has Agents. Pick a chore no existing Agent already does, from this conversation and what you know of their work, and go to step 3. The workspace's Agents don't count as knowing their work: with no notes, files or details about their week, ask the question below that fits first.
 - **The workspace already has Agents** and no chore is stated: offer to improve one of them first. Ask one question that names them, such as: "You already have @ops and @billing in Slack. Want to improve one of them, or set up a new teammate for something people keep asking you or that you do every week?"
 - **Otherwise**, ask exactly one question: "What do people keep asking you for, or what do you do every week?"
 
@@ -49,7 +49,7 @@ If the person changes something, call `propose_agent` again with the new draft b
 
 ## 4. After it's created
 
-1. For each service in the proposal, call `connect_service` with the new `agentId`, the service's `service` from `list_services`, `owner` `team` (or `me` if it should act as the person), and `continues: true`. Give the person each `setup.url`: they sign in on Chickpea's page and finish there. When they're done, check it with `get_setup_status` or `check_agent` (`get_guide` topic `connect`).
+1. For each service in the proposal, call `connect_service` with the new `agentId`, the service's `service` from `list_services`, and `continues: true`. Give the person each `setup.url`: on Chickpea's page they pick Personal or Team, sign in and finish there. When they're done, check it with `get_setup_status` or `check_agent` (`get_guide` topic `connect`).
 2. Scope the new Agent with the person (`get_guide` topic `scope`): draft its brief and test questions from this conversation, then test drive it on them. The person can answer its questions while a sign-in is still open.
 3. If the chore happens on a schedule ("every Monday"), offer to set that up next (`get_guide` topic `schedule`).
 4. Close with the hand-off (the ground rules): the first message to send the Agent in its direct messages, or in its Channel.

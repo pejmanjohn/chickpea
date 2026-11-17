@@ -298,7 +298,9 @@ test('a card stops the job only when it waits for the person, a goal is consent,
     assert.doesNotMatch(section, /and stop\. Write it so|Wait for their press or their next message/, `${topic}: a card that waits for nothing never stops the job`);
     assert.ok(section.includes('After a card, carry on with the job, unless the card waits for the person: a proposal to create or save, a change to confirm, or a sign-in.'), topic);
     assert.ok(section.includes('So in one turn, show at most one card that waits, and show it last.'), `${topic}: a client draws a turn's cards before its text`);
-    assert.ok(section.includes('- **A goal is consent.**') && section.includes('Outside a goal, preview each change to it'), `${topic}: a direct edit to a shared Agent keeps its preview`);
+    assert.ok(section.includes('- **A goal is consent to edit.**') && section.includes('Outside a goal, preview each change to it'), `${topic}: a direct edit to a shared Agent keeps its preview`);
+    // "Delete every Agent" once archived each at once, read as a goal (2026-11-17).
+    assert.ok(section.includes('No request, however plain, is a yes to save a schedule, add an Agent to a Channel, or archive or delete anything: show what will happen, ask, and wait.'), `${topic}: a request is no yes`);
     assert.ok(section.includes('- **End a job with a hand-off.**') && section.includes('- Never send a Slack message for the person.'), topic);
     // The model once named Codex inside ChatGPT, and told someone who never connected to connect "again".
     assert.ok(section.includes('connect Chickpea in this app\'s settings or plugin page and sign in with Slack') && section.includes('Name no app'), topic);
