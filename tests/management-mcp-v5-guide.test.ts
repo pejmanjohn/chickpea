@@ -314,6 +314,24 @@ test('a card stops the job only when it waits for the person, a goal is consent,
   }
 });
 
+test('a request for an Agent ends in propose_agent, whose card is the proposal, in both sections that propose', () => {
+  // A client once wrote the proposal as text and dropped the "check" that draws the card (2026-11-16).
+  for (const topic of ['start', 'research'] as const) {
+    const section = playbookSection(topic, 'chat-app').guide;
+    const call = section.search(/Call `propose_agent` with (?:it|that draft) and `continues: true`/);
+    const card = section.indexOf('**If your client shows Chickpea cards** and a card shows the proposal');
+    assert.ok(call > 0 && card > call, `${topic}: the call comes before anything is shown, and a card stands for the text`);
+    assert.ok(section.includes('goes through it, even when the person asks for a short answer.'), `${topic}: a short answer still proposes`);
+    assert.doesNotMatch(section, /Check the lead with/, `${topic}: propose_agent is the proposal, not a check after one`);
+    assert.ok(section.includes('never put a note to the person in them, such as which workspace it belongs in'), `${topic}: instructions are for the Agent alone`);
+    assert.match(section, /When the person asks for an Agent for another team or company, (?:propose it|make it the lead) anyway: say in one line that it would join this workspace/, `${topic}: a named team is no reason to skip the proposal`);
+  }
+  const start = playbookSection('start', 'chat-app').guide;
+  assert.ok(start.indexOf('**The person asks you to suggest one**') < start.indexOf('**The workspace already has Agents**'), 'a request to suggest one is read before the offer to improve an Agent');
+  assert.ok(start.includes('don\'t ask first, even when the workspace has Agents. Pick a chore no existing Agent already does'), 'and it neither asks first nor proposes a job an Agent already does');
+  assert.ok(playbookSection('start').guide.includes('Research first, too, when they ask you to look at their work and suggest one.'), 'a coding agent still looks before it proposes');
+});
+
 test('the server instructions end by sending a client without a skill to get_guide, within 512 characters', async (t) => {
   const { rpc } = await harness(t, 'guide-instructions', false);
   const { instructions } = await rpc('initialize', {

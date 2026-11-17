@@ -6,7 +6,7 @@ Research before you propose: one specific Agent built from what the person reall
 
 ## 1. Know the workspace
 
-Call `get_workspace` for the workspace name and the person's role, `list_agents` for the Agents that exist, and `list_services` for the services Chickpea can connect by sign-in. When the workspace has no name, say "this workspace" and don't guess one. The lead proposal must belong to this workspace. Work the person does for another company can be an alternate that names that company, never the lead. If an existing Agent already does a job you find, say so instead of proposing it again.
+Call `get_workspace` for the workspace name and the person's role, `list_agents` for the Agents that exist, and `list_services` for the services Chickpea can connect by sign-in. When the workspace has no name, say "this workspace" and don't guess one. The lead proposal must belong to this workspace. Work you find for another company can be an alternate that names that company, never the lead. When the person asks for an Agent for another team or company, make it the lead anyway: say in one line that it would join this workspace, and that to put it in another they switch workspace first (the ground rules). If an existing Agent already does a job you find, say so instead of proposing it again.
 
 ## 2. Look only where you may
 
@@ -42,14 +42,16 @@ Rank candidates by how recent and how repeated they are. Prefer one with a concr
 
 ## 4. Propose
 
-Present one lead proposal and up to two alternates, one line each. The lead has four parts:
+Draft the lead with the fields `propose_agent` takes (`name`, `handle`, `job`, `instructions`, `sampleAsk`, `promisedAnswer` and `services`). Its instructions are for the Agent alone: never put a note to the person in them, such as which workspace it belongs in. Call `propose_agent` with it and `continues: true`. It saves nothing. Every lead goes through it, even when the person asks for a short answer.
 
-1. What the person already has and what it's for, naming the sources you saw.
-2. The Slack front door: the message the person would send the Agent, and an example answer. Label it an example, and never invent facts, numbers or identifiers in it.
-3. What you'll do: create the Agent, add the connection, and check it once the sign-in or key is in place.
-4. What the person has to do: sign in to a service on Chickpea's setup page, issue a key themselves and type it there, or just say yes. Never create a key or token for them, and ask for read-only access when that's enough.
+- **If your client shows Chickpea cards** and a card shows the proposal, the card is the proposal. Say in one sentence what you based it on, naming the sources you saw, and in one more what the person does after Create, if a service needs a sign-in or a key. Give any alternates in one line each, and stop.
+- **No card shows:** present the lead in four parts, then up to two alternates, one line each, and ask whether to create it.
+  1. What the person already has and what it's for, naming the sources you saw.
+  2. The Slack front door: the message the person would send the Agent, and an example answer. Label it an example, and never invent facts, numbers or identifiers in it.
+  3. What you'll do: create the Agent, add the connection, and check it once the sign-in or key is in place.
+  4. What the person has to do: sign in to a service on Chickpea's setup page, issue a key themselves and type it there, or just say yes. Never create a key or token for them, and ask for read-only access when that's enough.
 
-Check the lead with `propose_agent` (`name`, `handle`, `job`, `instructions`, `sampleAsk`, `promisedAnswer` and `services`). It saves nothing. Show its handle and any `issues` with the proposal, and ask whether to create it.
+  Show its handle and any `issues` with the proposal.
 
 Ask a question before proposing only when the answer changes what you'd build.
 
