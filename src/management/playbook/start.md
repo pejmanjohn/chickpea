@@ -11,7 +11,7 @@ Call `get_workspace` for the workspace name and the person's role, and `list_age
 ## 2. Find the chore
 
 - **The chore is already stated** in this conversation (for example "sales keeps asking me whether orders shipped"): go straight to step 3. Don't ask anything first. If an existing Agent already does that job or nearly does, propose improving that Agent instead (`get_guide` topic `edit`).
-- **The person asks you to suggest one** ("look at what I do and suggest an Agent"): don't ask first. Pick the chore from this conversation and what you know of their work, and go to step 3. Ask the one question below only if you know nothing of it.
+- **The person asks you to suggest one** ("look at what I do and suggest an Agent"): don't ask first, even when the workspace has Agents. Pick a chore no existing Agent already does, from this conversation and what you know of their work, and go to step 3. Only if you know nothing of their work, ask the question below that fits.
 - **The workspace already has Agents** and no chore is stated: offer to improve one of them first. Ask one question that names them, such as: "You already have @ops and @billing in Slack. Want to improve one of them, or set up a new teammate for something people keep asking you or that you do every week?"
 - **Otherwise**, ask exactly one question: "What do people keep asking you for, or what do you do every week?"
 
@@ -20,7 +20,7 @@ Ask nothing else before the proposal unless the answer would change what you bui
 **What you build from.** Build the proposal from what the person says in this conversation, and from what you already know about their work, so it fits them. Say in a short phrase what you based it on ("from what you said about your invoices") so they can correct you. Ask them for nothing but the chore. Chickpea's tools receive only the Agent setup the person approves.
 
 <!-- coding-agent -->
-If you are a coding agent on the person's computer and they would rather you look at their projects than answer, research first (`get_guide` topic `research`).
+If you are a coding agent on the person's computer and they would rather you look at their projects than answer, research first (`get_guide` topic `research`). Research first, too, when they ask you to look at their work and suggest one.
 <!-- /coding-agent -->
 
 ## 3. Propose one teammate

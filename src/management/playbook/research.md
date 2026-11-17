@@ -6,7 +6,7 @@ Research before you propose: one specific Agent built from what the person reall
 
 ## 1. Know the workspace
 
-Call `get_workspace` for the workspace name and the person's role, `list_agents` for the Agents that exist, and `list_services` for the services Chickpea can connect by sign-in. When the workspace has no name, say "this workspace" and don't guess one. The lead proposal must belong to this workspace. Work you find for another company can be an alternate that names that company, never the lead. When the person asks for an Agent for another team or company, propose it anyway: say in one line that it would join this workspace, and that to put it in another they switch workspace first (the ground rules). If an existing Agent already does a job you find, say so instead of proposing it again.
+Call `get_workspace` for the workspace name and the person's role, `list_agents` for the Agents that exist, and `list_services` for the services Chickpea can connect by sign-in. When the workspace has no name, say "this workspace" and don't guess one. The lead proposal must belong to this workspace. Work you find for another company can be an alternate that names that company, never the lead. When the person asks for an Agent for another team or company, make it the lead anyway: say in one line that it would join this workspace, and that to put it in another they switch workspace first (the ground rules). If an existing Agent already does a job you find, say so instead of proposing it again.
 
 ## 2. Look only where you may
 
