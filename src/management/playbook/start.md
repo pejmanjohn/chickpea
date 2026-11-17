@@ -32,7 +32,7 @@ Draft one Agent for the chore with the fields `propose_agent` takes. Every Agent
 
 Call `propose_agent` with that draft and `continues: true`, since setup goes on after Create. It saves nothing. Every proposal goes through it, even when the person asks for a short answer. Then:
 
-- **If your client shows Chickpea cards** and a card shows the proposal: say one short sentence, such as what you based it on, and stop. The card shows the name, the job, the example and where it answers, and its Create button creates it. Don't list them, and don't say whether the Agent exists yet.
+- **If your client shows Chickpea cards** and a card shows the proposal: say one short sentence, such as what you based it on, add the workspace line from step 1 if it applies, and stop. The card shows the name, the job, the example and where it answers, and its Create button creates it. Don't list them, and don't say whether the Agent exists yet.
 - **No card shows,** as in a terminal: show the person
   - the name, @handle, and whether the handle is free;
   - the job in one line;
