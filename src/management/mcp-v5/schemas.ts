@@ -871,7 +871,7 @@ export const showTestReportInput = z.strictObject({
     runToken: zText(64).describe('The runToken practice_agent returned for this question\'s latest run.'),
     verdict: zText(120).describe('Your verdict in a few words, such as Good or Too long. The card shows about 40 characters.'),
     note: zText(400).optional().describe('One line on why, such as "Right page, 14 lines." The card shows about 160 characters.'),
-    before: zText(400).optional().describe('Its earlier verdicts in a few words, such as "round 1: fails" or "round 1: too long → passes after change 2", when it was asked before. The card shows about 100 characters.'),
+    before: zText(400).optional().describe('Its earlier verdicts in a few words, such as "round 1: fails" or "round 1: too long → passes after change 2", when it was asked before with another verdict. The card shows about 100 characters.'),
   })).min(1).max(10)
     .refine((runs) => new Set(runs.map(({ runToken }) => runToken)).size === runs.length, 'Send each runToken once.')
     .describe('Every question asked so far, in the order first asked.'),

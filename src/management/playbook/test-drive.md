@@ -63,7 +63,7 @@ When every test is done, if you changed the Agent's instructions, practice once 
 
 ## 6. Report
 
-After round 1 and after each change you have tested, call `show_test_report` with every test question so far: its verdict ("passes", "fails" or "can't be checked in practice") with a short note, `before` with its earlier verdicts, `round`, and `changes`, each with a one-line `why`. When testing is done, call it once more with `final` `true`. If you changed its instructions, offer to put them back, then close with the hand-off (the ground rules). If the Agent posts on a schedule or acts in a service, say that those parts are checked in Slack.
+After round 1 and after each change you have tested, call `show_test_report` with every test question so far: its verdict ("passes", "fails" or "can't be checked in practice") with a short note, `before` if its verdict changed, `round`, and `changes`, each with a one-line `why`. When testing is done, call it once more with `final` `true`. If you changed its instructions, offer to put them back, then close with the hand-off (the ground rules). If the Agent posts on a schedule or acts in a service, say that those parts are checked in Slack.
 
 If the person keeps the test questions in a file, offer to add today's results to it. Chickpea doesn't keep them.
 

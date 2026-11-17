@@ -79,6 +79,11 @@
     {
       "version": 2,
       "sha256": "814e7c4e36c201f852538ffe6eb0c0fb9a60133a4e8d9826e5c89589791f0961",
+      "released": true
+    },
+    {
+      "version": 3,
+      "sha256": "b4fdbc8798c06fe0beab18e11f498edb7d3aeb76e5dc2a030965eb58abbd1d4a",
       "released": false
     }
   ]

@@ -326,7 +326,67 @@ test('a row shows "was:" only when the first round\'s verdict differs, ignoring 
     'rows with no answers to open: the same, beside the note');
 });
 
-const CHANGE_ONE = { what: 'Give conditional checks before a fix', why: 'The answer assumed a cause the question never gave.' };
+// The Codex validation, 11-14: five rows read "Round 1: passes" under a "passes" chip.
+test('a round\'s trail shows only when it holds a verdict other than the one now', () => {
+  const report = (runs: Array<{ verdict: string; before?: string }>) => ({
+    structuredContent: {
+      agent: { agentId: AGENT, name: 'Docs Guide' },
+      runs: runs.map((run, index) => ({ question: `Question ${index + 1}?`, ...run })),
+      summary: '5 of 6 pass.',
+      round: 2,
+      nextStep: 'Carry on.',
+    },
+  });
+  const runs = [
+    { verdict: 'passes', before: 'Round 1: passes' },
+    { verdict: 'passes', before: 'round 1: passes, round 2: passes' },
+    { verdict: 'passes content and sources', before: 'Round 1: passes content and sources' },
+    { verdict: 'passes', before: 'Round 1: fails' },
+    { verdict: 'passes', before: 'round 1: too long → passes after change 2' },
+    { verdict: 'fails', before: 'round 1: passes' },
+  ];
+  const { state } = reportCard.step(reportCard.INITIAL, { type: 'result', result: report(runs), now: 0 });
+  assert.deepEqual(rowsOf(reportCard.present(state).blocks).map(({ detail }) => detail), [
+    undefined,
+    undefined,
+    undefined,
+    'Round 1: fails',
+    'round 1: too long → passes after change 2',
+    'round 1: passes',
+  ]);
+});
+
+// Review of PR 818: a trail whose words all sat in the verdict was hidden, so "not good" hid "was: good".
+test('an earlier verdict shows when the verdict now only adds to its words, or differs by a number or a sign', () => {
+  const details = (round: number | undefined, runs: Array<{ verdict: string; before: string }>) => {
+    const result = {
+      structuredContent: {
+        agent: { agentId: AGENT, name: 'Docs Guide' },
+        runs: runs.map((run, index) => ({ question: `Question ${index + 1}?`, ...run })),
+        summary: 'Mixed.',
+        ...round === undefined ? {} : { round },
+        nextStep: 'Carry on.',
+      },
+    };
+    const { state } = reportCard.step(reportCard.INITIAL, { type: 'result', result, now: 0 });
+    return rowsOf(reportCard.present(state).blocks).map(({ detail }) => detail);
+  };
+  assert.deepEqual(details(undefined, [
+    { verdict: 'Not good', before: 'Good' },
+    { verdict: '2 of 3', before: '1 of 3' },
+    { verdict: '✅', before: '❌' },
+    { verdict: 'Good', before: 'good.' },
+  ]), ['was: Good', 'was: 1 of 3', 'was: ❌', undefined], 'a report without rounds');
+  assert.deepEqual(details(3, [
+    { verdict: 'passes with caveats', before: 'round 1: passes' },
+    { verdict: 'passes after change 2', before: 'round 1: passes after change 1' },
+    { verdict: "can't be checked in practice", before: 'Round 1: can’t be checked in practice; round 2: can\'t be checked in practice.' },
+    { verdict: 'passes', before: 'round 1: passes → passes' },
+    { verdict: 'passes', before: 'round 1: passes, round 2: fails' },
+  ]), ['round 1: passes', 'round 1: passes after change 1', undefined, undefined, 'round 1: passes, round 2: fails'], 'a report with rounds');
+});
+
+const CHANGE_ONE ={ what: 'Give conditional checks before a fix', why: 'The answer assumed a cause the question never gave.' };
 
 test('a report mid-loop says its round, lists the changes so far above the questions, and opens a change to its reason', async (t) => {
   const w = await world(t, 'report-mid-loop');
