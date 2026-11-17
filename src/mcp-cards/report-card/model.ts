@@ -217,10 +217,17 @@ function changeRow(view: Shown, change: NonNullable<Report['changes']>[number], 
   };
 }
 
-/** Earlier verdicts worth showing: some, and not the same words as the verdict now. */
+/**
+ * Earlier verdicts worth showing: a word in them, past their round labels,
+ * that the verdict now lacks. "round 1: passes" beside "passes" says nothing.
+ */
 function changed(before: string | undefined, verdict: string): boolean {
-  const was = before?.trim().toLowerCase();
-  return was !== undefined && was !== '' && was !== verdict.trim().toLowerCase();
+  const now = new Set(words(verdict));
+  return words(before ?? '').some((word) => !now.has(word));
+}
+
+function words(text: string): string[] {
+  return text.toLowerCase().replace(/\bround\s*\d+/g, ' ').match(/\p{L}+/gu) ?? [];
 }
 
 function opened(view: Shown, run: Report['runs'][number], answer: string | null): Array<Block<Action>> {

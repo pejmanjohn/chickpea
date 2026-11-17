@@ -326,6 +326,36 @@ test('a row shows "was:" only when the first round\'s verdict differs, ignoring 
     'rows with no answers to open: the same, beside the note');
 });
 
+// The Codex validation, 11-14: five rows read "Round 1: passes" under a "passes" chip.
+test('a round\'s trail shows only when it holds a verdict other than the one now', () => {
+  const report = (runs: Array<{ verdict: string; before?: string }>) => ({
+    structuredContent: {
+      agent: { agentId: AGENT, name: 'Docs Guide' },
+      runs: runs.map((run, index) => ({ question: `Question ${index + 1}?`, ...run })),
+      summary: '5 of 6 pass.',
+      round: 2,
+      nextStep: 'Carry on.',
+    },
+  });
+  const runs = [
+    { verdict: 'passes', before: 'Round 1: passes' },
+    { verdict: 'passes', before: 'round 1: passes, round 2: passes' },
+    { verdict: 'passes content and sources', before: 'Round 1: passes content and sources' },
+    { verdict: 'passes', before: 'Round 1: fails' },
+    { verdict: 'passes', before: 'round 1: too long → passes after change 2' },
+    { verdict: 'fails', before: 'round 1: passes' },
+  ];
+  const { state } = reportCard.step(reportCard.INITIAL, { type: 'result', result: report(runs), now: 0 });
+  assert.deepEqual(rowsOf(reportCard.present(state).blocks).map(({ detail }) => detail), [
+    undefined,
+    undefined,
+    undefined,
+    'Round 1: fails',
+    'round 1: too long → passes after change 2',
+    'round 1: passes',
+  ]);
+});
+
 const CHANGE_ONE = { what: 'Give conditional checks before a fix', why: 'The answer assumed a cause the question never gave.' };
 
 test('a report mid-loop says its round, lists the changes so far above the questions, and opens a change to its reason', async (t) => {
