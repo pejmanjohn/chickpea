@@ -5,6 +5,6 @@ Save only after the person says yes to the preview. Call `update_agent` with the
 Other parts of an Agent. Say what will change and ask first:
 
 - **Memory:** `get_agent_memory` shows it with its `version`. To change it, call `update_agent_memory` with `agentId`, that `version`, and the whole new `body`.
-- **Archive or restore:** `archive_agent` or `restore_agent` with `agentId` and the `version` from `get_agent`. An archived Agent stops answering in Slack and leaves its Channels, and its schedules pause, until it's restored. Archiving one that answers in Channels comes back as `needs_confirmation` (below).
+- **Archive or restore:** `archive_agent` or `restore_agent` with `agentId` and the `version` from `get_agent`. An archived Agent stops answering in Slack and leaves its Channels, and its schedules pause, until it's restored. Archiving one that answers in Channels comes back as `needs_confirmation` (below). Archive one Agent at a time, and only after its confirmation is done start the next: a new one ends the confirmation still waiting.
 - **One of its skills:** `set_agent_skill` with `agentId`, the `skill` name from `get_agent`, and `action` `turn_on`, `turn_off` or `remove`.
 - **Its picture:** only Chickpea's Admin changes it. Give the person the Agent's `links.admin`.

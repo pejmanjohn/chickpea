@@ -11,7 +11,7 @@ Call `get_workspace` for the workspace name and the person's role, and `list_age
 ## 2. Find the chore
 
 - **The chore is already stated** in this conversation (for example "sales keeps asking me whether orders shipped"): go straight to step 3. Don't ask anything first. If an existing Agent already does that job or nearly does, propose improving that Agent instead (`get_guide` topic `edit`).
-- **The person asks you to suggest one** ("look at what I do and suggest an Agent"): don't ask first, even when the workspace has Agents. Pick a chore no existing Agent already does, from this conversation and what you know of their work, and go to step 3. The workspace's Agents don't count as knowing their work: with no notes, files or details about their week, ask the question below that fits first.
+- **The person asks you to suggest one** ("look at what I do and suggest an Agent"): if you know their work from this conversation, their notes or files, pick a chore no existing Agent already does and go to step 3 without asking, even when the workspace has Agents. The workspace's Agents don't tell you their work: knowing nothing else, ask the question below that fits.
 - **The workspace already has Agents** and no chore is stated: offer to improve one of them first. Ask one question that names them, such as: "You already have @ops and @billing in Slack. Want to improve one of them, or set up a new teammate for something people keep asking you or that you do every week?"
 - **Otherwise**, ask exactly one question: "What do people keep asking you for, or what do you do every week?"
 

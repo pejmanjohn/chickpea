@@ -330,7 +330,8 @@ test('a request for an Agent ends in propose_agent, whose card is the proposal, 
   }
   const start = playbookSection('start', 'chat-app').guide;
   assert.ok(start.indexOf('**The person asks you to suggest one**') < start.indexOf('**The workspace already has Agents**'), 'a request to suggest one is read before the offer to improve an Agent');
-  assert.ok(start.includes('don\'t ask first, even when the workspace has Agents. Pick a chore no existing Agent already does'), 'and it neither asks first nor proposes a job an Agent already does');
+  assert.ok(start.includes('pick a chore no existing Agent already does and go to step 3 without asking, even when the workspace has Agents'), 'and it neither asks first nor proposes a job an Agent already does');
+  assert.ok(start.includes('The workspace\'s Agents don\'t tell you their work: knowing nothing else, ask the question below that fits.'), 'with nothing known of their work, it asks first');
   assert.ok(playbookSection('start').guide.includes('Research first, too, when they ask you to look at their work and suggest one.'), 'a coding agent still looks before it proposes');
 });
 
