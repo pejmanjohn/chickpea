@@ -61,7 +61,7 @@ function frontDeskCandidates(usable: FrontDeskUsable): CustomAgentConfig[] {
 }
 
 /** The Agent's name as the block, the card, and the plan show it: one short line, else its handle. */
-function frontDeskName(agent: CustomAgentConfig): string {
+export function frontDeskName(agent: CustomAgentConfig): string {
   return clampText(inlineText(agent.name), FRONT_DESK_MAX_NAME_CHARS) || (agent.slackPresence?.normalizedHandle ?? '');
 }
 
@@ -225,7 +225,8 @@ function capNames(names: readonly string[]): { names: string[]; more: number } {
   };
 }
 
-function firstSentence(text: string | undefined): string | undefined {
+/** An Agent's purpose: the first sentence of its description, on one short line. */
+export function firstSentence(text: string | undefined): string | undefined {
   const flat = inlineText(text ?? '');
   if (!flat) return undefined;
   const end = flat.search(/[.!?](\s|$)/);

@@ -5,10 +5,7 @@ import {
   provisionSlackInteractionMember,
   slackInteractionMayUseGrantedChannel,
 } from '../src/auth/slack-admission.ts';
-import {
-  claimChickpeaIntroductionForAgentInteraction,
-  resolveAgentRoutingActor,
-} from '../src/channels/slack.ts';
+import { resolveAgentRoutingActor } from '../src/channels/slack.ts';
 import type { AppStores } from '../src/config/state-backend.ts';
 import { IdentityStoreLogic, SqliteIdentityStore } from '../src/identity/store.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
@@ -22,7 +19,9 @@ import { createSlackOwner } from './helpers/slack-owner.ts';
 
 const NOW = 1_787_000_000_000;
 
-test('first eligible Agent interaction queues one shared Chickpea introduction claim', async () => {
+// Only opening Chickpea's Messages tab claims the introduction
+// (slack-app-home-first-open.test.ts); a first message or mention of an Agent does not.
+test('first eligible Agent interaction provisions the member and queues no Chickpea introduction', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
   const management = new SqliteManagementStore(':memory:');
   const owner = await createSlackOwner(identity, { now: NOW });
@@ -49,25 +48,7 @@ test('first eligible Agent interaction queues one shared Chickpea introduction c
   try {
     const actor = await resolveAgentRoutingActor(input);
     assert.equal(actor.routing.fullMember, true);
-    assert.equal((await management.claimDueOutbox(Date.now(), 10, Date.now() + 30_000)).length, 0);
-    await claimChickpeaIntroductionForAgentInteraction({
-      actor,
-      workspaceId: input.workspaceId,
-      slackUserId: input.userId,
-      management,
-    });
-    await claimChickpeaIntroductionForAgentInteraction({
-      actor,
-      workspaceId: input.workspaceId,
-      slackUserId: input.userId,
-      management,
-    });
-    const claimed = await management.claimDueOutbox(Date.now(), 10, Date.now() + 30_000);
-    assert.equal(claimed.length, 1);
-    assert.ok(claimed[0] && 'kind' in claimed[0].receipt);
-    if (claimed[0] && 'kind' in claimed[0].receipt) {
-      assert.equal(claimed[0].receipt.kind, 'chickpea_introduction');
-    }
+    assert.deepEqual(await management.claimDueOutbox(Date.now(), 10, Date.now() + 30_000), []);
   } finally {
     identity.close();
     management.close();

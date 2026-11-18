@@ -89,6 +89,7 @@ import {
   resolveTurnAgentAccess,
   type PrivateAgentActor,
   type PrivateAgentPlacementFacts,
+  type PrivatelyUsableAgents,
 } from '../slack/agent-access.ts';
 import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
 import {
@@ -99,7 +100,7 @@ import {
   type FrontDeskOrigin,
   type SlackFrontDeskHandoffRequest,
 } from '../slack/front-desk.ts';
-import { readFrontDeskDirectory } from '../slack/front-desk-directory.ts';
+import { firstSentence, frontDeskName, readFrontDeskDirectory } from '../slack/front-desk-directory.ts';
 import {
   agentAppHomeStarterMessage,
   agentDirectoryAppHome,
@@ -261,7 +262,7 @@ import {
   type PrivateChannelSetupOutcome,
 } from '../slack/private-channel-setup.ts';
 import { replaceSlackActionMessage } from '../slack/action-response-url.ts';
-import type { PrivateChannelSetupIntent } from '../management/types.ts';
+import type { ChickpeaIntroductionUsable, PrivateChannelSetupIntent } from '../management/types.ts';
 import { parseCreditsAskAction, type CreditsAskAction } from '../slack/credits-ask.ts';
 import {
   addAgentToChannel,
@@ -287,7 +288,7 @@ import {
   resolveHostSlackManagementProposal,
   resolveTypedSlackManagementApproval,
 } from '../management/slack-approval.ts';
-import type { SetupWakeRequest } from '../management/receipts.ts';
+import { CHICKPEA_INTRODUCTION_MAX_AGENTS, type SetupWakeRequest } from '../management/receipts.ts';
 import { admitSlackBrowserActionReply } from '../slack/browser-action-admission.ts';
 import {
   authorizeUiResponse,
@@ -1269,23 +1270,50 @@ export async function resolveAgentRoutingActor(input: {
   };
 }
 
-export async function claimChickpeaIntroductionForAgentInteraction(input: {
+/**
+ * Chickpea's welcome for a member opening its Messages tab, once per person,
+ * with what they could use then. Guests and Slack Connect users get none.
+ */
+async function claimChickpeaIntroductionOnMessagesOpen(input: {
   actor: ResolvedAgentRoutingActor;
   workspaceId: string;
   slackUserId: string;
+  usable: PrivatelyUsableAgents;
   management: Pick<AppStores['management'], 'claimIntroduction'>;
 }): Promise<void> {
   if (!input.actor.principal) return;
+  const usable = chickpeaIntroductionUsable(input.usable);
   await input.management.claimIntroduction({
     organizationId: input.actor.principal.organizationId,
     userId: input.actor.principal.userId,
     workspaceId: input.workspaceId,
     slackUserId: input.slackUserId,
     trigger: 'first_interaction',
+    ...(usable ? { usable } : {}),
     at: Date.now(),
   }).catch((error) => {
     console.warn('[chickpea] Slack introduction claim failed:', sanitizeError(error));
   });
+}
+
+/** The welcome's snapshot. None when Slack confirmed no Agent but could not confirm some. */
+function chickpeaIntroductionUsable(usable: PrivatelyUsableAgents): ChickpeaIntroductionUsable | undefined {
+  if (usable.agents.length === 0 && usable.incomplete) return undefined;
+  const listed = usable.agents.slice(0, CHICKPEA_INTRODUCTION_MAX_AGENTS);
+  return {
+    agents: listed.map((agent) => {
+      const handle = agent.slackPresence?.normalizedHandle;
+      const purpose = firstSentence(agent.description);
+      const channelId = usable.visibleChannels.get(agent.id);
+      return {
+        name: frontDeskName(agent),
+        ...(handle ? { handle } : {}),
+        ...(purpose ? { purpose } : {}),
+        ...(channelId ? { channelId } : {}),
+      };
+    }),
+    more: usable.agents.length - listed.length,
+  };
 }
 
 const PROMPTS_FIXED_BY_APP_MANIFEST = 'static_prompts_configured';
@@ -1293,6 +1321,13 @@ const PROMPTS_FIXED_BY_APP_MANIFEST = 'static_prompts_configured';
 const FIRST_PROMPTS = [
   { title: 'Create my first Agent', message: 'Help me create my first Agent. Ask me what my team works on.' },
   { title: 'Ideas for my team', message: 'What kinds of Agents could help my team?' },
+  { title: 'Connect a tool', message: 'Which tools can my Agents connect to?' },
+];
+
+/** For a person who can already use an Agent. */
+const JOINER_PROMPTS = [
+  { title: 'What can our Agents do?', message: 'Which Agents can I use, and what does each one do?' },
+  { title: 'Set up a new Agent', message: 'Help me set up a new Agent. Ask me what I work on.' },
   { title: 'Connect a tool', message: 'Which tools can my Agents connect to?' },
 ];
 
@@ -1315,13 +1350,23 @@ async function openAgentAppHome(input: {
     transport: input.transport,
     stores: input.stores,
   });
+  const usable = await listUsableAgentsForActor({
+    workspaceId: input.workspaceId,
+    userId: input.event.user,
+    stores: input.stores,
+    transport: input.transport,
+    actor,
+  });
   await Promise.all([
-    messages && channelId ? offerFirstPrompts(input.client, channelId) : undefined,
+    messages && channelId
+      ? offerSuggestedPrompts(input.client, channelId, usable.agents.length > 0 ? JOINER_PROMPTS : FIRST_PROMPTS)
+      : undefined,
     messages
-      ? claimChickpeaIntroductionForAgentInteraction({
+      ? claimChickpeaIntroductionOnMessagesOpen({
           actor,
           workspaceId: input.workspaceId,
           slackUserId: input.event.user,
+          usable,
           management: input.stores.management,
         })
       : undefined,
@@ -1332,16 +1377,21 @@ async function openAgentAppHome(input: {
       transport: input.transport,
       botUserId: input.botUserId,
       actor,
+      usable,
       platformEnv: input.platformEnv,
     }),
   ]);
 }
 
-async function offerFirstPrompts(client: Pick<SlackUiClient, 'assistant'>, channelId: string): Promise<void> {
+async function offerSuggestedPrompts(
+  client: Pick<SlackUiClient, 'assistant'>,
+  channelId: string,
+  prompts: typeof FIRST_PROMPTS,
+): Promise<void> {
   try {
     // Without a thread they apply to the whole tab. Slack does not say they
     // persist, so every open sets them again.
-    await client.assistant.threads.setSuggestedPrompts({ channel_id: channelId, prompts: FIRST_PROMPTS });
+    await client.assistant.threads.setSuggestedPrompts({ channel_id: channelId, prompts });
   } catch (error) {
     const code = slackPlatformErrorCode(error) ?? 'unknown';
     if (code !== PROMPTS_FIXED_BY_APP_MANIFEST) {
@@ -1358,6 +1408,8 @@ async function publishAgentAppHome(input: {
   botUserId?: string;
   unavailableNotice?: boolean;
   actor?: ResolvedAgentRoutingActor;
+  /** This open's list, when the caller already read it for this actor. */
+  usable?: PrivatelyUsableAgents;
   platformEnv?: PlatformEnv | undefined;
 }): Promise<void> {
   if (!input.botUserId) return;
@@ -1370,21 +1422,7 @@ async function publishAgentAppHome(input: {
     transport: input.transport,
     stores: input.stores,
   });
-  const [agents, grants] = actor.routing.fullMember
-    ? await Promise.all([
-        input.stores.config.listAgents(),
-        input.stores.config.listAgentChannelGrants(input.workspaceId),
-      ])
-    : [[], []];
-  const visible = actor.routing.fullMember
-    ? (await listPrivatelyUsableAgents({
-        agents,
-        workspaceId: input.workspaceId,
-        grants,
-        actor: privateAgentActor(actor, input.userId),
-        transport: input.transport,
-      })).agents
-    : [];
+  const visible = (input.usable ?? await listUsableAgentsForActor({ ...input, actor })).agents;
   await input.transport.publishAppHome({
     userId: input.userId,
     view: agentDirectoryAppHome(visible, {
@@ -1395,6 +1433,28 @@ async function publishAgentAppHome(input: {
         agents: visible,
       }),
     }),
+  });
+}
+
+/** The Agents this person may use, as App Home lists them; none for a guest. */
+async function listUsableAgentsForActor(input: {
+  workspaceId: string;
+  userId: string;
+  stores: AppStores;
+  transport: SlackTransport;
+  actor: ResolvedAgentRoutingActor;
+}): Promise<PrivatelyUsableAgents> {
+  if (!input.actor.routing.fullMember) return { agents: [], incomplete: false, visibleChannels: new Map() };
+  const [agents, grants] = await Promise.all([
+    input.stores.config.listAgents(),
+    input.stores.config.listAgentChannelGrants(input.workspaceId),
+  ]);
+  return listPrivatelyUsableAgents({
+    agents,
+    workspaceId: input.workspaceId,
+    grants,
+    actor: privateAgentActor(input.actor, input.userId),
+    transport: input.transport,
   });
 }
 
@@ -3699,13 +3759,6 @@ async function processSlackEvent(
       }
       routedHandoff = routed.handoff;
       if (routed.coAddressed) turn.coAddressed = routed.coAddressed;
-      const introduction = ask ? undefined : claimChickpeaIntroductionForAgentInteraction({
-        actor: agentRoutingActor,
-        workspaceId: turn.workspaceId,
-        slackUserId: turn.userId,
-        management: stores.management,
-      });
-      introduction?.catch(() => undefined);
       let routedAssignment = routed.assignment;
       if (routed.handoffFallbackRequired && routed.previousAgentId && routed.route.handoff) {
         const fallbackContext = await hydrateSlackPublicHandoffFallback(
@@ -3767,7 +3820,6 @@ async function processSlackEvent(
       const policyAssignment = await resolveModelPolicyForAssignment(
         routedAssignment, store, stores.settings, process.env, installation, platformEnv,
       );
-      await introduction;
       const admittedCredential = {
         model: policyAssignment.model,
         credential: resolveModelCredentialAttribution(

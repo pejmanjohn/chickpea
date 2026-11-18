@@ -288,7 +288,7 @@ test('opening a hosted Messages tab sets the first prompts with the installation
     assert.deepEqual((await h.stores.management.claimDueOutbox(now + 1, 10, now + 30_000))
       .map(({ destination, receipt }) => ({ destination, receipt })), [{
       destination: { kind: 'slack_dm', workspaceId: TEAM, slackUserId: 'U1' },
-      receipt: { kind: 'chickpea_introduction', trigger: 'first_interaction' },
+      receipt: { kind: 'chickpea_introduction', trigger: 'first_interaction', usable: { agents: [], more: 0 } },
     }]);
   });
 });
