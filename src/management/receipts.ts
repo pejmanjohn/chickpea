@@ -1032,9 +1032,9 @@ function introductionAgentLine(agent: ChickpeaIntroductionAgent): string {
     : INERT_AGENT_HANDLE.test(agent.handle) ? agent.handle : boundedSlackText(agent.handle, 80);
   const purpose = agent.purpose ? boundedSlackText(agent.purpose, 200) : '';
   const channel = agent.channelId && SLACK_CHANNEL_ID.test(agent.channelId) ? agent.channelId : undefined;
-  return `• *${boundedSlackText(agent.name, 80)}*${handle ? ` @${handle}` : ''}${
-    channel ? ` in <#${channel}>` : ''
-  }${purpose ? `: ${purpose}` : ''}`;
+  const name = boundedSlackText(agent.name, 80);
+  const label = [name ? `*${name}*` : '', handle ? `@${handle}` : ''].filter(Boolean).join(' ') || 'An Agent';
+  return `• ${label}${channel ? ` in <#${channel}>` : ''}${purpose ? `: ${purpose}` : ''}`;
 }
 
 function escapeSlackText(value: string): string {

@@ -19,9 +19,7 @@ import { createSlackOwner } from './helpers/slack-owner.ts';
 
 const NOW = 1_787_000_000_000;
 
-// Only opening Chickpea's Messages tab claims the introduction
-// (slack-app-home-first-open.test.ts); a first message or mention of an Agent does not.
-test('first eligible Agent interaction provisions the member and queues no Chickpea introduction', async () => {
+test('resolving a first eligible Slack actor provisions the member and queues nothing', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
   const management = new SqliteManagementStore(':memory:');
   const owner = await createSlackOwner(identity, { now: NOW });

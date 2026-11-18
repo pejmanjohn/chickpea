@@ -28,7 +28,7 @@ interface Harness {
   openAppHome(user: string, tab: string): Promise<void>;
   claimDueOutbox(): Promise<Array<{ destination: unknown; receipt: ManagementReceipt }>>;
   /** A live user Agent placed in these Channels. */
-  placeAgent(id: string, name: string, description: string, channelIds: string[]): Promise<void>;
+  placeAgent(id: string, name: string, description: string, channelIds: string[], userGroupId?: string): Promise<void>;
 }
 
 async function withGatewayInstallation(
@@ -92,9 +92,16 @@ async function withGatewayInstallation(
     stores,
     calls,
     warnings,
-    async placeAgent(id, name, description, channelIds) {
+    async placeAgent(id, name, description, channelIds, userGroupId) {
+      const handle = name.toLowerCase().replace(/ /g, '-');
       await stores.config.createAgent({
         id, name, description, instructions: 'Help.', enabled: true, lifecycle: 'active',
+        ...(userGroupId
+          ? { slackPresence: {
+              requestedHandle: handle, normalizedHandle: handle, desiredState: 'active', health: 'healthy',
+              avatar: { kind: 'generated', revision: 1, seed: id }, userGroupId,
+            } }
+          : {}),
         creatorMembershipId: owner.membership.id, editPolicy: 'creator_and_admins',
         skills: [], mcpServers: [], apiConnections: [], repositories: [],
       });
@@ -143,7 +150,7 @@ test('a teammate who can use an Agent is welcomed with it and its Channel, and o
     channels: { C01SUPPORT: { private: false }, C02NEWHIRES: { private: true }, C03FINANCE: { private: true } },
     memberChannels: { U2: ['C02NEWHIRES'] },
   });
-  await h.placeAgent('agent_support', 'Support Desk', 'Answers order, shipping and returns questions. Escalates refunds.', ['C01SUPPORT']);
+  await h.placeAgent('agent_support', 'Support Desk', 'Answers order, shipping and returns questions. Escalates refunds.', ['C01SUPPORT'], 'S01SUPPORT');
   await h.placeAgent('agent_onboarding', 'Onboarding Guide', 'Helps new teammates find the right Channel and person.', ['C03FINANCE', 'C02NEWHIRES']);
   await h.placeAgent('agent_finance', 'Finance Desk', 'Answers expense questions.', ['C03FINANCE']);
   await h.openAppHome('U2', 'messages');
@@ -160,7 +167,7 @@ test('a teammate who can use an Agent is welcomed with it and its Channel, and o
       usable: {
         agents: [
           {
-            name: 'Onboarding Guide', handle: 'onboarding-guide',
+            name: 'Onboarding Guide',
             purpose: 'Helps new teammates find the right Channel and person.', channelId: 'C02NEWHIRES',
           },
           {
@@ -171,11 +178,11 @@ test('a teammate who can use an Agent is welcomed with it and its Channel, and o
         more: 0,
       },
     },
-  }], 'Finance Desk, only in a private Channel this person is not in, is not listed; nor is that Channel');
+  }], 'Finance Desk, only in a private Channel this person is not in, is not listed; nor is that Channel. Onboarding Guide has no published handle, so it names none');
   assert.equal(formatManagementSetupReceipt(queued[0]!.receipt), [
     'Hi, I’m *Chickpea*. Your team uses me to set up AI Agents here in Slack. You can already use these:',
     [
-      '• *Onboarding Guide* @onboarding-guide in <#C02NEWHIRES>: Helps new teammates find the right Channel and person.',
+      '• *Onboarding Guide* in <#C02NEWHIRES>: Helps new teammates find the right Channel and person.',
       '• *Support Desk* @support-desk in <#C01SUPPORT>: Answers order, shipping and returns questions.',
     ].join('\n'),
     'Mention an Agent in its Channel, or press Message next to it on my Home tab to talk to it privately. To set up a new Agent for work you repeat, tell me what it should do.',

@@ -1122,6 +1122,14 @@ test('Chickpea introduction renders user-entered Agent text inert and links only
   assert.doesNotMatch(text, /<!channel>|<@U999>/);
 });
 
+test('Chickpea introduction lists an Agent whose name is only formatting by its handle', () => {
+  const lines = introduction('first_interaction', {
+    agents: [{ name: '***', handle: 'support-desk' }, { name: '__' }],
+    more: 0,
+  }).split('\n\n')[1]!.split('\n');
+  assert.deepEqual(lines, ['• @support-desk', '• An Agent']);
+});
+
 // Defect caught: @sales_ops shown as @salesops, a handle nobody has.
 test('Chickpea introduction keeps the underscores inside an Agent handle', () => {
   const lines = introduction('first_interaction', {

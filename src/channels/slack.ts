@@ -1302,7 +1302,7 @@ function chickpeaIntroductionUsable(usable: PrivatelyUsableAgents): ChickpeaIntr
   const listed = usable.agents.slice(0, CHICKPEA_INTRODUCTION_MAX_AGENTS);
   return {
     agents: listed.map((agent) => {
-      const handle = agent.slackPresence?.normalizedHandle;
+      const handle = agentSlackHandle(agent)?.handle;
       const purpose = firstSentence(agent.description);
       const channelId = usable.visibleChannels.get(agent.id);
       return {
