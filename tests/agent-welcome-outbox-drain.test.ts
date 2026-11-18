@@ -217,3 +217,23 @@ test('a hosted first-Owner claim over the state RPC arms the outbox drain for Ch
   assert.equal(tenant.stores.management.nextOutboxDueAt(), NOW);
   assert.deepEqual(writes, [NOW], 'the introduction is drained now, not at the next unrelated wake');
 });
+
+// Defect caught: a teammate's welcome, claimed when they open Chickpea's
+// Messages tab, waiting for an unrelated wake. The Worker claims it over this
+// RPC, and no message admission arms a drain for it.
+test('claiming Chickpea\'s introduction over the state RPC arms the outbox drain at once', async (context) => {
+  context.mock.method(Date, 'now', () => NOW);
+  const f = fixture(LATER_SWEEP);
+  try {
+    const claimed = await f.probe.managementExecute({
+      kind: 'claim_introduction',
+      input: {
+        organizationId: 'org_1', userId: 'user_1', workspaceId: 'T_TEST', slackUserId: 'U_TEST',
+        trigger: 'first_interaction', usable: { agents: [], more: 0 }, at: NOW,
+      },
+    });
+    assert.equal(claimed.ok, true);
+    assert.equal(f.management.nextOutboxDueAt(), NOW);
+    assert.deepEqual(f.writes, [NOW], 'the welcome is sent now, not at the next unrelated wake');
+  } finally { f.db.close(); }
+});
