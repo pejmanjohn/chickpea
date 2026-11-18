@@ -1451,7 +1451,11 @@ export class ManagementStoreLogic {
           workspaceId: input.workspaceId,
           slackUserId: input.slackUserId,
         },
-        receipt: { kind: 'chickpea_introduction', trigger: input.trigger },
+        receipt: {
+          kind: 'chickpea_introduction',
+          trigger: input.trigger,
+          ...(input.usable ? { usable: input.usable } : {}),
+        },
         status: 'pending',
         attempts: 0,
         nextAttemptAt: input.at,

@@ -2629,8 +2629,6 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     } finally {
       // The thread's next delivery goes on beside this one's status and hand-off.
       void place.then((release) => release());
-      // As managementExecute: Chickpea's introduction, queued by a person's first message, is sent now.
-      await this.armReceiptDrainAfter('claim_introduction').catch(() => undefined);
       await Promise.all(handOffs);
       releaseReceipt?.();
     }

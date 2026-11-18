@@ -34,9 +34,12 @@ import {
   slackTsAt,
 } from './front-desk.ts';
 
+/** The usable Agents as the front desk reads them. */
+type FrontDeskUsable = Pick<PrivatelyUsableAgents, 'agents' | 'incomplete'>;
+
 /** The facts one directory is assembled from, read once at ingress. */
 export interface FrontDeskFacts {
-  usable: PrivatelyUsableAgents;
+  usable: FrontDeskUsable;
   accounts: readonly ConnectionAccount[];
   bindings: ReadonlyMap<string, readonly AgentConnectionBinding[]>;
   actorMembershipId?: string;
@@ -51,14 +54,14 @@ export interface FrontDeskFacts {
  * Slack app is left out: it posts as its own bot, which is not in this DM.
  * So is one with neither a name that survives cleaning nor a handle.
  */
-function frontDeskCandidates(usable: PrivatelyUsableAgents): CustomAgentConfig[] {
+function frontDeskCandidates(usable: FrontDeskUsable): CustomAgentConfig[] {
   return usable.agents.filter((agent) =>
     agent.kind === 'user' && agent.id !== CHICKPEA_AGENT_ID && !agentAppIsLive(agent.slackPresence) &&
     frontDeskName(agent) !== '');
 }
 
 /** The Agent's name as the block, the card, and the plan show it: one short line, else its handle. */
-function frontDeskName(agent: CustomAgentConfig): string {
+export function frontDeskName(agent: CustomAgentConfig): string {
   return clampText(inlineText(agent.name), FRONT_DESK_MAX_NAME_CHARS) || (agent.slackPresence?.normalizedHandle ?? '');
 }
 
@@ -71,7 +74,7 @@ interface FrontDeskOrder {
 }
 
 function orderFrontDeskCandidates(
-  usable: PrivatelyUsableAgents,
+  usable: FrontDeskUsable,
   replies: readonly RecentSlackAgentReply[],
   nowMs: number,
 ): FrontDeskOrder {
@@ -222,7 +225,8 @@ function capNames(names: readonly string[]): { names: string[]; more: number } {
   };
 }
 
-function firstSentence(text: string | undefined): string | undefined {
+/** An Agent's purpose: the first sentence of its description, on one short line. */
+export function firstSentence(text: string | undefined): string | undefined {
   const flat = inlineText(text ?? '');
   if (!flat) return undefined;
   const end = flat.search(/[.!?](\s|$)/);

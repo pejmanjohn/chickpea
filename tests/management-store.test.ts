@@ -70,6 +70,47 @@ test('Chickpea introduction claim queues exactly one durable DM across triggers'
   }
 });
 
+test('Chickpea introduction claim stores what the person could use, and a later claim keeps the first snapshot', async () => {
+  const store = new SqliteManagementStore(':memory:');
+  const claim = {
+    organizationId: 'org_intro',
+    userId: 'user_intro',
+    workspaceId: 'T_INTRO',
+    slackUserId: 'U_INTRO',
+    trigger: 'first_interaction' as const,
+  };
+  try {
+    const first = await store.claimIntroduction({
+      ...claim,
+      usable: {
+        agents: [{ name: 'Support Desk', handle: 'support-desk', purpose: 'Answers order questions.', channelId: 'C0123' }],
+        more: 2,
+      },
+      at: NOW,
+    });
+    const snapshot = {
+      kind: 'chickpea_introduction',
+      trigger: 'first_interaction',
+      usable: {
+        agents: [{ name: 'Support Desk', handle: 'support-desk', purpose: 'Answers order questions.', channelId: 'C0123' }],
+        more: 2,
+      },
+    };
+    assert.deepEqual(first.outbox?.receipt, snapshot);
+
+    const later = await store.claimIntroduction({
+      ...claim,
+      usable: { agents: [{ name: 'Onboarding Guide' }], more: 0 },
+      at: NOW + 1,
+    });
+    assert.equal(later.created, false);
+    const queued = await store.claimDueOutbox(NOW + 1, 10, NOW + 30_000);
+    assert.deepEqual(queued.map(({ receipt }) => receipt), [snapshot]);
+  } finally {
+    store.close();
+  }
+});
+
 const CREATION_THREAD = {
   kind: 'thread' as const, workspaceId: 'T_HELP', channelId: 'D_HELP', threadTs: '1800000000.000100',
 };

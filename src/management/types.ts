@@ -665,6 +665,28 @@ export interface ManagementAgentCreatedWelcome {
 export interface ManagementChickpeaIntroduction {
   kind: 'chickpea_introduction';
   trigger: 'first_owner' | 'first_interaction';
+  /**
+   * What this person could use when the welcome was claimed. Absent when
+   * unknown: first_owner, a welcome claimed before this field, or Slack
+   * confirmed none while some were unconfirmed.
+   */
+  usable?: ChickpeaIntroductionUsable;
+}
+
+export interface ChickpeaIntroductionUsable {
+  /** At most 5, in Home tab order. */
+  agents: ChickpeaIntroductionAgent[];
+  /** Usable Agents not listed. */
+  more: number;
+}
+
+export interface ChickpeaIntroductionAgent {
+  name: string;
+  handle?: string;
+  /** First sentence of the description, clamped like the front desk's purpose. */
+  purpose?: string;
+  /** A Channel the Agent answers in that this person can see. */
+  channelId?: string;
 }
 
 /** Internal durable record. Digest members must never cross a public adapter. */
@@ -864,6 +886,8 @@ export interface ClaimManagementIntroductionInput {
   workspaceId: string;
   slackUserId: string;
   trigger: ManagementIntroductionClaim['trigger'];
+  /** Stored on the receipt; a repeat claim keeps the first. */
+  usable?: ChickpeaIntroductionUsable;
   at: number;
 }
 

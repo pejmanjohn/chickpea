@@ -107,10 +107,16 @@ test('Cloudflare management proxy preserves the canonical ledger contract and ty
       workspaceId: 'T_RPC',
       slackUserId: 'U_RPC',
       trigger: 'first_interaction',
+      usable: { agents: [{ name: 'Support Desk', channelId: 'C_RPC' }], more: 0 },
       at: NOW,
     });
     assert.equal(introduction.created, true);
     assert.equal(introduction.outbox?.destination.kind, 'slack_dm');
+    assert.deepEqual(introduction.outbox?.receipt, {
+      kind: 'chickpea_introduction',
+      trigger: 'first_interaction',
+      usable: { agents: [{ name: 'Support Desk', channelId: 'C_RPC' }], more: 0 },
+    }, 'the snapshot crosses the state RPC');
     const replay = await proxy.claimIntroduction({
       organizationId: 'org_rpc',
       userId: 'user_rpc',
