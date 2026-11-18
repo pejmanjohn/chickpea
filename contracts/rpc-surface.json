@@ -5953,6 +5953,22 @@
         "\"rolled_back\""
       ]
     },
+    "ChickpeaIntroductionAgent": {
+      "object": {
+        "channelId?": "string",
+        "handle?": "string",
+        "name": "string",
+        "purpose?": "string"
+      }
+    },
+    "ChickpeaIntroductionUsable": {
+      "object": {
+        "agents": {
+          "array": "#ChickpeaIntroductionAgent"
+        },
+        "more": "number"
+      }
+    },
     "ChickpeaManagementHandoff": {
       "object": {
         "actingAgentId": "string",
@@ -6047,6 +6063,7 @@
             "\"first_owner\""
           ]
         },
+        "usable?": "#ChickpeaIntroductionUsable",
         "userId": "string",
         "workspaceId": "string"
       }
@@ -10526,7 +10543,8 @@
             "\"first_interaction\"",
             "\"first_owner\""
           ]
-        }
+        },
+        "usable?": "#ChickpeaIntroductionUsable"
       }
     },
     "ManagementConnectorConnectedReceipt": {

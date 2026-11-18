@@ -30,6 +30,8 @@ import type {
   ManagementReceipt,
   ManagementAgentCreatedWelcome,
   ManagementChickpeaIntroduction,
+  ChickpeaIntroductionAgent,
+  ChickpeaIntroductionUsable,
   ManagementConnectorConnectedReceipt,
   ManagementRoutineSavedAcknowledgement,
   ManagementScheduleActionAcknowledgement,
@@ -40,6 +42,9 @@ import type {
 } from './types.ts';
 import { emitManagementMetric } from './telemetry.ts';
 import { managementResultFullyApplied } from './contracts.ts';
+
+/** The most Agents Chickpea's introduction lists by name. */
+export const CHICKPEA_INTRODUCTION_MAX_AGENTS = 5;
 
 const OUTBOX_LEASE_MS = 30_000;
 const OUTBOX_MAX_ATTEMPTS = 8;
@@ -963,12 +968,67 @@ function takenHandleText(
   return `@${boundedSlackText(receipt.takenHandle, 80)} was already taken in this Slack workspace, so ${owner} handle is @${boundedSlackText(receipt.agentHandle, 80)}.${changeHint}`;
 }
 
-function formatChickpeaIntroduction(_receipt: ManagementChickpeaIntroduction): string {
-  return [
-    'Hi, I’m *Chickpea*. I set up AI Agents for your team, right here in Slack.',
-    'Each Agent has one job, like answering support questions or drafting weekly updates. Tell me what you need, and I’ll create the Agent, connect its tools, and add it to the right channels.',
-    'What would you like your first Agent to help with?',
-  ].join('\n\n');
+/**
+ * Who Chickpea greets: the installer; a teammate with Agents they can use;
+ * one Slack confirmed can use none; or one whose Agents are unknown.
+ */
+type ChickpeaIntroductionVariant =
+  | { kind: 'installer' }
+  | { kind: 'agents'; usable: ChickpeaIntroductionUsable }
+  | { kind: 'no_agents' }
+  | { kind: 'unknown' };
+
+function chickpeaIntroductionVariant(receipt: ManagementChickpeaIntroduction): ChickpeaIntroductionVariant {
+  if (receipt.trigger === 'first_owner') return { kind: 'installer' };
+  if (!receipt.usable) return { kind: 'unknown' };
+  return receipt.usable.agents.length > 0 ? { kind: 'agents', usable: receipt.usable } : { kind: 'no_agents' };
+}
+
+function formatChickpeaIntroduction(receipt: ManagementChickpeaIntroduction): string {
+  const variant = chickpeaIntroductionVariant(receipt);
+  switch (variant.kind) {
+    case 'installer':
+      return [
+        'Hi, I’m *Chickpea*. I set up AI Agents for your team, right here in Slack.',
+        'Each Agent has one job, like answering support questions or drafting weekly updates. Tell me what you need, and I’ll create the Agent, connect its tools, and add it to the right channels.',
+        'What would you like your first Agent to help with?',
+      ].join('\n\n');
+    case 'agents': {
+      const { agents, more } = variant.usable;
+      const listed = agents.slice(0, CHICKPEA_INTRODUCTION_MAX_AGENTS);
+      const unlisted = more + agents.length - listed.length;
+      return [
+        'Hi, I’m *Chickpea*. Your team uses me to set up AI Agents here in Slack. You can already use these:',
+        [
+          ...listed.map(introductionAgentLine),
+          ...(unlisted > 0 ? [`Plus ${unlisted} more on my Home tab.`] : []),
+        ].join('\n'),
+        'Mention an Agent in its Channel, or press Message next to it on my Home tab to talk to it privately. To set up a new Agent for work you repeat, tell me what it should do.',
+      ].join('\n\n');
+    }
+    case 'no_agents':
+      return [
+        'Hi, I’m *Chickpea*. I set up AI Agents for your team, right here in Slack.',
+        'Each Agent has one job, like answering support questions or drafting weekly updates. None are set up for you yet. Tell me about a task you do every week, and I’ll set up an Agent for it.',
+      ].join('\n\n');
+    case 'unknown':
+      return [
+        'Hi, I’m *Chickpea*. Your team uses me to set up AI Agents here in Slack.',
+        'My Home tab lists the Agents you can use. To set up a new one, tell me what it should do.',
+      ].join('\n\n');
+  }
+}
+
+const SLACK_CHANNEL_ID = /^[CG][A-Z0-9]+$/;
+
+/** One listed Agent. Its name, handle and purpose are user-entered, so they render inert. */
+function introductionAgentLine(agent: ChickpeaIntroductionAgent): string {
+  const handle = agent.handle ? boundedSlackText(agent.handle, 80) : '';
+  const purpose = agent.purpose ? boundedSlackText(agent.purpose, 200) : '';
+  const channel = agent.channelId && SLACK_CHANNEL_ID.test(agent.channelId) ? agent.channelId : undefined;
+  return `• *${boundedSlackText(agent.name, 80)}*${handle ? ` @${handle}` : ''}${
+    channel ? ` in <#${channel}>` : ''
+  }${purpose ? `: ${purpose}` : ''}`;
 }
 
 function escapeSlackText(value: string): string {

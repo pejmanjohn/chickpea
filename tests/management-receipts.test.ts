@@ -19,6 +19,7 @@ import {
 } from '../src/routines/types.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
 import type {
+  ChickpeaIntroductionAgent,
   ManagementAgentCreatedWelcome,
   ManagementReceiptOutboxRecord,
 } from '../src/management/types.ts';
@@ -981,13 +982,19 @@ test('an acknowledged Agent welcome is not retried when post-delivery bookkeepin
   assert.equal(result.deliveryRef, 'slack:C_WELCOME:1800000000.000500');
 });
 
+const INSTALLER_INTRODUCTION = [
+  'Hi, I’m *Chickpea*. I set up AI Agents for your team, right here in Slack.',
+  'Each Agent has one job, like answering support questions or drafting weekly updates. Tell me what you need, and I’ll create the Agent, connect its tools, and add it to the right channels.',
+  'What would you like your first Agent to help with?',
+].join('\n\n');
+
 test('Chickpea introduction opens one Slack DM and ends with a question the person answers', async () => {
   const calls: Array<Record<string, unknown>> = [];
   const record: ManagementReceiptOutboxRecord = {
     outboxId: 'chickpea_intro_org_user',
     operationId: 'chickpea_intro_org_user',
     destination: { kind: 'slack_dm', workspaceId: 'T_INTRO', slackUserId: 'U_INTRO' },
-    receipt: { kind: 'chickpea_introduction', trigger: 'first_interaction' },
+    receipt: { kind: 'chickpea_introduction', trigger: 'first_owner' },
     status: 'delivering',
     attempts: 1,
     nextAttemptAt: 1_800_000_000_000,
@@ -1028,12 +1035,91 @@ test('Chickpea introduction opens one Slack DM and ends with a question the pers
   });
   assert.deepEqual(calls[0], { users: 'U_INTRO' });
   assert.equal(calls[1]?.channel, 'D_INTRO');
-  assert.equal(calls[1]?.text, [
-    'Hi, I’m *Chickpea*. I set up AI Agents for your team, right here in Slack.',
-    'Each Agent has one job, like answering support questions or drafting weekly updates. Tell me what you need, and I’ll create the Agent, connect its tools, and add it to the right channels.',
-    'What would you like your first Agent to help with?',
-  ].join('\n\n'));
+  assert.equal(calls[1]?.text, INSTALLER_INTRODUCTION);
   assert.equal(result.deliveryRef, 'slack:D_INTRO:1800000000.000400');
+});
+
+const SUPPORT_DESK: ChickpeaIntroductionAgent = {
+  name: 'Support Desk',
+  handle: 'support-desk',
+  purpose: 'Answers order, shipping and returns questions.',
+  channelId: 'C0123',
+};
+const ONBOARDING_GUIDE: ChickpeaIntroductionAgent = {
+  name: 'Onboarding Guide',
+  handle: 'onboarding-guide',
+  purpose: 'Helps new teammates find the right Channel and person.',
+};
+const JOINER_CLOSE = 'Mention an Agent in its Channel, or press Message next to it on my Home tab to talk to it privately. To set up a new Agent for work you repeat, tell me what it should do.';
+
+function introduction(
+  trigger: 'first_owner' | 'first_interaction',
+  usable?: { agents: ChickpeaIntroductionAgent[]; more: number },
+): string {
+  return formatManagementSetupReceipt({ kind: 'chickpea_introduction', trigger, ...(usable ? { usable } : {}) });
+}
+
+test('Chickpea introduction fits the person: installer, teammate with Agents, with none, or unknown', () => {
+  assert.equal(introduction('first_owner'), INSTALLER_INTRODUCTION);
+  assert.equal(
+    introduction('first_owner', { agents: [SUPPORT_DESK], more: 0 }),
+    INSTALLER_INTRODUCTION,
+    'the installer keeps today’s text, whatever was stored with it',
+  );
+  assert.equal(introduction('first_interaction', { agents: [SUPPORT_DESK, ONBOARDING_GUIDE], more: 3 }), [
+    'Hi, I’m *Chickpea*. Your team uses me to set up AI Agents here in Slack. You can already use these:',
+    [
+      '• *Support Desk* @support-desk in <#C0123>: Answers order, shipping and returns questions.',
+      '• *Onboarding Guide* @onboarding-guide: Helps new teammates find the right Channel and person.',
+      'Plus 3 more on my Home tab.',
+    ].join('\n'),
+    JOINER_CLOSE,
+  ].join('\n\n'));
+  assert.equal(introduction('first_interaction', { agents: [], more: 0 }), [
+    'Hi, I’m *Chickpea*. I set up AI Agents for your team, right here in Slack.',
+    'Each Agent has one job, like answering support questions or drafting weekly updates. None are set up for you yet. Tell me about a task you do every week, and I’ll set up an Agent for it.',
+  ].join('\n\n'));
+  assert.equal(introduction('first_interaction'), [
+    'Hi, I’m *Chickpea*. Your team uses me to set up AI Agents here in Slack.',
+    'My Home tab lists the Agents you can use. To set up a new one, tell me what it should do.',
+  ].join('\n\n'), 'a welcome claimed without a snapshot says nothing it cannot know');
+});
+
+test('Chickpea introduction lists at most five Agents and counts the rest, with no more line when none are left', () => {
+  const agents = Array.from({ length: 6 }, (_, index) => ({ name: `Agent ${index + 1}` }));
+  const listed = introduction('first_interaction', { agents, more: 2 }).split('\n\n')[1]!.split('\n');
+  assert.deepEqual(listed, [
+    '• *Agent 1*', '• *Agent 2*', '• *Agent 3*', '• *Agent 4*', '• *Agent 5*',
+    'Plus 3 more on my Home tab.',
+  ]);
+  const exact = introduction('first_interaction', { agents: [{ name: 'Support Desk' }], more: 0 });
+  assert.equal(exact.split('\n\n')[1], '• *Support Desk*', 'only the name when nothing else is known');
+  assert.doesNotMatch(exact, /Plus|more on my Home tab/);
+});
+
+test('Chickpea introduction renders user-entered Agent text inert and links only a real Channel id', () => {
+  const text = introduction('first_interaction', {
+    agents: [
+      {
+        name: '*Boss* <!channel>\nnow',
+        handle: '<@U999>',
+        purpose: 'Pings <!channel> and <@U999> about *everything*\n> quoted',
+        channelId: '<!channel>',
+      },
+      { name: 'Lowercase Channel', channelId: 'c0123' },
+      { name: 'Direct message', channelId: 'D0123' },
+      { name: 'Private group', channelId: 'G0456' },
+    ],
+    more: 0,
+  });
+  const lines = text.split('\n\n')[1]!.split('\n');
+  assert.deepEqual(lines, [
+    '• *Boss &lt;!channel&gt; now* @&lt;@U999&gt;: Pings &lt;!channel&gt; and &lt;@U999&gt; about everything &gt; quoted',
+    '• *Lowercase Channel*',
+    '• *Direct message*',
+    '• *Private group* in <#G0456>',
+  ]);
+  assert.doesNotMatch(text, /<!channel>|<@U999>/);
 });
 
 test('durable action state repairs one DM reaction and keeps Channel success reply-owned', async () => {
