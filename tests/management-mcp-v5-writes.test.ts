@@ -544,10 +544,11 @@ test('a confirmed change is named as its confirmation asked it; several, or one 
     'Removed Dana from Chickpea.');
   assert.equal(named(preview({ operationKind: 'update_member', statement: { kind: 'update_member', member: 'Dana', role: 'owner' } })),
     'Made Dana an Owner.');
+  assert.equal(named(preview({ operationKind: 'archive_agent', statement: { kind: 'archive_agent', agent, channelCount: 1 } })),
+    'Archived Research; it no longer answers anywhere.');
   for (const unnamed of [
     undefined,
     preview({ before: { enabled: false }, after: { enabled: true } }),
-    preview({ operationKind: 'archive_agent', statement: { kind: 'archive_agent', agent, channelCount: 0 } }),
     preview({ operationKind: 'delete_agent', statement: { kind: 'delete_agent', agent } }, { before: { enabled: true }, after: { enabled: false } }),
   ]) assert.equal(named(unnamed), 'Made the change you confirmed.');
 });
@@ -597,10 +598,12 @@ test('the immediate writes apply in the call, as policy.ts says for this door', 
   await run('take_over_schedule', { scheduleId: listed.scheduleId, version: resumed.version });
   errorOf(await call('pause_schedule', { scheduleId: listed.scheduleId, version: listed.version, idempotencyKey: 'stale' }), 'changed_since_read');
 
-  const archived = await run('archive_agent', { agentId: 'agent_research', version: await version(call, 'agent_research') });
-  assert.equal((await f.config.getAgent('agent_research')).lifecycle, 'archived');
-  await run('restore_agent', { agentId: 'agent_research', version: archived.version });
-  assert.equal((await f.config.getAgent('agent_research')).lifecycle, 'active');
+  // An Agent in no Channel archives at once; one that answers in Channels asks first (connections-removals).
+  await createFixtureAgent(f, 'agent_quiet');
+  const archived = await run('archive_agent', { agentId: 'agent_quiet', version: await version(call, 'agent_quiet') });
+  assert.equal((await f.config.getAgent('agent_quiet')).lifecycle, 'archived');
+  await run('restore_agent', { agentId: 'agent_quiet', version: archived.version });
+  assert.equal((await f.config.getAgent('agent_quiet')).lifecycle, 'active');
 
   // No idempotencyKey: each call makes a new link, as its idempotentHint false says.
   const provider = structured(await call('connect_model_provider', { provider: 'openai' }));

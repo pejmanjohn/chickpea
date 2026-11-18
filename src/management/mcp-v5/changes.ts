@@ -15,7 +15,7 @@ import {
   type ManagementOperation,
 } from '../types.ts';
 import { channelNames } from '../channel-names.ts';
-import { confirmationAsk, turnsAgentOff } from './confirmation-ask.ts';
+import { confirmationAsk, quietsAgent, turnsAgentOff } from './confirmation-ask.ts';
 import { fail, fiveZeroCode, serviceCodeRetryable, versionToken, type McpErrorCode } from './conventions.ts';
 import { agentAvatar, agentLinks, agentStatus, type FiveZeroDeps } from './reads.ts';
 import type * as schemas from './schemas.ts';
@@ -198,7 +198,7 @@ async function confirmationResult(
       inAdmin: !preview.changes.some(({ operationKind }) => operationKind === 'delete_agent'),
       ask: confirmationAsk(preview, {
         ...agent ? { agent } : {},
-        channels: turnsAgentOff(preview) ? await agentChannels(deps, context, about) : [],
+        channels: quietsAgent(preview) ? await agentChannels(deps, context, about) : [],
       }),
     },
   };
@@ -370,6 +370,8 @@ const CONFIRMED = 'Made the change you confirmed.';
 
 function confirmedWords(statement: ManagementChangeStatement): string | undefined {
   switch (statement.kind) {
+    case 'archive_agent':
+      return DONE_SUMMARIES.archive_agent!(statement.agent.name);
     case 'delete_agent':
       return `Deleted ${statement.agent.name}.`;
     case 'disconnect_connection':

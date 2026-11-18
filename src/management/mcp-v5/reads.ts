@@ -748,7 +748,10 @@ export async function getSetupStatus(
     });
   }
   const { target } = result;
-  const { connection, avatarUrl, hasFirstAsk } = await setupConnection(deps, context, target);
+  // connect_service's owner is a hint when the person picked on the page: a finished link's receipt says which.
+  const { receipt } = result;
+  const picked = receipt && 'kind' in receipt && receipt.kind === 'connector_connected' ? receipt.ownerKind : target.ownerKind;
+  const { connection, avatarUrl, hasFirstAsk } = await setupConnection(deps, context, { ...target, ...picked ? { ownerKind: picked } : {} });
   return {
     status: SETUP_STATUS[result.status],
     what: target.targetLabel,

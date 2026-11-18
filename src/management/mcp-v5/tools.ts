@@ -331,10 +331,11 @@ export const FIVE_ZERO_TOOLS = {
   }),
   archive_agent: tool({
     title: 'Archive an Agent',
-    description: 'Archive an Agent: it stops answering in Slack, leaves its Channels, and its schedules pause. Its settings are kept, and restore_agent brings it back. Send the version get_agent returned. Applies at once. Deleting is a separate step.',
+    description: 'Archive an Agent: it stops answering in Slack, leaves its Channels, and its schedules pause. Its settings are kept, and restore_agent brings it back. Send the version get_agent returned. An Agent that answers in Channels returns needs_confirmation with a preview first; any other applies at once. One at a time: a new archive ends a confirmation still waiting. Deleting is a separate step.',
     input: schemas.archiveAgentInput,
     output: schemas.changeResultOutput,
     write: writeHints({ destructive: true }),
+    card: 'agent-card',
     run: (deps, args) => writes.archiveAgent(deps, args),
   }),
   restore_agent: tool({
@@ -404,7 +405,7 @@ export const FIVE_ZERO_TOOLS = {
   }),
   connect_service: tool({
     title: 'Connect a service to an Agent',
-    description: 'Get a Chickpea setup link that connects one service to an Agent: a service from list_services, or with custom an API or MCP server the catalog lacks, which this adds to the Agent first. The person signs in or enters the key on Chickpea\'s page; never ask for it. A connection the Agent already has is refused: use reconnect_service. Each call makes a new link.',
+    description: 'Get a Chickpea setup link that connects one service to an Agent: a service from list_services, or with custom an API or MCP server the catalog lacks, added to the Agent first. On Chickpea\'s page the person signs in or enters the key, and picks Personal or Team for a catalog service; never ask for these. Already connected? Use reconnect_service. Each call makes a new link.',
     input: schemas.connectServiceInput,
     output: schemas.connectServiceOutput,
     // Adding an open MCP server asks that server for its tools.
@@ -458,7 +459,7 @@ export const FIVE_ZERO_TOOLS = {
   }),
   save_schedule: tool({
     title: 'Save a schedule',
-    description: `Create a schedule (routine) that makes an Agent post in a Slack Channel on its own, or change one: its task, timing, time zone and whether it posts every time. dm "me" in place of channelId posts in your own direct messages with the Agent. ${guideFirst('schedule')} Changing one overwrites it; send its version from list_schedules. Applies at once.`,
+    description: `Create or change a schedule (routine): an Agent posts on its own in a Slack Channel, or with dm "me" in your own direct messages with it. ${guideFirst('schedule')} Show the person the schedule and save only after they say yes; it applies at once. Changing one overwrites it: send its version from list_schedules.`,
     input: schemas.saveScheduleInput,
     output: schemas.changeResultOutput,
     write: writeHints({ destructive: true }),

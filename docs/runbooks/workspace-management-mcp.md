@@ -201,7 +201,7 @@ In Slack, only the person approves. The host applies a change set when the reque
 
 ### Confirmation over MCP
 
-An MCP client acts with the signed-in person's Admin authority. Every change the policy allows for that person applies at once, through the 5.0 write for it. The exceptions are the changes the Admin UI asks "Are you sure?" about (`assets/admin-ui/admin.js`), plus Agent deletion, which the Admin UI has no button for:
+An MCP client acts with the signed-in person's Admin authority. Every change the policy allows for that person applies at once, through the 5.0 write for it. The exceptions are the changes the Admin UI asks "Are you sure?" about (`assets/admin-ui/admin.js`), plus Agent deletion, which the Admin UI has no button for, and archiving an Agent that answers in Channels, which models did on their own when asked to delete every Agent:
 
 | Change | Admin UI confirmation |
 |---|---|
@@ -212,6 +212,7 @@ An MCP client acts with the signed-in person's Admin authority. Every change the
 | `update_agent` that removes an existing `mcpServers` or `apiConnections` entry, or `disconnect_connection` | "Disconnect account" confirm |
 | `remove_website_login` | Website login "Remove" confirm |
 | `update_agent` that disables an Agent with Channel grants | "Disable everywhere" callout |
+| `archive_agent` for an Agent that is on and has Channel grants | None; Admin archives at once. An Agent with no Channels, or one that is off, is archived at once over MCP too |
 
 In the service such an item returns `confirmation_required`, and the rest of the call waits in the same change set. A 5.0 write returns it as `needs_confirmation`, with `confirmation.preview` and a `confirmToken`, the change set's proposal id. The client shows the preview, asks the person, and calls `confirm_change` with the token after they agree. A destructive item that cannot share a change set with the rest of its call (a later `request_setup`, or a second change to the same object) fails with `confirmation_needs_own_call`; the rest of the call is handled without it, and the agent resends that item alone. Each MCP client keeps one pending change set per person. Another destructive change makes the earlier one stale, and confirming the earlier one returns `proposal_stale`. Removing a repository grant or a skill applies directly, as in Admin. `undo_change` applies directly unless its inverse is in this set, for example undoing an added MCP server. The posture comes from one table, `POSTURE` in `src/management/policy.ts`, keyed by policy reason and door; the Admin door's column is all immediate because the browser asks first.
 

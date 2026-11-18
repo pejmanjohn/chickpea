@@ -43,11 +43,17 @@ export function confirmationAsk(preview: ManagementChangeSetPreview, target: Ask
   const plain = formatChangeSetProposal(preview, PLAIN_DIALECT).trim();
   if (preview.changes.length !== 1 || !change) return { ...UNSURE, consequence: plain };
   if (turnsAgentOff(preview)) return turnOffAsk(target);
+  if (change.statement?.kind === 'archive_agent') return archiveAsk(target);
   const asked = change.statement ? statementAsk(change.statement, target) : undefined;
   return { ...asked ?? UNSURE, consequence: plain };
 }
 
-/** Turning an Agent off is the one ask that names its Channels: they go quiet. */
+/** Turning an Agent off or archiving it quiets it in its Channels, so those asks name them. */
+export function quietsAgent(preview: ManagementChangeSetPreview): boolean {
+  return turnsAgentOff(preview) ||
+    preview.changes.length === 1 && preview.changes[0]!.statement?.kind === 'archive_agent';
+}
+
 export function turnsAgentOff(preview: ManagementChangeSetPreview): boolean {
   const [change, ...more] = preview.changes;
   const enabled = (record: unknown) => (record as { enabled?: unknown } | undefined)?.enabled;
@@ -64,6 +70,18 @@ function turnOffAsk({ agent, channels }: AskTarget): ConfirmationAsk {
     consequence: `${reach} Its instructions, memory and connections stay as they are.`,
     confirm: 'Turn off',
     keep: 'Keep it on',
+  };
+}
+
+function archiveAsk({ agent, channels }: AskTarget): ConfirmationAsk {
+  const reach = channels.length
+    ? `It leaves ${joinNames(channels)} and stops answering in Slack, and its schedules pause.`
+    : 'It stops answering in Slack, and its schedules pause.';
+  return {
+    question: `Archive ${mention(agent) ?? 'this Agent'}?`,
+    consequence: `${reach} Its settings are kept, and restoring it brings it back to its Channels.`,
+    confirm: 'Archive',
+    keep: 'Keep it',
   };
 }
 

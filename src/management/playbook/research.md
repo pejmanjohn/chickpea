@@ -63,4 +63,4 @@ If you find no candidate with concrete evidence, ask at most three short questio
 
 ## After the yes
 
-Add the connections you said you would: `connect_service` for each catalog service, with the new `agentId`, the service's `service` and `owner` `team`, and give the person each `setup.url`. For a custom API, see `get_guide` topic `connect`. When the person says they've finished, check with `get_setup_status`, then once with `check_agent`. Then scope the new Agent with the person (`get_guide` topic `scope`): its brief can name the sources you found. Tell the person what to send the Agent in Slack first.
+Add the connections you said you would: `connect_service` for each catalog service, with the new `agentId` and the service's `service`, and give the person each `setup.url`: on Chickpea's page they pick Personal or Team. For a custom API, see `get_guide` topic `connect`. When the person says they've finished, check with `get_setup_status`, then once with `check_agent`. Then scope the new Agent with the person (`get_guide` topic `scope`): its brief can name the sources you found. Tell the person what to send the Agent in Slack first.

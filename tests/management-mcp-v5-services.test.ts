@@ -121,7 +121,7 @@ test('a managed service lists its tools now, its writes as write with what they 
     { name: 'gmail_create_draft', does: 'write', changes: 'create email draft' },
     { name: 'gmail_send_message', does: 'write', changes: 'send email' },
   ]);
-  assert.match(gmail.nextStep, /connect_service with service gmail, an agentId and owner team or me/);
+  assert.match(gmail.nextStep, /connect_service with service gmail and an agentId connects it; the person picks Personal or Team on Chickpea's page\./);
   assert.match(gmail.nextStep, /practice run can use its read actions/);
   const raw = JSON.stringify(gmail);
   assert.equal(raw.includes('gmail.messages.send'), false, 'no capability ID');
@@ -194,7 +194,7 @@ test('a member reads the catalog too, and is told only an Owner or Admin connect
   const { call } = await harness(t, 'svc-member', 'member');
   const notion = service(await call('get_service', { service: 'Notion' }));
   assert.equal(notion.practice, 'reads_ready');
-  assert.match(notion.nextStep, /owner me \(only an Owner or Admin connects a team account\)/);
+  assert.match(notion.nextStep, /the person connects their own account on Chickpea's page \(only an Owner or Admin connects a team one\)/);
   assert.doesNotMatch(notion.nextStep, /marks a team account/, 'nothing to mark for a managed service');
   // A service whose reads are marked: the member marks their own account's tools, an Owner or Admin a team account's.
   const linear = service(await call('get_service', { service: 'linear' }));

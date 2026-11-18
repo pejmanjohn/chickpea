@@ -755,8 +755,8 @@ for (const [app, clientId] of [
     assert.match(refused.content[0]!.text, /^Refused \(not_found\): /, 'a refusal leaves as a result');
     const invalid = await call('get_confirmation', { confirmToken: '' });
     assert.deepEqual([invalid.isError, invalid.structuredContent!.error.code], [false, 'invalid_input'], 'and one the SDK made');
-    const archive = await call('archive_agent', { agentId: 'agent_missing', version: '0123456789abcdef', idempotencyKey: 'archive' });
-    assert.equal(archive.isError, true, 'a tool no card receives keeps isError');
+    const restore = await call('restore_agent', { agentId: 'agent_missing', version: '0123456789abcdef', idempotencyKey: 'restore' });
+    assert.equal(restore.isError, true, 'a tool no card receives keeps isError');
     assert.deepEqual(counted().map(({ outcome }) => outcome), ['tool_error', 'input_refused', 'tool_error']);
 
     for (const name of ['confirm_workspace_change', 'apply_workspace_changes'] as const) {
@@ -907,7 +907,12 @@ test('a confirmation kept as it was is refused the same way, whatever changed si
 test('a held deletion never sends the person to Admin, which cannot delete an Agent', async (t) => {
   const { connect } = await harness(t, 'card-delete');
   const { call } = await connect(CARDS);
-  const archived = await call('archive_agent', { agentId: 'agent_support', version: await version(call, 'agent_support'), idempotencyKey: 'archive' });
+  // It answers in a Channel, so the card holds its archive's confirmation as well.
+  const asked = await call('archive_agent', { agentId: 'agent_support', version: await version(call, 'agent_support'), idempotencyKey: 'archive' });
+  const { confirmToken: archiveToken } = asked._meta!['chickpea/held'] as { confirmToken: string };
+  assert.ok(!modelView(asked).includes(archiveToken), 'the model never sees the archive\'s token');
+  assert.equal(asked.structuredContent!.confirmation.ask.question, 'Archive @research?');
+  const archived = await call('confirm_change', { confirmToken: archiveToken });
   const deleting = await call('delete_agent', { agentId: 'agent_support', version: archived.structuredContent!.version, idempotencyKey: 'delete' });
   const held = deleting._meta?.['chickpea/held'] as { confirmToken?: string };
   assert.equal(typeof held?.confirmToken, 'string', 'the card holds the token');

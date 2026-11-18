@@ -683,6 +683,16 @@ test('a connect link names whose account it is only when its page fixes that, so
   assert.equal(fresh.setup?.owner, undefined, 'no owner: the person chooses on the page');
   const freshPage = (await h.page(fresh.setup!.setupToken!, cookieOf(await h.exchange(fresh.setup!.url)))).html;
   assert.deepEqual([radio(freshPage, 'member'), radio(freshPage, 'team')], ['', ''], 'both choices are open');
+  const unasked = await connectService(deps, { agentId: h.agent.id, service: 'HubSpot', idempotencyKey: 'hubspot-unasked' });
+  assert.equal(unasked.setup?.owner, undefined, 'a call with no owner gets the same page');
+  const unaskedPage = (await h.page(unasked.setup!.setupToken!, cookieOf(await h.exchange(unasked.setup!.url)))).html;
+  assert.deepEqual([radio(unaskedPage, 'member'), radio(unaskedPage, 'team')], ['', '']);
+
+  // Admin's page, for a connector the setup page cannot serve, opens on the owner the call asked for, or names none.
+  assert.equal((await connectService(deps, { agentId: h.agent.id, service: 'Sentry', owner: 'team', idempotencyKey: 'sentry-team' })).setup?.owner, 'team');
+  const sentry = await connectService(deps, { agentId: h.agent.id, service: 'Sentry', idempotencyKey: 'sentry' });
+  assert.equal(sentry.setup?.owner, undefined);
+  assert.match(sentry.setup!.url, /\/admin\/agents\/[^/]+\/connections\/new\/sentry\/(team|member)$/);
 
   // A reconnect keeps its account's owner, and the page shows that one, locked.
   const account = await h.config.putConnectionAccount({
@@ -711,6 +721,22 @@ test('a connect link names whose account it is only when its page fixes that, so
   assert.equal(again.setup?.owner, 'team');
   const againPage = (await h.page(again.setup!.setupToken!, cookieOf(await h.exchange(again.setup!.url)))).html;
   assert.deepEqual([radio(againPage, 'member'), radio(againPage, 'team')], [' disabled', ' checked disabled']);
+});
+
+// With no owner the link carries the first free account as a hint; the person may pick the other on the page.
+test('a finished link reports the connection of the account the person picked, not the one the call guessed', async (t) => {
+  const h = await harness(t, 'mcp-owner-picked');
+  const context = h.mcp(h.owner, CHATGPT_CLIENT);
+  const deps = { service: h.service, context: async () => context, baseUrl: ORIGIN };
+  const link = await connectService(deps, { agentId: h.agent.id, service: 'HubSpot', idempotencyKey: 'hubspot' });
+  const setupId = link.setup!.setupToken!;
+  const cookie = cookieOf(await h.exchange(link.setup!.url));
+  assert.equal((await h.post(setupId, 'authorize', cookie, { ownerKind: 'member', access: 'read' })).status, 200);
+  assert.equal((await h.post(setupId, 'managed/poll', cookie)).status, 200);
+  const [account] = await h.config.listConnectionAccounts(h.owner.user.slackTeamId);
+  assert.equal(account!.ownerKind, 'member');
+  const status = await getSetupStatus(deps, { setupToken: setupId });
+  assert.deepEqual([status.status, status.connection?.connectionId, status.connection?.status], ['done', account!.id, 'ready']);
 });
 
 type Harness = Awaited<ReturnType<typeof harness>>;

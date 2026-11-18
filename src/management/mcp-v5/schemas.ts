@@ -303,14 +303,13 @@ export const connectServiceInput = z.strictObject({
   agentId: zAgentId,
   service: zText(128).optional().describe('A service from list_services, by service or name.'),
   owner: z.enum(['team', 'me']).optional()
-    .describe('With service: team connects it for everyone who uses the Agent (Owners and Admins only); me connects your own account.'),
+    .describe('Usually left out: the person picks Personal or Team on Chickpea\'s page. Send it only when they already said: team is one account for everyone who uses the Agent (Owners and Admins only); me is their own.'),
   custom: zCustomConnection.optional().describe('Only for a service list_services lacks: a custom API or MCP connection.'),
   checkPath: zCheckPath.optional(),
   version: zAgentVersion.optional().describe('Required with custom: the version get_agent returned.'),
   idempotencyKey: zIdempotencyKey,
   continues: zContinues,
 }).refine((input) => (input.service === undefined) !== (input.custom === undefined), 'Send service or custom, not both.')
-  .refine((input) => input.service === undefined || input.owner !== undefined, 'Say whose account it is: owner team or me.')
   .refine((input) => input.custom === undefined || input.version !== undefined, 'Send the version get_agent returned with custom.')
   .refine((input) => input.checkPath === undefined || input.custom?.kind === 'api', 'checkPath is only for a custom API connection.');
 export const reconnectServiceInput = z.strictObject({

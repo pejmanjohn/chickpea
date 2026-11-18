@@ -36,7 +36,7 @@ const BASE_URL = 'https://chickpea.example.test';
  */
 const CARD_TOOLS: Record<string, CardName> = {
   ...Object.fromEntries([
-    'propose_agent', 'propose_agent_change', 'create_agent', 'undo_change',
+    'propose_agent', 'propose_agent_change', 'create_agent', 'undo_change', 'archive_agent',
     'delete_agent', 'remove_connection', 'remove_website_login', 'delete_schedule', 'remove_model_provider_key', 'update_member',
   ].map((tool) => [tool, 'agent-card' as const])),
   connect_service: 'connect-card',
@@ -119,7 +119,7 @@ test('a tool that can ask "Are you sure?" draws the Agent card, which is its con
     .filter(([, tool]) => /\breturns needs_confirmation\b/.test(tool.description))
     .map(([name]) => name);
   assert.deepEqual(confirming.sort(), [
-    'delete_agent', 'delete_schedule', 'remove_connection', 'remove_model_provider_key', 'remove_website_login',
+    'archive_agent', 'delete_agent', 'delete_schedule', 'remove_connection', 'remove_model_provider_key', 'remove_website_login',
     'undo_change', 'update_agent', 'update_member',
   ]);
   for (const name of confirming.filter((name) => name !== 'update_agent')) {

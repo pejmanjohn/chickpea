@@ -24,7 +24,7 @@ export type PlaybookTopic = typeof PLAYBOOK_TOPICS[number];
 
 /** One line per topic, for the list a client gets when it names none. */
 export const PLAYBOOK_TOPIC_ABOUT = {
-  start: 'Set up a first Agent for a chore the person names: one proposal, then create it.',
+  start: 'Set up a first Agent for a chore the person names, or suggest one when asked: one proposal, then create it.',
   research: 'Find a first Agent in the person\'s own work before proposing it.',
   scope: 'Agree on an Agent\'s job and write test questions, each with what a good answer does.',
   connect: 'Connect a service, sign one in again, add a custom API or MCP server, or mark which tools only read.',

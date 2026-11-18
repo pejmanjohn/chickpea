@@ -65,10 +65,10 @@ function needsSetup(
 /**
  * Chickpea's page for a new connection asks whose account it is, so its
  * owner is named only where it is fixed: a reconnect keeps its account's,
- * and Admin's page is for the one asked for.
+ * and Admin's page opens on the one the call asked for.
  */
-function linkFrom(result: PrepareConnectorSetupResult): Setup {
-  const fixed = result.reconnect !== undefined || result.setupOperationId === undefined;
+function linkFrom(result: PrepareConnectorSetupResult, ownerAsked = true): Setup {
+  const fixed = result.reconnect !== undefined || ownerAsked && result.setupOperationId === undefined;
   return {
     url: result.handoffUrl,
     ...(result.setupOperationId ? { setupToken: result.setupOperationId } : {}),
@@ -117,10 +117,13 @@ export async function connectService(
       nextStep: 'Call list_services and send a service from it, or connect it with custom.',
     });
   }
-  const ownerKind = input.owner === 'team' ? 'team' : 'member';
-  if (ownerKind === 'team' && snapshot.caller.role === 'member') teamConnectionRefused(`connect ${connector.name}`);
-  const existing = catalogConnection(agent, connector, ownerKind);
-  if (existing) alreadyConnected(agent, existing);
+  if (input.owner === 'team' && snapshot.caller.role === 'member') teamConnectionRefused(`connect ${connector.name}`);
+  // Without an owner, Chickpea's page asks: refuse only when each account the person may pick there is taken.
+  const lanes: Array<'team' | 'member'> = input.owner ? [input.owner === 'team' ? 'team' : 'member']
+    : snapshot.caller.role === 'member' ? ['member'] : ['team', 'member'];
+  const held = lanes.map((lane) => catalogConnection(agent, connector, lane));
+  const ownerKind = lanes.find((_, index) => !held[index]);
+  if (!ownerKind) alreadyConnected(agent, held[0]!);
   const setup = await forManagedAgent(deps.service.prepareConnectorSetup(context, {
     agentId: agent.id,
     connector: connector.id,
@@ -132,7 +135,7 @@ export async function connectService(
     alreadyConnected(agent, { connectionId: setup.reconnect.connectionId, name: setup.reconnect.label });
   }
   const { agent: summary } = await agentSummary(deps, context, agent.id);
-  return needsSetup(summary, linkFrom(setup), `Open the link to connect ${connector.name} to ${agent.name}.`);
+  return needsSetup(summary, linkFrom(setup, input.owner !== undefined), `Open the link to connect ${connector.name} to ${agent.name}.`);
 }
 
 function alreadyConnected(agent: SnapshotAgent, connection: { connectionId: string; name: string }): never {
@@ -343,7 +346,7 @@ export async function reconnectService(
 
 function teamConnectionRefused(what: string): never {
   return fail('not_allowed', `Only an Owner or Admin can ${what} for the whole team.`, {
-    nextStep: 'Connect the person\'s own account with owner me, or tell them an Owner or Admin can do it.',
+    nextStep: 'Call connect_service without owner to connect the person\'s own account, or tell them an Owner or Admin can do it.',
   });
 }
 

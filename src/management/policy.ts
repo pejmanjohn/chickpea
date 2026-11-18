@@ -57,9 +57,11 @@ type ManagementPosture = 'immediate' | 'confirmation';
 type ManagementDoor = ManagementOrigin['kind'];
 
 /**
- * The changes the Admin UI asks "Are you sure?" about, and Agent deletion,
- * which it has no button for. Every door that lets a model act asks too; the
- * Admin UI asks in the browser before it calls the service.
+ * The changes the Admin UI asks "Are you sure?" about, Agent deletion, which
+ * it has no button for, and archiving an Agent that answers in Channels,
+ * which models did unasked when told to delete every Agent. Every door that
+ * lets a model act asks too; the Admin UI asks in the browser before it calls
+ * the service.
  */
 const DESTRUCTIVE = { slack: 'confirmation', mcp: 'confirmation', admin: 'immediate' } as const;
 /** Slack's approval policy reviews these; MCP acts with the person's Admin authority. */
@@ -74,6 +76,7 @@ const POSTURE = {
   connection_removal: DESTRUCTIVE,
   website_login_removal: DESTRUCTIVE,
   disable_active_agent: DESTRUCTIVE,
+  archive_active_agent: DESTRUCTIVE,
   membership_role_change: REVIEWED_IN_SLACK,
   archive_agent_reach: REVIEWED_IN_SLACK,
   restore_agent_reach: REVIEWED_IN_SLACK,
@@ -176,7 +179,7 @@ function managementPolicyReason(
     return { allowed: true, reason: 'agent_deletion' };
   }
   if (operation.kind === 'archive_agent') {
-    return { allowed: true, reason: 'archive_agent_reach' };
+    return { allowed: true, reason: answersInChannels(facts) ? 'archive_active_agent' : 'archive_agent_reach' };
   }
   if (operation.kind === 'restore_agent') {
     return { allowed: true, reason: 'restore_agent_reach' };
@@ -189,10 +192,7 @@ function managementPolicyReason(
     if (facts.connectionRemoved) {
       return { allowed: true, reason: 'connection_removal' };
     }
-    const disablingActive = facts.currentAgent?.enabled === true &&
-      operation.patch.enabled === false &&
-      Boolean(facts.agentReferences?.channelGrants.length);
-    if (disablingActive) {
+    if (operation.patch.enabled === false && answersInChannels(facts)) {
       return { allowed: true, reason: 'disable_active_agent' };
     }
     if (operation.confirmationReason === 'recipe_overwrite') {
@@ -247,4 +247,9 @@ function managementPolicyReason(
     return { allowed: true, reason: 'revoke_channel_reach' };
   }
   return { allowed: true, reason: 'safe_reversible_change' };
+}
+
+/** The Agent is on and holds Channel grants, so turning it off or archiving it quiets it there. */
+function answersInChannels(facts: ManagementPolicyFacts): boolean {
+  return facts.currentAgent?.enabled === true && Boolean(facts.agentReferences?.channelGrants.length);
 }
