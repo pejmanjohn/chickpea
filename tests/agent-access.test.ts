@@ -354,7 +354,11 @@ test('directory access filters workspace, grant, and Agent lifecycle state', asy
     transport: transport({ calls, channels: { C_PUBLIC: channel('C_PUBLIC') } }),
   });
 
-  assert.deepEqual(visible, { agents: [active], incomplete: false });
+  assert.deepEqual(visible, {
+    agents: [active],
+    incomplete: false,
+    visibleChannels: new Map([[active.id, 'C_PUBLIC']]),
+  });
   assert.deepEqual(calls, ['lookup:C_PUBLIC']);
   assert.equal(await resolvePrivateAgentAudience({
     agent: disabled,
@@ -379,7 +383,7 @@ test('directory access excludes guests and Slack Connect actors without reading 
         calls,
         channels: { C_PUBLIC: channel('C_PUBLIC') },
       }),
-    }), { agents: [], incomplete: false });
+    }), { agents: [], incomplete: false, visibleChannels: new Map() });
   }
   assert.deepEqual(calls, []);
 });
@@ -443,7 +447,7 @@ test('a directory says it is incomplete when Slack could not confirm an Agent th
       memberChannels: new Set(),
     }),
   });
-  assert.deepEqual(listed, { agents: [shown], incomplete: true });
+  assert.deepEqual(listed, { agents: [shown], incomplete: true, visibleChannels: new Map([[shown.id, 'C_PUBLIC']]) });
 
   // An Agent the person is denied is left out without making the list incomplete.
   const denied = await listPrivatelyUsableAgents({
@@ -456,7 +460,62 @@ test('a directory says it is incomplete when Slack could not confirm an Agent th
       memberChannels: new Set(),
     }),
   });
-  assert.deepEqual(denied, { agents: [shown], incomplete: false });
+  assert.deepEqual(denied, { agents: [shown], incomplete: false, visibleChannels: new Map([[shown.id, 'C_PUBLIC']]) });
+});
+
+test('each usable Agent names one Channel the person can see, from the facts already read', async () => {
+  const mixed = agent('mixed');
+  const memberPrivate = agent('member_private');
+  const creatorOnly = agent('creator_only', { creatorMembershipId: fullMember.membershipId });
+  const outsiderPrivate = agent('outsider_private');
+  const calls: string[] = [];
+  const listed = await listPrivatelyUsableAgents({
+    agents: [mixed, memberPrivate, creatorOnly, outsiderPrivate],
+    workspaceId: 'T1',
+    grants: [
+      // Private first, so the public Channel wins by rule, not by order.
+      grant(mixed.id, 'C_SECRET'),
+      grant(mixed.id, 'C_PUBLIC'),
+      grant(memberPrivate.id, 'C_SECRET'),
+      grant(memberPrivate.id, 'C_TEAM'),
+      grant(outsiderPrivate.id, 'C_SECRET'),
+    ],
+    actor: fullMember,
+    transport: transport({
+      calls,
+      channels: {
+        C_PUBLIC: channel('C_PUBLIC'),
+        C_SECRET: channel('C_SECRET', { private: true }),
+        C_TEAM: channel('C_TEAM', { private: true }),
+      },
+      memberChannels: new Set(['C_TEAM']),
+    }),
+  });
+
+  assert.deepEqual(listed.agents.map(({ id }) => id), [creatorOnly.id, memberPrivate.id, mixed.id]);
+  assert.deepEqual(listed.visibleChannels, new Map([
+    [memberPrivate.id, 'C_TEAM'],
+    [mixed.id, 'C_PUBLIC'],
+  ]), 'a public Channel first, else a private one the person is in; never a private one they are not in');
+  assert.deepEqual(
+    calls.sort(),
+    ['lookup:C_PUBLIC', 'lookup:C_SECRET', 'lookup:C_TEAM', 'member-channels'],
+    'no Slack call beyond the ones access already makes',
+  );
+});
+
+test('a public Agent names its Channel without reading the person\'s Channels', async () => {
+  const shown = agent('shown');
+  const calls: string[] = [];
+  const listed = await listPrivatelyUsableAgents({
+    agents: [shown],
+    workspaceId: 'T1',
+    grants: [grant(shown.id, 'C_PUBLIC')],
+    actor: fullMember,
+    transport: transport({ calls, channels: { C_PUBLIC: channel('C_PUBLIC') } }),
+  });
+  assert.deepEqual(listed.visibleChannels, new Map([[shown.id, 'C_PUBLIC']]));
+  assert.deepEqual(calls, ['lookup:C_PUBLIC']);
 });
 
 test('Slack fact failures emit sanitized unavailable diagnostics', async (t) => {

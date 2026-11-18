@@ -58,7 +58,7 @@ interface PrivateAgentDirectoryInput {
 
 interface PlacementState {
   activeGrantCount: number;
-  verifiedPublic: boolean;
+  verifiedPublicChannelIds: ReadonlySet<string>;
   verifiedPrivateChannelIds: ReadonlySet<string>;
   unavailable: boolean;
 }
@@ -73,7 +73,7 @@ export async function resolvePrivateAgentAccess(
   const facts = await collectTargetedFacts(grants.map(({ channelId }) => channelId), input.transport);
   const placement = placementState(grants, facts);
   const memberChannels = input.actor.fullMember && input.actor.slackUserId &&
-      !placement.verifiedPublic && placement.verifiedPrivateChannelIds.size > 0
+      placement.verifiedPublicChannelIds.size === 0 && placement.verifiedPrivateChannelIds.size > 0
     ? await listMemberChannels(input.transport, input.actor.slackUserId)
     : undefined;
   return evaluateAccess(input.agent, input.actor, placement, memberChannels);
@@ -148,13 +148,18 @@ export async function resolvePrivateAgentAudience(
 export interface PrivatelyUsableAgents {
   agents: CustomAgentConfig[];
   incomplete: boolean;
+  /**
+   * Agent id to one Channel it answers in that this person can see: a public
+   * one, else a private one they are in. Absent for an Agent placed in none.
+   */
+  visibleChannels: ReadonlyMap<string, string>;
 }
 
 /** Resolve the App Home directory with one fact snapshot for this interaction. */
 export async function listPrivatelyUsableAgents(
   input: PrivateAgentDirectoryInput,
 ): Promise<PrivatelyUsableAgents> {
-  if (!input.actor.fullMember) return { agents: [], incomplete: false };
+  if (!input.actor.fullMember) return { agents: [], incomplete: false, visibleChannels: new Map() };
   const agents = input.agents
     .filter(agentIsEligible)
     .sort((left, right) => left.name.localeCompare(right.name));
@@ -180,20 +185,35 @@ export async function listPrivatelyUsableAgents(
   }
 
   const privateMembershipNeeded = [...placements.values()].some((placement) =>
-    !placement.verifiedPublic && placement.verifiedPrivateChannelIds.size > 0
+    placement.verifiedPublicChannelIds.size === 0 && placement.verifiedPrivateChannelIds.size > 0
   );
   const memberChannels = privateMembershipNeeded && input.actor.slackUserId
     ? await listMemberChannels(input.transport, input.actor.slackUserId)
     : undefined;
 
   const usable: CustomAgentConfig[] = [];
+  const visibleChannels = new Map<string, string>();
   let incomplete = false;
   for (const agent of agents) {
-    const { status } = evaluateAccess(agent, input.actor, placements.get(agent.id)!, memberChannels);
-    if (status === 'allowed') usable.push(agent);
-    else if (status === 'unavailable') incomplete = true;
+    const placement = placements.get(agent.id)!;
+    const { status } = evaluateAccess(agent, input.actor, placement, memberChannels);
+    if (status === 'allowed') {
+      usable.push(agent);
+      const channelId = visibleChannelId(placement, memberChannels);
+      if (channelId) visibleChannels.set(agent.id, channelId);
+    } else if (status === 'unavailable') incomplete = true;
   }
-  return { agents: usable, incomplete };
+  return { agents: usable, incomplete, visibleChannels };
+}
+
+/** From facts already read: a verified public Channel, else a verified private one the person is in. */
+function visibleChannelId(
+  placement: PlacementState,
+  memberChannels: ReadonlySet<string> | undefined,
+): string | undefined {
+  const [publicChannelId] = placement.verifiedPublicChannelIds;
+  return publicChannelId ??
+    [...placement.verifiedPrivateChannelIds].find((channelId) => memberChannels?.has(channelId));
 }
 
 function activeAgentGrants(input: {
@@ -270,8 +290,8 @@ function placementState(
   grants: readonly AgentChannelGrant[],
   facts: ReadonlyMap<string, SlackChannel | undefined>,
 ): PlacementState {
+  const verifiedPublicChannelIds = new Set<string>();
   const verifiedPrivateChannelIds = new Set<string>();
-  let verifiedPublic = false;
   let unavailable = false;
   for (const grant of grants) {
     const channel = facts.get(grant.channelId);
@@ -280,18 +300,18 @@ function placementState(
       continue;
     }
     if (channel.private) verifiedPrivateChannelIds.add(channel.id);
-    else verifiedPublic = true;
+    else verifiedPublicChannelIds.add(channel.id);
   }
   return {
     activeGrantCount: grants.length,
-    verifiedPublic,
+    verifiedPublicChannelIds,
     verifiedPrivateChannelIds,
     unavailable,
   };
 }
 
 function audienceForPlacement(placement: PlacementState): PrivateAgentAudience {
-  if (placement.verifiedPublic) return 'workspace_members';
+  if (placement.verifiedPublicChannelIds.size > 0) return 'workspace_members';
   if (placement.unavailable) return 'unavailable';
   if (placement.verifiedPrivateChannelIds.size > 0) return 'private_channel_members';
   if (placement.activeGrantCount === 0) return 'creator_only';
@@ -318,7 +338,7 @@ function evaluateAccess(
   memberChannels: ReadonlySet<string> | undefined,
 ): PrivateAgentAccessResult {
   if (!agentIsEligible(agent)) return { status: 'unavailable', audience: 'unavailable' };
-  if (placement.verifiedPublic) {
+  if (placement.verifiedPublicChannelIds.size > 0) {
     return {
       status: actor.fullMember ? 'allowed' : 'denied',
       audience: 'workspace_members',
