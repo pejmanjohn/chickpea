@@ -1122,6 +1122,18 @@ test('Chickpea introduction renders user-entered Agent text inert and links only
   assert.doesNotMatch(text, /<!channel>|<@U999>/);
 });
 
+// Defect caught: @sales_ops shown as @salesops, a handle nobody has.
+test('Chickpea introduction keeps the underscores inside an Agent handle', () => {
+  const lines = introduction('first_interaction', {
+    agents: [{ name: 'Sales Ops', handle: 'sales_ops' }, { name: 'Edge handle', handle: '_edge_' }],
+    more: 0,
+  }).split('\n\n')[1]!.split('\n');
+  assert.deepEqual(lines, [
+    '• *Sales Ops* @sales_ops',
+    '• *Edge handle* @edge',
+  ], 'an underscore at either end could open italics, so it is still removed');
+});
+
 test('durable action state repairs one DM reaction and keeps Channel success reply-owned', async () => {
   const management = new SqliteManagementStore(':memory:');
   const routines = new SqliteRoutineStore(':memory:', () => 1_800_000_000_000);

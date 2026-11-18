@@ -1020,10 +1020,16 @@ function formatChickpeaIntroduction(receipt: ManagementChickpeaIntroduction): st
 }
 
 const SLACK_CHANNEL_ID = /^[CG][A-Z0-9]+$/;
+/**
+ * A handle whose underscores sit inside it. Slack reads those as text, and
+ * without them the line names a different handle.
+ */
+const INERT_AGENT_HANDLE = /^[a-z0-9](?:[a-z0-9_-]{0,78}[a-z0-9])?$/;
 
 /** One listed Agent. Its name, handle and purpose are user-entered, so they render inert. */
 function introductionAgentLine(agent: ChickpeaIntroductionAgent): string {
-  const handle = agent.handle ? boundedSlackText(agent.handle, 80) : '';
+  const handle = !agent.handle ? ''
+    : INERT_AGENT_HANDLE.test(agent.handle) ? agent.handle : boundedSlackText(agent.handle, 80);
   const purpose = agent.purpose ? boundedSlackText(agent.purpose, 200) : '';
   const channel = agent.channelId && SLACK_CHANNEL_ID.test(agent.channelId) ? agent.channelId : undefined;
   return `• *${boundedSlackText(agent.name, 80)}*${handle ? ` @${handle}` : ''}${
