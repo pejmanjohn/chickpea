@@ -504,6 +504,44 @@ test('each usable Agent names one Channel the person can see, from the facts alr
   );
 });
 
+// Defect caught: Chickpea's welcome linking a Channel the person may not be
+// able to open: an archived one, one Chickpea left, or one Slack cannot read.
+test('an Agent never names an archived Channel, one Chickpea left, or one Slack cannot read', async () => {
+  const archivedFirst = agent('archived_first');
+  const leftPublic = agent('left_public');
+  const unreadable = agent('unreadable');
+  const listed = await listPrivatelyUsableAgents({
+    agents: [archivedFirst, leftPublic, unreadable],
+    workspaceId: 'T1',
+    grants: [
+      grant(archivedFirst.id, 'C_ARCHIVED'),
+      grant(archivedFirst.id, 'C_PUBLIC'),
+      grant(leftPublic.id, 'C_LEFT'),
+      grant(leftPublic.id, 'C_TEAM'),
+      grant(unreadable.id, 'C_GONE'),
+      grant(unreadable.id, 'C_PUBLIC'),
+    ],
+    actor: fullMember,
+    transport: transport({
+      channels: {
+        C_ARCHIVED: channel('C_ARCHIVED', { archived: true }),
+        C_PUBLIC: channel('C_PUBLIC'),
+        C_LEFT: channel('C_LEFT', { member: false }),
+        C_TEAM: channel('C_TEAM', { private: true }),
+      },
+      // The person is still in the archived Channel and the one Chickpea left.
+      memberChannels: new Set(['C_ARCHIVED', 'C_LEFT', 'C_TEAM']),
+    }),
+  });
+
+  assert.deepEqual(listed.agents.map(({ id }) => id), [archivedFirst.id, leftPublic.id, unreadable.id]);
+  assert.deepEqual(listed.visibleChannels, new Map([
+    [archivedFirst.id, 'C_PUBLIC'],
+    [leftPublic.id, 'C_TEAM'],
+    [unreadable.id, 'C_PUBLIC'],
+  ]));
+});
+
 test('a public Agent names its Channel without reading the person\'s Channels', async () => {
   const shown = agent('shown');
   const calls: string[] = [];
