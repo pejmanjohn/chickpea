@@ -9,7 +9,7 @@ import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { AgentAppLifecycle, CustomAgentConfig } from '../src/config/types.ts';
 import type { AgentSlackAppsHost } from '../src/slack/agent-apps/host.ts';
 import { AgentSlackApps, type AgentAppTransport } from '../src/slack/agent-apps/index.ts';
-import { readAppSecrets, saveConfigurationToken } from '../src/slack/agent-apps/secrets.ts';
+import { readAppSecrets, saveConfigurationToken, writeAppSecrets } from '../src/slack/agent-apps/secrets.ts';
 import {
   type AgentAppSlackApi,
   AmbiguousEffect,
@@ -258,6 +258,27 @@ async function appOf(f: Fixture): Promise<AgentAppLifecycle | undefined> {
   return presence?.kind === 'agent_app' ? presence.app : undefined;
 }
 
+async function setApp(f: Fixture, app: AgentAppLifecycle): Promise<void> {
+  const agent = await f.config.getAgent('agent_support');
+  await f.config.updateAgent(agent.id, {
+    slackPresence: {
+      kind: 'agent_app', requestedHandle: 'support', normalizedHandle: 'support', desiredState: 'active', health: 'pending',
+      avatar: agent.slackPresence!.avatar, released: { userGroupId: 'S1' }, app,
+    },
+  }, agent.revision);
+}
+
+/** The operator lines for an app Chickpea would not use because its record names another Agent. */
+function recordRefusals(t: TestContext): unknown[] {
+  const lines: unknown[] = [];
+  const warn = console.warn.bind(console);
+  t.mock.method(console, 'warn', (...args: unknown[]) => {
+    if ((args[0] as { event?: unknown } | undefined)?.event === 'chickpea.agent_app.record_refused') lines.push(args[0]);
+    else warn(...args);
+  });
+  return lines;
+}
+
 function buttonUrls(message: Posted): string[] {
   const actions = message.blocks.find((block) => (block as { type: string }).type === 'actions') as { elements: Array<{ url?: string }> } | undefined;
   return actions?.elements.map((element) => element.url ?? '').filter(Boolean) ?? [];
@@ -373,25 +394,69 @@ test('a crash after any external call reruns to the same end with one create and
   }
 });
 
-test('a record without secrets older than a minute deletes the recorded app and creates again', async (t) => {
+test('a record without secrets older than a minute deletes nothing, creates again, and tells the Owner an unused app may remain', async (t) => {
   const f = await fixture(t);
   f.crashRealmWriteOnce = true;
   await assert.rejects(() => f.service.start('agent_support', OWNER), Crash);
   assert.equal((await appOf(f))?.state, 'created');
   await f.service.advance('agent_support');
   assert.equal((await appOf(f))?.state, 'created', 'within the settle window another run may still be writing');
-  assert.deepEqual(f.slack.deleted, []);
   f.clock.now = NOW + 60_000;
   await f.service.advance('agent_support');
-  assert.deepEqual(f.slack.deleted, ['A0APP1']);
+  assert.deepEqual(f.slack.deleted, [], 'an app with no record is never deleted');
   assert.equal(f.slack.created.length, 2);
   const app = await appOf(f);
   assert.equal(app?.state, 'awaiting_consent');
   assert.equal(app?.state === 'awaiting_consent' && app.app.appId, 'A0APP2');
   assert.deepEqual(f.signingSecretsAtUpdate, ['signing-secret-2'], 'only the recreated app, with its secret stored, gets its URLs');
+  const [mayRemain, allowDm] = f.transport.posted;
+  assert.match(mayRemain?.text ?? '', /Slack may have created an app for Support, but Chickpea didn.+t hear back\. Open Your Apps in Slack and delete any Support app you don.+t recognize/);
+  assert.equal(mayRemain?.channelId, `D_${OWNER}`);
+  assert.deepEqual(buttonUrls(mayRemain!), ['https://api.slack.com/apps']);
+  assert.match(allowDm?.text ?? '', /Support.+s Slack app is ready/);
+  assert.equal(f.transport.posted.length, 2);
   const deps = { credentials: f.settings, keyring: f.service['secrets'].keyring, slack: f.slack };
   assert.equal(await readAppSecrets(deps, 'A0APP1'), undefined);
   assert.equal((await readAppSecrets(deps, 'A0APP2'))?.secrets.signingSecret, 'signing-secret-2');
+});
+
+test("an app whose record names another Agent gets no URL update and no icon: the Owner is asked to try again, the operator gets one line", async (t) => {
+  const lines = recordRefusals(t);
+  for (const [state, use] of [['created', 'update'], ['urls_set', 'icon']] as const) {
+    const f = await fixture(t);
+    const deps = { credentials: f.settings, keyring: f.service['secrets'].keyring, slack: f.slack };
+    await writeAppSecrets(deps, 'A0APP1', 'agent_other', { clientSecret: 'client-secret-o', signingSecret: 'signing-secret-o', botToken: 'xoxb-other' }, null);
+    await setApp(f, { state, at: NOW, startedBy: OWNER, app: { appId: 'A0APP1', clientId: '1.client' } });
+    await f.service.advance('agent_support');
+
+    assert.deepEqual(f.calls.log, ['openDirectConversation', 'postMessage'], `${state}: nothing reaches Slack but the Owner's message`);
+    assert.deepEqual([f.slack.updates, f.slack.icons, f.slack.deleted], [[], [], []]);
+    const app = await appOf(f);
+    assert.deepEqual(app?.state === 'needs_attention' && [app.reason, app.resume, app.app?.appId], ['urls_refused', 'created', 'A0APP1']);
+    assert.equal(f.transport.posted[0]?.text, "Slack didn't finish connecting Support's app to Chickpea. Wait a minute, then choose Try again.");
+    assert.equal((await readAppSecrets(deps, 'A0APP1'))?.agentId, 'agent_other', "the other Agent's record is untouched");
+    assert.deepEqual(lines.splice(0), [{
+      event: 'chickpea.agent_app.record_refused', use, agentId: 'agent_support', appId: 'A0APP1', recordAgentId: 'agent_other',
+    }]);
+  }
+});
+
+test("an app whose record cannot be opened gets no URL update and no icon, and nothing is created or deleted", async (t) => {
+  for (const state of ['created', 'urls_set'] as const) {
+    const f = await fixture(t);
+    const rekeyed = { credentials: f.settings, keyring: generateCredentialKeyring('k2'), slack: f.slack };
+    await writeAppSecrets(rekeyed, 'A0APP1', 'agent_support', { clientSecret: 'client-secret-1', signingSecret: 'signing-secret-1' }, null);
+    await setApp(f, { state, at: NOW - 60_000, startedBy: OWNER, app: { appId: 'A0APP1', clientId: '1.client' } });
+    const warn = t.mock.method(console, 'warn', () => undefined);
+    await f.service.advance('agent_support');
+    warn.mock.restore();
+
+    assert.deepEqual(f.calls.log, ['openDirectConversation', 'postMessage'], `${state}: nothing reaches Slack but the Owner's message`);
+    assert.deepEqual([f.slack.created, f.slack.updates, f.slack.icons, f.slack.deleted], [[], [], [], []]);
+    const app = await appOf(f);
+    assert.deepEqual(app?.state === 'needs_attention' && [app.reason, app.resume, app.app?.appId], ['urls_refused', 'created', 'A0APP1']);
+    assert.ok(await f.settings.getEncryptedCredentialRevision('agent-slack-app.a0app1'), 'the record stays');
+  }
 });
 
 test('two concurrent starts make one app', async (t) => {
@@ -629,12 +694,6 @@ test('refusals at the other steps log too, each with the app it concerns', async
   spent.slack.rotate = async () => { throw new SlackRefused('tooling.tokens.rotate', 'invalid_refresh_token'); };
   await spent.service.start('agent_support', OWNER);
   assert.equal(await spent.service.pasteConfigurationToken('xoxe-1-pasted-again-0000'), 'rejected');
-  const orphan = await fixture(t);
-  orphan.crashRealmWriteOnce = true;
-  await assert.rejects(() => orphan.service.start('agent_support', OWNER), Crash);
-  orphan.clock.now = NOW + 60_000;
-  orphan.slack.refuseDelete = new SlackRefused('apps.manifest.delete', 'invalid_app_id');
-  await orphan.service.advance('agent_support');
 
   assert.deepEqual(refusals.map(({ step, agentId, appId, code, errors }) => ({ step, agentId, appId, code, errors })), [
     { step: 'update', agentId: 'agent_support', appId: 'A0APP1', code: 'invalid_manifest', errors: [{ message: 'Invalid URL', pointer: '/settings/event_subscriptions/request_url' }] },
@@ -642,7 +701,6 @@ test('refusals at the other steps log too, each with the app it concerns', async
     { step: 'release_handle', agentId: 'agent_support', appId: null, code: 'permission_denied', errors: [] },
     { step: 'rotate', agentId: null, appId: null, code: 'invalid_refresh_token', errors: [] },
     { step: 'rotate', agentId: null, appId: null, code: 'invalid_refresh_token', errors: [] },
-    { step: 'delete', agentId: 'agent_support', appId: 'A0APP1', code: 'invalid_app_id', errors: [] },
   ]);
   const app = await appOf(icon);
   assert.equal(app?.state === 'awaiting_consent' && app.icon, 'not_set', 'a refused icon does not stop the app');

@@ -20,7 +20,7 @@ import type { CustomAgentConfig } from '../../config/types.ts';
 import { agentSlackAppsHost, type AgentAppRetirement, type AgentSlackAppIngress, type AgentSlackAppsHost } from './host.ts';
 import { FINISH_APP_ACTION, START_APP_ACTION, TRY_AGAIN_ACTION } from './pages.ts';
 import { agentAppIsLive, agentAppRecord } from './lifecycle.ts';
-import { loggedUnreadableAsNone, readAppSecrets, type SecretDeps, unreadableAsNone } from './secrets.ts';
+import { readOwnAppSecrets, type SecretDeps } from './secrets.ts';
 import { AgentSlackApps, type AgentAppTransport } from './service.ts';
 import { createAgentAppSlackApi, logSlackRefusal } from './slack-api.ts';
 import { loadCredentialKeyring } from '../credential-keyring.ts';
@@ -54,9 +54,9 @@ async function agentAppExecutionBot(env: PlatformEnv | undefined, agentId: strin
   if (!agent || presence?.kind !== 'agent_app') return { kind: 'not_app' };
   if (!agentAppIsLive(presence)) return { kind: 'unavailable' };
   const appId = presence.app.app.appId;
-  // Only an envelope that cannot be opened makes the app unavailable; a realm read that fails is retried with the turn.
-  const stored = await readAppSecrets(secretDeps(env), appId).catch(unreadableAsNone);
-  if (!stored?.secrets.botToken) return { kind: 'unavailable' };
+  // A record that is missing, unreadable, or another Agent's makes the app unavailable; a realm outage is retried with the turn.
+  const stored = await readOwnAppSecrets(secretDeps(env), appId, agentId, 'execution');
+  if (stored.kind !== 'own' || !stored.secrets.botToken) return { kind: 'unavailable' };
   return {
     kind: 'live',
     bot: { agentId, appId, botToken: stored.secrets.botToken, botUserId: presence.app.botUserId, displayName: agent.name },
@@ -176,8 +176,9 @@ export async function agentDmPlacementFacts(
 
 /**
  * What a host needs before it trusts a delivery for this app; undefined for an
- * unknown or deleted app, or one whose secrets cannot be opened, so the host
- * acknowledges rather than asking Slack to retry a delivery nothing can verify.
+ * unknown or deleted app, or one whose record cannot be opened or names
+ * another Agent, so the host acknowledges rather than asking Slack to retry a
+ * delivery nothing can verify.
  */
 export async function agentAppIngressFacts(env: PlatformEnv, appId: string): Promise<AgentSlackAppIngress | undefined> {
   const stores = resolveStores(env);
@@ -185,8 +186,8 @@ export async function agentAppIngressFacts(env: PlatformEnv, appId: string): Pro
     candidate.slackPresence?.kind === 'agent_app' && agentAppRecord(candidate.slackPresence.app)?.appId === appId
   );
   if (!agent) return undefined;
-  const stored = await readAppSecrets(secretDeps(env), appId).catch(loggedUnreadableAsNone);
-  if (!stored) return undefined;
+  const stored = await readOwnAppSecrets(secretDeps(env), appId, agent.id, 'ingress');
+  if (stored.kind !== 'own') return undefined;
   const workspace = (await stores.config.listWorkspaceInstallations())[0];
   const teamId = workspace?.teamId ?? workspace?.workspaceId;
   if (!teamId || workspace?.health === 'revoked') return undefined;
