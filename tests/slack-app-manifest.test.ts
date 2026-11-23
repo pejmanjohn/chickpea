@@ -178,6 +178,18 @@ test('new manifests hear group DM messages and read their history, and an app wi
   });
 });
 
+test("an Agent's own app subscribes to the Stop button, with the one scope and the Agent Session feature it needs", () => {
+  const manifest = buildSlackAppManifest({
+    kind: 'agent_app',
+    urls: { events: 'https://cloud.test/e', interactions: 'https://cloud.test/i' },
+    appName: 'Support', botDisplayName: 'support', description: 'Support Agent',
+    redirectUri: 'https://cloud.test/slack/agent-apps/callback', scopes: AGENT_APP_BOT_SCOPES, events: AGENT_APP_BOT_EVENTS,
+  });
+  assert.ok(manifest.settings.event_subscriptions.bot_events.includes('agent_session_stopped'));
+  assert.ok(manifest.oauth_config.scopes.bot.includes('chat:write'));
+  assert.ok(manifest.features.agent_view, 'Slack draws Stop on an Agent Session, which agent_view gives the app');
+});
+
 test('an Agent\'s own app neither hears group DMs nor reads their history', () => {
   assert.equal(AGENT_APP_BOT_SCOPES.includes('mpim:history'), false);
   assert.equal(AGENT_APP_BOT_EVENTS.includes('message.mpim'), false);

@@ -22,7 +22,7 @@ import {
   handleAgentAppHomeAction,
   ownBotClient,
 } from '../slack/agent-apps/index.ts';
-import type { SlackSpeaker } from '../slack/speaker.ts';
+import { type SlackSpeaker, speakerFor } from '../slack/speaker.ts';
 
 import { withBetterAuthAccessRevoker } from '../auth/better-auth-environment.ts';
 import {
@@ -848,10 +848,15 @@ function handleAgentAppSlackEvents(
     }
     const bot = await agentAppBotCredentials(platformEnv, handoff.agentId, handoff.appId);
     if (!bot) return;
+    const execution = agentAppExecution(bot, platformEnv, gate.botToken);
+    if (eventType === 'agent_session_stopped') {
+      await processSlackStopButton(payload as unknown as SlackEventFixture, platformEnv, execution);
+      return;
+    }
     await processSlackEvent(
       payload as unknown as SlackEventFixture,
       platformEnv,
-      agentAppExecution(bot, platformEnv, gate.botToken),
+      execution,
       undefined,
       undefined,
       { installation },
@@ -4931,7 +4936,7 @@ async function removeLateMidRunReaction(input: MidRunReaction, name: string): Pr
  * `no_running_job` (nothing undelivered to stop) or `not_allowed` (someone
  * who may not use the Agent there, and is not told: a guest, say).
  */
-type SlackStopButtonToken = 'invalid' | 'no_route' | 'no_running_job' | 'not_allowed';
+type SlackStopButtonToken = 'invalid' | 'no_route' | 'no_running_job' | 'not_allowed' | 'not_own_dm';
 
 function logSlackStopButton(outcome: SlackStopButtonToken): void {
   console.info('[chickpea] steering.stop_button', { outcome });
@@ -4961,23 +4966,29 @@ function logSteeringAdmission(
  * the press is held and one posted after it is a new turn. Recording is
  * idempotent and the press is claimed, so a Slack retry, a second press and a
  * typed stop record one stop. Slack leaves the session in `processing`; the
- * stopped ending settles it.
+ * stopped ending settles it. An Agent app's press is its own only in its own
+ * DM, and runs as its bot there; any other press it hears selects nothing.
  */
 async function processSlackStopButton(
   payload: SlackEventFixture,
   platformEnv: PlatformEnv | undefined,
-  execution?: Pick<SlackEventExecution, 'transport' | 'client' | 'botUserId' | 'stores'>,
+  execution?: Pick<SlackEventExecution, 'transport' | 'client' | 'botUserId' | 'stores' | 'agentApp' | 'placementFacts'>,
 ): Promise<void> {
   const press = parseSlackAgentSessionStopped(payload.event);
   if (!press) {
     logSlackStopButton('invalid');
     return;
   }
+  const direct = press.channelId.startsWith('D');
+  if (execution?.agentApp && !direct) {
+    logSlackStopButton('not_own_dm');
+    return;
+  }
   const stores = execution?.stores ?? resolveStores(platformEnv);
   const installation = await stores.config.getWorkspaceInstallation(payload.team_id);
   if (!installation || installation.health === 'revoked') return;
-  if (execution && installation.transportMode !== 'gateway') return;
-  if (!execution && installation.transportMode !== 'direct') return;
+  // The gateway hands in its execution; Chickpea's direct app and an Agent app's run on a direct installation.
+  if (installation.transportMode !== (execution && !execution.agentApp ? 'gateway' : 'direct')) return;
   if (!(await stores.config.getAgentThreadRoute(payload.team_id, press.channelId, press.threadTs))) {
     logSlackStopButton('no_route');
     return;
@@ -4995,9 +5006,9 @@ async function processSlackStopButton(
     ? await resolveInstallationBotUserId(installation.botUserId, credentials, platformEnv)
     : undefined);
   if (!transport || !client || !botUserId) return;
+  const placementFacts = execution?.placementFacts ?? transport;
 
   // The press, as a reply of that person's in the Agent Session's thread.
-  const direct = press.channelId.startsWith('D');
   const turn: NormalizedSlackTurn = {
     workspaceId: payload.team_id,
     channelId: press.channelId,
@@ -5029,6 +5040,7 @@ async function processSlackStopButton(
       turn,
       surface,
       actor: actor.routing,
+      ...(execution?.agentApp ? { agentApp: execution.agentApp } : {}),
       config: stores.config,
       transport,
       authorizeUserAgent: async (agent) => resolveTurnAgentAccess({
@@ -5037,7 +5049,7 @@ async function processSlackStopButton(
         workspaceId: turn.workspaceId,
         grants: await stores.config.listAgentChannelGrants(turn.workspaceId),
         actor: privateAgentActor(actor, turn.userId),
-        transport,
+        transport: placementFacts,
       }),
     });
   } catch (err) {
@@ -5105,7 +5117,7 @@ async function processSlackStopButton(
         surface,
         actor,
         config: stores.config,
-        placementFacts: transport,
+        placementFacts,
       }),
       turn,
       state,
@@ -5124,6 +5136,7 @@ async function processSlackStopButton(
     turn,
     assignment: routed.assignment,
     installationHealth: installation.health,
+    ownApp: Boolean(execution?.agentApp),
     stores,
     platformEnv,
   });
@@ -5143,6 +5156,8 @@ async function settleIdleAgentSession(input: {
   turn: NormalizedSlackTurn;
   assignment: ResolvedAssignment;
   installationHealth: Parameters<typeof selectSlackPresentationOwner>[0]['installationHealth'];
+  /** The press came through the Agent's own app, in its own DM, and its client is that app's bot. */
+  ownApp: boolean;
   stores: AppStores;
   platformEnv: PlatformEnv | undefined;
 }): Promise<void> {
@@ -5153,8 +5168,8 @@ async function settleIdleAgentSession(input: {
       installationHealth: input.installationHealth,
       agentId: agent.id,
       agentName: agent.name,
-      // Its client is Chickpea's bot, which posts as the Agent.
-      speaker: { kind: 'chickpea_as_agent' },
+      // Otherwise its client is Chickpea's bot, which posts as the Agent.
+      speaker: input.ownApp ? speakerFor(agent.slackPresence, { kind: 'agent_dm' }) : { kind: 'chickpea_as_agent' },
       conversationKind: slackConversationKind(input.turn),
       ...(avatarUrl ? { avatarUrl } : {}),
       ...(agent.slackPresence ? { slackPresence: agent.slackPresence } : {}),

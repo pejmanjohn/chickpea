@@ -65,8 +65,8 @@ import {
   turnJobRunSpeaker,
   verifySlackInstallationTurnAccess,
 } from '../src/slack/installation-execution.ts';
-import { stopNodeTurnRelay } from '../src/slack/node-turn-relay.ts';
-import { deliverAgentFailureFinal } from '../src/slack/run-turn.ts';
+import { slackPresentationStatePort, stopNodeTurnRelay } from '../src/slack/node-turn-relay.ts';
+import { deliverAgentFailureFinal, runTurn } from '../src/slack/run-turn.ts';
 import { redrawCardSetAsAgent } from '../src/slack/ui/agent-card-redraw.ts';
 import { validatePresentCards } from '../src/slack/ui/presentation-tools.ts';
 import { renderCards } from '../src/slack/ui/render-display.ts';
@@ -2495,4 +2495,67 @@ test("an app Agent asked in its own DM to start a group DM has Chickpea's bot op
   const opened = h.calls.find((call) => call.method === 'conversations.open' && call.body.get('users')?.includes(','));
   assert.equal(opened?.token, MAIN_BOT);
   assert.deepEqual(sender(h.calls.find((call) => call.method === 'chat.postMessage' && call.body.get('text') === 'Kicking off Q3 refunds here.')), AS_SUPPORT);
+}));
+
+/** Slack's Stop button pressed on an Agent Session's working indicator, as the Agent app's delivery hears it. */
+function stopPress(channel: string, threadTs: string, pressTs: string) {
+  return {
+    type: 'event_callback', event_id: `EvStop${pressTs.replace('.', '')}`, event_time: Math.floor(Number(pressTs)), team_id: TEAM, api_app_id: AGENT_APP,
+    authorizations: [{ team_id: TEAM, user_id: AGENT_BOT_USER, is_bot: true, is_enterprise_install: false }],
+    event: { type: 'agent_session_stopped', user: 'U1', channel, thread_ts: threadTs, event_ts: pressTs },
+  };
+}
+
+/** The stopped ending of `job`, run as its executor runs it: under the speaker its admission froze. */
+async function endStoppedAsRun(h: Harness, job: PendingTurnJob): Promise<SlackCall | undefined> {
+  const env = withHostedSlackApp(h.base, MAIN_APP);
+  const resolve = withAgentAppExecution((workspaceId) => resolveSlackInstallationExecutionContext(workspaceId, env), env);
+  const context = await resolve(TEAM, turnJobRunSpeaker(job));
+  const presentationState = slackPresentationStatePort(h.stores.slackState, env);
+  const before = h.calls.length;
+  await runTurn(job.turn, job.assignment, env, {
+    client: context.client, installationContext: context, turnId: job.id, ...(job.runId ? { runId: job.runId } : {}),
+    usageRecordingEnabled: false, settingsStore: h.stores.settings, appStores: h.stores,
+    ...(presentationState ? { presentationState } : {}),
+    stopEnding: { beforeDispatch: true, finish: async () => ({ stopperUserId: 'U1', unread: 1, pullRequests: [], windingDown: false }) },
+  });
+  // A stream carries the note in its chunks, a post in its text.
+  return h.calls.slice(before).find((call) =>
+    ['chat.postMessage', 'chat.startStream'].includes(call.method) && [...call.body.values()].some((value) => value.includes('Stopped by <@U1>.')));
+}
+
+test("Slack's Stop button in an Agent app's own DM stops the run there, and its stop note posts as the Agent's own bot with no persona", async (t) => withHarness(t, async (h) => {
+  const root = '1900009000.000100';
+  assert.equal((await h.deliver('events', dmEvent({ event_id: 'EvStopRoot' }, { ts: root, event_ts: root }), { settle: true })).status, 200);
+  const job = await pendingTurn(h.stores, (pending) => pending.turn.messageTs === root);
+  assert.ok(job);
+  assert.equal(job.stop, undefined);
+
+  assert.equal((await h.deliver('events', stopPress('D1', root, '1900009000.000200'), { settle: true })).status, 200);
+  const stopped = (await h.stores.slackState.listPendingTurns!()).find((pending) => pending.id === job.id);
+  assert.equal(stopped?.stop?.role, 'stopped', "the press stops the run in that thread, as a typed stop does");
+  assert.equal(stopped.assignment.agentId, 'agent_support');
+  assert.deepEqual(sender(await endStoppedAsRun(h, stopped)), OWN_BOT);
+  assert.deepEqual(personaOnAppToken(h), []);
+}));
+
+test("Slack's Stop button an Agent app hears anywhere but its own DM selects no Agent and stops nothing", async (t) => withHarness(t, async (h) => {
+  const root = '1900009100.000100';
+  const job = await admitSupportTurn(h, 'C1', root, '1900009100.000200');
+  const info = t.mock.method(console, 'info', () => undefined);
+  assert.equal((await h.deliver('events', stopPress('C1', root, '1900009100.000300'), { settle: true })).status, 200);
+  assert.equal((await h.stores.slackState.listPendingTurns!()).find((pending) => pending.id === job.id)?.stop, undefined,
+    "a Channel thread's run keeps going");
+  assert.deepEqual(info.mock.calls.filter(({ arguments: [line] }) => line === '[chickpea] steering.stop_button').map(({ arguments: [, token] }) => token),
+    [{ outcome: 'not_own_dm' }]);
+  assert.deepEqual(h.calls.filter((call) => call.method.startsWith('chat.') || call.method.includes('setStatus')), [], 'and nothing is posted');
+}));
+
+test("Slack's Stop button in an Agent app's own DM with nothing running settles the indicator as the Agent's own bot", async (t) => withHarness(t, async (h) => {
+  const root = '1900009200.000100';
+  await h.stores.config.putAgentThreadRoute({ workspaceId: TEAM, channelId: 'D1', threadTs: root, agentId: 'agent_support', agentGeneration: 1 });
+  t.mock.method(console, 'info', () => undefined);
+  assert.equal((await h.deliver('events', stopPress('D1', root, '1900009200.000200'), { settle: true })).status, 200);
+  const settled = h.calls.find((call) => call.method === 'agents.sessions.setStatus');
+  assert.deepEqual({ ...sender(settled), status: settled?.body.get('status') }, { ...OWN_BOT, status: 'active' });
 }));
