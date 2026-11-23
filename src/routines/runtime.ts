@@ -5,6 +5,7 @@ import {
   computeSnapshotHash,
   effectiveSlackConfigFromAssignment,
   type EffectiveSlackConfig,
+  withPlainHandleIdentity,
 } from '../config/effective-config.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import {
@@ -82,6 +83,19 @@ export interface RoutineRuntimeAccess {
   channelShared?: boolean;
   /** One-release bridge for v0.1.19 runs whose stored fence used the catalog revision. */
   legacyAccessHashForCatalogRevision?: (catalogRevision: string | undefined) => string;
+  /** Bridge for runs dispatched while the fence covered how Slack writes the Agent's handle. */
+  legacyAccessHashWithHandleForm?: string;
+}
+
+/** Whether the access hash a run stored when it was dispatched still names this access. */
+export function routineAccessMatches(
+  access: RoutineRuntimeAccess,
+  storedAccessHash: string,
+  catalogRevision: string | undefined,
+): boolean {
+  return storedAccessHash === access.accessHash ||
+    storedAccessHash === access.legacyAccessHashWithHandleForm ||
+    storedAccessHash === access.legacyAccessHashForCatalogRevision?.(catalogRevision);
 }
 
 export class RoutineRuntimeError extends Error {
@@ -338,6 +352,7 @@ export async function resolveRoutineRuntimeAccess(
     return {
       config,
       accessHash,
+      legacyAccessHashWithHandleForm: directAccessHash(routineConfigHashWithHandleForm(config)),
       legacyAccessHashForCatalogRevision: (catalogRevision) => directAccessHash(
         computeSnapshotHash(configWithCatalogRevision(config, catalogRevision)),
       ),
@@ -460,6 +475,7 @@ export async function resolveRoutineRuntimeAccess(
   return {
     config,
     accessHash,
+    legacyAccessHashWithHandleForm: channelAccessHash(routineConfigHashWithHandleForm(config)),
     legacyAccessHashForCatalogRevision: (catalogRevision) => channelAccessHash(
       computeSnapshotHash(configWithCatalogRevision(config, catalogRevision)),
     ),
@@ -497,8 +513,16 @@ function configWithCatalogRevision(
   };
 }
 
-/** Catalog hydration provenance is frozen in the runtime route, not authority. */
+/**
+ * Catalog hydration provenance is frozen in the runtime route, not authority.
+ * A run in flight keeps its access while its Agent's handle moves between its
+ * user group and its own app's bot; any other config change still ends it.
+ */
 function routineConfigHash(config: EffectiveSlackConfig): string {
+  return computeSnapshotHash(withPlainHandleIdentity(configWithCatalogRevision(config, undefined)));
+}
+
+function routineConfigHashWithHandleForm(config: EffectiveSlackConfig): string {
   return computeSnapshotHash(configWithCatalogRevision(config, undefined));
 }
 

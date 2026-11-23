@@ -16,6 +16,7 @@ import { routineDestinationBindingDigest } from '../src/routines/ids.ts';
 import { prepareRoutinePrompt } from '../src/routines/prompt.ts';
 import {
   resolveRoutineRuntimeAccess,
+  routineAccessMatches,
   RoutineAgentAppUnavailableError,
   RoutineRuntimeError,
   type RoutineRuntimeAccess,
@@ -58,9 +59,9 @@ function appPresence(app: AgentAppLifecycle = LIVE): AgentSlackPresence {
     avatar: { kind: 'generated', revision: 1, seed: 'support' }, app, released: { userGroupId: 'SSUPPORT' },
   };
 }
-function agent(presence: AgentSlackPresence): CustomAgentConfig {
+function agent(presence: AgentSlackPresence, instructions = 'Help.'): CustomAgentConfig {
   return {
-    id: 'agent_support', kind: 'user', revision: 1, name: 'Support', instructions: 'Help.', enabled: true,
+    id: 'agent_support', kind: 'user', revision: 1, name: 'Support', instructions, enabled: true,
     lifecycle: 'active', editPolicy: 'creator_and_admins', configurationGeneration: 1, slackPresence: presence,
     creatorMembershipId: 'membership_owner', model: 'anthropic/claude-sonnet-4-6',
     skills: [], mcpServers: [], apiConnections: [], repositories: [],
@@ -108,9 +109,9 @@ function runOf(routine: RoutineDefinition): RoutineRun {
     revisionHash: 'a'.repeat(64),
   };
 }
-function authorityFor(routine: RoutineDefinition, presence: AgentSlackPresence): ResolvedRoutineAuthority {
+function authorityFor(routine: RoutineDefinition, presence: AgentSlackPresence, instructions?: string): ResolvedRoutineAuthority {
   const direct = routine.destination.kind === 'direct_thread';
-  const config = agent(presence);
+  const config = agent(presence, instructions);
   return {
     reference: {
       scheduleId: routine.id, agentId: config.id, workspaceId: TEAM, channelId: routine.channelId,
@@ -130,7 +131,7 @@ function authorityFor(routine: RoutineDefinition, presence: AgentSlackPresence):
     }] as never,
     assignment: {
       workspaceId: TEAM, channelId: routine.channelId, agentId: config.id, agent: config,
-      model: 'anthropic/claude-sonnet-4-6', modelAttribution: { source: 'pinned', providerId: 'anthropic' },
+      model: 'anthropic/claude-sonnet-4-6', modelAttribution: { source: 'pinned', providerId: 'anthropic', catalogRevision: 'rev2' },
     },
     actorSlackUserId: OWNER,
     effectiveConnections: [],
@@ -302,10 +303,15 @@ function withHost(t: TestContext): void {
   t.after(() => configureAgentSlackApps(undefined));
 }
 
-function accessDependencies(presence: AgentSlackPresence, slackFake: Slack, grants?: ResolvedRoutineAuthority['agentGrants']) {
+function accessDependencies(
+  presence: AgentSlackPresence,
+  slackFake: Slack,
+  grants?: ResolvedRoutineAuthority['agentGrants'],
+  instructions?: string,
+) {
   return {
     authority: async (routine: RoutineDefinition) => ({
-      ...authorityFor(routine, presence),
+      ...authorityFor(routine, presence, instructions),
       ...(grants ? { agentGrants: grants } : {}),
     }),
     installationExecution: slackFake.resolver,
@@ -335,9 +341,10 @@ test('every schedule stored before an Agent could speak as its own app keeps its
     '426442a88349422a994b77f5495c156e8ef89ee77d1dcbd69d07f26c910a49da',
   );
   const channelGroup = await access(channelRoutine, GROUP, slack());
-  assert.equal(channelGroup.accessHash, '0ba9bfa9cc874d09ed26ae9b10860af2aeb41d90e3851b29deeca852742a3955');
+  assert.ok(routineAccessMatches(channelGroup, '0ba9bfa9cc874d09ed26ae9b10860af2aeb41d90e3851b29deeca852742a3955', 'rev2'));
   const channelApp = await access(channelRoutine, appPresence(), slack({ appChannels: [] }));
   assert.equal(channelApp.accessHash, '148b233f3a4e4380346bf1316eb83a4cb94581e425b4c266f60811c70581e41b');
+  assert.equal(channelGroup.accessHash, channelApp.accessHash, 'the hash does not say whether a user group or an app holds the handle');
   const channelOwnBot = await access(channelRoutine, appPresence(), slack({ appChannels: [CHANNEL] }));
   assert.equal(channelOwnBot.botUserId, AGENT_BOT);
   assert.equal(channelOwnBot.accessHash, channelApp.accessHash, "the hash names Chickpea's bot, whichever bot speaks");
@@ -345,10 +352,8 @@ test('every schedule stored before an Agent could speak as its own app keeps its
     channelApp.legacyAccessHashForCatalogRevision?.('rev1'),
     '7318f3c3f01b11b3979a77330ca84aecfbce4482aaa5d2fd082998e5036597ed',
   );
-  assert.equal(
-    (await access(direct, GROUP, slack())).accessHash,
-    'aee510f17fbacc826d025aa69674501bd9e90b8a340c0c92513db944bed863a4',
-  );
+  const directGroup = await access(direct, GROUP, slack());
+  assert.ok(routineAccessMatches(directGroup, 'aee510f17fbacc826d025aa69674501bd9e90b8a340c0c92513db944bed863a4', 'rev2'));
   const directApp = await access(direct, appPresence(), slack());
   assert.equal(directApp.accessHash, 'cb1a62f679ec412fcae99429284ebb574dcb617dd87a168f74ec88fb7096c4ea');
   assert.equal(
@@ -620,11 +625,18 @@ async function storedChannelSchedule(t: TestContext) {
     slackFake: Slack,
     answer: Answer,
     dispatches = { count: 0 },
+    /** The Agent's saved instructions, and the access hash an older Core stored at dispatch. */
+    edit: { instructions?: string; dispatchedAccessHash?: string } = {},
   ) => executeRoutineOccurrence({ env: {}, store, occurrenceId: occurrence.id, attempt: occurrence.attempt }, {
     now: () => NOW + 1,
     usageRecordingEnabled: false,
     resolveCredential: async () => null,
-    resolveAccess: (run, current) => resolveRoutineRuntimeAccess(run, current, undefined, accessDependencies(presence, slackFake)),
+    resolveAccess: async (run, current) => {
+      const resolved = await resolveRoutineRuntimeAccess(
+        run, current, undefined, accessDependencies(presence, slackFake, undefined, edit.instructions),
+      );
+      return edit.dispatchedAccessHash ? { ...resolved, accessHash: edit.dispatchedAccessHash } : resolved;
+    },
     resolveModel: async () => ({ model: 'anthropic/claude-sonnet-4-6' }),
     codingWorkspaceConfigured: async () => false,
     preparePrompt: (run, routine, resolved, _env, client) => prepareRoutinePrompt(run, routine, resolved, undefined, client, {
@@ -713,6 +725,64 @@ test("a Channel schedule keeps running when its Agent's app is removed, and post
   assert.equal(await execute(third, appPresence(removedApp), fake, { text: 'Third.' }), 'completed');
   await assertStillOn(store);
   assert.deepEqual(laterPosts(fake), [[CHICKPEA_BOT, 'Second.'], [CHICKPEA_BOT, 'Third.']]);
+});
+
+for (const [move, from, to] of [
+  ['from its user group to its app', GROUP, appPresence()],
+  ['from its app back to its user group', appPresence(), GROUP],
+] as const) {
+  test(`a run in flight while its Agent's handle moves ${move} finishes, posts, and its schedule stays on`, async (t) => {
+    withHost(t);
+    // The app's bot is not in the Channel, so it has posted nothing there.
+    const fake = slack({ appChannels: [], history: HISTORY.filter((row) => row.user !== AGENT_BOT) });
+    const { store, start, execute } = await storedChannelSchedule(t);
+    const run = await start();
+    const dispatches = { count: 0 };
+    assert.equal(await execute(run, from, fake, 'interrupted', dispatches), 'resumable');
+    assert.equal(await execute(run, to, fake, { text: 'Done.' }, dispatches), 'completed');
+    assert.equal(dispatches.count, 1, 'the run reattaches rather than starting over');
+    const settled = await store.getRun(run.id);
+    assert.equal(settled?.status, 'succeeded', `the run finishes: ${settled?.publicError ?? ''}`);
+    await assertStillOn(store);
+    assert.deepEqual(fake.posts.map((post) => [post.bot, post.payload.text]), [[CHICKPEA_BOT, 'Done.']]);
+  });
+}
+
+test("a run in flight while its Agent's instructions are edited still fails, and its schedule is turned off", async (t) => {
+  withHost(t);
+  const fake = slack({ appChannels: [] });
+  const { store, start, execute } = await storedChannelSchedule(t);
+  const run = await start();
+  const dispatches = { count: 0 };
+  assert.equal(await execute(run, GROUP, fake, 'interrupted', dispatches), 'resumable');
+  assert.equal(
+    await execute(run, GROUP, fake, { text: 'Done.' }, dispatches, { instructions: 'Help, and file a ticket.' }),
+    'completed',
+  );
+  const failed = await store.getRun(run.id);
+  assert.deepEqual(
+    [failed?.status, failed?.failureClass, failed?.publicError],
+    ['failed', 'access_denied', 'Channel access changed while the routine was running.'],
+  );
+  const routine = await store.getRoutine('routine_channel');
+  assert.deepEqual([routine?.state, routine?.disabledReason], ['disabled', 'access_denied']);
+  assert.equal(fake.posts.some((post) => post.payload.text === 'Done.'), false, 'the result never posts');
+});
+
+test('a run dispatched by Core before this change re-enters with nothing changed and still matches', async (t) => {
+  withHost(t);
+  const fake = slack({ appChannels: [] });
+  const { store, start, execute } = await storedChannelSchedule(t);
+  const run = await start();
+  const dispatches = { count: 0 };
+  // The access hash Core computed before this change for this Channel schedule of a user-group Agent.
+  const dispatchedAccessHash = '0ba9bfa9cc874d09ed26ae9b10860af2aeb41d90e3851b29deeca852742a3955';
+  assert.equal(await execute(run, GROUP, fake, 'interrupted', dispatches, { dispatchedAccessHash }), 'resumable');
+  assert.equal((await store.getRun(run.id))?.resolvedAccessHash, dispatchedAccessHash);
+  assert.equal(await execute(run, GROUP, fake, { text: 'Done.' }, dispatches), 'completed');
+  const settled = await store.getRun(run.id);
+  assert.equal(settled?.status, 'succeeded', `the run finishes: ${settled?.publicError ?? ''}`);
+  await assertStillOn(store);
 });
 
 /** The Channel's history with the app's bot's earlier post carrying no app_id. */
