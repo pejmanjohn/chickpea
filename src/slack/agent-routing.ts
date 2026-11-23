@@ -373,10 +373,12 @@ export async function resolveAgentRoute(
   // the thread and the rest answer after it, as guests. Every one must be
   // reachable by this person here, or none is asked; the first is checked
   // below as the routed Agent. In a Channel or a group DM an Agent app's bot
-  // is its Agent's handle while the host serves that app. Chickpea's bot and
-  // that app's bot each hear such a message and route it alike, so
-  // whichever hears it first admits every Agent it names and the other
-  // delivery finds the message taken.
+  // is its Agent's handle while the host serves that app. In a Channel,
+  // Chickpea's bot and that app's bot each hear such a message and route it
+  // alike, so whichever hears it first admits every Agent it names and the
+  // other delivery finds the message taken. In a group DM an app's delivery
+  // admits only its own Agent, so the two deliveries do not route it alike:
+  // any other Agent named there answers only if Chickpea's delivery admits it.
   const addressed = (surface === 'channel' || groupDm
     ? agentsNamed(turn.text, agentsByGroupId, agents)
     : mentionedAgents).slice(0, MAX_ADDRESSED_AGENTS);
