@@ -1,10 +1,11 @@
 import { getSlackStateStore, type PlatformEnv } from '../../config/state-backend.ts';
-import { agentAppIsLive, type AgentSlackPresence } from '../../config/types.ts';
+import { agentAppIsLive, type AgentSlackPresence, type CustomAgentConfig } from '../../config/types.ts';
 import { slackConversationsInfo } from '../credentials.ts';
 import { ADMISSION_MEMBERSHIP_TTL_MS } from '../installation-execution.ts';
 import { slackConversationKind } from '../thread-key.ts';
 import type { SlackTransport } from '../transport/types.ts';
 import type { NormalizedSlackTurn } from '../types.ts';
+import { agentSlackAppsHost } from './host.ts';
 import { agentAppBotCredentials } from './live.ts';
 import { type SlackSpeaker, speakerFor } from '../speaker.ts';
 
@@ -52,6 +53,24 @@ async function agentBotInChannel(env: PlatformEnv | undefined, agentId: string, 
   if (!info.ok && (info.error === 'channel_not_found' || info.error === 'not_in_channel')) return false;
   if (!info.ok) throw new Error('conversations.info failed');
   return info.facts?.id === channelId && info.facts.member === true;
+}
+
+/**
+ * Whether an Agent's own app can answer in a Channel: the host serves it, it
+ * is live, its token can be read, and its bot is a member. This is the same
+ * cached fact admission reads for the speaker, so the two never disagree
+ * within its TTL.
+ */
+export async function agentAppAnswersInChannel(
+  env: PlatformEnv | undefined,
+  agent: Pick<CustomAgentConfig, 'id' | 'slackPresence'>,
+  channelId: string,
+): Promise<boolean> {
+  const presence = agent.slackPresence;
+  if (!agentSlackAppsHost() || !agentAppIsLive(presence)) return false;
+  const { app } = presence;
+  return (await botMembership(app.botUserId, channelId, () =>
+    agentBotInChannel(env, agent.id, app.app.appId, channelId))).member;
 }
 
 /**

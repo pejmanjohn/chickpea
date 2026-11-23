@@ -132,6 +132,9 @@ test('a thread reply that names an Agent does not need an existing Agent thread'
   // "@oncall what is this?" under an alert nobody has answered.
   assert.equal(turnRequiresOwnedThread(turn({ source: 'implicit_thread_reply', text: '<!subteam^SAGENT> what is this?' })), false);
   assert.equal(turnRequiresOwnedThread(turn({ source: 'implicit_thread_reply', text: '<!subteam^SAGENT|@oncall> what is this?' })), false);
+  // So does one that names an Agent app's bot; a person's name is not an Agent's.
+  assert.equal(turnRequiresOwnedThread(turn({ source: 'implicit_thread_reply', text: '<@UAPPBOT> what is this?' }), ['UAPPBOT']), false);
+  assert.equal(turnRequiresOwnedThread(turn({ source: 'implicit_thread_reply', text: '<@U2> what is this?' }), ['UAPPBOT']), true);
   // A plain reply or a reaction still continues only an owned thread.
   assert.equal(turnRequiresOwnedThread(turn({ source: 'implicit_thread_reply', text: 'thanks!' })), true);
   assert.equal(turnRequiresOwnedThread(turn({ source: 'reaction_added', text: 'Reacted :eyes:' })), true);

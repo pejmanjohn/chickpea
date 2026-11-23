@@ -129,6 +129,24 @@ test('a group DM is addressed as a Channel is, and its messages keep their kind'
   assert.equal(mention.turn.channelType, undefined);
 });
 
+test("a root message naming only an Agent app's bot is a mention of that Agent; any other person stays ordinary text", () => {
+  const options = { botUserId: 'UBOT', siblingBotUserIds: ['UAPPBOT'] };
+  for (const [name, message] of [
+    ['Channel', topLevelChannelMessage({ event: { text: '<@UAPPBOT> where do refunds go?' } })],
+    ['group DM', groupDmMessage({ event: { text: '<@UAPPBOT|support> where do refunds go?' } })],
+  ] as const) {
+    const turn = normalizeSlackTurn(message, options);
+    assert.ok(turn.status === 'runnable', name);
+    assert.deepEqual([turn.turn.source, turn.turn.threadTs, turn.turn.contextMode], ['agent_mention', turn.turn.messageTs, 'channel_history'], name);
+  }
+  assert.deepEqual(normalizeSlackTurn(topLevelChannelMessage({ event: { text: '<@U2> lunch?' } }), options), {
+    status: 'ignored', reason: 'unaddressed_channel_message',
+  });
+  assert.deepEqual(normalizeSlackTurn(topLevelChannelMessage({ event: { text: '<@UAPPBOT> hi' } }), { botUserId: 'UBOT' }), {
+    status: 'ignored', reason: 'unaddressed_channel_message',
+  }, 'a bot this installation does not answer as is nobody');
+});
+
 test('a direct message without a channel type is a DM turn, so turns built from it stay DM turns', () => {
   const event = dmMessage({ event_id: 'Ev_DM_NO_CHANNEL_TYPE' });
   delete event.event.channel_type;

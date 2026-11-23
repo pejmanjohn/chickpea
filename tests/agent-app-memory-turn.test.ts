@@ -16,6 +16,7 @@ import { loadCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import type { SlackInstallationExecutionContext } from '../src/slack/installation-execution.ts';
 import { invalidateSlackInstallationCredentialCache } from '../src/slack/installation-credentials.ts';
 import { runTurn } from '../src/slack/run-turn.ts';
+import { createSlackWebClient } from '../src/slack/web-client.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { AGENT_FAILURE_TEXT } from '../src/slack/web-client-presenter.ts';
 
@@ -349,4 +350,27 @@ test('a turn whose memory could not be prepared logs that it was quarantined, no
     warn.mock.calls.map((call) => call.arguments[0] as { event?: string }).filter((line) => line?.event === 'chickpea.turn.agent_failure'),
     [{ event: 'chickpea.turn.agent_failure', reason: 'memory_quarantined', stage: 'before_run', agentId: h.agent.id }],
   );
+}));
+
+test("`!memory` addressed to the Agent's bot is the Agent's memory command where Chickpea's bot answers for it", async (t) => withHarness(t, async (h) => {
+  const chickpea: SlackInstallationExecutionContext = {
+    workspaceId: TEAM, transportMode: 'direct', sharedAppReads: false, botToken: 'xoxb-workspace-bot',
+    botUserId: WORKSPACE_BOT_USER, client: createSlackWebClient('xoxb-workspace-bot'),
+  };
+  const turn: NormalizedSlackTurn = {
+    ...channelMention(50), text: `<@${AGENT_BOT_USER}> !memory`, source: 'agent_mention', speaker: { kind: 'chickpea_as_agent' },
+  };
+  const prompts: string[] = [];
+  const before = h.calls.length;
+  await runTurn(turn, assignmentFor(h.agent, 'C1'), h.env, {
+    installationContext: chickpea,
+    usageRecordingEnabled: false,
+    agentPrompt: async (input) => {
+      prompts.push(input.message);
+      return { text: ANSWER, requestedModel: 'local-stub/agent-app', returnedModel: null, reportedUsage: null, usageCompleteness: 'not_reported' as const };
+    },
+  });
+  assert.deepEqual(prompts, [], 'the command never reaches the model');
+  const posted = h.calls.slice(before).filter((call) => call.method.startsWith('chat.')).map((call) => readable(call.body)).join('\n');
+  assert.match(posted, /This Agent has one shared memory/, "Support's memory is listed");
 }));
