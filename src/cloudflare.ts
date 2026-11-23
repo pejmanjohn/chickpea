@@ -1,5 +1,5 @@
 import { GatewayInboxConflictError } from './slack/gateway/inbox.ts';
-import { continueAgentAppSwitch, withAgentAppExecution } from './slack/agent-apps/index.ts';
+import { armUnfinishedAgentAppMoves, continueAgentAppSwitch, withAgentAppExecution } from './slack/agent-apps/index.ts';
 import { GATEWAY_HTTP_SETTING, parseHttpDeliveryState, verifyHttpDelivery, httpDeliveryReceipt, HttpDeliveryError } from './slack/gateway/http-delivery.ts';
 import { GATEWAY_BINDING_SETTING } from './slack/gateway/client.ts';
 import type { GatewayAdmissionResult, GatewayInboundDelivery, GatewayWorkspaceBinding } from './slack/gateway/protocol.ts';
@@ -405,6 +405,7 @@ import {
   deliverManagementReceiptToSlack,
   drainManagementReceiptOutbox,
   isAgentAppSwitchJob,
+  isFinalOutboxAttempt,
   failAgentWelcomeTurn,
   isAgentCreatedWelcome,
   reconcileScheduleActionReceipts,
@@ -2865,6 +2866,14 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
         retentionStartedAt - this.lastRetentionSweepAt >= RETENTION_SWEEP_INTERVAL_MS) {
       stores.management.cleanupRetention(retentionStartedAt, 250);
       this.lastRetentionSweepAt = retentionStartedAt;
+      // A move to or from an Agent's own app cut off before its job was armed, or whose job spent every try, is
+      // armed again here, so it finishes without a person; the receipts drain below runs it.
+      await armUnfinishedAgentAppMoves({
+        config: localGatewayAppStores(stores).config,
+        management: stores.management as unknown as ManagementStore,
+      }, retentionStartedAt).catch((error: unknown) => {
+        console.warn('[chickpea] Agent app move sweep failed', error instanceof Error ? error.name : typeof error);
+      });
       retentionMs = Date.now() - retentionStartedAt;
     }
     // A practice run goes an hour after it settles, on the wake nextDueAt arms for it.
@@ -3828,7 +3837,7 @@ async function drainCloudflareManagementReceipts(
     wake: (request) => admitSetupWake(request, env, localHostAddressedAdmission(stores, env)),
     // An Agent app's switch job posts nothing itself: its drain runs the switch, against this store's own rows.
     deliver: (record) => isAgentAppSwitchJob(record.receipt)
-      ? continueAgentAppSwitch(env, record.receipt, agentAppStores)
+      ? continueAgentAppSwitch(env, record.receipt, agentAppStores, { finalAttempt: isFinalOutboxAttempt(record) })
       : deliverManagementReceiptToSlack(record, {
         identity: stores.identity as unknown as IdentityStore,
         resolveInstallation,

@@ -31,7 +31,14 @@ export interface AgentAppLinks {
   adminUrl?: string;
 }
 
-export type AgentAppMessageKind = 'allow' | 'archived_left' | 'archived_installed' | 'permission_needed' | AgentAppAttention;
+export type AgentAppMessageKind =
+  | 'allow'
+  | 'archived_left'
+  | 'archived_installed'
+  | 'permission_needed'
+  | 'app_removed_unreachable'
+  | 'app_removed_permission'
+  | AgentAppAttention;
 
 type Button =
   | { label: string; url: string }
@@ -55,6 +62,10 @@ const openAdmin = (adminUrl: string | undefined): Button[] => adminUrl ? [{ labe
  */
 export function permissionNeededCopy({ handle }: Pick<AgentAppNames, 'handle'>): string {
   return `Chickpea needs one more Slack permission to give @${handle} its own Slack app. In Chickpea Admin, choose Update in Slack, then choose Give @${handle} its own Slack app in Chickpea's Home tab.`;
+}
+
+function removedUnreachable({ name, handle }: AgentAppNames): string {
+  return `${name}'s Slack app was removed from this workspace, so people can't mention @${handle} for now. ${name} still answers through Chickpea in its threads and in messages with Chickpea.`;
 }
 
 const DM_COPY = {
@@ -94,10 +105,22 @@ const DM_COPY = {
     text: ({ name }) => `Chickpea needs a new Slack refresh token to finish ${name}'s app.`,
     buttons: (links) => links.tokenPageUrl ? [{ label: 'Paste a new token', url: links.tokenPageUrl }] : [],
   },
+  /** Removed, and its user group is back on. */
   app_removed: {
     text: ({ name, handle }) =>
-      `${name}'s Slack app was removed from this workspace, so @${handle} can't answer there. Choose Allow to add it back.`,
+      `${name}'s Slack app was removed from this workspace. People can still mention @${handle}, and ${name} answers through Chickpea. Choose Allow to add the app back.`,
     buttons: allow,
+  },
+  /** Removed, with no user group to answer @handle: none to turn back on, or Slack refused. */
+  app_removed_unreachable: {
+    text: (names) => `${removedUnreachable(names)} Choose Allow to add the app back.`,
+    buttons: allow,
+  },
+  /** Removed, and Slack refused to turn the user group back on for want of the Owner's permission. */
+  app_removed_permission: {
+    text: (names) =>
+      `${removedUnreachable(names)} To bring back @${names.handle} without the app, choose Update in Slack in Chickpea Admin, then choose Try again. Or choose Allow to add the app back.`,
+    buttons: (links, names) => [...allow(links, names), ...openAdmin(links.adminUrl), tryAgain(links)],
   },
   /** The archive refusal Admin shows, sent too because the Agent no longer answers. */
   uninstall_failed: {
@@ -150,7 +173,11 @@ export function agentAppSwitchedMessage(names: AgentAppNames, report: AgentAppSw
   return { text, blocks: [{ type: 'section', text: { type: 'mrkdwn', text } }] };
 }
 
+/** Slack caps a section's text at 3,000 characters; a long list names this many and counts the rest. */
+const LISTED_MAX = 20;
+
 function listed(items: readonly string[]): string {
+  if (items.length > LISTED_MAX) return `${items.slice(0, LISTED_MAX).join(', ')} and ${items.length - LISTED_MAX} more`;
   if (items.length <= 1) return items[0] ?? '';
   return `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`;
 }
@@ -213,6 +240,8 @@ export type AgentAppHomeRow =
   | { kind: 'stalled' }
   | { kind: 'waiting' }
   | { kind: 'active' }
+  /** Live, and the Owner never got the switch's result message: the row says what it would have. */
+  | { kind: 'active_untold'; report: AgentAppSwitchReport }
   | { kind: 'attention' };
 
 const HOME_COPY = {
@@ -223,7 +252,7 @@ const HOME_COPY = {
   waiting: ({ handle }: AgentAppNames) => `@${handle}'s Slack app is ready to add. Open your messages with Chickpea to allow it.`,
   active: ({ handle }: AgentAppNames) => `@${handle} has its own Slack app. People can message @${handle} directly.`,
   attention: ({ handle }: AgentAppNames) => `@${handle}'s Slack app needs your attention. Open your messages with Chickpea for details.`,
-} satisfies Record<Exclude<AgentAppHomeRow['kind'], 'offer'>, (names: AgentAppNames) => string>;
+} satisfies Record<Exclude<AgentAppHomeRow['kind'], 'offer' | 'active_untold'>, (names: AgentAppNames) => string>;
 
 /** The Owner's App Home line under an Agent, with its one control. */
 export function agentAppHomeBlocks(row: AgentAppHomeRow, names: AgentAppNames, agentId: string): object[] {
@@ -237,7 +266,8 @@ export function agentAppHomeBlocks(row: AgentAppHomeRow, names: AgentAppNames, a
       ? button(label, { url: row.tokenPageUrl, action_id: `agent_app_link_${agentId}` })
       : button(label, { action_id: START_APP_ACTION, value: agentId })];
   }
-  const line = { type: 'context', elements: [{ type: 'mrkdwn', text: escapeMrkdwn(HOME_COPY[row.kind](names)) }] };
+  const text = row.kind === 'active_untold' ? agentAppSwitchedMessage(names, row.report).text : escapeMrkdwn(HOME_COPY[row.kind](names));
+  const line = { type: 'context', elements: [{ type: 'mrkdwn', text }] };
   if (row.kind === 'stalled') return [line, button('Finish setting up', { action_id: FINISH_APP_ACTION, value: agentId })];
   if (row.kind === 'permission_needed' && row.adminUrl) {
     return [line, button('Open Chickpea', { url: row.adminUrl, action_id: `agent_app_admin_${agentId}` })];
