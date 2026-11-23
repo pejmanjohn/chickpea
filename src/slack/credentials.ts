@@ -799,6 +799,36 @@ export async function slackConversationsInfo(
   };
 }
 
+export interface SlackConversationsOpenResult {
+  ok: boolean;
+  error: string | undefined;
+  /** The DM between the token's bot and the person. */
+  channelId: string | undefined;
+  retryAfterMs: number | undefined;
+}
+
+/**
+ * `conversations.open` for one person: the DM between the token's bot and
+ * that person, which Slack opens if it is not open yet (nobody is notified).
+ * It needs only `im:write`, so it answers for a bot that holds no `im:read`.
+ */
+export async function slackConversationsOpen(
+  botToken: string,
+  userId: string,
+  options: SlackTruthFetchOptions = {},
+): Promise<SlackConversationsOpenResult> {
+  const result = await slackFormPost('conversations.open', botToken, new URLSearchParams({ users: userId }), options);
+  const channel = result.body.channel;
+  const id = channel && typeof channel === 'object' ? (channel as { id?: unknown }).id : undefined;
+  const ok = result.ok && result.body.ok === true && typeof id === 'string' && id.length > 0;
+  return {
+    ok,
+    error: ok ? undefined : result.error ?? (typeof result.body.error === 'string' ? result.body.error : 'invalid_response'),
+    channelId: ok ? id : undefined,
+    retryAfterMs: result.retryAfterMs,
+  };
+}
+
 export interface SlackUsersInfoResult {
   ok: boolean;
   error: string | undefined;

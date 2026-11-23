@@ -10,7 +10,7 @@ export {
   handleAgentAppHomeAction,
   withAgentAppExecution,
 } from './live.ts';
-export { admissionSpeaker, agentAppBotSees, storedRunSpeaker } from './place.ts';
+export { admissionSpeaker, agentAppBotSees, isAgentAppDm, storedRunSpeaker } from './place.ts';
 export { agentAppPostingBot, agentAppRouteSelection } from './routing.ts';
 export { createAgentSlackAppRoutes } from './routes.ts';
 export { AgentSlackApps, type AgentAppTransport } from './service.ts';

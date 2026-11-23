@@ -1,10 +1,10 @@
 import { getSlackStateStore, type PlatformEnv } from '../../config/state-backend.ts';
 import { type ActiveAgentApp, agentAppIsLive, type AgentSlackPresence } from '../../config/types.ts';
-import { slackConversationsInfo } from '../credentials.ts';
+import { isTransientSlackApiError, slackConversationsInfo, slackConversationsOpen } from '../credentials.ts';
 import { ADMISSION_MEMBERSHIP_TTL_MS } from '../installation-execution.ts';
 import { type SlackSpeaker, speakerFor } from '../speaker.ts';
 import { slackConversationKind } from '../thread-key.ts';
-import type { SlackTransport } from '../transport/types.ts';
+import { type SlackTransport, SlackTransportError } from '../transport/types.ts';
 import type { NormalizedSlackTurn } from '../types.ts';
 import { agentAppBotCredentials } from './live.ts';
 
@@ -21,28 +21,18 @@ export interface SlackTurnHearing {
   installationBot?: { botUserId: string; transport: Pick<SlackTransport, 'lookupChannel'> };
 }
 
-interface MembershipFact {
-  member: boolean;
-  verifiedAt: number;
-  /** Slack did not answer; such a fact is never cached. */
-  unread?: true;
-}
+interface MembershipFact { member: boolean; verifiedAt: number }
 
 const MEMBERSHIP_CACHE_LIMIT = 512;
 const memberships = new Map<string, MembershipFact>();
 
-/** One bot's membership of one conversation, read at most once per admission TTL in this isolate. A failed read is not kept. */
+/** One bot's membership of one conversation, read at most once per admission TTL in this isolate. A failed read throws and is not kept. */
 async function botMembership(botUserId: string, channelId: string, read: () => Promise<boolean>): Promise<MembershipFact> {
   const key = `${botUserId}\u0000${channelId}`;
   const now = Date.now();
   const cached = memberships.get(key);
   if (cached && now - cached.verifiedAt >= 0 && now - cached.verifiedAt < ADMISSION_MEMBERSHIP_TTL_MS) return cached;
-  let member: boolean;
-  try {
-    member = await read();
-  } catch {
-    return { member: false, verifiedAt: now, unread: true };
-  }
+  const member = await read();
   if (memberships.size >= MEMBERSHIP_CACHE_LIMIT) memberships.clear();
   const fact = { member, verifiedAt: now };
   memberships.set(key, fact);
@@ -53,21 +43,49 @@ export function clearAdmissionMembershipsForTests(): void {
   memberships.clear();
 }
 
-/** Whether an Agent app's bot is in a conversation, asked on its own token. A bot sees a DM only when it is one side of it. */
+/** A membership read that failed, which a Channel or group DM place counts as "not a member". */
+const notVerified = (): MembershipFact => ({ member: false, verifiedAt: Date.now() });
+
+/** Whether an Agent app's bot is in a Channel or group DM, asked on its own token. */
 async function agentBotIsIn(env: PlatformEnv | undefined, agentId: string, appId: string, channelId: string): Promise<boolean> {
   const bot = await agentAppBotCredentials(env, agentId, appId);
   if (!bot) return false;
   const info = await slackConversationsInfo(bot.botToken, channelId);
   if (!info.ok && (info.error === 'channel_not_found' || info.error === 'not_in_channel')) return false;
   if (!info.ok) throw new Error('conversations.info failed');
-  return info.facts?.id === channelId && (info.facts.im || info.facts.mpim || info.facts.member);
+  return info.facts?.id === channelId && (info.facts.mpim || info.facts.member);
+}
+
+/**
+ * Whether `channelId` is the DM between an Agent app's bot and the person
+ * `userId`, asked on the app's own token. An Agent app holds `im:write` but
+ * never `im:read`, so Slack refuses `conversations.info` on a DM for it
+ * (`missing_scope`); `conversations.open` names the app's DM with that person
+ * instead. False when the app has no live bot. When Slack does not say, this
+ * throws a `SlackTransportError` (retryable for an outage or a rate limit):
+ * the caller must not guess whose DM it is.
+ */
+export async function isAgentAppDm(
+  env: PlatformEnv | undefined,
+  input: { agentId: string; appId: string; userId: string; channelId: string },
+): Promise<boolean> {
+  const bot = await agentAppBotCredentials(env, input.agentId, input.appId);
+  if (!bot) return false;
+  const opened = await slackConversationsOpen(bot.botToken, input.userId);
+  if (!opened.ok) {
+    const code = opened.error ?? 'invalid_response';
+    throw new SlackTransportError('conversations.open', code, {
+      retryable: isTransientSlackApiError(code),
+      effectOutcome: 'failed',
+      ...(opened.retryAfterMs === undefined ? {} : { retryAfterMs: opened.retryAfterMs }),
+    });
+  }
+  return opened.channelId === input.channelId;
 }
 
 /**
  * Whether a live Agent app's bot can see a conversation, asked on its own
- * token and cached as at admission. A bot sees a DM only when it is one side
- * of it, so a DM no bot heard is the app's own exactly when this is true.
- * Undefined when Slack did not answer.
+ * token and cached as at admission. Undefined when Slack did not answer.
  */
 export async function agentAppBotSees(
   env: PlatformEnv | undefined,
@@ -75,20 +93,28 @@ export async function agentAppBotSees(
   app: ActiveAgentApp,
   channelId: string,
 ): Promise<boolean | undefined> {
-  const fact = await botMembership(app.botUserId, channelId, () => agentBotIsIn(env, agentId, app.app.appId, channelId));
-  return fact.unread ? undefined : fact.member;
+  try {
+    return (await botMembership(app.botUserId, channelId, () => agentBotIsIn(env, agentId, app.app.appId, channelId))).member;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
  * Where an admitted turn was heard, and so the bot that answers its run
  * (speakerFor). A DM an Agent's own app heard is marked with that app's bot;
- * a DM turn Chickpea built is the app's own when the app's bot can see it,
- * and a DM marked with another bot is no DM of this Agent's. In a Channel or
+ * a DM turn Chickpea built is the app's own when the app's DM with the
+ * person is this one (isAgentAppDm, cached), and a DM marked with another
+ * bot is no DM of this Agent's. When Slack does not answer that question the
+ * admission throws, so no bot is chosen for a DM it may not be in; a turn
+ * Chickpea built retries its admission, and one still not admitted is
+ * reported as such (a setup's wake posts its notice instead). In a Channel or
  * group DM the bot that heard the turn counts as a member unless Slack said
  * it is not, and the run's access check verifies it; the other bot is asked
- * once with a cached `conversations.info`. When the answering bot is not the
- * one that heard the turn, the turn carries its membership instead, so the
- * run's access check reuses it within the same TTL.
+ * once with a cached `conversations.info`, and a failed read counts as not a
+ * member. When the answering bot is not the one that heard the turn, the
+ * turn carries its membership instead, so the run's access check reuses it
+ * within the same TTL.
  */
 export async function admissionSpeaker(input: {
   turn: NormalizedSlackTurn;
@@ -101,12 +127,12 @@ export async function admissionSpeaker(input: {
   const conversation = slackConversationKind(turn);
   const app = agentAppIsLive(presence) ? presence.app : undefined;
   const appBotIn = (live: ActiveAgentApp) => botMembership(live.botUserId, turn.channelId, () =>
-    agentBotIsIn(input.env, input.agentId, live.app.appId, turn.channelId));
+    agentBotIsIn(input.env, input.agentId, live.app.appId, turn.channelId)).catch(notVerified);
   if (conversation === 'im') {
+    const appDm = (live: ActiveAgentApp) => botMembership(live.botUserId, turn.channelId, () =>
+      isAgentAppDm(input.env, { agentId: input.agentId, appId: live.app.appId, userId: turn.userId, channelId: turn.channelId }));
     if (hearing.agentApp) turn.dmBotUserId = hearing.botUserId;
-    else if (hearing.byHost && app && !turn.dmBotUserId && await agentAppBotSees(input.env, input.agentId, app, turn.channelId)) {
-      turn.dmBotUserId = app.botUserId;
-    }
+    else if (hearing.byHost && app && !turn.dmBotUserId && (await appDm(app)).member) turn.dmBotUserId = app.botUserId;
     if (!turn.dmBotUserId) return speakerFor(presence, { kind: 'chickpea_dm' });
     if (presence?.kind !== 'agent_app' || (app && app.botUserId !== turn.dmBotUserId)) {
       return { kind: 'unavailable', reason: 'no_bot_can_post' };
@@ -128,7 +154,7 @@ export async function admissionSpeaker(input: {
   // Chickpea's bot is asked only when the live app's bot is not in the Channel; otherwise the app's bot answers either way.
   const chickpeaFact = hearing.agentApp && chickpea && !appBotIsMember
     ? await botMembership(chickpea.botUserId, turn.channelId, async () =>
-      (await chickpea.transport.lookupChannel(turn.channelId)).member === true)
+      (await chickpea.transport.lookupChannel(turn.channelId)).member === true).catch(notVerified)
     : undefined;
   const speaker = speakerFor(presence, {
     kind: 'channel',

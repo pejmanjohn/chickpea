@@ -57,8 +57,13 @@ Admission decides the bot once per run, from where the message was heard
 (`speakerFor` in `src/slack/speaker.ts`), and stores it with the turn; the run's
 visible owner follows from it. A DM the app heard is marked with the app's bot,
 and a DM marked with another Agent's bot is never this Agent's own. A turn
-Chickpea builds itself in a DM or group DM (an ask, a setup's wake) asks the
-app's bot once with `conversations.info` whether it is there. In a Channel the
+Chickpea builds itself in a DM (an ask, a setup's wake) asks the app's token
+once with `conversations.open` for the person, and is in the app's own DM when
+Slack names this DM. It cannot ask `conversations.info`: an Agent app has no
+`im:read`, and Slack answers `missing_scope` for a DM. When Slack does not
+answer, the turn is not admitted on a guess; its admission is retried, and a
+setup's wake that is still not admitted posts its notice instead. In a group DM
+the app's bot is asked once with `conversations.info` whether it is there. In a Channel the
 bot that heard the message counts as a member unless Slack said it is not, and
 the other bot is asked once with `conversations.info`. Each of these reads is
 kept in the isolate for the admission membership TTL, so a bot that joined or
