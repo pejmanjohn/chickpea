@@ -7,7 +7,7 @@ import { agentSlackHandle } from '../agent-asks.ts';
 import { resolveSlackBehaviorSettings } from '../behavior-settings.ts';
 import { resolveSlackPublicUrl } from '../credentials.ts';
 import { renderAgentChannelWelcome } from '../message-format.ts';
-import type { SlackTransport } from '../transport/types.ts';
+import { SlackTransportError, type SlackTransport } from '../transport/types.ts';
 import { agentAvatarInstallation, agentAvatarUrlForPresentation } from './avatar-assets.ts';
 
 /** A Channel welcome Slack accepted. */
@@ -125,8 +125,9 @@ async function joinUnlessIn(
   if (await botIsIn(installationBot, channelId)) return 'heard';
   try {
     return (await joining.joinPublicChannel(channelId)).member ? 'heard_since_chickpea_joined' : 'need_mention';
-  } catch {
-    console.warn('[chickpea] Chickpea could not join a Channel beside an Agent app');
+  } catch (error) {
+    console.warn('[chickpea] Chickpea could not join a Channel beside an Agent app:',
+      error instanceof SlackTransportError ? error.code : 'failed');
     return 'need_mention';
   }
 }

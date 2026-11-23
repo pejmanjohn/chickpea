@@ -50,7 +50,8 @@ export async function agentAppRouteSelection(
 ): Promise<AgentAppRouteSelection | undefined> {
   const conversation = slackConversationKind(turn);
   if (agentApp) {
-    const ownAddress = conversation === 'im' ? turn.source === 'dm_message' : turn.source === 'app_mention';
+    // A message in its own DM that names its bot is normalized as a mention.
+    const ownAddress = turn.source === 'app_mention' || (conversation === 'im' && turn.source === 'dm_message');
     return ownAddress ? { kind: 'select', agentId: agentApp.agentId } : undefined;
   }
   if (conversation === 'im') return undefined;

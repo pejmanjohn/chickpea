@@ -1611,6 +1611,14 @@ test("a live app Agent's turn in its own DM is marked with its bot, and posts an
   assert.deepEqual(personaOnAppToken(h), []);
 }));
 
+test("a message in the app Agent's own DM that names its bot is its Agent's, answered as its bot", async (t) => withHarness(t, async (h) => {
+  assert.equal((await h.deliver('events', dmEvent({}, { text: `<@${AGENT_BOT_USER}> hello` }))).status, 200);
+  const job = await pendingTurn(h.stores, () => true);
+  assert.ok(job);
+  assert.deepEqual([job.assignment.agentId, job.turn.speaker], ['agent_support', { kind: 'own_bot', botUserId: AGENT_BOT_USER }],
+    'Slack sends a DM as a message whatever it mentions, and normalization reads one that names the bot as a mention');
+}));
+
 test("a live app Agent's reply in a Channel its bot is not in, where Chickpea's bot is, posts through Chickpea as the Agent instead of failing not_in_channel", async (t) => withHarness(t, async (h) => {
   const job = await admitSupportTurn(h, 'C1', '1900003100.000100', '1900003100.000200');
   assert.deepEqual(job.turn.speaker, { kind: 'chickpea_as_agent' });

@@ -44,6 +44,8 @@ test("an Agent app's own delivery selects its Agent only for a mention of its ow
     { kind: 'select', agentId: 'support' });
   assert.deepEqual(await agentAppRouteSelection({ text: '<@UBOTSUP> hi', source: 'app_mention' }, agents, own, answersWhereLive),
     { kind: 'select', agentId: 'support' });
+  assert.deepEqual(await agentAppRouteSelection({ text: '<@UBOTSUP> hi', source: 'app_mention', channelType: 'im' }, agents, own, answersWhereLive),
+    { kind: 'select', agentId: 'support' }, 'a message in its own DM that names its bot is still a message to it');
   for (const source of ['implicit_thread_reply', 'agent_mention', 'reaction_added'] as const) {
     assert.equal(await agentAppRouteSelection({ text: '<!subteam^S1|@finance> hi', source }, agents, own, answersWhereLive), undefined,
       `${source} routes as it would on Chickpea's delivery`);

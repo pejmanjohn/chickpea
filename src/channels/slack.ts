@@ -1575,6 +1575,8 @@ export async function postAgentRoutingFeedback(input: {
   surface: AssignmentSurface;
   result: Exclude<AgentRoutingResult, { kind: 'ignore' | 'routed' }>;
   client: ReturnType<typeof createSlackWebClient>;
+  /** The Agent app bots this delivery answers for: a thread reply naming one names its Agent. */
+  appBotUserIds?: readonly string[];
 }): Promise<void> {
   const denial = input.result.kind === 'denied' ? input.result : undefined;
   const alternatives = denial?.alternatives.length
@@ -1601,8 +1603,7 @@ export async function postAgentRoutingFeedback(input: {
     // Ambient roots remain silent, and a denied Agent never becomes visible
     // through the alternatives list.
     const explicitAgentMention = input.turn.source === 'agent_mention' ||
-      (input.turn.source === 'implicit_thread_reply' &&
-        parseAgentUserGroupMentions(input.turn.text).length > 0);
+      (input.turn.source === 'implicit_thread_reply' && !turnRequiresOwnedThread(input.turn, input.appBotUserIds));
     if (input.turn.source !== 'app_mention' && !explicitAgentMention) return;
     await input.client.chat.postEphemeral({
       channel: input.turn.channelId,
@@ -3769,6 +3770,7 @@ async function processSlackEvent(
           surface,
           result: routed,
           client: runtimeClient,
+          appBotUserIds: siblingBotUserIds,
         }));
         return;
       }

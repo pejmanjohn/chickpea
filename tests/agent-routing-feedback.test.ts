@@ -50,6 +50,20 @@ test('an explicit Channel denial always informs only the requester', async () =>
   assert.deepEqual(publicMessages, []);
 });
 
+test("a denied thread reply that names an Agent app's bot informs the requester, as one naming a handle does", async () => {
+  for (const [text, told] of [['<@UAPPBOT> and this?', 1], ['<@U2> and this?', 0]] as const) {
+    const ephemeral: unknown[] = [];
+    await postAgentRoutingFeedback({
+      turn: turn({ text, source: 'implicit_thread_reply' }),
+      surface: 'channel',
+      result: { kind: 'denied', reason: 'not_available', alternatives: [] },
+      appBotUserIds: ['UAPPBOT'],
+      client: { chat: { async postEphemeral(input: unknown) { ephemeral.push(input); return { ok: true }; } } } as never,
+    });
+    assert.equal(ephemeral.length, told, text);
+  }
+});
+
 test('an ambient Channel denial remains silent', async () => {
   const calls: unknown[] = [];
 
