@@ -2247,6 +2247,30 @@ async function appAgentHolding(store: SqliteConfigStore, handle: string) {
   }, created.revision);
 }
 
+test("an Agent that shared its handle with an app Agent before Chickpea kept handles unique still saves other edits from Admin", async () => {
+  const fixture = harness();
+  try {
+    await appAgentHolding(fixture.store, 'support');
+    const created = await fixture.store.createAgent({
+      id: 'agent_support', name: 'Support', instructions: 'Answer support questions.', enabled: true, lifecycle: 'active',
+      model: 'local-stub/admin-agent', skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const support = await fixture.store.updateAgent(created.id, {
+      slackPresence: { ...created.slackPresence!, requestedHandle: 'support', normalizedHandle: 'support' },
+    }, created.revision);
+    // Admin sends the handle with every save.
+    const saved = await fixture.app.request(`http://localhost/admin/api/agents/${support.id}`, {
+      method: 'PATCH', headers: auth(),
+      body: JSON.stringify({ expectedRevision: support.revision, handle: 'support', instructions: 'Answer support questions kindly.' }),
+    });
+    assert.equal(saved.status, 200);
+    assert.equal((await fixture.store.getAgent(support.id)).instructions, 'Answer support questions kindly.');
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
 test("Admin refuses to create an Agent, or rename one, onto a handle another Agent's own app holds, until that Agent is archived", async () => {
   const fixture = harness();
   try {

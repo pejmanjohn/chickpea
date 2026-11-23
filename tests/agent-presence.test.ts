@@ -188,11 +188,12 @@ async function appAgentHolding(config: SqliteConfigStore, id: string, handle: st
   }, created.revision);
 }
 
-test("a handle another Agent's own app holds is taken: publishing asks Slack for nothing and offers free handles, until that Agent is archived", async () => {
+test("a handle another Agent's own app holds is taken: publishing asks Slack for nothing and offers handles no Slack group or Agent has, until that Agent is archived", async () => {
   const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const transport = new FakeSlackTransport();
   try {
     const holder = await appAgentHolding(config, 'agent_helpdesk', 'support');
+    await config.createAgent(agent('agent_support_two', 'Support two', 'support-2'));
     await config.createAgent(agent('agent_support', 'Support', 'support'));
     transport.groups.push({ id: 'S_TEAM', name: 'Support team', handle: 'support-team', disabled: false });
     const reconciler = new AgentPresenceReconciler({ config, transport, announce: null, now: () => NOW });
@@ -200,10 +201,11 @@ test("a handle another Agent's own app holds is taken: publishing asks Slack for
     await assert.rejects(
       () => reconciler.retry('agent_support'),
       (error: unknown) => error instanceof AgentPresenceError && error.code === 'handle_collision' &&
-        error.suggestions.join() === 'support-2,support-3,support-4',
+        error.suggestions.join() === 'support-3,support-4,support-5',
     );
     assert.equal(transport.createCalls, 0, 'Slack is asked for nothing');
-    assert.deepEqual((await config.getAgent('agent_support')).slackPresence?.handleSuggestions, ['support-2', 'support-3', 'support-4']);
+    assert.deepEqual((await config.getAgent('agent_support')).slackPresence?.handleSuggestions, ['support-3', 'support-4', 'support-5'],
+      'no Slack group\'s handle, and no other Agent\'s');
 
     await config.updateAgent(holder.id, { lifecycle: 'archived' }, holder.revision);
     const published = await reconciler.retry('agent_support');

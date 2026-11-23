@@ -2558,4 +2558,12 @@ test("Slack's Stop button in an Agent app's own DM with nothing running settles 
   assert.equal((await h.deliver('events', stopPress('D1', root, '1900009200.000200'), { settle: true })).status, 200);
   const settled = h.calls.find((call) => call.method === 'agents.sessions.setStatus');
   assert.deepEqual({ ...sender(settled), status: settled?.body.get('status') }, { ...OWN_BOT, status: 'active' });
+
+  // A thread there recorded as another Agent's is still the app's own: no persona goes on its token.
+  const other = '1900009200.000300';
+  await h.stores.config.putAgentThreadRoute({ workspaceId: TEAM, channelId: 'D1', threadTs: other, agentId: 'agent_finance', agentGeneration: 1 });
+  const before = h.calls.length;
+  assert.equal((await h.deliver('events', stopPress('D1', other, '1900009200.000400'), { settle: true })).status, 200);
+  assert.deepEqual(sender(h.calls.slice(before).find((call) => call.method === 'agents.sessions.setStatus')), OWN_BOT);
+  assert.deepEqual(personaOnAppToken(h), []);
 }));

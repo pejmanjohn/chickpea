@@ -255,3 +255,22 @@ test("an archived Agent holds no handle: another Agent is renamed onto it, and a
     assert.equal(await handleOf('agent_support'), 'support');
   });
 });
+
+test("an Agent that shared its handle with an app Agent before Chickpea kept handles unique may still be given the handle it has", async (t) => {
+  await withEnv({ CHICKPEA_TENANCY: undefined, SLACK_STATE_DB_PATH: ':memory:' }, async () => {
+    const { f, slackApply, handleOf } = await handleFixture(t);
+    const created = await f.config.createAgent({
+      ...BASE, id: 'agent_support', name: 'Support', instructions: 'Draft customer replies.', creatorMembershipId: f.admin.membership.id,
+    });
+    await f.config.updateAgent(created.id, {
+      slackPresence: { ...created.slackPresence!, requestedHandle: 'support', normalizedHandle: 'support' },
+    }, created.revision);
+    const [outcome] = await slackApply(f.admin.binding.slackUserId, 'keep Support as @support', [{
+      itemId: 'edit', kind: 'update_agent', agentId: 'agent_support',
+      expectedRevision: (await f.config.getAgent('agent_support')).revision,
+      patch: { requestedHandle: 'support' },
+    }]);
+    assert.equal(outcome?.disposition, 'applied', inspect(outcome));
+    assert.equal(await handleOf('agent_support'), 'support');
+  });
+});
