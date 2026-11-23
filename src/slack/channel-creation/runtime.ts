@@ -18,6 +18,7 @@ import { agentAvatarInstallation, agentAvatarUrlForPresentation } from '../agent
 import { resolveSlackPublicUrl } from '../credentials.ts';
 import { resolveSlackInstallationExecutionContext } from '../installation-execution.ts';
 import { slackConversationFacts } from '../reading/authority.ts';
+import { readingBot } from '../reading/tools.ts';
 import { RequestReceipt } from '../requested-conversations/receipts.ts';
 import { routeRepliesToAgent } from '../requested-conversations/replies.ts';
 import { requesterAgentRefusal } from '../requested-conversations/standing.ts';
@@ -65,6 +66,8 @@ async function slackChannelCreateService(
   const [agent, publicUrl] = await Promise.all([config.getAgent(plan.agentId), resolveSlackPublicUrl(env, settings)]);
   const avatarUrl = agentAvatarUrlForPresentation(agent, publicUrl, agentAvatarInstallation(env));
   const current = { channelId: signal.channelId, threadTs: signal.threadTs, messageTs: signal.messageTs };
+  // The run's own bot reads the conversation it was asked in: Chickpea's bot cannot see an Agent app's own DM.
+  const asked = await readingBot(workspace, env, plan.agentId, signal.turnJobId);
   const transport = createDirectSlackTransportFromWebClient(workspace.client);
   return new SlackChannelCreateService({
     workspaceId: signal.workspaceId,
@@ -72,7 +75,7 @@ async function slackChannelCreateService(
     requesterText: signal.requesterText,
     requesterTextSource: signal.requesterTextSource,
     webContentRead: signal.publicDocRead === true,
-    currentConversation: { current, conversation: slackConversationFacts(workspace.client, current) },
+    currentConversation: { current, conversation: slackConversationFacts(asked.client, current) },
     chickpeaBot: workspace.client,
     persona: { username: agent.name, ...(avatarUrl ? { icon_url: avatarUrl } : {}) },
     assertStanding: (visibility) => assertChannelCreateStanding({

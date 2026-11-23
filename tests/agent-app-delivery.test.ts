@@ -8,6 +8,7 @@ import { test, type TestContext } from 'node:test';
 import { Hono, type ExecutionContext } from 'hono';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
+import type { RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import {
   admitSetupWake,
   markSlackInstallationEnded,
@@ -21,6 +22,7 @@ import type { EncryptedCredentialStore } from '../src/config/settings-store.ts';
 import { closeNodeStateStores, getSettingsStore, resolveStores, type AppStores, type PlatformEnv } from '../src/config/state-backend.ts';
 import type { AgentAppLifecycle, CustomAgentConfig } from '../src/config/types.ts';
 import { createLiveWorkspaceManagementService } from '../src/management/live-service.ts';
+import { deliverManagementReceiptToSlack, formatManagementSetupReceipt } from '../src/management/receipts.ts';
 import { invokeWorkspaceManagementTool } from '../src/management/tool-adapter.ts';
 import type { ManagementActorContext } from '../src/management/types.ts';
 import {
@@ -41,6 +43,11 @@ import { clearAdmissionMembershipsForTests } from '../src/slack/agent-apps/place
 import { readAppSecrets, saveConfigurationToken, writeAppSecrets } from '../src/slack/agent-apps/secrets.ts';
 import { createAgentAppSlackApi } from '../src/slack/agent-apps/slack-api.ts';
 import { generateCredentialKeyring, loadCredentialKeyring } from '../src/slack/credential-keyring.ts';
+import { AGENT_ASK_PAUSE_TEXT, AGENT_ASK_TURN_LIMIT, createAgentAskCollector } from '../src/slack/agent-asks.ts';
+import { OPEN_AGENT_DM_ACTION_ID, START_AGENT_ACTION_ID } from '../src/slack/app-home.ts';
+import { CANVASES_NOT_IN_AGENT_DM, createSlackCanvasTools, slackCanvasService } from '../src/slack/canvases/tools.ts';
+import { createSlackChannel } from '../src/slack/channel-creation/runtime.ts';
+import { startSlackGroupDm } from '../src/slack/group-dm/runtime.ts';
 import { AGENT_CHANNEL_ADD_ACTION } from '../src/slack/agent-channel-offer.ts';
 import { invalidateStoredSlackPublicUrl } from '../src/slack/credentials.ts';
 import { configureHostedSlackPermissionsUpdate } from '../src/slack/hosted-permissions.ts';
@@ -245,6 +252,7 @@ async function withHarness(
     )) {
       return Response.json({ ok: false, error: 'missing_scope' });
     }
+    if (method === 'conversations.open' && !body.get('users') && !channel) return Response.json({ ok: false, error: 'users_list_not_supplied' });
     // As in Slack, a bot sees a private Channel or group DM only when it is in it, and a DM only when it is one side of it.
     if (method === 'conversations.info' && (
       ((options.privateChannels?.includes(channel) || channel.startsWith('G')) && outside.get(token ?? '')?.has(channel)) ||
@@ -286,6 +294,8 @@ async function withHarness(
             : channel.startsWith('G')
               ? { id: channel, name: 'mpdm-owner--teammate-1', is_mpim: true, is_private: true, is_member: true, is_archived: false }
               : { id: channel, is_im: true, user: 'U1' } }
+          : method === 'conversations.create'
+            ? { ok: true, channel: { id: 'C9NEW', name: body.get('name'), is_channel: true, is_private: body.get('is_private') === 'true', is_member: true } }
           : method === 'conversations.join'
             ? { ok: true, channel: { id: channel, name: 'team', is_channel: true, is_private: false, is_member: true, is_archived: false } }
           : method === 'conversations.members'
@@ -296,7 +306,7 @@ async function withHarness(
               response_metadata: { next_cursor: '' },
             }
             : method === 'conversations.open'
-              ? { ok: true, channel: { id: APP_DMS[token ?? ''] ?? 'DOWNER' } }
+              ? { ok: true, channel: { id: (body.get('users') ?? '').includes(',') ? 'GNEW' : APP_DMS[token ?? ''] ?? 'DOWNER' } }
               : method === 'conversations.history' || method === 'conversations.replies'
                 ? { ok: true, messages: (method === 'conversations.history' ? options.history : options.replies) ?? [] }
               : method === 'reactions.get'
@@ -2112,8 +2122,10 @@ test("a teammate with its own app, asked inside another Agent's own DM, never ge
     { runtimeContract: 'chickpea-v1', agentId: 'agent_finance' },
     { messageTs: '1900003900.000100', text: 'Q2 revenue was 1.1M.' },
   );
+  // As a runner from before the host refused asks in an app's DM hands one over: without the DM's bot.
+  const { dmBotUserId: _heardBy, ...handedOver } = asking.turn;
   await processSlackAgentAsks({
-    turn: asking.turn, fromAgentId: 'agent_support', fromThreadOwner: true,
+    turn: handedOver, fromAgentId: 'agent_support', fromThreadOwner: true,
     deliveries: [{ messageTs: '1900003900.000200', text: `Let me check. <@${FINANCE_BOT_USER}> what was Q3 revenue?` }],
   }, env, { stores: h.stores });
   const asked = await pendingTurn(h.stores, (job) => job.assignment.agentId === 'agent_finance');
@@ -2248,3 +2260,239 @@ test("a turn Chickpea builds in a Channel its bot is not in answers as the app's
   assert.deepEqual(own.turn.speaker, { kind: 'own_bot', botUserId: AGENT_BOT_USER });
   assert.deepEqual(sender(await postAsRun(h, own)), OWN_BOT);
 }, { notMemberOf: { [MAIN_BOT]: ['C1'], [AGENT_BOT]: ['C1'] } }));
+
+/** The App Home Chickpea publishes for U1, by Agent: its Message button's action and link. */
+async function appHomeMessageButtons(h: Harness, tab: 'home' | 'messages' = 'home'): Promise<Record<string, { action: string; url?: string }>> {
+  const before = h.calls.length;
+  const now = Date.now();
+  assert.equal((await h.deliverToChickpea({
+    token: '', team_id: TEAM, api_app_id: MAIN_APP.appId, type: 'event_callback', event_id: `EvHome${now}`, event_time: now,
+    authorizations: [{ team_id: TEAM, user_id: 'UBOT', is_bot: true, is_enterprise_install: false }],
+    event: { type: 'app_home_opened', user: 'U1', channel: CHICKPEA_DM, tab },
+  })).status, 200);
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const published = h.calls.slice(before).find((call) => call.method === 'views.publish');
+    if (published) {
+      const view = JSON.parse(published.body.get('view') ?? '{}') as {
+        blocks: Array<{ accessory?: { action_id: string; value?: string; url?: string; text?: { text: string } } }>;
+      };
+      return Object.fromEntries(view.blocks.flatMap(({ accessory }) =>
+        accessory?.text?.text === 'Message' && accessory.value
+          ? [[accessory.value, { action: accessory.action_id, ...(accessory.url ? { url: accessory.url } : {}) }]]
+          : []));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail('no App Home was published');
+}
+
+test("App Home's Message opens a live app Agent's own DM; a user-group Agent's still starts a thread in Chickpea's DM", async (t) => withHarness(t, async (h) => {
+  const start = { action: START_AGENT_ACTION_ID };
+  assert.deepEqual(await appHomeMessageButtons(h), {
+    agent_support: { action: OPEN_AGENT_DM_ACTION_ID, url: `https://slack.com/app_redirect?app=${AGENT_APP}&team=${TEAM}` },
+    agent_finance: start,
+  });
+  configureAgentSlackApps(undefined);
+  assert.deepEqual(await appHomeMessageButtons(h), { agent_support: start, agent_finance: start },
+    "without the port no app's bot answers its DM, so Message starts a thread in Chickpea's DM as before");
+}));
+
+test("App Home's link click for an app Agent seeds nothing in Chickpea's DM", async (t) => withHarness(t, async (h) => {
+  assert.equal((await h.deliverToChickpea({
+    type: 'block_actions', api_app_id: MAIN_APP.appId, team: { id: TEAM }, user: { id: 'U1' }, trigger_id: 'trigger1',
+    container: { type: 'view', view_id: 'VHOME' },
+    actions: [{ type: 'button', action_id: OPEN_AGENT_DM_ACTION_ID, value: 'agent_support', action_ts: `${Date.now() / 1_000}` }],
+  }, 'interactions')).status, 200);
+  assert.deepEqual(h.calls.filter((call) => call.method.startsWith('chat.') || call.method === 'conversations.open'), []);
+}));
+
+test('the joiner welcome tells a person to message an app Agent directly by its handle; a user-group Agent keeps the Message row', async (t) => withHarness(t, async (h) => {
+  await appHomeMessageButtons(h, 'messages');
+  const now = Date.now();
+  const [queued] = await h.stores.management.claimDueOutbox(now + 1, 10, now + 30_000);
+  assert.ok(queued && 'kind' in queued.receipt && queued.receipt.kind === 'chickpea_introduction');
+  assert.deepEqual(queued.receipt.usable?.agents.map(({ name, ownApp }) => [name, ownApp ?? false]), [['Finance', false], ['Support', true]]);
+  assert.equal(formatManagementSetupReceipt(queued.receipt).split('\n\n').at(-1),
+    'Mention an Agent in its Channel, or press Message next to it on my Home tab to talk to it privately. You can also message @support directly. To set up a new Agent for work you repeat, tell me what it should do.');
+}));
+
+/** A connector's notice for `agentId` in the thread `threadTs` of `channelId`, delivered as the outbox delivers it. */
+async function deliverConnectedNotice(h: Harness, agentId: string, channelId: string, threadTs: string, finishedBy: string | null = 'U1') {
+  const agent = await h.stores.config.getAgent(agentId);
+  const before = h.calls.length;
+  await deliverManagementReceiptToSlack({
+    outboxId: `receipt_${channelId}_${threadTs}`, operationId: 'setup_tasks',
+    destination: {
+      kind: 'thread', workspaceId: TEAM, channelId, threadTs,
+      ...(finishedBy ? { wake: { agentId, slackUserId: finishedBy, conversationKind: 'im' as const, note: SETUP_NOTE } } : {}),
+    },
+    receipt: {
+      kind: 'connector_connected', setupOperationId: 'setup_tasks', connector: 'Tasks', toolkit: 'tasks', agentId, agentName: agent.name,
+      ownerKind: 'member', accessLane: 'read', avatarUrl: 'https://hosted.example/avatar.png', completedAt: Date.now(),
+    },
+    status: 'pending', attempts: 0, nextAttemptAt: 0, createdAt: 0, updatedAt: 0,
+  }, {
+    identity: h.stores.identity,
+    env: withHostedSlackApp(h.base, MAIN_APP),
+    agentPresence: async (id) => (await h.stores.config.getAgent(id)).slackPresence,
+  });
+  return sender(h.calls.slice(before).find((call) => call.method === 'chat.postMessage'));
+}
+
+test("the connected notice speaks as the bot that speaks for the Agent where it lands, and never with a persona on the app's token", async (t) => withHarness(t, async (h) => {
+  assert.deepEqual(await deliverConnectedNotice(h, 'agent_support', 'D1', '1900004500.000100'), OWN_BOT,
+    "in the app's own DM, where Chickpea's bot cannot post");
+  assert.deepEqual(dmQuestions(h, AGENT_BOT), ['conversations.open U1'], "the app's token only opened its DM with the person who finished the setup");
+  const before = h.calls.length;
+  assert.deepEqual(await deliverConnectedNotice(h, 'agent_support', CHICKPEA_DM, '1900004500.000200'), AS_SUPPORT);
+  assert.deepEqual(dmQuestions(h, AGENT_BOT, before), ['conversations.open U1'], "the app's DM with that person is another one");
+  assert.deepEqual(await deliverConnectedNotice(h, 'agent_support', 'C1', '1900004500.000300'), OWN_BOT, 'a Channel its bot is in');
+  assert.deepEqual(await deliverConnectedNotice(h, 'agent_support', 'C2', '1900004500.000400'), AS_SUPPORT, 'a Channel its bot is not in');
+  assert.deepEqual(await deliverConnectedNotice(h, 'agent_finance', 'C1', '1900004500.000500'), { token: MAIN_BOT, username: 'Finance', picture: true },
+    'a user-group Agent, as before');
+  assert.deepEqual(personaOnAppToken(h), []);
+}, { notMemberOf: { [AGENT_BOT]: ['C2'] } }));
+
+test("a connected notice with no person to ask about is placed as Chickpea's DM, and the app's token is asked nothing", async (t) => withHarness(t, async (h) => {
+  await assert.rejects(deliverConnectedNotice(h, 'agent_support', 'D1', '1900004550.000100', null), /channel_not_found/,
+    "Chickpea's bot is refused in the app's own DM, so the outbox keeps the notice");
+  assert.deepEqual(dmQuestions(h, AGENT_BOT), []);
+  assert.deepEqual(await deliverConnectedNotice(h, 'agent_support', CHICKPEA_DM, '1900004550.000200', null), AS_SUPPORT);
+  assert.deepEqual(dmQuestions(h, AGENT_BOT), []);
+}));
+
+test("a connected notice whose DM Slack does not place is not posted on a guessed bot", async (t) => withHarness(t, async (h) => {
+  await assert.rejects(deliverConnectedNotice(h, 'agent_support', CHICKPEA_DM, '1900004560.000100'), /ratelimited/);
+  assert.deepEqual(h.calls.filter((call) => call.method.startsWith('chat.')), [], 'nothing posts on either bot');
+}, { rateLimited: [`conversations.open ${AGENT_BOT}`] }));
+
+const FINANCE_NOT_IN_DM = "Finance can't reply in this direct message. Mention Finance in a channel instead.";
+
+/** Hands the host one reply of `asking` that asks Finance, as its run's collector does when Finance is its teammate there. */
+async function askFinanceFrom(h: Harness, asking: PendingTurnJob, ts: string): Promise<void> {
+  const collector = createAgentAskCollector({
+    turn: asking.turn,
+    assignment: { ...asking.assignment, teammates: [{ name: 'Finance', handle: 'finance', userGroupId: 'SFINANCE' }] },
+    dispatch: (request) => processSlackAgentAsks(request, withHostedSlackApp(h.base, MAIN_APP), { stores: h.stores }),
+  });
+  collector.note({ messageTs: ts, text: 'Let me ask @finance about Q3.' });
+  await collector.flush('succeeded');
+}
+
+test("a teammate asked inside an app Agent's own DM is not run, and the Agent's bot says once in the thread where to ask instead", async (t) => withHarness(t, async (h) => {
+  assert.equal((await h.deliver('events', dmEvent())).status, 200);
+  const asking = await pendingTurn(h.stores, (job) => job.turn.channelId === 'D1');
+  assert.ok(asking);
+  assert.deepEqual(asking.turn.speaker, { kind: 'own_bot', botUserId: AGENT_BOT_USER });
+  await askFinanceFrom(h, asking, '1900004650.000100');
+  await askFinanceFrom(h, asking, '1900004650.000200');
+  const lines = h.calls.filter((call) => call.method === 'chat.postMessage' && call.body.get('text') === FINANCE_NOT_IN_DM);
+  assert.deepEqual(lines.map((call) => [sender(call), call.body.get('channel'), call.body.get('thread_ts')]),
+    [[OWN_BOT, 'D1', asking.turn.threadTs]], "one line, from Support's own bot, in the thread it asked from");
+  assert.equal(await pendingTurn(h.stores, (job) => job.assignment.agentId === 'agent_finance'), undefined, 'no teammate turn is admitted');
+  assert.ok((await h.stores.config.listSlackPublicContext(TEAM, 'D1', asking.turn.threadTs))
+    .some((row) => row.role === 'agent' && row.text === FINANCE_NOT_IN_DM), 'Support reads the line on its next turn');
+}));
+
+test("the same ask from a Channel admits the teammate and posts no such line", async (t) => withHarness(t, async (h) => {
+  const asking = await admitSupportTurn(h, 'C1', '1900004660.000100', '1900004660.000200');
+  await askFinanceFrom(h, asking, '1900004660.000300');
+  assert.ok(await pendingTurn(h.stores, (job) => job.assignment.agentId === 'agent_finance'), 'Finance is asked');
+  assert.deepEqual(h.calls.filter((call) => call.body.get('text') === FINANCE_NOT_IN_DM), []);
+}));
+
+/** Asks Finance from `asking` until the exchange reaches its limit, then once more; returns the pause line's post. */
+async function pauseLineAfterLimit(h: Harness, asking: PendingTurnJob): Promise<SlackCall | undefined> {
+  const env = withHostedSlackApp(h.base, MAIN_APP);
+  const state = h.stores.slackState as unknown as { recordTurnAttempt(id: string, n: number): Promise<void> };
+  for (let index = 1; index <= AGENT_ASK_TURN_LIMIT + 1; index += 1) {
+    const ts = `${asking.turn.threadTs.split('.')[0]}.0009${String(index).padStart(2, '0')}`;
+    await processSlackAgentAsks({
+      turn: asking.turn, fromAgentId: asking.assignment.agentId, fromThreadOwner: true,
+      deliveries: [{ messageTs: ts, text: '@finance and now?' }],
+    }, env, { stores: h.stores });
+    const asked = await pendingTurn(h.stores, (job) => job.turn.messageTs === ts);
+    if (asked) await state.recordTurnAttempt(asked.id, 1);
+  }
+  return h.calls.find((call) => call.method === 'chat.postMessage' && call.body.get('text') === AGENT_ASK_PAUSE_TEXT);
+}
+
+test("the ask-limit pause line comes from the asking run's own bot without a persona where that bot speaks", async (t) => withHarness(t, async (h) => {
+  const asking = await admitSupportTurn(h, 'C1', '1900004600.000100', '1900004600.000200');
+  assert.deepEqual(asking.turn.speaker, { kind: 'own_bot', botUserId: AGENT_BOT_USER });
+  assert.deepEqual(sender(await pauseLineAfterLimit(h, asking)), OWN_BOT);
+  assert.deepEqual(personaOnAppToken(h), []);
+}));
+
+test("the ask-limit pause line comes through Chickpea under the Agent's name where its app's bot is not", async (t) => withHarness(t, async (h) => {
+  const asking = await admitSupportTurn(h, 'C1', '1900004700.000100', '1900004700.000200');
+  assert.deepEqual(asking.turn.speaker, { kind: 'chickpea_as_agent' });
+  assert.deepEqual(sender(await pauseLineAfterLimit(h, asking)), AS_SUPPORT);
+}, { notMemberOf: { [AGENT_BOT]: ['C1'] } }));
+
+/** The Slack signal of `job`'s run, as its tools read it. */
+function signalOf(job: PendingTurnJob, requesterText?: string) {
+  return {
+    agentId: job.assignment.agentId, workspaceId: TEAM, channelId: job.turn.channelId, threadTs: job.turn.threadTs,
+    conversationKind: job.turn.channelType === 'im' ? 'im' as const : 'channel' as const, slackUserId: 'U1', eventId: job.turn.eventId,
+    messageTs: job.turn.messageTs, turnJobId: job.id, ...(requesterText ? { requesterText } : {}),
+  };
+}
+
+test("canvases say plainly they are not available in an app Agent's own DM, and work as before everywhere else", async (t) => withHarness(t, async (h) => {
+  const env = withHostedSlackApp(h.base, MAIN_APP);
+  const plan = { agentId: 'agent_support', actorMembershipId: h.ownerMembershipId } as RuntimePlanV2;
+  assert.equal((await h.deliver('events', dmEvent())).status, 200);
+  const own = await pendingTurn(h.stores, (job) => job.turn.channelId === 'D1');
+  assert.ok(own);
+  const before = h.calls.length;
+  const [read] = createSlackCanvasTools(() => slackCanvasService(plan, signalOf(own), env));
+  const refused = JSON.parse(await (read as unknown as { run(input: { data: object }): Promise<string> }).run({ data: {} }));
+  assert.deepEqual(refused, { status: 'not_read', code: 'not_in_this_conversation', message: CANVASES_NOT_IN_AGENT_DM });
+  assert.deepEqual(h.calls.slice(before).filter((call) => call.method !== 'auth.test' && call.method !== 'users.info'), [],
+    'nothing is asked of Slack');
+  for (const channelId of [CHICKPEA_DM, 'C1']) {
+    const job = await admitSupportTurn(h, channelId, `19000048${channelId === 'C1' ? '1' : '0'}0.000100`, `19000048${channelId === 'C1' ? '1' : '0'}0.000200`);
+    await slackCanvasService(plan, signalOf(job), env);
+  }
+  const finance = await admitChannelTurnOf(h, 'agent_finance', '1900004820.000100', '1900004820.000200');
+  await slackCanvasService({ ...plan, agentId: 'agent_finance' }, signalOf(finance), env);
+}));
+
+test("an app Agent asked in its own DM to create a Channel has Chickpea's bot create it and post as the Agent", async (t) => withHarness(t, async (h) => {
+  const env = withHostedSlackApp(h.base, MAIN_APP);
+  assert.equal((await h.deliver('events', dmEvent())).status, 200);
+  const own = await pendingTurn(h.stores, (job) => job.turn.channelId === 'D1');
+  assert.ok(own);
+  const result = await createSlackChannel(
+    { agentId: 'agent_support', actorMembershipId: h.ownerMembershipId },
+    signalOf(own, 'please make a channel for the Q3 refunds'),
+    env,
+    { name: 'q3-refunds', visibility: 'private', people: [], message: 'Kicking off Q3 refunds here.' },
+  );
+  assert.equal(result.status, 'created', JSON.stringify(result));
+  assert.deepEqual(h.calls.filter((call) => call.method === 'conversations.info' && call.body.get('channel') === 'D1').map((call) => call.token), [AGENT_BOT],
+    "the DM it was asked in is read by the app's bot, the one in it");
+  assert.deepEqual(['conversations.create', 'conversations.invite'].map((method) => h.calls.find((call) => call.method === method)?.token), [MAIN_BOT, MAIN_BOT]);
+  assert.deepEqual(sender(h.calls.find((call) => call.method === 'chat.postMessage' && call.body.get('channel') === 'C9NEW')), AS_SUPPORT);
+}));
+
+test("an app Agent asked in its own DM to start a group DM has Chickpea's bot open it and post as the Agent", async (t) => withHarness(t, async (h) => {
+  const env = withHostedSlackApp(h.base, MAIN_APP);
+  assert.equal((await h.deliver('events', dmEvent())).status, 200);
+  const own = await pendingTurn(h.stores, (job) => job.turn.channelId === 'D1');
+  assert.ok(own);
+  const result = await startSlackGroupDm(
+    { agentId: 'agent_support', actorMembershipId: h.ownerMembershipId },
+    signalOf(own, 'please start a group DM with <@U0SAM> about the Q3 refunds'),
+    env,
+    ['U0SAM'],
+    'Kicking off Q3 refunds here.',
+  );
+  assert.equal(result.status, 'posted', JSON.stringify(result));
+  assert.deepEqual(h.calls.filter((call) => call.method === 'conversations.info' && call.body.get('channel') === 'D1').map((call) => call.token), [AGENT_BOT],
+    "the DM it was asked in is read by the app's bot, the one in it");
+  const opened = h.calls.find((call) => call.method === 'conversations.open' && call.body.get('users')?.includes(','));
+  assert.equal(opened?.token, MAIN_BOT);
+  assert.deepEqual(sender(h.calls.find((call) => call.method === 'chat.postMessage' && call.body.get('text') === 'Kicking off Q3 refunds here.')), AS_SUPPORT);
+}));

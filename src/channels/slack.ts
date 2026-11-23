@@ -20,7 +20,9 @@ import {
   agentSlackAppsHost,
   endAgentSlackApp,
   handleAgentAppHomeAction,
+  ownBotClient,
 } from '../slack/agent-apps/index.ts';
+import type { SlackSpeaker } from '../slack/speaker.ts';
 
 import { withBetterAuthAccessRevoker } from '../auth/better-auth-environment.ts';
 import {
@@ -69,11 +71,12 @@ import {
   type StateRpcResult,
   type TurnJob,
 } from '../config/state-rpc.ts';
-import type {
-  AgentThreadRoute,
-  CustomAgentConfig,
-  ResolvedAssignment,
-  WorkspaceInstallation,
+import {
+  agentAppIsLive,
+  type AgentThreadRoute,
+  type CustomAgentConfig,
+  type ResolvedAssignment,
+  type WorkspaceInstallation,
 } from '../config/types.ts';
 import {
   resolveSlackBehaviorSettings,
@@ -239,6 +242,7 @@ import {
   AGENT_ASK_MAX_TARGETS,
   AGENT_ASK_PAUSE_TEXT,
   AGENT_ASK_TURN_LIMIT,
+  agentAskNotInAgentDmText,
   agentAskOrigin,
   agentSlackHandle,
   isHandedBackTurn,
@@ -1313,6 +1317,8 @@ function chickpeaIntroductionUsable(usable: PrivatelyUsableAgents): ChickpeaIntr
         ...(handle ? { handle } : {}),
         ...(purpose ? { purpose } : {}),
         ...(channelId ? { channelId } : {}),
+        // Without the port no Agent app's bot answers its DM.
+        ...(agentSlackAppsHost() && agentAppIsLive(agent.slackPresence) ? { ownApp: true as const } : {}),
       };
     }),
     more: usable.agents.length - listed.length,
@@ -1430,6 +1436,8 @@ async function publishAgentAppHome(input: {
     userId: input.userId,
     view: agentDirectoryAppHome(visible, {
       unavailableNotice: input.unavailableNotice === true,
+      // Without the port no Agent app's bot answers, so its DM would answer nothing.
+      ...(agentSlackAppsHost() ? { agentDmTeamId: installation.teamId ?? input.workspaceId } : {}),
       rowExtras: await agentAppHomeRows({
         env: input.platformEnv,
         viewer: { role: actor.principal?.role },
@@ -1990,6 +1998,15 @@ export async function processSlackAgentAsks(
       if (targets.length < AGENT_ASK_MAX_TARGETS) targets.push({ agent, delivery });
     }
   }
+  // Neither a teammate's bot nor Chickpea's can post in an Agent app's own DM: no teammate is asked there.
+  if (asking.dmBotUserId !== undefined) {
+    for (const { agent } of targets) {
+      await postAgentAskNotInAgentDm({ stores, platformEnv, asking, from, teammate: agent }).catch((error: unknown) => {
+        console.warn('[chickpea] agent ask refusal line failed:', error instanceof Error ? error.name : 'unknown');
+      });
+    }
+    return;
+  }
   // The thread's own Agent, if it started this chain: asks made here carry it,
   // and a guest's answer that asks nobody goes back to it. One that mentions
   // an Agent is a report or a further ask, whose answer comes back later.
@@ -2061,6 +2078,7 @@ export async function processSlackAgentAsks(
           platformEnv,
           turn,
           from,
+          ...(asking.speaker ? { speaker: asking.speaker } : {}),
           originMessageTs,
         }),
       }),
@@ -2414,6 +2432,8 @@ async function postAgentAskPause(input: {
   platformEnv: PlatformEnv | undefined;
   turn: NormalizedSlackTurn;
   from: CustomAgentConfig;
+  /** The asking run's speaker, the bot that speaks for `from` in this thread. */
+  speaker?: SlackSpeaker;
   originMessageTs: string;
 }): Promise<void> {
   const { turn, from } = input;
@@ -2422,13 +2442,14 @@ async function postAgentAskPause(input: {
   console.info('[chickpea] agent ask limit reached; exchange paused');
   let posted: Awaited<ReturnType<typeof input.client.chat.postMessage>>;
   try {
-    const avatarUrl = await resolvedAgentAvatarUrl(from, input.stores, input.platformEnv);
-    posted = await input.client.chat.postMessage({
+    // The asking Agent's own app's bot carries its name and picture already, and takes no persona.
+    const ownBot = await ownBotClient(input.platformEnv, turn.workspaceId, from.id, input.speaker);
+    const avatarUrl = ownBot ? undefined : await resolvedAgentAvatarUrl(from, input.stores, input.platformEnv);
+    posted = await (ownBot ?? input.client).chat.postMessage({
       channel: turn.channelId,
       thread_ts: turn.threadTs,
       text: AGENT_ASK_PAUSE_TEXT,
-      username: from.name,
-      ...(avatarUrl ? { icon_url: avatarUrl } : {}),
+      ...(ownBot ? {} : { username: from.name, ...(avatarUrl ? { icon_url: avatarUrl } : {}) }),
     });
   } catch (error) {
     // The note was not posted: give the claim back so the exchange's next
@@ -2443,6 +2464,43 @@ async function postAgentAskPause(input: {
       turn,
       { runtimeContract: 'chickpea-v1', agentId: from.id },
       { messageTs: posted.ts, text: AGENT_ASK_PAUSE_TEXT },
+    ).catch(() => undefined);
+  }
+}
+
+/**
+ * An Agent asked a teammate from inside its own app's DM, where the
+ * teammate cannot reply: the asking Agent's bot says so in the thread, once
+ * per teammate for the person's message, and the line enters the thread
+ * record, so the Agent reads why on its next turn. A run with no stored own
+ * bot posts nothing: no other bot can post there.
+ */
+async function postAgentAskNotInAgentDm(input: {
+  stores: AppStores;
+  platformEnv: PlatformEnv | undefined;
+  asking: SlackAgentAskRequest['turn'];
+  from: CustomAgentConfig;
+  teammate: CustomAgentConfig;
+}): Promise<void> {
+  const { asking, from } = input;
+  const ownBot = await ownBotClient(input.platformEnv, asking.workspaceId, from.id, asking.speaker);
+  if (!ownBot) return;
+  const key = `agent-ask-not-in-dm:${asking.workspaceId}:${asking.channelId}:${asking.threadTs}:${agentAskOrigin(asking)}:${input.teammate.id}`;
+  if (!(await input.stores.slackState.claim(key))) return;
+  const text = agentAskNotInAgentDmText(input.teammate.name);
+  let posted: Awaited<ReturnType<typeof ownBot.chat.postMessage>>;
+  try {
+    posted = await ownBot.chat.postMessage({ channel: asking.channelId, thread_ts: asking.threadTs, text });
+  } catch (error) {
+    await input.stores.slackState.release(key).catch(() => undefined);
+    throw error;
+  }
+  if (typeof posted.ts === 'string' && posted.ts) {
+    await recordDeliveredSlackAgentMessage(
+      input.stores.config,
+      asking,
+      { runtimeContract: 'chickpea-v1', agentId: from.id },
+      { messageTs: posted.ts, text },
     ).catch(() => undefined);
   }
 }

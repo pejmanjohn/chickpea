@@ -55,12 +55,14 @@ import {
   cacheSlackInstallationExecutionContexts,
   effectiveTurnSlackInstallationId,
   normalizeSlackInstallationExecutionError,
+  ownBotRun,
   resolveSlackInstallationExecutionContext,
   verifySlackInstallationTurnAccess,
   type SlackInstallationAccessVerifier,
   type SlackInstallationExecutionContext,
   type SlackInstallationExecutionResolver,
 } from './installation-execution.ts';
+import { withAgentAppExecution } from './agent-apps/index.ts';
 import { recordSlackInstallationUnavailable } from './installation-observability.ts';
 import {
   isTurnJobStopRefusal,
@@ -420,8 +422,9 @@ function createNodeTurnRelayContext(options: NodeTurnRelayDrainOptions) {
     : undefined);
   const shouldResolveIdentity = Boolean(options.resolveInstallation) ||
     (!options.client && !options.executeTurn);
+  // A run whose stored speaker is its Agent app's own bot posts and edits as that bot.
   const resolveInstallation = options.resolveInstallation ??
-    ((workspaceId: string) => resolveSlackInstallationExecutionContext(workspaceId, env));
+    withAgentAppExecution((workspaceId: string) => resolveSlackInstallationExecutionContext(workspaceId, env), env);
   const verifyInstallationAccess = options.verifyInstallationAccess ?? verifySlackInstallationTurnAccess;
   const installationFor = cacheSlackInstallationExecutionContexts(resolveInstallation);
   return {
@@ -509,7 +512,7 @@ function createNodeThreadDrain(
       let installationContext: SlackInstallationExecutionContext | undefined;
       if (shouldResolveIdentity) {
         try {
-          installationContext = await installationFor(effectiveTurnSlackInstallationId(job.turn));
+          installationContext = await installationFor(effectiveTurnSlackInstallationId(job.turn), ownBotRun(job));
           await verifyInstallationAccess(installationContext, job.turn);
         } catch (error) {
           const unavailable = normalizeSlackInstallationExecutionError(
@@ -880,11 +883,14 @@ async function drainNodeWakePassOnce(options: NodeTurnRelayDrainOptions): Promis
     shouldResolveIdentity ? installationFor : undefined,
     verifyInstallationAccess,
   );
+  // A run stored with its Agent app's own bot is edited by that bot; every other run by the installation's.
+  const runClient = async (workspaceId: string, turnJobId: string) =>
+    (await installationFor(workspaceId, await state.ownBotRun?.(turnJobId))).client;
   await drainPresentationRepairs(
     state,
     options.client,
     env,
-    shouldResolveIdentity ? installationFor : undefined,
+    shouldResolveIdentity ? runClient : undefined,
   );
   await state.maintainRunPresentations?.(100);
   if (!options.state) {
@@ -895,8 +901,7 @@ async function drainNodeWakePassOnce(options: NodeTurnRelayDrainOptions): Promis
     const presentation = presentationState
       ? {
           state: presentationState,
-          resolveClient: async (workspaceId: string) =>
-            (await installationFor(workspaceId)).client,
+          resolveClient: runClient,
         }
       : undefined;
     await drainManagementReceiptOutbox({
@@ -918,6 +923,7 @@ async function drainNodeWakePassOnce(options: NodeTurnRelayDrainOptions): Promis
       deliver: (record) => deliverManagementReceiptToSlack(record, {
         identity,
         ...(env ? { env } : {}),
+        agentPresence: async (agentId) => (await config.listAgents()).find(({ id }) => id === agentId)?.slackPresence,
         onDelivered: async (deliveredRecord, delivery) => {
           try {
             await completeAgentWelcomeDelivery(
@@ -943,7 +949,7 @@ async function drainPresentationRepairs(
   state: SlackStateStore,
   client: WebClient | undefined,
   env: PlatformEnv | undefined,
-  resolveInstallation?: SlackInstallationExecutionResolver,
+  runClient?: (workspaceId: string, turnJobId: string) => Promise<WebClient>,
 ): Promise<void> {
   const presentationState = slackPresentationStatePort(state, env);
   if (!state.listRunPresentationsForRepair || !presentationState) return;
@@ -952,9 +958,9 @@ async function drainPresentationRepairs(
   await drainSlackPresentationRepairs({
     presentations,
     state: presentationState,
-    resolveClient: async (workspaceId) => {
+    resolveClient: async (workspaceId, turnJobId) => {
       if (client) return client;
-      if (resolveInstallation) return (await resolveInstallation(workspaceId)).client;
+      if (runClient) return runClient(workspaceId, turnJobId);
       return getClient(env);
     },
     onFailure: (_presentation, error) => {
@@ -980,7 +986,7 @@ async function drainSlackInteractionCleanups(
     try {
       const installationContext = client || !resolveInstallation
         ? undefined
-        : await resolveInstallation(effectiveTurnSlackInstallationId(job.turn));
+        : await resolveInstallation(effectiveTurnSlackInstallationId(job.turn), ownBotRun(job));
       if (installationContext) await verifyInstallationAccess(installationContext, job.turn);
       const slack = client ?? installationContext?.client ?? await getClient(env);
       await repairSlackInteractionProgress(

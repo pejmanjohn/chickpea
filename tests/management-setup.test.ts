@@ -285,6 +285,7 @@ test('the initiating member claims one authenticated browser and completes an ex
     assert.doesNotMatch(JSON.stringify(durableRequest), new RegExp(CAPABILITY));
 
     const delivered: string[] = [];
+    const presences: unknown[] = [];
     let principal: AuthPrincipal | undefined;
     const app = createManagementSetupRoutes({
       management,
@@ -294,8 +295,9 @@ test('the initiating member claims one authenticated browser and completes an ex
       now: () => now,
       randomCapability: () => 's'.repeat(43),
       authenticatePrincipal: async () => principal,
-      deliverReceipt: async (record) => {
+      deliverReceipt: async (record, input) => {
         delivered.push(formatManagementSetupReceipt(record.receipt));
+        presences.push(await input.agentPresence?.('agent_research'), await input.agentPresence?.('agent_missing'));
         return { deliveryRef: 'slack:C_ADMIN:receipt.1' };
       },
       connectionCheck: { cloudflare: true },
@@ -406,6 +408,10 @@ test('the initiating member claims one authenticated browser and completes an ex
     assert.equal(setup?.browserSessionDigest, undefined);
     assert.equal(setup?.receipt?.connector, 'Gmail');
     assert.equal(delivered.length, 1);
+    const stored = (await config.getAgent('agent_research')).slackPresence;
+    assert.ok(stored);
+    assert.deepEqual(presences, [stored, undefined],
+      "the notice is given the Agent's Slack presence, so it posts as the bot that speaks for the Agent there");
     assert.match(delivered[0]!, /^✅ Gmail( \([^)]*\))? is now connected to Customer Research\.$/);
     assert.doesNotMatch(delivered[0]!, new RegExp(setupId), 'the notice carries no receipt ID');
     assert.doesNotMatch(delivered[0]!, /Scopes|Receipt|Initiated by/);

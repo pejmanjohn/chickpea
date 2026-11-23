@@ -53,6 +53,7 @@ export function localSlackStateStore(input: {
       turnJobs.countPendingDeliveriesForWorkspace(workspaceId),
     listPendingTurns: async () => turnJobs.listPending(MAX_TURN_DRAIN_BATCH),
     turnJobView: async (id) => turnJobs.runnerView(id),
+    ownBotRun: async (id) => turnJobs.ownBotRun(id),
     // Plain statements around the receiver: no transaction is held across it.
     deliverStopNotices: async (receive) => {
       await deliverDueStopNotices({ turnJobs, receiver: receive });

@@ -182,6 +182,37 @@ export async function admissionSpeaker(input: {
 }
 
 /**
+ * The speaker of a post Chickpea makes for an Agent outside its runs, such as
+ * a notice in one of its threads. A DM is the Agent app's own only when Slack
+ * names it as the app's DM with the person `userId` (isAgentAppDm); with no
+ * person to ask about, it is placed as Chickpea's DM. In a Channel or group
+ * DM the app's bot answers when it is a member, and Chickpea's bot is taken
+ * to be one, as for a turn Chickpea builds there. The caller asks only with
+ * the port on.
+ */
+export async function hostPostSpeaker(input: {
+  env: PlatformEnv | undefined;
+  agentId: string;
+  presence: AgentSlackPresence | undefined;
+  channelId: string;
+  userId?: string;
+}): Promise<SlackSpeaker> {
+  const { presence } = input;
+  const app = agentAppIsLive(presence) ? presence.app : undefined;
+  if (input.channelId.startsWith('D')) {
+    const own = app && input.userId
+      ? await isAgentAppDm(input.env, { agentId: input.agentId, appId: app.app.appId, userId: input.userId, channelId: input.channelId })
+      : false;
+    return speakerFor(presence, { kind: own ? 'agent_dm' : 'chickpea_dm' });
+  }
+  const appBotIsMember = app
+    ? (await botMembership(app.botUserId, input.channelId, () =>
+      agentBotIsIn(input.env, input.agentId, app.app.appId, input.channelId)).catch(notVerified)).member
+    : false;
+  return speakerFor(presence, { kind: 'channel', appBotIsMember, chickpeaBotIsMember: true });
+}
+
+/**
  * The speaker a run's admission stored, read from inside that run (its turn
  * job is pending while it runs). Undefined for a run stored before its
  * speaker was, or one no longer pending. A failed read throws: the caller
