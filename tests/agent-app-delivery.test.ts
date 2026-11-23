@@ -2726,3 +2726,37 @@ test("an app Agent asked in its own DM to start a group DM has Chickpea's bot op
   assert.equal(opened?.token, MAIN_BOT);
   assert.deepEqual(sender(h.calls.find((call) => call.method === 'chat.postMessage' && call.body.get('text') === 'Kicking off Q3 refunds here.')), AS_SUPPORT);
 }));
+
+// Defects caught: a workspace that never gave an Agent its own app paying a state-store read for app bots on every
+// Slack event; the fact going stale once an Agent does have an app record.
+test('a Slack event reads the Agents\' app bots only where some Agent has an app record', async (t) => {
+  await withHarness(t, async (h) => {
+    const reads = t.mock.method(h.stores.config, 'listAgentAppBots');
+    const support = await h.stores.config.getAgent('agent_support');
+    await h.stores.config.updateAgent(support.id, {
+      slackPresence: {
+        requestedHandle: 'support', normalizedHandle: 'support', desiredState: 'active', health: 'healthy',
+        avatar: support.slackPresence!.avatar, userGroupId: 'SSUPPORT',
+      },
+    }, support.revision);
+
+    assert.equal((await h.deliverToChickpea(channelMessage('1900000400.000100', 'hello team').chickpea)).status, 200);
+    assert.equal(reads.mock.callCount(), 0, 'no Agent has an app record, so nothing is read');
+
+    const current = await h.stores.config.getAgent('agent_support');
+    await h.stores.config.updateAgent(current.id, {
+      slackPresence: { ...asUserGroupPresence(current.slackPresence), app: UNINSTALLING_ATTACHED },
+    }, current.revision);
+    assert.equal((await h.deliverToChickpea(channelMessage('1900000400.000200', 'hello again').chickpea)).status, 200);
+    assert.equal(reads.mock.callCount(), 1, 'an app record turns the read back on');
+  });
+});
+
+const UNINSTALLING_ATTACHED: Extract<AgentAppLifecycle, { state: 'uninstalling' }> = {
+  state: 'uninstalling', at: Date.now(), startedBy: 'U1', app: { appId: AGENT_APP, clientId: '1.client' }, botUserId: AGENT_BOT_USER, next: 'delete',
+};
+
+function asUserGroupPresence(presence: CustomAgentConfig['slackPresence']) {
+  if (!presence || presence.kind === 'agent_app') throw new Error('expected a user-group presence');
+  return presence;
+}

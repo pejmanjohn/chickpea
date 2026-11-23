@@ -171,6 +171,16 @@ test('the Channel asked for at creation waits as a pending grant', async (t) => 
   assert.deepEqual([f.slack.joined, f.slack.created], [[], []], 'Chickpea neither joins nor makes a group');
 });
 
+test('a private Channel Chickpea is not in writes no pending grant for an Agent not in Slack yet', async (t) => {
+  const f = await fixture(t, 'own_app');
+  f.slack.channel = { ...f.slack.channel, private: true, member: false };
+  await f.config.createAgent(newAgent('agent_support', 'Support'));
+
+  await assert.rejects(f.reconciler.publish({ ...publishInput, keepPendingUntilInSlack: true }), { code: 'private_channel_invite_required' });
+
+  assert.deepEqual(await f.config.listAgentChannelGrants(), [], 'nothing the switch could later turn on without a membership check');
+});
+
 test('a user-group Agent is added to a Channel as before when the setting is on', async (t) => {
   const f = await fixture(t, 'own_app');
   f.slack.groups.push({ id: 'S_SUPPORT', name: 'Support', handle: 'support', disabled: false });
