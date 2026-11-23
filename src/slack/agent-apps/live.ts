@@ -82,11 +82,10 @@ export async function agentAppBotCredentials(
  * `own_bot` run throws and every other run gets the base. An `own_bot` run
  * whose app is no longer live, or whose token cannot be read, throws too: its
  * owner names the app's bot, so Chickpea's bot never posts for it without the
- * Agent's persona. A run stored before its
- * speaker was keeps the earlier rule: the live app's bot, else the
- * installation's for a user-group Agent, else unavailable. A caller whose
- * base context refuses rate-limited calls passes `rejectRateLimitedCalls` so
- * the app's client refuses them too.
+ * Agent's persona. A run stored before its speaker was keeps the earlier rule:
+ * the live app's bot, else the installation's for a user-group Agent, else
+ * unavailable. A caller whose base context refuses rate-limited calls passes
+ * `rejectRateLimitedCalls` so the app's client refuses them too.
  */
 export function withAgentAppExecution(
   base: SlackInstallationExecutionResolver,
