@@ -22,7 +22,7 @@ import {
 } from '../src/routines/runtime.ts';
 import { agentRoutineDeletion, SqliteRoutineStore } from '../src/routines/store.ts';
 import type { RoutineDefinition, RoutineDestination, RoutineRun, RoutineStore } from '../src/routines/types.ts';
-import type { AgentAppLifecycle, AgentSlackPresence, CustomAgentConfig } from '../src/config/types.ts';
+import type { AgentAppLifecycle, AgentSlackPresence, AttachedAgentApp, CustomAgentConfig } from '../src/config/types.ts';
 import { type AgentSlackAppsHost, configureAgentSlackApps } from '../src/slack/agent-apps/host.ts';
 import {
   type SlackInstallationExecutionContext,
@@ -897,4 +897,40 @@ test("a one-time schedule in the Agent's own DM waits for its app until its dead
 
   assert.equal(await execute(NOW + 60_001), 'completed', 'past its deadline it is skipped as before');
   assert.equal((await store.getRun(run.id))?.skipReason, 'agent_app_unavailable');
+});
+
+/** The prompt line a schedule run renders for the Agent app's bot's earlier post. */
+async function earlierAppPostLine(presence: AgentSlackPresence, fake: Slack): Promise<string | undefined> {
+  const resolved = await access(channelRoutine, presence, fake);
+  const { prompt } = await prepareRoutinePrompt({ ...runOf(channelRoutine), scheduledFor: NOW }, channelRoutine, resolved, undefined, resolved.client, {
+    contextStore: { listSlackPublicContext: () => [], listRecentSlackPublicContext: () => [] },
+    prepareMemory: async () => ({
+      conversationKey: 'schedule', memoryEpoch: 1, selection: { entries: [] }, footerItems: [],
+      visibilityBarrierAt: null, ownerBound: true, validateLease: async () => true, confirmInjection: async () => true,
+    }),
+  });
+  return prompt.split('\n').find((line) => line.includes('Earlier standup post.'));
+}
+
+test("after its app is removed and its user group holds the handle again, a schedule reads the app's bot's earlier posts as the Agent's own", async (t) => {
+  withHost(t);
+  const line = await earlierAppPostLine({ ...GROUP, app: removedApp as AttachedAgentApp }, slack());
+  assert.match(line ?? '', /role=agent/);
+});
+
+test("while a removed app is still being uninstalled beside its user group, a schedule reads that bot's earlier posts as the Agent's own, app_id or not", async (t) => {
+  withHost(t);
+  const uninstalling: AttachedAgentApp = {
+    state: 'uninstalling', at: NOW, startedBy: OWNER, app: { appId: 'A0AGENT1', clientId: '1.client' },
+    botUserId: AGENT_BOT, next: 'delete',
+  };
+  const line = await earlierAppPostLine({ ...GROUP, app: uninstalling }, slack({ history: HISTORY_WITHOUT_APP_ID }));
+  assert.match(line ?? '', /role=agent/);
+});
+
+test("an Agent with no app reads another app's bot's posts as an app's, and one with a live app reads its bot's as its own, as before", async (t) => {
+  withHost(t);
+  assert.doesNotMatch(await earlierAppPostLine(GROUP, slack()) ?? '', /role=agent/);
+  assert.match(await earlierAppPostLine(appPresence(), slack()) ?? '', /role=agent/);
+  assert.match(await earlierAppPostLine(appPresence(), slack({ history: HISTORY_WITHOUT_APP_ID })) ?? '', /role=agent/);
 });
