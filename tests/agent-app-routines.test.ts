@@ -196,7 +196,11 @@ function botClient(input: {
       },
     },
     conversations: {
-      open: async () => { record('conversations.open'); return { ok: true, channel: { id: input.dm, is_im: true } }; },
+      open: async ({ users }: { users: string }) => {
+        record('conversations.open');
+        if (users !== OWNER) throw slackError('user_not_found');
+        return { ok: true, channel: { id: input.dm, is_im: true } };
+      },
       info: async ({ channel }: { channel: string }) => {
         record('conversations.info');
         if (input.infoUnanswered?.()) throw rateLimited();
@@ -235,7 +239,7 @@ interface Slack {
   app: SlackInstallationExecutionContext;
   resolver: (workspaceId: string, run?: SlackRunSpeaker) => Promise<SlackInstallationExecutionContext>;
   /** isAgentAppDm on this Slack: the app's token opens its DM with the person, or Slack does not answer. */
-  agentAppDm: (env: unknown, input: { userId: string; channelId: string }) => Promise<boolean>;
+  agentAppDm: (env: unknown, input: { agentId: string; appId: string; userId: string; channelId: string }) => Promise<boolean>;
 }
 function slack(input: {
   chickpeaChannels?: readonly string[];
@@ -274,7 +278,9 @@ function slack(input: {
       if (contextFailures-- > 0) throw new Error('app record unreadable');
       return app;
     },
-    agentAppDm: async (_env, { userId, channelId }) => {
+    agentAppDm: async (_env, { agentId, appId, userId, channelId }) => {
+      // The real lookup reads this Agent's stored app by these IDs; a wrong one is "not the app's DM".
+      assert.deepEqual({ agentId, appId }, { agentId: 'agent_support', appId: 'A0AGENT1' });
       if (input.appUnanswered) {
         throw new SlackTransportError('conversations.open', 'ratelimited', { retryable: true, effectOutcome: 'failed' });
       }
