@@ -15,6 +15,7 @@ import {
   deleteConfigurationToken,
   hasConfigurationToken,
   readAppSecrets,
+  readOwnAppSecrets,
   saveConfigurationToken,
   type SecretDeps,
   withConfigurationToken,
@@ -241,4 +242,31 @@ test("an unopenable app envelope fails only that Agent and never the tenant's re
   assert.deepEqual((await readAppSecrets(second, 'A0C8APPB'))?.secrets, { clientSecret: 'csb', signingSecret: 'ssb' });
   assert.equal((await identity.getAuthControl())?.healthGate, before);
   assert.equal('identity' in first, false, 'custody never holds the identity store');
+});
+
+test("an app is an Agent's only when its record exists, opens and names that Agent; another Agent's record is logged once", async (t) => {
+  const d = fixture(t);
+  const revision = await writeAppSecrets(d, 'A0C8APP', 'agent_support', { clientSecret: 'cs', signingSecret: 'ss', botToken: 'xoxb-1' }, null);
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  assert.deepEqual(await readOwnAppSecrets(d, 'A0C8APP', 'agent_support', 'update'), {
+    kind: 'own', revision, secrets: { clientSecret: 'cs', signingSecret: 'ss', botToken: 'xoxb-1' },
+  });
+  assert.equal(warn.mock.callCount(), 0);
+
+  assert.deepEqual(await readOwnAppSecrets(d, 'A0C8APP', 'agent_finance', 'delete'), { kind: 'another_agent' });
+  assert.deepEqual(warn.mock.calls.map((call) => call.arguments[0]), [{
+    event: 'chickpea.agent_app.record_refused', use: 'delete', agentId: 'agent_finance', appId: 'A0C8APP', recordAgentId: 'agent_support',
+  }]);
+  assert.equal(JSON.stringify(warn.mock.calls).includes('xoxb-1'), false, 'no secret in the log');
+
+  assert.deepEqual(await readOwnAppSecrets(d, 'A0C8NONE', 'agent_support', 'delete'), { kind: 'missing' });
+  const rekeyed = { ...d, keyring: generateCredentialKeyring('k2') };
+  assert.deepEqual(await readOwnAppSecrets(rekeyed, 'A0C8APP', 'agent_support', 'delete'), { kind: 'unreadable' });
+  assert.equal(warn.mock.calls.at(-1)?.arguments[0], '[chickpea] agent_app_secrets_unreadable {"appId":"A0C8APP"}');
+
+  const unreachable = Object.assign(Object.create(d.settings) as SqliteSettingsStore, {
+    getEncryptedCredentialRevision: async () => { throw new Error('realm unreachable'); },
+  });
+  await assert.rejects(() => readOwnAppSecrets({ ...d, credentials: unreachable }, 'A0C8APP', 'agent_support', 'delete'), /realm unreachable/,
+    'a store that cannot be reached throws rather than reading as no record');
 });

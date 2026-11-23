@@ -38,7 +38,7 @@ export interface AgentSlackAppIngress {
   readonly signingSecret: string;
 }
 
-/** Undefined when this installation has no Agent app with that ID (unknown, or deleted) or its secrets cannot be opened. Throws only on a store outage. */
+/** Undefined when this installation has no Agent app with that ID (unknown, or deleted), or its record cannot be opened or names another Agent. Throws only on a store outage. */
 export function agentSlackAppIngress(env: PlatformEnv, appId: string): Promise<AgentSlackAppIngress | undefined> {
   return agentAppIngressFacts(env, appId);
 }

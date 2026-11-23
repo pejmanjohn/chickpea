@@ -275,6 +275,23 @@ test("app secrets that can't be opened answer the callback with the expired page
   assert.deepEqual(warn.mock.calls.map((call) => call.arguments[0]), [`[chickpea] agent_app_secrets_unreadable {"appId":"${APP.appId}"}`]);
 });
 
+test("a callback for an app whose record names another Agent exchanges nothing, keeps that record, and answers with the expired page", async (t) => {
+  const f = await fixture(t);
+  const state = await open(f);
+  const stored = await readAppSecrets(f.secrets, APP.appId);
+  assert.ok(stored);
+  await writeAppSecrets(f.secrets, APP.appId, 'agent_other', stored.secrets, stored.revision);
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  const response = await f.service.completeConsent(new URLSearchParams({ code: 'c', state }), OWNER);
+  assert.equal(response.status, 410);
+  assert.deepEqual(f.slack.exchanges, []);
+  assert.equal((await readAppSecrets(f.secrets, APP.appId))?.agentId, 'agent_other');
+  assert.equal((await appOf(f.config))?.state, 'awaiting_consent');
+  assert.deepEqual(warn.mock.calls.map((call) => call.arguments[0]), [{
+    event: 'chickpea.agent_app.record_refused', use: 'exchange', agentId: 'agent_support', appId: APP.appId, recordAgentId: 'agent_other',
+  }]);
+});
+
 test('Allow from a removed app resumes the sequence first, and an active app says so', async (t) => {
   const active = await fixture(t, { state: 'active', at: NOW, app: APP, icon: 'agent_avatar', botUserId: 'UBOT', installedAt: NOW, installedBy: OWNER });
   const response = await active.service.allow('agent_support', OWNER);
