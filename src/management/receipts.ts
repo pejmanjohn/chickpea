@@ -730,6 +730,10 @@ export async function deliverManagementReceiptToSlack(
         agentId: agentReceipt.agentId,
         presence: await input.agentPresence?.(agentReceipt.agentId),
         channelId: channel,
+        // A setup's thread names the person who finished it; a DM Chickpea opened above is its own.
+        ...(record.destination.kind === 'thread' && record.destination.wake
+          ? { userId: record.destination.wake.slackUserId }
+          : {}),
       }))
     : undefined;
   const client = ownBot ?? execution.client;
