@@ -1830,7 +1830,7 @@ test("Chickpea's bot whose membership admission could not verify answers as the 
 test("a failed read of the run's turn row fails its reading tool and its card redraw, and never switches to the app's bot", async (t) => withHarness(t, async (h) => {
   const job = await admitSupportTurn(h, CHICKPEA_DM, '1900004200.000100', '1900004200.000200');
   assert.deepEqual(job.turn.speaker, { kind: 'chickpea_as_agent' });
-  const state = h.stores.slackState as { turnJobView?: (id: string) => Promise<unknown> };
+  const state = h.stores.slackState as { turnJobView: (id: string) => Promise<unknown> };
   const turnJobView = state.turnJobView;
   state.turnJobView = async () => { throw new Error('state store unreachable'); };
   t.after(() => { state.turnJobView = turnJobView; });
