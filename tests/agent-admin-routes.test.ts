@@ -7666,6 +7666,21 @@ test("Admin's restore is refused, asking Slack nothing, while another Agent in S
     assert.equal(restored.body.message, 'Another Agent in Slack uses @support. Rename or archive that Agent, then restore this one.');
     assert.equal((await fixture.store.getAgent('agent_support')).lifecycle, 'archived');
     assert.equal(fixture.transport.groups.find(({ id }) => id === groupId)?.disabled, true, 'the group stays off');
+
+    // An Agent that was never in Slack is refused the same way.
+    const draft = await fixture.store.createAgent({
+      id: 'agent_draft', name: 'Desk', instructions: 'Answer the desk.', enabled: true, lifecycle: 'active',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const parked = await fixture.store.updateAgent(draft.id, {
+      lifecycle: 'archived', slackPresence: { ...draft.slackPresence!, requestedHandle: 'support', normalizedHandle: 'support' },
+    }, draft.revision);
+    const draftRestore = await fixture.app.request('http://localhost/admin/api/agents/agent_draft/restore', {
+      method: 'POST', headers: auth(), body: JSON.stringify({ expectedRevision: parked.revision }),
+    });
+    assert.equal(draftRestore.status, 409);
+    assert.equal(((await draftRestore.json()) as Record<string, unknown>).error, 'handle_collision');
+    assert.equal((await fixture.store.getAgent('agent_draft')).lifecycle, 'archived');
   } finally {
     fixture.store.close();
     fixture.settings.close();

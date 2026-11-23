@@ -940,6 +940,12 @@ test('an Agent whose own group carries its handle retries and edits while a stal
     assert.equal(edited.slackPresence?.health, 'healthy');
     assert.equal(transport.groups[0]?.name, 'Support desk');
     assert.equal(transport.groups[0]?.handle, 'support');
+
+    // An Agent in Slack that shared @support before handles were kept unique does not block it either.
+    await appAgentHolding(config, 'agent_helpdesk', 'support');
+    transport.groups[0]!.disabled = true;
+    assert.equal((await reconciler.retry('agent_support')).slackPresence?.health, 'healthy');
+    assert.equal(transport.groups[0]?.disabled, false);
   } finally {
     config.close();
   }

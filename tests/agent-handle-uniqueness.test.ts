@@ -7,6 +7,7 @@ import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import { createLiveWorkspaceManagementService } from '../src/management/live-service.ts';
+import { WorkspaceManagementService } from '../src/management/service.ts';
 import { invokeSlackWorkspaceManagementTool, type SlackManagementSignal } from '../src/management/slack-tools.ts';
 import type {
   ManagementActorContext,
@@ -329,4 +330,66 @@ test("restoring an Agent over MCP while another Agent in Slack took its handle i
     assert.equal(await handleOf('agent_desk'), 'desk');
     assert.deepEqual({ created: slack.created, updated: slack.updated }, { created: [], updated: [] });
   });
+});
+
+test("creating an Agent on a handle an Agent not yet in Slack stores picks a free handle and says so", async (t) => {
+  await withEnv({ CHICKPEA_TENANCY: undefined, SLACK_STATE_DB_PATH: ':memory:' }, async () => {
+    const { f, slack, service, member, context, handleOf } = await handleFixture(t);
+    const draft = await f.config.createAgent({
+      ...BASE, id: 'agent_triage_draft', name: 'Triage draft', instructions: 'Sort questions.', creatorMembershipId: f.admin.membership.id,
+    });
+    await f.config.updateAgent(draft.id, {
+      slackPresence: { ...draft.slackPresence!, requestedHandle: 'triage', normalizedHandle: 'triage' },
+    }, draft.revision);
+    const result = await service.applyWorkspaceChanges({
+      context: context(member), idempotencyKey: 's3a-stored', operations: [createSupport('agent_triage', 'triage')],
+    });
+    assert.ok('outcomes' in result, inspect(result));
+    assert.deepEqual(result.outcomes[0]?.handleChange, { requested: 'triage', used: 'triage-team' });
+    assert.deepEqual(slack.created, ['triage-team'], 'Slack never saw @triage asked for');
+    assert.equal(await handleOf('agent_triage'), 'triage-team');
+  });
+});
+
+test("restoring an Agent with no Slack connected is refused the same way while another Agent in Slack took its handle", async () => {
+  const f = await createManagementAdapterFixture('s3a-restore-offline');
+  try {
+    const desk = await f.config.createAgent({
+      ...BASE, id: 'agent_desk', name: 'Desk', instructions: 'Answer the front desk.', creatorMembershipId: f.admin.membership.id,
+    });
+    const archived = await f.config.updateAgent(desk.id, {
+      lifecycle: 'archived', slackPresence: { ...desk.slackPresence!, requestedHandle: 'desk', normalizedHandle: 'desk' },
+    }, desk.revision);
+    const helpdesk = await f.config.createAgent({
+      ...BASE, id: 'agent_helpdesk', name: 'Helpdesk', instructions: 'Answer tickets.', creatorMembershipId: f.admin.membership.id,
+    });
+    await f.config.updateAgent(helpdesk.id, {
+      slackPresence: {
+        kind: 'agent_app', requestedHandle: 'desk', normalizedHandle: 'desk', desiredState: 'active', health: 'healthy',
+        avatar: helpdesk.slackPresence!.avatar,
+        app: {
+          state: 'active', at: 1, app: { appId: 'A0HELPDESK', clientId: '1.client' }, icon: 'agent_avatar',
+          botUserId: 'UHELPDESKBOT', installedAt: 1, installedBy: f.admin.binding.slackUserId,
+        },
+      },
+    }, helpdesk.revision);
+    const service = new WorkspaceManagementService({
+      identity: f.identity, config: f.config, management: f.management, setupBaseUrl: 'http://localhost', now: () => 1_800_000_000_000,
+    });
+    const result = await service.applyWorkspaceChanges({
+      context: {
+        userId: f.admin.user.id, membershipId: f.admin.membership.id, organizationId: f.admin.membership.organizationId,
+        origin: { kind: 'mcp', clientId: 's3a-handles' },
+      },
+      idempotencyKey: 's3a-restore-offline',
+      operations: [{ itemId: 'restore', kind: 'restore_agent', agentId: 'agent_desk', expectedRevision: archived.revision }],
+    });
+    assert.ok('outcomes' in result, inspect(result));
+    assert.deepEqual({ code: result.outcomes[0]?.code, instruction: result.outcomes[0]?.instruction }, {
+      code: 'handle_collision', instruction: 'Another Agent in Slack uses @desk. Rename or archive that Agent, then restore this one.',
+    });
+    assert.equal((await f.config.getAgent('agent_desk')).lifecycle, 'archived');
+  } finally {
+    f.close();
+  }
 });

@@ -165,6 +165,28 @@ test('a stop stamps the running row, holds the unread rows before it, and the en
   } finally { db.close(); }
 });
 
+test("a stop bound to an Agent app's bot stops only a run speaking as that bot, and records nothing otherwise", () => {
+  const speakers: Array<[string, NormalizedSlackTurn['speaker'] | undefined, string]> = [
+    ['own', { kind: 'own_bot', botUserId: 'U_APP_BOT' }, 'stopped'],
+    ['other_app', { kind: 'own_bot', botUserId: 'U_OTHER_BOT' }, 'other_speaker'],
+    ['through_chickpea', { kind: 'chickpea_as_agent' }, 'other_speaker'],
+    ['older_row', undefined, 'other_speaker'],
+  ];
+  for (const [name, speaker, outcome] of speakers) {
+    const { db, turns } = store();
+    try {
+      const running = job(name, '101', speaker ? { speaker } : {});
+      turns.enqueue(running);
+      dispatch(turns, running);
+      const decision = turns.steer(stop('110', { source: 'button', agentId: 'agent_stop', speakerBotUserId: 'U_APP_BOT' }));
+      assert.equal(decision.outcome, outcome, name);
+      if (outcome !== 'stopped') assert.equal(stopOf(turns, name), undefined, `${name}: nothing is recorded`);
+    } finally {
+      db.close();
+    }
+  }
+});
+
 test('a second stop for the same run returns the first record and holds nothing more', () => {
   const { db, turns, clock } = store();
   try {
