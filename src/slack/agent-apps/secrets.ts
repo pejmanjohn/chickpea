@@ -12,7 +12,7 @@ import {
   encryptSlackSecretEnvelope,
   workspaceCredentialContext,
 } from '../secret-envelope.ts';
-import { type AgentAppSlackApi, SlackRefused, logSlackRefusal } from './slack-api.ts';
+import { type AgentAppSlackApi, type AgentAppSlackStep, SlackRefused, logSlackRefusal } from './slack-api.ts';
 
 export interface AgentAppSecrets {
   clientSecret: string;
@@ -56,14 +56,6 @@ export class AgentAppSecretsUnreadable extends Error {
 export function unreadableAsNone(error: unknown): undefined {
   if (error instanceof AgentAppSecretsUnreadable) return undefined;
   throw error;
-}
-
-/** As `unreadableAsNone`, and names the app for the operator where no other trace of it would show. */
-export function loggedUnreadableAsNone(error: unknown): undefined {
-  if (error instanceof AgentAppSecretsUnreadable) {
-    console.warn(`[chickpea] agent_app_secrets_unreadable ${JSON.stringify({ appId: error.appId })}`);
-  }
-  return unreadableAsNone(error);
 }
 
 /** A compare-and-set on the realm lost to another writer. */
@@ -131,6 +123,39 @@ export async function readAppSecrets(
     revision: record.revision,
     secrets: { clientSecret, signingSecret, ...(botToken ? { botToken } : {}) },
   };
+}
+
+export type OwnAppSecrets =
+  | { kind: 'own'; revision: string; secrets: AgentAppSecrets }
+  | { kind: 'missing' | 'unreadable' | 'another_agent' };
+
+/**
+ * The one test before Chickpea uses, changes or deletes a Slack app: its
+ * record exists, opens, and names this Agent. A configuration token can change
+ * or delete any app its owner collaborates on, so an app ID alone proves
+ * nothing. Both refusals that point at a fault are logged for the operator; a
+ * store that cannot be reached still throws.
+ */
+export async function readOwnAppSecrets(
+  d: SecretDeps,
+  appId: string,
+  agentId: string,
+  use: AgentAppSlackStep | 'execution' | 'ingress' | 'end',
+): Promise<OwnAppSecrets> {
+  let stored;
+  try {
+    stored = await readAppSecrets(d, appId);
+  } catch (error) {
+    if (!(error instanceof AgentAppSecretsUnreadable)) throw error;
+    console.warn(`[chickpea] agent_app_secrets_unreadable ${JSON.stringify({ appId })}`);
+    return { kind: 'unreadable' };
+  }
+  if (!stored) return { kind: 'missing' };
+  if (stored.agentId !== agentId) {
+    console.warn({ event: 'chickpea.agent_app.record_refused', use, agentId, appId, recordAgentId: stored.agentId });
+    return { kind: 'another_agent' };
+  }
+  return { kind: 'own', revision: stored.revision, secrets: stored.secrets };
 }
 
 /** Throws LostRevision when `expected` is no longer the stored revision. */

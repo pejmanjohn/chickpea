@@ -74,8 +74,8 @@ import {
   deleteAppSecrets,
   deleteConfigurationToken,
   hasConfigurationToken,
-  loggedUnreadableAsNone,
   readAppSecrets,
+  readOwnAppSecrets,
   saveConfigurationToken,
   unreadableAsNone,
   withConfigurationToken,
@@ -311,8 +311,8 @@ export class AgentSlackApps {
       await this.commit(agent, { type: 'consent_undone', at: now });
       return consentPage('cancelled', names);
     }
-    const stored = await readAppSecrets(this.secrets, app.appId).catch(loggedUnreadableAsNone);
-    if (!stored) return consentPage('expired', names);
+    const stored = await readOwnAppSecrets(this.secrets, app.appId, agent.id, 'exchange');
+    if (stored.kind !== 'own') return consentPage('expired', names);
     let grant;
     try {
       grant = await this.slack.exchange({
@@ -364,8 +364,8 @@ export class AgentSlackApps {
       botUserId: presence.app.botUserId,
     });
     if (outcome !== 'end') return 'ignored';
-    const stored = await readAppSecrets(this.secrets, appId).catch(unreadableAsNone);
-    if (stored?.secrets.botToken) {
+    const stored = await readOwnAppSecrets(this.secrets, appId, agent.id, 'end');
+    if (stored.kind === 'own' && stored.secrets.botToken) {
       const { clientSecret, signingSecret } = stored.secrets;
       await writeAppSecrets(this.secrets, appId, agent.id, { clientSecret, signingSecret }, stored.revision);
     }
@@ -505,23 +505,23 @@ export class AgentSlackApps {
     },
 
     set_urls: async (run) => {
-      const app = agentAppRecord(run.app)!;
-      const { teamId, installationId } = await this.installation();
-      const stored = await readAppSecrets(this.secrets, app.appId);
-      if (!stored) {
-        // A crash between the `created` commit and the realm write left an app without secrets.
+      if (run.app.state !== 'created') return 'wait';
+      const { app, startedBy } = run.app;
+      const record = await readOwnAppSecrets(this.secrets, app.appId, run.agent.id, 'update');
+      if (record.kind === 'missing') {
+        // A crash between the `created` commit and the realm write left an app with no record, so it is not
+        // provably this Agent's and is never deleted: create again and leave the Owner to delete the unused one.
         if (run.now - run.app.at < CREATE_SETTLE_MS) return 'wait';
-        try {
-          await withConfigurationToken(this.secrets, teamId, (token) => this.slack.delete(token, app.appId));
-        } catch (error) {
-          if (error instanceof ConfigTokenNeeded) return { event: { type: 'config_token_needed', at: run.now } };
-          if (error instanceof SlackRefused) logSlackRefusal('delete', { agentId: run.agent.id, appId: app.appId }, error);
-          if (error instanceof SlackRefused || error instanceof SlackUnavailable) return 'wait';
-          throw error;
-        }
         const manifestFingerprint = slackManifestFingerprint(this.createManifest(run.agent));
-        return { event: { type: 'recreate', at: run.now, manifestFingerprint } };
+        return {
+          event: { type: 'recreate', at: run.now, manifestFingerprint },
+          after: async () => {
+            await this.message('ambiguous_create', run.agent, startedBy, `agent-app-unrecorded:${run.agent.id}:${app.appId}`);
+          },
+        };
       }
+      if (record.kind !== 'own') return { event: { type: 'record_refused', at: run.now } };
+      const { teamId, installationId } = await this.installation();
       const manifest = this.manifest(run.agent, this.deps.host.requestUrls(installationId, app.appId));
       try {
         await withConfigurationToken(this.secrets, teamId, (token) => this.slack.update(token, app.appId, manifest));
@@ -539,6 +539,9 @@ export class AgentSlackApps {
 
     set_icon: async (run) => {
       const app = agentAppRecord(run.app)!;
+      if ((await readOwnAppSecrets(this.secrets, app.appId, run.agent.id, 'icon')).kind !== 'own') {
+        return { event: { type: 'record_refused', at: run.now } };
+      }
       const { teamId } = await this.installation();
       const { png, icon } = await this.icon(run.agent, run.presence);
       try {
@@ -559,13 +562,14 @@ export class AgentSlackApps {
 
     uninstall: async (run) => {
       const app = agentAppRecord(run.app)!;
-      const stored = await readAppSecrets(this.secrets, app.appId);
-      if (!stored?.secrets.botToken) return { event: { type: 'uninstalled', at: run.now } };
+      const record = await readOwnAppSecrets(this.secrets, app.appId, run.agent.id, 'uninstall');
+      if (record.kind === 'another_agent') return { event: { type: 'record_refused', at: run.now } };
+      if (record.kind !== 'own' || !record.secrets.botToken) return { event: { type: 'uninstalled', at: run.now } };
       try {
         await this.slack.uninstall({
           clientId: app.clientId,
-          clientSecret: stored.secrets.clientSecret,
-          botToken: stored.secrets.botToken,
+          clientSecret: record.secrets.clientSecret,
+          botToken: record.secrets.botToken,
         });
       } catch (error) {
         if (error instanceof SlackUnavailable) return 'wait';
@@ -580,19 +584,23 @@ export class AgentSlackApps {
     delete: async (run) => {
       if (run.app.state !== 'uninstalling') return 'wait';
       const { app, startedBy } = run.app;
-      const { teamId } = await this.installation();
-      let left = false;
-      try {
-        await withConfigurationToken(this.secrets, teamId, (token) => this.slack.delete(token, app.appId));
-      } catch (error) {
-        if (error instanceof SlackUnavailable) return 'wait';
-        if (error instanceof SlackRefused) logSlackRefusal('delete', { agentId: run.agent.id, appId: app.appId }, error);
-        if (error instanceof SlackRefused && error.code === 'ratelimited') return 'wait';
-        if (!(error instanceof ConfigTokenNeeded || error instanceof SlackRefused)) throw error;
-        left = true;
+      const record = await readOwnAppSecrets(this.secrets, app.appId, run.agent.id, 'delete');
+      if (record.kind === 'another_agent') return { event: { type: 'record_refused', at: run.now } };
+      // With no record, even one this step deleted before a crash, the app is not provably this Agent's: it is left for the Owner.
+      let left = record.kind !== 'own';
+      if (record.kind === 'own') {
+        const { teamId } = await this.installation();
+        try {
+          await withConfigurationToken(this.secrets, teamId, (token) => this.slack.delete(token, app.appId));
+        } catch (error) {
+          if (error instanceof SlackUnavailable) return 'wait';
+          if (error instanceof SlackRefused) logSlackRefusal('delete', { agentId: run.agent.id, appId: app.appId }, error);
+          if (error instanceof SlackRefused && error.code === 'ratelimited') return 'wait';
+          if (!(error instanceof ConfigTokenNeeded || error instanceof SlackRefused)) throw error;
+          left = true;
+        }
+        await deleteAppSecrets(this.secrets, app.appId, record.revision);
       }
-      const stored = await readAppSecrets(this.secrets, app.appId).catch(unreadableAsNone);
-      if (stored) await deleteAppSecrets(this.secrets, app.appId, stored.revision);
       if (left) this.leftDefinition.add(run.agent.id);
       return {
         event: { type: 'deleted', at: run.now },

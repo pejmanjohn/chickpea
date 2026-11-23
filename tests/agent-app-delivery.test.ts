@@ -24,7 +24,7 @@ import {
   retireAgentSlackApps,
   withAgentSlackAppHandoff,
 } from '../src/slack/agent-apps/host.ts';
-import { agentAppPresenceHooks, createAgentSlackAppRoutes } from '../src/slack/agent-apps/index.ts';
+import { agentAppBotCredentials, agentAppPresenceHooks, createAgentSlackAppRoutes } from '../src/slack/agent-apps/index.ts';
 import { readAppSecrets, saveConfigurationToken, writeAppSecrets } from '../src/slack/agent-apps/secrets.ts';
 import { createAgentAppSlackApi } from '../src/slack/agent-apps/slack-api.ts';
 import { generateCredentialKeyring, loadCredentialKeyring } from '../src/slack/credential-keyring.ts';
@@ -405,6 +405,30 @@ test('ingress facts for an app whose secrets cannot be opened are none, and logg
   assert.equal(await agentSlackAppIngress(h.base, AGENT_APP), undefined, 'the host acknowledges instead of asking Slack to retry forever');
   assert.ok(warn.mock.calls.some((call) => String(call.arguments[0]).includes(AGENT_APP)), 'the unreadable app is logged by ID');
   assert.equal(warn.mock.calls.some((call) => JSON.stringify(call.arguments).includes(AGENT_SECRET)), false);
+}));
+
+test("an Agent whose app's record names another Agent gets no bot token and no ingress facts, and the operator sees why", async (t) => withHarness(t, async (h) => {
+  const stored = await readAppSecrets(h.secrets(), AGENT_APP);
+  assert.ok(stored);
+  await writeAppSecrets(h.secrets(), AGENT_APP, 'agent_finance', stored.secrets, stored.revision);
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  assert.equal(await agentSlackAppIngress(h.base, AGENT_APP), undefined);
+  assert.equal(await agentAppBotCredentials(h.base, 'agent_support', AGENT_APP), undefined);
+  const line = (use: string) => ({ event: 'chickpea.agent_app.record_refused', use, agentId: 'agent_support', appId: AGENT_APP, recordAgentId: 'agent_finance' });
+  assert.deepEqual(warn.mock.calls.map((call) => call.arguments[0]), [line('ingress'), line('execution')]);
+  assert.equal(JSON.stringify(warn.mock.calls).includes(AGENT_BOT), false);
+  assert.equal(JSON.stringify(warn.mock.calls).includes(AGENT_SECRET), false);
+}));
+
+test("an app_uninstalled for an app whose record names another Agent leaves that record as it was", async (t) => withHarness(t, async (h) => {
+  const stored = await readAppSecrets(h.secrets(), AGENT_APP);
+  assert.ok(stored);
+  await writeAppSecrets(h.secrets(), AGENT_APP, 'agent_finance', stored.secrets, stored.revision);
+  t.mock.method(console, 'warn', () => undefined);
+  assert.equal(await endAgentSlackApp(h.base, AGENT_APP, dmEvent({}, { type: 'app_uninstalled' })), 'ended');
+  const after = await readAppSecrets(h.secrets(), AGENT_APP);
+  assert.deepEqual(after && { agentId: after.agentId, botToken: after.secrets.botToken }, { agentId: 'agent_finance', botToken: AGENT_BOT },
+    "Support's end never rewrites another Agent's record as Support's");
 }));
 
 test("a revoked installation serves none of its Agent apps' deliveries and offers no ingress facts", async (t) => withHarness(t, async (h) => {
