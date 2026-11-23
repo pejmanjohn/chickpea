@@ -51,6 +51,7 @@
     "browser.*": 2,
     "connector.*": 1,
     "mcp.*": 1,
+    "slack.agent_apps.v1": 1,
     "slack.gateway.binding.v1": 1,
     "slack.gateway.claim.v1": 1,
     "slack.gateway.deploymentIdentity.v1": 1,

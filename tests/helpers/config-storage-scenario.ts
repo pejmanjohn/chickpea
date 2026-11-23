@@ -1039,6 +1039,8 @@ export function writeConfigStorageScenario(kit: ConfigStorageKit, db: StateDb): 
     settings.setSetting(key, JSON.stringify({ synthetic: key }));
   }
   writeBrowser(stores);
+  // An Owner chose that each new Agent is its own Slack app.
+  settings.setSetting('slack.agent_apps.v1', JSON.stringify({ mode: 'own_app', changedBy: 'U0SCENARIOOWN', changedAt: SCENARIO_NOW }));
   // A restart runs the start-time cleanup, which deletes the legacy-format keys.
   kit(db);
 }

@@ -1,5 +1,5 @@
 {
-  "scenario": "112dd42937b3d3f93cbf027141defa833a451dba350c946b3c1016f82dbedae3",
+  "scenario": "ef939864e899fbf0ae8f352dd3fe48718b9238a9410c8363609c81c0e3b5016c",
   "contract": {
     "schemaVersion": 12,
     "schemaMarker": "agent-first-v1",
@@ -53,6 +53,7 @@
       "browser.*": 2,
       "connector.*": 1,
       "mcp.*": 1,
+      "slack.agent_apps.v1": 1,
       "slack.gateway.binding.v1": 1,
       "slack.gateway.claim.v1": 1,
       "slack.gateway.deploymentIdentity.v1": 1,
@@ -1075,6 +1076,9 @@
         "\"mcp.agent_scenario_researcher.credential.connection_<generated>.bearer\"": "{\"synthetic\":\"mcp.agent_scenario_researcher.credential.connection_<generated>.bearer\"}",
         "\"mcp.agent_scenario_researcher.credential.connection_<generated>.oauth.tokens\"": "{\"synthetic\":\"mcp.agent_scenario_researcher.credential.connection_<generated>.oauth.tokens\"}",
         "\"mcp.connection_scenario_docs.account.oauth.tokens\"": "{\"synthetic\":\"mcp.connection_scenario_docs.account.oauth.tokens\"}"
+      },
+      "slack.agent_apps.v1": {
+        "\"slack.agent_apps.v1\"": "{\"changedAt\":1792083600000,\"changedBy\":\"U0SCENARIOOWN\",\"mode\":\"own_app\"}"
       },
       "slack.gateway.binding.v1": {
         "\"slack.gateway.binding.v1\"": "{\"appId\":\"A0SCENARIO\",\"bindingId\":\"binding_scenario\",\"botUserId\":\"U0SCENARIOBOT\",\"clientId\":\"1000000000.2000000000\",\"deploymentId\":\"deployment_scenario\",\"installedAt\":1792080000000,\"installerSlackUserId\":\"U0SCENARIOOWN\",\"sessionUrl\":\"wss://gateway.example.com/sessions/binding_scenario\",\"workspaceId\":\"T0SCENARIO\"}"
