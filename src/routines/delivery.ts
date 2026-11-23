@@ -292,18 +292,22 @@ async function postClaimedRoutineMessage(
   claimedAt: number,
 ): Promise<RoutineDeliveryReceipt> {
   const now = input.now ?? Date.now;
-  const agentAvatarUrl = agentAvatarUrlForPresentation(
-    input.access.config.agent,
-    input.access.publicUrl,
-    input.access.avatarInstallationId,
-  );
+  // The Agent's own app's bot already carries its name and picture; its token never takes a persona.
+  const persona = input.access.speaker?.kind !== 'own_bot';
+  const agentAvatarUrl = persona
+    ? agentAvatarUrlForPresentation(
+        input.access.config.agent,
+        input.access.publicUrl,
+        input.access.avatarInstallationId,
+      )
+    : undefined;
   const payload = {
     channel: input.routine.channelId,
     ...(input.routine.destination.threadTs
       ? { thread_ts: input.routine.destination.threadTs }
       : {}),
     ...(typeof message === 'string' ? { text: message } : message),
-    username: input.access.config.agent.name,
+    ...(persona ? { username: input.access.config.agent.name } : {}),
     ...(agentAvatarUrl
       ? { icon_url: agentAvatarUrl }
       : {}),
@@ -498,7 +502,7 @@ export async function deliverRoutineRecoveryNotice(
     response = await client.chat.postMessage({
       channel: channelId,
       text: routinePauseNotice(recovery.failureClass, destination.kind),
-      username: 'Chickpea',
+      ...(input.access.speaker?.kind === 'own_bot' ? {} : { username: 'Chickpea' }),
       unfurl_links: false,
       unfurl_media: false,
     });

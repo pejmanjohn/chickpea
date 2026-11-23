@@ -106,6 +106,7 @@ import {
 } from '../slack/artifact-receipts.ts';
 import {
   resolveRoutineRuntimeAccess,
+  RoutineAgentAppUnavailableError,
   RoutineRuntimeError,
   type RoutineRuntimeAccess,
 } from './runtime.ts';
@@ -247,7 +248,9 @@ export async function executeRoutineOccurrence(
     // for a later heartbeat, and nothing is failed, paused or posted for it.
     if (isCredentialKeyringUnavailable(error)) return 'resumable';
     const failure = runtimeFailure(error, false);
-    if ([
+    // Its Agent's app is away from the DM it posts in: this occurrence is skipped and the schedule stays on.
+    const agentAppAway = error instanceof RoutineAgentAppUnavailableError && current.status === 'admitting';
+    if (!agentAppAway && [
       'assignment_missing',
       'creator_ineligible',
       'channel_ineligible',
@@ -282,6 +285,8 @@ export async function executeRoutineOccurrence(
         publicError: failure.publicError,
         skipReason: 'unresolved_assignment',
       });
+    } else if (agentAppAway) {
+      await skipRun(input.store, current.id, now(), { ...failure, skipReason: 'agent_app_unavailable' });
     } else {
       await failUnsettledRun(
         input.store,
