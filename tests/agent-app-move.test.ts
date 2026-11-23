@@ -235,7 +235,7 @@ async function fixture(
   });
   const reconciler = new AgentPresenceReconciler({
     config, transport: main as unknown as SlackTransport, announce: null, now: () => clock.now,
-    agentApps: { retire: async (current) => (await service.retire(current)).agent, bringBotIn: async () => undefined },
+    agentApps: { retire: async (current) => (await service.retire(current)).agent, bringBotIn: async () => undefined, ownAppMode: async () => false },
   });
   return { config, settings, secrets, slack, main, bot, calls, clock, armed, store, permission, service, reconciler };
 }

@@ -581,6 +581,12 @@ export interface WorkspaceInstallation {
   healthDetail?: string;
   createdAt: number;
   updatedAt: number;
+  /**
+   * Whether any Agent here has a Slack app record: worked out by the store on
+   * each single read, never stored. A store on older code leaves it out,
+   * which a reader takes as "maybe", so it still reads the Agents' app bots.
+   */
+  agentApps?: boolean;
 }
 
 export interface EnsureWorkspaceInstallationInput {

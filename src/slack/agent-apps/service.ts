@@ -124,7 +124,10 @@ export type { AgentAppSwitchJob } from './lifecycle.ts';
 export interface AgentSlackAppsDeps {
   env: PlatformEnv | undefined;
   stores: {
-    config: Pick<ConfigStore, 'getAgent' | 'listAgents' | 'updateAgent' | 'listWorkspaceInstallations' | 'listAgentChannelGrants'>;
+    config: Pick<
+      ConfigStore,
+      'getAgent' | 'listAgents' | 'updateAgent' | 'listWorkspaceInstallations' | 'listAgentChannelGrants' | 'putAgentChannelGrant'
+    >;
     settings: SettingsStore & EncryptedCredentialStore;
   };
   host: AgentSlackAppsHost;
@@ -689,6 +692,7 @@ export class AgentSlackApps {
     },
 
     bring_in_pending: async (agent, presence) => {
+      if (!presence.released) await this.grantCreatorChannels(agent);
       const bot = await this.switchBot(agent, presence);
       if (bot) {
         for (const channelId of await this.grantedChannels(agent.id)) {
@@ -745,6 +749,25 @@ export class AgentSlackApps {
   private async switchBot(agent: CustomAgentConfig, presence: LiveAgentApp): Promise<AgentAppBotTransport | undefined> {
     const stored = await readOwnAppSecrets(this.secrets, presence.app.app.appId, agent.id, 'join');
     return stored.kind === 'own' && stored.secrets.botToken ? this.appBot(stored.secrets.botToken) : undefined;
+  }
+
+  /**
+   * An Agent that was not in Slack yet, so released no group: the Channels its
+   * creator asked for when creating it waited as pending grants, and are its
+   * Channels now. Any other pending add is left as it is.
+   */
+  private async grantCreatorChannels(agent: CustomAgentConfig): Promise<void> {
+    const { config } = this.deps.stores;
+    for (const grant of await config.listAgentChannelGrants()) {
+      if (grant.agentId !== agent.id || grant.status !== 'pending' || grant.createdByMembershipId !== agent.creatorMembershipId) continue;
+      try {
+        await config.putAgentChannelGrant({ ...grant, status: 'active' }, grant.revision);
+      } catch (error) {
+        // A rerun of this step got there first; anything else is the job's to retry.
+        const now = (await config.listAgentChannelGrants(grant.workspaceId, grant.channelId)).find((g) => g.agentId === agent.id);
+        if (now?.status !== 'active') throw error;
+      }
+    }
   }
 
   private async grantedChannels(agentId: string): Promise<string[]> {

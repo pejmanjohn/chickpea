@@ -45,6 +45,8 @@ export interface SlackInstallationExecutionContext {
   botUserId: string;
   displayName?: string;
   client: WebClient;
+  /** The installation's `agentApps`: false only when no Agent here has a Slack app record. */
+  agentApps?: boolean;
 }
 
 /** The Agent a run answers as, and the speaker its admission stored (absent on older rows). */
@@ -206,6 +208,7 @@ export async function resolveSlackInstallationExecutionContext(
     botUserId: auth.botUserId,
     ...(auth.botName ? { displayName: auth.botName } : {}),
     client: createSlackWebClient(botToken, { rejectRateLimitedCalls: options.rejectRateLimitedCalls === true }),
+    ...(installation.agentApps === undefined ? {} : { agentApps: installation.agentApps }),
   };
 }
 
@@ -321,6 +324,7 @@ async function resolveGatewayExecutionContext(
     sharedAppReads: true,
     botUserId,
     client,
+    ...(installation.agentApps === undefined ? {} : { agentApps: installation.agentApps }),
   };
 }
 

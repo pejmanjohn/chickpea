@@ -219,6 +219,7 @@ test("publishing an Agent brings its own app's bot into the Channel through the 
           asked.push([agent.id, channel.id, channel.private]);
           return placement;
         },
+        ownAppMode: async () => false,
       },
     });
     const publish = (channelId: string) => reconciler.publish({
@@ -315,6 +316,7 @@ test('archiving an Agent app retires the app first, and refuses without a host f
           return config.updateAgent(current.id, { slackPresence: { ...userGroup('support', 'S1'), desiredState: 'disabled' } }, current.revision);
         },
         async bringBotIn() { throw new Error('archive brings no bot in'); },
+        ownAppMode: async () => false,
       },
     }).archive('agent_support');
     assert.deepEqual(retired, ['agent_support']);

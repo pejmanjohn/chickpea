@@ -139,7 +139,7 @@ export async function slackReadingService(
     });
     [reader, appBots] = await Promise.all([
       readingBot(workspace, env, plan.agentId, signal.turnJobId),
-      listAgentAppBots(config),
+      listAgentAppBots(config, workspace),
     ]);
   } catch {
     throw new SlackReadError('unavailable', SLACK_READ_MESSAGES.unavailable);

@@ -1,5 +1,6 @@
 import type { ConfigStore } from '../../config/store.ts';
 import {
+  AWAITING_OWN_APP,
   type AgentChannelGrant,
   type AgentSlackPresence,
   type CustomAgentConfig,
@@ -20,6 +21,7 @@ import {
   AgentPresenceError,
   agentOffError,
   classifyAgentPresenceError,
+  notInSlackYetError,
 } from './errors.ts';
 import {
   agentUserGroupDescription,
@@ -34,6 +36,8 @@ export interface AgentAppPresenceHooks {
   retire(agent: CustomAgentConfig): Promise<CustomAgentConfig>;
   /** Brings a live app's bot into a Channel the Agent was added to; undefined for an Agent without one. */
   bringBotIn(agent: CustomAgentConfig, channel: { id: string; private: boolean }): Promise<AgentAppBot | undefined>;
+  /** Whether the workspace's Slack apps setting is `own_app`: a new Agent then waits for its own app instead of a user group. */
+  ownAppMode(): Promise<boolean>;
 }
 
 /** A live app's bot after publishing: in the Channel, with a transport that posts as it, or left out. */
@@ -55,6 +59,12 @@ interface PublishAgentInput {
   channelId: string;
   actorMembershipId: string;
   actorSlackUserId: string;
+  /**
+   * For an Agent not in Slack yet: keep the Channel as a pending grant, which
+   * the switch after an Owner's Allow completes, instead of refusing the add.
+   * Only for a Channel asked for when the Agent was created.
+   */
+  keepPendingUntilInSlack?: true;
 }
 
 interface AgentPublicationResult {
@@ -307,12 +317,22 @@ export class AgentPresenceReconciler {
       throw new AgentPresenceError('slack_operation_failed', 'Archived Agents cannot be published.');
     }
     if (!agent.enabled) throw agentOffError(agent);
+    const waitingForApp = await this.notInSlackYet(agent);
+    // Refused before anything is written: no handle exists that people in the Channel could use.
+    if (waitingForApp && !input.keepPendingUntilInSlack) {
+      if (agent.slackPresence?.errorCode !== AWAITING_OWN_APP) await this.retry(agent.id).catch(() => undefined);
+      throw notInSlackYetError(agent);
+    }
+    // A Channel Slack will not take yet leaves a waiting Agent as it is: not in Slack yet, not needing attention.
+    const recordFailure = waitingForApp
+      ? async () => undefined
+      : (failed: CustomAgentConfig, error: AgentPresenceError) => this.recordFailure(failed, error);
     let channel;
     try {
       channel = await transport.lookupChannel(input.channelId);
     } catch (error) {
       const classified = classifyAgentPresenceError(error);
-      await this.recordFailure(agent, classified);
+      await recordFailure(agent, classified);
       throw classified;
     }
     const ensurePendingGrant = async (): Promise<AgentChannelGrant> => {
@@ -343,7 +363,7 @@ export class AgentPresenceReconciler {
         'private_channel_invite_required',
         'Invite Chickpea to the private Slack Channel before retrying.',
       );
-      await this.recordFailure(agent, error);
+      await recordFailure(agent, error);
       throw error;
     }
     try {
@@ -355,7 +375,7 @@ export class AgentPresenceReconciler {
       }
     } catch (error) {
       const classified = classifyAgentPresenceError(error);
-      await this.recordFailure(await config.getAgent(agent.id), classified);
+      await recordFailure(await config.getAgent(agent.id), classified);
       throw classified;
     }
     const persistedChannel = await config.getChannel(input.workspaceId, input.channelId);
@@ -377,6 +397,10 @@ export class AgentPresenceReconciler {
       await config.refreshChannelLabel(input.workspaceId, input.channelId, channel.name);
     }
     const pendingGrant = await ensurePendingGrant();
+    if (waitingForApp) {
+      const waiting = agent.slackPresence?.errorCode === AWAITING_OWN_APP ? agent : await this.reconcile(agent.id);
+      return { agent: waiting, grant: pendingGrant };
+    }
     if (!channel.member) {
       try {
         await transport.joinPublicChannel(input.channelId);
@@ -484,6 +508,7 @@ export class AgentPresenceReconciler {
       }
     }
 
+    if (!group && await this.ownAppMode()) return this.awaitOwnApp(agent);
     if (!group) {
       const pendingCreate = {
         name: agentUserGroupName(agent.name, groups),
@@ -724,7 +749,9 @@ export class AgentPresenceReconciler {
       agent.revision,
     );
     presence = requiredPresence(agent);
-    if (!presence.userGroupId) return agent;
+    if (!presence.userGroupId) {
+      return presence.kind !== 'agent_app' && await this.ownAppMode() ? this.awaitOwnApp(agent) : agent;
+    }
     try {
       await enableUserGroup(transport, presence.userGroupId);
       return config.updateAgent(
@@ -745,6 +772,39 @@ export class AgentPresenceReconciler {
       await this.recordFailure(agent, classified);
       throw classified;
     }
+  }
+
+  private async ownAppMode(): Promise<boolean> {
+    return await this.dependencies.agentApps?.ownAppMode() ?? false;
+  }
+
+  /** An Agent with no user group of its own nor its own app, in a workspace where each new Agent is its own app. */
+  private async notInSlackYet(agent: CustomAgentConfig): Promise<boolean> {
+    const presence = agent.slackPresence;
+    if (!presence || presence.kind === 'agent_app' || presence.userGroupId) return false;
+    return this.ownAppMode();
+  }
+
+  /**
+   * No user group: the Agent is not in Slack yet, handle-less until an
+   * Owner adds it as its own Slack app. It answers in Chickpea's DM meanwhile,
+   * so it is active.
+   */
+  private async awaitOwnApp(agent: CustomAgentConfig): Promise<CustomAgentConfig> {
+    return this.dependencies.config.updateAgent(
+      agent.id,
+      {
+        ...(agent.lifecycle === 'archived' ? {} : { lifecycle: 'active' as const }),
+        slackPresence: {
+          ...withoutPendingCreate(withoutPresenceErrors(userGroupPresence(agent))),
+          desiredState: 'active',
+          health: 'unpublished',
+          errorCode: AWAITING_OWN_APP,
+          observedAt: this.now(),
+        },
+      },
+      agent.revision,
+    );
   }
 
   private async updateGroupIfNeeded(

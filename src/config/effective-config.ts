@@ -4,11 +4,12 @@ import { ModelResolutionError } from './errors.ts';
 import type { ModelEffort } from './model-effort.ts';
 import { resolveAssignment, surfaceForChannelId, type ConfigStores } from './resolver.ts';
 import type { PlatformEnv } from './state-backend.ts';
-import type {
-  AgentTeammate,
-  CustomAgentConfig,
-  ModelCredentialAttribution,
-  ResolvedAssignment,
+import {
+  AWAITING_OWN_APP,
+  type AgentTeammate,
+  type CustomAgentConfig,
+  type ModelCredentialAttribution,
+  type ResolvedAssignment,
 } from './types.ts';
 import { agentMayAskTeammates } from '../slack/agent-asks.ts';
 import { IDENTITY_OPENING } from '../web/instruction-links.ts';
@@ -134,7 +135,8 @@ export function runtimeIdentityInstruction(
     `Your Agent ID is ${assignment.agent.id} and your name is ${assignment.agent.name}.`,
   ];
   const presence = assignment.agent.slackPresence;
-  const handle = presence?.normalizedHandle || presence?.requestedHandle;
+  // Not in Slack yet: no handle reaches it until an Owner adds it, so it has none to recognize.
+  const handle = presence?.errorCode === AWAITING_OWN_APP ? undefined : presence?.normalizedHandle || presence?.requestedHandle;
   if (handle) {
     parts.push(
       presence?.userGroupId

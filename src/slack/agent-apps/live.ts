@@ -25,6 +25,7 @@ import { agentSlackAppsHost, type AgentAppRetirement, type AgentSlackAppIngress,
 import { FINISH_APP_ACTION, START_APP_ACTION, TRY_AGAIN_ACTION } from './pages.ts';
 import { type AgentAppSwitchJob, agentAppIsLive, agentAppMoveJob, agentAppRecord } from './lifecycle.ts';
 import { readOwnAppSecrets, type SecretDeps } from './secrets.ts';
+import { readAgentSlackAppsSetting } from './setting.ts';
 import type { AgentAppTransport, AgentSlackApps } from './service.ts';
 import { createAgentAppSlackApi, logSlackRefusal } from './slack-api.ts';
 import { loadCredentialKeyring } from '../credential-keyring.ts';
@@ -237,6 +238,9 @@ export function agentAppPresenceHooks(env: PlatformEnv | undefined): AgentAppPre
   return {
     async retire(agent) {
       return (await (await liveAgentSlackApps(env, host)).retire(agent)).agent;
+    },
+    async ownAppMode() {
+      return (await readAgentSlackAppsSetting(getSettingsStore(env))).mode === 'own_app';
     },
     async bringBotIn(agent, channel) {
       const presence = agent.slackPresence;

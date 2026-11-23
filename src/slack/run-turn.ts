@@ -1412,7 +1412,7 @@ async function runTurnAttempt(
     client,
     turn,
     ...(installationContext ? { botUserId: installationContext.botUserId } : {}),
-    siblingBotUserIds: await siblingBotUserIds(assignment, installationContext?.botUserId, turnConfig(), turn.workspaceId),
+    siblingBotUserIds: await siblingBotUserIds(assignment, installationContext, turnConfig(), turn.workspaceId),
     sharedAppReads,
     state: options.appStores?.slackState ?? getSlackStateStore(platformEnv),
     ...(threadRecord ? { record: threadRecord } : {}),
@@ -3287,12 +3287,13 @@ function logMemoryLeaseFailure(stage: 'before_run' | 'after_run', agentId: strin
  */
 async function siblingBotUserIds(
   assignment: Pick<ResolvedAssignment, 'teammates'>,
-  readerBotUserId: string | undefined,
+  reader: Pick<SlackInstallationExecutionContext, 'botUserId' | 'agentApps'> | undefined,
   config: Pick<ConfigStore, 'listAgentAppBots' | 'getWorkspaceInstallation'>,
   workspaceId: string,
 ): Promise<string[]> {
+  const readerBotUserId = reader?.botUserId;
   const teammates = (assignment.teammates ?? []).flatMap((teammate) => 'botUserId' in teammate ? [teammate.botUserId] : []);
-  const appBots = await listAgentAppBots(config);
+  const appBots = await listAgentAppBots(config, reader);
   const installationBot = appBots.length ? (await config.getWorkspaceInstallation(workspaceId))?.botUserId : undefined;
   const bots = new Set([...teammates, ...(installationBot ? [installationBot] : []), ...appBots.map((bot) => bot.botUserId)]);
   if (readerBotUserId) bots.delete(readerBotUserId);

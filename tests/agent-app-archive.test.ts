@@ -136,6 +136,7 @@ async function fixture(
         return retired.agent;
       },
       bringBotIn: async () => { throw new Error('archive brings no bot in'); },
+      ownAppMode: async () => false,
     },
   });
   return { config, settings, secrets, slack, transport, clock, service, reconciler, agent, retirements };

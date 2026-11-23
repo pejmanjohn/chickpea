@@ -590,6 +590,8 @@ export interface WorkspaceManagementServiceInput {
     workspaceId: string;
     channelId: string;
     agentId: string;
+    /** The Agent was created in the same call: a Channel it cannot join until it is in Slack waits as pending. */
+    createdInCall?: true;
   }) => Promise<{ agent: CustomAgentConfig; grant: AgentChannelGrant }>;
   publishGeneratedAgentAvatar?: (input: {
     workspaceId: string;
@@ -7217,6 +7219,7 @@ export class WorkspaceManagementService {
             workspaceId: operation.workspaceId,
             channelId: operation.channelId,
             agentId: operation.agentId!,
+            ...(operation.agentClientRef ? { createdInCall: true as const } : {}),
           });
           const mutation = mutationForGrant(
             published.grant,

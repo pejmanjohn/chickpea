@@ -3342,6 +3342,7 @@ function privateChannelSetupService(execution: PrivateChannelSetupExecution): Pr
       requireAgentChannelPublication(
         current.principal, await stores.config.getAgent(agentId), current.routing.channelMember,
       );
+      const agentApps = agentAppPresenceHooks(execution.platformEnv);
       return new AgentPresenceReconciler({
         config: stores.config,
         transport,
@@ -3349,6 +3350,7 @@ function privateChannelSetupService(execution: PrivateChannelSetupExecution): Pr
           env: execution.platformEnv, settings: stores.settings, identity: stores.identity,
           management: stores.management, transport, installationBot: transport,
         }),
+        ...(agentApps ? { agentApps } : {}),
       }).publish({
         workspaceId, channelId, agentId,
         actorMembershipId: current.principal.membershipId,
@@ -3577,7 +3579,7 @@ async function processSlackEvent(
     )
   ) return;
   // Every bot Chickpea answers as here is itself: the installation's, and each Agent app's.
-  const appBots = ask ? [] : await listAgentAppBots(stores.config);
+  const appBots = ask ? [] : await listAgentAppBots(stores.config, installation);
   const tenantBots = ask || !agentSlackAppsHost() ? [] : tenantBotUserIds(appBots, installation.botUserId);
   const threadRoutes = new Map<string, AgentThreadRoute | undefined>();
   const threadRoute = async (channelId: string, threadTs: string) => {

@@ -38,7 +38,14 @@ export function agentSlackAddress(
   return { ...(userGroupId ? { agentUserGroupId: userGroupId } : {}), ...(botUserId ? { agentBotUserId: botUserId } : {}) };
 }
 
-/** Without the host's Agent-app port no app is served, and nothing is read. */
-export async function listAgentAppBots(config: Pick<ConfigStore, 'listAgentAppBots'>): Promise<AgentAppBot[]> {
-  return agentSlackAppsHost() ? config.listAgentAppBots() : [];
+/**
+ * Without the host's Agent-app port no app is served, and nothing is read;
+ * nor when the installation record the caller already holds says no Agent
+ * here has an app record (`agentApps: false`).
+ */
+export async function listAgentAppBots(
+  config: Pick<ConfigStore, 'listAgentAppBots'>,
+  installation: { agentApps?: boolean } | undefined,
+): Promise<AgentAppBot[]> {
+  return agentSlackAppsHost() && installation?.agentApps !== false ? config.listAgentAppBots() : [];
 }

@@ -16,7 +16,8 @@ type AgentPresenceErrorCode =
   | 'slack_reconnect_required'
   | 'slack_unavailable'
   | 'slack_operation_failed'
-  | 'agent_off';
+  | 'agent_off'
+  | 'not_in_slack_yet';
 
 export class AgentPresenceError extends Error {
   constructor(
@@ -44,6 +45,15 @@ export function agentOffMessage(agent: Pick<CustomAgentConfig, 'name'>): string 
 
 export function agentOffError(agent: Pick<CustomAgentConfig, 'name'>): AgentPresenceError {
   return new AgentPresenceError('agent_off', agentOffMessage(agent));
+}
+
+/** An Agent waiting for its own Slack app has no handle anyone could use in a Channel; only an Owner can add it to Slack. */
+export function notInSlackYetMessage(agent: Pick<CustomAgentConfig, 'name'>): string {
+  return `${agent.name} isn't in Slack yet. A workspace Owner needs to add it first.`;
+}
+
+export function notInSlackYetError(agent: Pick<CustomAgentConfig, 'name'>): AgentPresenceError {
+  return new AgentPresenceError('not_in_slack_yet', notInSlackYetMessage(agent));
 }
 
 const PAID_PLAN_ERRORS = new Set([
@@ -257,6 +267,14 @@ export function agentPresenceRecovery(
       title: 'Join the Channel first',
       explanation: 'You can add an Agent only to Slack Channels you belong to.',
       steps: ['Join the Channel in Slack.', 'Come back here and select Retry.'],
+      actionLabel: 'Retry',
+    };
+  }
+  if (error.code === 'not_in_slack_yet') {
+    return {
+      title: `${agent.name} isn't in Slack yet`,
+      explanation: error.message,
+      steps: ['Ask a workspace Owner to add it to Slack, then add it to the Channel.'],
       actionLabel: 'Retry',
     };
   }
