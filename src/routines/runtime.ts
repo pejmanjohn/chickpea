@@ -205,12 +205,6 @@ export async function resolveRoutineRuntimeAccess(
     });
   };
   let speaker: SlackSpeaker | undefined;
-  const speakAs = (context: SlackInstallationExecutionContext) => {
-    botToken = context.botToken;
-    botUserId = context.botUserId;
-    client = context.client;
-    speaker = { kind: 'own_bot', botUserId: context.botUserId };
-  };
   if (routine.destination.kind === 'direct_thread') {
     if (!authority || routine.authorityMode !== 'live_direct_member_v1') {
       throw new RoutineRuntimeError(
@@ -252,13 +246,12 @@ export async function resolveRoutineRuntimeAccess(
         if (isCredentialKeyringUnavailable(error)) throw error;
         throw new RoutineAgentAppUnavailableError();
       }
+      // The check below refuses a DM the app's bot does not open either.
+      ({ botToken, botUserId } = app);
+      directClient = app.client;
+      speaker = { kind: 'own_bot', botUserId };
       try {
-        const opened = await openDirect(app.client);
-        if (opened?.id === routine.destination.conversationId) {
-          speakAs(app);
-          directClient = app.client;
-          directConversation = opened;
-        }
+        directConversation = await openDirect(app.client);
       } catch (error) {
         throw unverifiedAccess(
           isRetryableDependencyFailure(error),
@@ -270,7 +263,7 @@ export async function resolveRoutineRuntimeAccess(
     if (
       user?.id !== actorSlackUserId ||
       actorSlackUserId === botUserId ||
-      classifySlackUserForAdmission(user, routine.workspaceId, botUserId!) !== 'eligible_human'
+      classifySlackUserForAdmission(user, routine.workspaceId, botUserId) !== 'eligible_human'
     ) {
       throw new RoutineRuntimeError(
         'creator_ineligible',
@@ -332,7 +325,7 @@ export async function resolveRoutineRuntimeAccess(
         computeSnapshotHash(configWithCatalogRevision(config, catalogRevision)),
       ),
       ...(botToken ? { botToken } : {}),
-      botUserId: botUserId!,
+      botUserId,
       client: directClient,
       ...(speaker ? { speaker } : {}),
       publicUrl: await resolveSlackPublicUrl(env).catch(() => undefined),
@@ -355,7 +348,8 @@ export async function resolveRoutineRuntimeAccess(
     });
     const read = app ? await readConversation(app.botToken, app.client) : undefined;
     if (app && read?.ok && read.facts?.id === routine.channelId && read.facts.member) {
-      speakAs(app);
+      ({ botToken, botUserId, client } = app);
+      speaker = { kind: 'own_bot', botUserId };
       conversation = read;
     }
   }
@@ -438,7 +432,7 @@ export async function resolveRoutineRuntimeAccess(
       computeSnapshotHash(configWithCatalogRevision(config, catalogRevision)),
     ),
     ...(botToken ? { botToken } : {}),
-    botUserId: botUserId!,
+    botUserId,
     ...(client ? { client } : {}),
     ...(speaker ? { speaker } : {}),
     publicUrl: await resolveSlackPublicUrl(env).catch(() => undefined),
