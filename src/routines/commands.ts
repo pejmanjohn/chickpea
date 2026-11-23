@@ -7,6 +7,7 @@ import type { ConfigStore } from '../config/store.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import { resolveEffectiveConnectionAccounts } from '../connections/runtime.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
+import { agentSlackAddress } from '../slack/agent-app-bots.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import {
   stripResolvedSlackCommandAddress,
@@ -170,7 +171,7 @@ export async function handleRoutineSlackRequest(
 ): Promise<string | undefined> {
   const command = parseRoutineCommand(turn.text, {
     botUserId: dependencies.installationContext?.botUserId,
-    agentUserGroupId: dependencies.assignment?.agent.slackPresence?.userGroupId,
+    ...agentSlackAddress(dependencies.assignment?.agent),
   });
   if (!command) return undefined;
   if (!isRoutineSlackTurn(turn)) return undefined;

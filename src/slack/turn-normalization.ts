@@ -28,6 +28,12 @@ function isOwnBot(options: SlackTurnNormalizationOptions, user: unknown): boolea
     (user === options.botUserId || (options.siblingBotUserIds?.includes(user) ?? false));
 }
 
+/** Whether the text mentions any of `botUserIds`: on Chickpea's delivery, an Agent app's bot names that Agent. */
+export function mentionsSlackBot(text: string, botUserIds: readonly string[] | undefined): boolean {
+  if (!botUserIds?.length) return false;
+  return [...text.matchAll(/<@([UW][A-Z0-9]+)(?:\|[^>]*)?>/g)].some(([, id]) => botUserIds.includes(id!));
+}
+
 /** Strip Slack's transport wrapper into the credential-free runtime envelope. */
 export function normalizeSlackInboundEnvelope(
   payload: SlackEventFixture,
@@ -211,7 +217,7 @@ export function normalizeSlackTurn(
   if (!isChannelConversation(event)) {
     return { status: 'ignored', reason: 'unsupported_channel_type' };
   }
-  if (!event.thread_ts && /<!subteam\^[A-Z0-9]+(?:\|[^>]+)?>/i.test(text)) {
+  if (!event.thread_ts && (/<!subteam\^[A-Z0-9]+(?:\|[^>]+)?>/i.test(text) || mentionsSlackBot(text, options.siblingBotUserIds))) {
     return runnableTurn({
       payload,
       channelId: event.channel,

@@ -1,11 +1,17 @@
 import { getSlackStateStore, type PlatformEnv } from '../../config/state-backend.ts';
-import { type ActiveAgentApp, agentAppIsLive, type AgentSlackPresence } from '../../config/types.ts';
+import {
+  type ActiveAgentApp,
+  agentAppIsLive,
+  type AgentSlackPresence,
+  type CustomAgentConfig,
+} from '../../config/types.ts';
 import { isTransientSlackApiError, slackConversationsInfo, slackConversationsOpen } from '../credentials.ts';
 import { ADMISSION_MEMBERSHIP_TTL_MS } from '../installation-execution.ts';
 import { type SlackSpeaker, speakerFor } from '../speaker.ts';
 import { slackConversationKind } from '../thread-key.ts';
 import { type SlackTransport, SlackTransportError } from '../transport/types.ts';
 import type { NormalizedSlackTurn } from '../types.ts';
+import { agentSlackAppsHost } from './host.ts';
 import { agentAppBotCredentials } from './live.ts';
 
 /** The bot that heard a turn at admission. */
@@ -81,6 +87,26 @@ export async function isAgentAppDm(
     });
   }
   return opened.channelId === input.channelId;
+}
+
+/**
+ * Whether an Agent's own app can answer in a Channel or group DM: the host
+ * serves it, it is live, its token can be read, and its bot is a member. This
+ * is the same cached fact admission reads for the speaker, so the two never
+ * disagree within its TTL. A read that fails counts as "cannot answer here",
+ * as admission counts it, so Chickpea routes the mention and the message's
+ * claim keeps one answer if the app's own delivery routes it too.
+ */
+export async function agentAppAnswersIn(
+  env: PlatformEnv | undefined,
+  agent: Pick<CustomAgentConfig, 'id' | 'slackPresence'>,
+  channelId: string,
+): Promise<boolean> {
+  const presence = agent.slackPresence;
+  if (!agentSlackAppsHost() || !agentAppIsLive(presence)) return false;
+  const { app } = presence;
+  return (await botMembership(app.botUserId, channelId, () =>
+    agentBotIsIn(env, agent.id, app.app.appId, channelId)).catch(notVerified)).member;
 }
 
 /**

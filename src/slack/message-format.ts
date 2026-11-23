@@ -1057,16 +1057,22 @@ export function renderAgentChannelWelcome(params: {
   name: string;
   description: string | undefined;
   handle: string;
-  /** Whether the Agent hears replies in its threads that do not mention it, in this Channel. */
-  hearsThreadReplies: boolean;
+  /**
+   * Whether the Agent hears replies in its threads that do not mention it, in
+   * this Channel: through Chickpea's bot, there before or just joined.
+   */
+  threadReplies: 'heard' | 'heard_since_chickpea_joined' | 'need_mention';
 } & SlackAgentAddress): string {
   const name = sanitizedWelcomeText(params.name, 80);
   const description = sanitizedWelcomeText(params.description ?? '', 400);
   const mention = liveAgentMention('userGroupId' in params ? params.userGroupId : params.botUserId, params.handle);
   return [
     `Hi, I’m *${name}*.${description ? ` ${description}` : ''}`,
-    `Mention ${mention} to start a thread with me. I only join conversations that mention me` +
-      (params.hearsThreadReplies ? ', and once I’m in a thread you can keep going there without the mention.' : '.'),
+    `Mention ${mention} to start a thread with me. I only join conversations that mention me` + {
+      heard: ', and once I’m in a thread you can keep going there without the mention.',
+      heard_since_chickpea_joined: '. Chickpea joined too, so replies in my threads reach me without a mention.',
+      need_mention: '.',
+    }[params.threadReplies],
   ].join('\n\n');
 }
 

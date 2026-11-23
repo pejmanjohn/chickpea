@@ -11,6 +11,7 @@ import {
   type AgentAppBotCredentials,
   type AgentSlackAppHandoff,
   admissionSpeaker,
+  agentAppAnswersIn,
   agentAppBotCredentials,
   agentAppHomeRows,
   agentAppPlacementFacts,
@@ -170,6 +171,7 @@ import {
   slackTurnSurface,
 } from '../slack/thread-key.ts';
 import {
+  mentionsSlackBot,
   normalizeSlackTurn,
   parseSlackMessageDelete,
   parseSlackMessageEdit,
@@ -182,7 +184,7 @@ import {
 } from '../slack/node-turn-relay.ts';
 import { slackSemanticActivityStatusEnabled } from '../slack/semantic-status-flag.ts';
 import { hydrateSlackPublicHandoffFallback } from '../slack/web-client-context.ts';
-import { type AgentAppBot, listAgentAppBots } from '../slack/agent-app-bots.ts';
+import { type AgentAppBot, agentSlackAddress, listAgentAppBots } from '../slack/agent-app-bots.ts';
 import { slackAdmissionInStore } from '../slack/admission-path.ts';
 import { hydrateTurnSlackContext } from '../slack/turn-context-reads.ts';
 import type { SlackContextSelf } from '../slack/thread-context.ts';
@@ -1573,6 +1575,8 @@ export async function postAgentRoutingFeedback(input: {
   surface: AssignmentSurface;
   result: Exclude<AgentRoutingResult, { kind: 'ignore' | 'routed' }>;
   client: ReturnType<typeof createSlackWebClient>;
+  /** The Agent app bots this delivery answers for: a thread reply naming one names its Agent. */
+  appBotUserIds?: readonly string[];
 }): Promise<void> {
   const denial = input.result.kind === 'denied' ? input.result : undefined;
   const alternatives = denial?.alternatives.length
@@ -1599,8 +1603,7 @@ export async function postAgentRoutingFeedback(input: {
     // Ambient roots remain silent, and a denied Agent never becomes visible
     // through the alternatives list.
     const explicitAgentMention = input.turn.source === 'agent_mention' ||
-      (input.turn.source === 'implicit_thread_reply' &&
-        parseAgentUserGroupMentions(input.turn.text).length > 0);
+      (input.turn.source === 'implicit_thread_reply' && !turnRequiresOwnedThread(input.turn, input.appBotUserIds));
     if (input.turn.source !== 'app_mention' && !explicitAgentMention) return;
     await input.client.chat.postEphemeral({
       channel: input.turn.channelId,
@@ -2938,9 +2941,12 @@ function emitUiInteraction(outcome: 'received' | 'refused' | 'resolved', reason?
 async function addRequestedAgentToChannel(
   input: Pick<SlackUiContext, 'platformEnv' | 'stores' | 'client' | 'transport' | 'gateway' | 'botUserId' | 'execution'> & {
     request: AgentChannelAddRequest;
+    /** A person's Slack Add of the Agent's own bot: once it grants the Agent, Chickpea's bot joins a public Channel too. */
+    chickpeaJoins?: true;
   },
 ): Promise<void> {
   const { request, stores, transport, botUserId, platformEnv } = input;
+  const installationBot = input.execution?.agentApp ? input.execution.installationBot : transport;
   if (!botUserId) return;
   await addAgentToChannel(request, {
     claim: (key) => stores.slackState.claim(key),
@@ -2974,7 +2980,8 @@ async function addRequestedAgentToChannel(
           env: platformEnv, settings: stores.settings, identity: stores.identity,
           management: stores.management, transport,
           // On an Agent app's delivery, `transport` is that app's bot and Chickpea's rides beside it.
-          installationBot: input.execution?.agentApp ? input.execution.installationBot : transport,
+          installationBot,
+          ...(input.chickpeaJoins && installationBot ? { joiningInstallationBot: installationBot } : {}),
         }),
         ...(agentApps ? { agentApps } : {}),
       }).publish({
@@ -3623,7 +3630,7 @@ async function processSlackEvent(
   // claim, or any Slack read, so a dropped reply stays fully silent.
   if (
     !ask &&
-    turnRequiresOwnedThread(turn) &&
+    turnRequiresOwnedThread(turn, siblingBotUserIds) &&
     !(await threadRoute(turn.channelId, turn.threadTs))
   ) {
     return;
@@ -3702,11 +3709,17 @@ async function processSlackEvent(
           actor: privateAgentActor(agentRoutingActor!, turn.userId),
           transport: execution?.placementFacts ?? runtimeTransport,
         }),
-        // The bot that heard this message is in the Channel; another is asked about through it.
+        // The bot that heard this message is in the Channel; another is asked about through it. Chickpea's
+        // bot answers for an app Agent whose own bot is not there.
         postingBotInChannel: async (agent) => {
-          const bot = agentAppPostingBot(agent) ?? (execution?.agentApp ? installation.botUserId : resolvedBotUserId);
-          return !bot || bot === resolvedBotUserId || runtimeTransport.channelHasMember(turn.channelId, bot);
+          const chickpea = execution?.agentApp ? installation.botUserId : resolvedBotUserId;
+          for (const bot of [agentAppPostingBot(agent), chickpea]) {
+            if (!bot) continue;
+            if (bot === resolvedBotUserId || await runtimeTransport.channelHasMember(turn.channelId, bot)) return true;
+          }
+          return !chickpea;
         },
+        agentAppAnswersHere: (agent) => agentAppAnswersIn(platformEnv, agent, turn.channelId),
       });
       if (routed.kind === 'ignore') return;
       if (routed.kind !== 'routed' && ui) return;
@@ -3757,6 +3770,7 @@ async function processSlackEvent(
           surface,
           result: routed,
           client: runtimeClient,
+          appBotUserIds: siblingBotUserIds,
         }));
         return;
       }
@@ -3998,7 +4012,7 @@ async function processSlackEvent(
   turn.activeWorkAtAdmission = await (routedReads?.activeWork ?? state.isActiveWork(threadKey));
   const commandAddress = {
     botUserId: resolvedBotUserId,
-    agentUserGroupId: assignment.agent.slackPresence?.userGroupId,
+    ...agentSlackAddress(assignment.agent),
   };
   // A message a person typed: neither a click nor an Agent's ask. Only such
   // a message can run a command, approve, stop, check in, or answer a
@@ -5391,7 +5405,7 @@ async function refuseIneligibleSlackStop(input: {
       : undefined;
     const command = slackSteeringCommand(turn.text, {
       botUserId: input.botUserId,
-      agentUserGroupId: agent?.slackPresence?.userGroupId,
+      ...agentSlackAddress(agent),
     });
     if (command !== 'stop') return false;
   } catch {
@@ -5477,6 +5491,7 @@ async function handleMemberJoinedChannel(
           workspaceId, userId: event.inviter, channelId: event.channel, threadTs: null,
           agentId, requestId: payload.event_id,
         },
+        chickpeaJoins: true,
       });
     } catch (error) {
       console.warn('[chickpea] Agent app Channel add could not finish:', sanitizeError(error));
@@ -5624,9 +5639,14 @@ async function withAdmittedModelCredential<T extends Pick<ResolvedAssignment, 'm
  * this?" under an alert nobody has answered reaches @oncall. Routing still
  * decides which Agent that is and whether it may work in this channel.
  */
-export function turnRequiresOwnedThread(turn: Pick<NormalizedSlackTurn, 'source' | 'text'>): boolean {
+export function turnRequiresOwnedThread(
+  turn: Pick<NormalizedSlackTurn, 'source' | 'text'>,
+  /** The Agent app bots this delivery answers for: naming one addresses its Agent. */
+  appBotUserIds: readonly string[] = [],
+): boolean {
   if (turn.source === 'reaction_added') return true;
-  return turn.source === 'implicit_thread_reply' && parseAgentUserGroupMentions(turn.text).length === 0;
+  return turn.source === 'implicit_thread_reply' && parseAgentUserGroupMentions(turn.text).length === 0 &&
+    !mentionsSlackBot(turn.text, appBotUserIds);
 }
 
 /**
