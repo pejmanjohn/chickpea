@@ -1823,6 +1823,25 @@ test("a mention of the app Agent's bot is routed by Chickpea when the app is not
   }
 }));
 
+/** Slack calls rate-limited for now, keyed `<method> <token>`; a test lifts the limit by emptying it. */
+const appReadLimited: string[] = [];
+
+test("a mention of the app Agent's bot is routed by Chickpea while Slack rate-limits the app bot's membership read, and answered once", async (t) => withHarness(t, async (h) => {
+  const ts = '1900004350.000100';
+  const message = messageIn('C1', ts, `<@${AGENT_BOT_USER}> where do refunds go?`);
+  appReadLimited.push(`conversations.info ${AGENT_BOT}`);
+  t.after(() => { appReadLimited.length = 0; });
+  assert.equal((await h.deliverToChickpea(message.chickpea)).status, 200);
+  assert.deepEqual(await answersTo(h, ts), [SUPPORT_THROUGH_CHICKPEA], 'a read that failed counts as the app being unable to answer here');
+  const [job] = (await h.stores.slackState.listPendingTurns!()).filter((pending) => pending.turn.messageTs === ts);
+  assert.deepEqual(sender(await postAsRun(h, job!)), AS_SUPPORT, "Chickpea's bot posts under Support's name and picture");
+
+  appReadLimited.length = 0;
+  t.mock.method(console, 'info', () => undefined);
+  assert.equal((await h.deliver('events', message.app)).status, 200);
+  assert.deepEqual(await answersTo(h, ts), [SUPPORT_THROUGH_CHICKPEA], "the app's own delivery of the same message adds no second answer");
+}, { rateLimited: appReadLimited }));
+
 test('a mention both deliveries route, the app having become able to answer between them, is answered once', async (t) => withHarness(t, async (h) => {
   const ts = '1900004400.000100';
   const message = messageIn('C1', ts, `<@${AGENT_BOT_USER}> where do refunds go?`);

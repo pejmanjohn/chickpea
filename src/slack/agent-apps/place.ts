@@ -93,7 +93,9 @@ export async function isAgentAppDm(
  * Whether an Agent's own app can answer in a Channel or group DM: the host
  * serves it, it is live, its token can be read, and its bot is a member. This
  * is the same cached fact admission reads for the speaker, so the two never
- * disagree within its TTL.
+ * disagree within its TTL. A read that fails counts as "cannot answer here",
+ * as admission counts it, so Chickpea routes the mention and the message's
+ * claim keeps one answer if the app's own delivery routes it too.
  */
 export async function agentAppAnswersIn(
   env: PlatformEnv | undefined,
@@ -104,7 +106,7 @@ export async function agentAppAnswersIn(
   if (!agentSlackAppsHost() || !agentAppIsLive(presence)) return false;
   const { app } = presence;
   return (await botMembership(app.botUserId, channelId, () =>
-    agentBotIsIn(env, agent.id, app.app.appId, channelId))).member;
+    agentBotIsIn(env, agent.id, app.app.appId, channelId)).catch(notVerified)).member;
 }
 
 /**
