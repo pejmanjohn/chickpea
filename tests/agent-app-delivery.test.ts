@@ -247,6 +247,7 @@ async function withHarness(
     )) {
       return Response.json({ ok: false, error: 'missing_scope' });
     }
+    if (method === 'conversations.open' && !body.get('users') && !channel) return Response.json({ ok: false, error: 'users_list_not_supplied' });
     // As in Slack, a bot sees a private Channel or group DM only when it is in it, and a DM only when it is one side of it.
     if (method === 'conversations.info' && (
       ((options.privateChannels?.includes(channel) || channel.startsWith('G')) && outside.get(token ?? '')?.has(channel)) ||
@@ -2031,12 +2032,15 @@ test('the joiner welcome tells a person to message an app Agent directly by its 
 }));
 
 /** A connector's notice for `agentId` in the thread `threadTs` of `channelId`, delivered as the outbox delivers it. */
-async function deliverConnectedNotice(h: Harness, agentId: string, channelId: string, threadTs: string) {
+async function deliverConnectedNotice(h: Harness, agentId: string, channelId: string, threadTs: string, finishedBy: string | null = 'U1') {
   const agent = await h.stores.config.getAgent(agentId);
   const before = h.calls.length;
   await deliverManagementReceiptToSlack({
     outboxId: `receipt_${channelId}_${threadTs}`, operationId: 'setup_tasks',
-    destination: { kind: 'thread', workspaceId: TEAM, channelId, threadTs },
+    destination: {
+      kind: 'thread', workspaceId: TEAM, channelId, threadTs,
+      ...(finishedBy ? { wake: { agentId, slackUserId: finishedBy, conversationKind: 'im' as const, note: SETUP_NOTE } } : {}),
+    },
     receipt: {
       kind: 'connector_connected', setupOperationId: 'setup_tasks', connector: 'Tasks', toolkit: 'tasks', agentId, agentName: agent.name,
       ownerKind: 'member', accessLane: 'read', avatarUrl: 'https://hosted.example/avatar.png', completedAt: Date.now(),
@@ -2053,13 +2057,29 @@ async function deliverConnectedNotice(h: Harness, agentId: string, channelId: st
 test("the connected notice speaks as the bot that speaks for the Agent where it lands, and never with a persona on the app's token", async (t) => withHarness(t, async (h) => {
   assert.deepEqual(await deliverConnectedNotice(h, 'agent_support', 'D1', '1900004500.000100'), OWN_BOT,
     "in the app's own DM, where Chickpea's bot cannot post");
+  assert.deepEqual(dmQuestions(h, AGENT_BOT), ['conversations.open U1'], "the app's token only opened its DM with the person who finished the setup");
+  const before = h.calls.length;
   assert.deepEqual(await deliverConnectedNotice(h, 'agent_support', CHICKPEA_DM, '1900004500.000200'), AS_SUPPORT);
+  assert.deepEqual(dmQuestions(h, AGENT_BOT, before), ['conversations.open U1'], "the app's DM with that person is another one");
   assert.deepEqual(await deliverConnectedNotice(h, 'agent_support', 'C1', '1900004500.000300'), OWN_BOT, 'a Channel its bot is in');
   assert.deepEqual(await deliverConnectedNotice(h, 'agent_support', 'C2', '1900004500.000400'), AS_SUPPORT, 'a Channel its bot is not in');
   assert.deepEqual(await deliverConnectedNotice(h, 'agent_finance', 'C1', '1900004500.000500'), { token: MAIN_BOT, username: 'Finance', picture: true },
     'a user-group Agent, as before');
   assert.deepEqual(personaOnAppToken(h), []);
 }, { notMemberOf: { [AGENT_BOT]: ['C2'] } }));
+
+test("a connected notice with no person to ask about is placed as Chickpea's DM, and the app's token is asked nothing", async (t) => withHarness(t, async (h) => {
+  await assert.rejects(deliverConnectedNotice(h, 'agent_support', 'D1', '1900004550.000100', null), /channel_not_found/,
+    "Chickpea's bot is refused in the app's own DM, so the outbox keeps the notice");
+  assert.deepEqual(dmQuestions(h, AGENT_BOT), []);
+  assert.deepEqual(await deliverConnectedNotice(h, 'agent_support', CHICKPEA_DM, '1900004550.000200', null), AS_SUPPORT);
+  assert.deepEqual(dmQuestions(h, AGENT_BOT), []);
+}));
+
+test("a connected notice whose DM Slack does not place is not posted on a guessed bot", async (t) => withHarness(t, async (h) => {
+  await assert.rejects(deliverConnectedNotice(h, 'agent_support', CHICKPEA_DM, '1900004560.000100'), /ratelimited/);
+  assert.deepEqual(h.calls.filter((call) => call.method.startsWith('chat.')), [], 'nothing posts on either bot');
+}, { rateLimited: [`conversations.open ${AGENT_BOT}`] }));
 
 /** Asks Finance from `asking` until the exchange reaches its limit, then once more; returns the pause line's post. */
 async function pauseLineAfterLimit(h: Harness, asking: PendingTurnJob): Promise<SlackCall | undefined> {
