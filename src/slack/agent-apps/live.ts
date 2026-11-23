@@ -349,7 +349,7 @@ export async function liveAgentSlackApps(
     stores: { config: local?.config ?? resolved.config, settings },
     host,
     transport: mainBotTransport(credentials, settings),
-    armSwitch: async (job) => { await management.putOutbox(agentAppSwitchOutbox(job, Date.now())); },
+    armSwitch: (job) => armAgentAppSwitch(management, job, Date.now()),
     publicOrigin: () => resolveSlackPublicUrl(env, resolved.settings, resolved.identity),
     userGroupPermissionMissing: async () => hostedSlackUpdateGrantsUserGroupToken() && !(await credentials()).userGroupToken,
   });
@@ -358,10 +358,11 @@ export async function liveAgentSlackApps(
 /**
  * The switch job as an outbox row: one per app install, so a second Allow of
  * the same install arms nothing new, and the drain that claims it runs the
- * switch's remaining steps.
+ * switch's remaining steps. `rearm` numbers the rows that follow one that
+ * settled with the switch unfinished.
  */
-export function agentAppSwitchOutbox(job: AgentAppSwitchJob, at: number): ManagementReceiptOutboxRecord {
-  const outboxId = `agent_app_switch:${job.agentId}:${job.appId}:${job.installedAt}`;
+export function agentAppSwitchOutbox(job: AgentAppSwitchJob, at: number, rearm = 0): ManagementReceiptOutboxRecord {
+  const outboxId = `agent_app_switch:${job.agentId}:${job.appId}:${job.installedAt}${rearm ? `:${rearm}` : ''}`;
   return {
     outboxId,
     operationId: outboxId,
@@ -373,6 +374,24 @@ export function agentAppSwitchOutbox(job: AgentAppSwitchJob, at: number): Manage
     createdAt: at,
     updatedAt: at,
   };
+}
+
+/**
+ * Arm the switch job for an install whose switch has steps left. The outbox
+ * keeps a row it already has, settled or not, so a row that settled without
+ * finishing the switch (every attempt failed, or it ran while the app was not
+ * live) is followed by a new one. A row still waiting or running is left
+ * alone: one install never has two unsettled jobs.
+ */
+export async function armAgentAppSwitch(
+  management: Pick<AppStores['management'], 'putOutbox'>,
+  job: AgentAppSwitchJob,
+  at: number,
+): Promise<void> {
+  for (let rearm = 0; ; rearm += 1) {
+    const row = await management.putOutbox(agentAppSwitchOutbox(job, at, rearm));
+    if (row.status !== 'delivered' && row.status !== 'failed') return;
+  }
 }
 
 /** The drain's run of one switch job. Without the port it fails and is retried: nothing here can drive an Agent app. */
