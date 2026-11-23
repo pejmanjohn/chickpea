@@ -16,7 +16,11 @@ import {
 } from '../src/config/types.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { agentAppBots } from '../src/slack/agent-app-bots.ts';
-import { AgentPresenceReconciler, repairMentionedAgentUserGroup } from '../src/slack/agent-presence/reconciler.ts';
+import {
+  AgentPresenceReconciler,
+  AgentUserGroupLookupLimiter,
+  repairMentionedAgentUserGroup,
+} from '../src/slack/agent-presence/reconciler.ts';
 import type { SlackTransport } from '../src/slack/transport/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 
@@ -41,6 +45,11 @@ function store() {
   config.createAgent(agent('agent_support'));
   return {
     config,
+    /** Another Agent, stored with `presence` as written. */
+    add(id: string, presence: object): void {
+      config.createAgent(agent(id));
+      db.run('UPDATE config_agents SET slack_presence_json = ? WHERE id = ?', JSON.stringify(presence), id);
+    },
     /** What the store reads back for `json` as written by any earlier code. */
     read(json: string): AgentSlackPresence | undefined {
       db.run('UPDATE config_agents SET slack_presence_json = ? WHERE id = ?', json, 'agent_support');
@@ -248,6 +257,7 @@ test('repair and the reconciler never create or rebind a group for an app Agent 
           async lookupUserGroup() { return { id: userGroupId, name: 'Support', handle: 'support', disabled: false, updatedAt: NOW / 1000 }; },
         },
         now: () => NOW,
+        limiter: new AgentUserGroupLookupLimiter(),
       });
       assert.deepEqual(result, { kind: 'unknown' }, userGroupId);
     }
@@ -257,6 +267,35 @@ test('repair and the reconciler never create or rebind a group for an app Agent 
     assert.deepEqual((await reconciler.retry('agent_support')).slackPresence, stored);
     assert.deepEqual(config.getAgent('agent_support').slackPresence, stored);
     assert.deepEqual(transport.calls, []);
+  } finally {
+    s.close();
+  }
+});
+
+// Defects caught: directory repair counting only user groups as claims, so a released group that still answers
+// for its app Agent is bound to another Agent whose interrupted create left a matching lease.
+test("repair never binds an app Agent's answering released group to another Agent", async () => {
+  const s = store();
+  try {
+    s.roundTrip({
+      kind: 'agent_app', ...BASE, desiredState: 'active', health: 'healthy', app: LIVE, released: { userGroupId: 'S1', answers: true },
+    } satisfies AgentAppPresence);
+    const lease = { name: 'Support', handle: 'support', description: 'Support Agent', startedAt: NOW - 60_000 };
+    s.add('agent_other', {
+      ...BASE, desiredState: 'active', health: 'needs_attention', errorCode: 'user_group_create_ambiguous', pendingCreate: lease,
+    });
+    const before = s.config.getAgent('agent_other').slackPresence;
+    const result = await repairMentionedAgentUserGroup({
+      workspaceId: 'TACME', channelId: 'C1', userGroupId: 'S1', config: s.config as never,
+      transport: {
+        async lookupUserGroup() { return { id: 'S1', ...lease, disabled: false, updatedAt: NOW / 1000 }; },
+      },
+      now: () => NOW,
+      // A limiter of its own: the module's one remembers denials from other tests.
+      limiter: new AgentUserGroupLookupLimiter(),
+    });
+    assert.deepEqual(result, { kind: 'unknown' });
+    assert.deepEqual(s.config.getAgent('agent_other').slackPresence, before);
   } finally {
     s.close();
   }
