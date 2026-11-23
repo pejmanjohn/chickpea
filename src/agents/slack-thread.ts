@@ -1091,7 +1091,7 @@ function useSlackInteractiveComponents(
   useTool(createRequestFormTool({ store, scope, ...fallback }));
   if (writeDisplayComponent) {
     const redraw = async (surface: UiSurfaceRecord) => (await import('../slack/ui/agent-card-redraw.ts'))
-      .redrawCardSetAsAgent(await resolveAgentPlatformEnv(), plan.agentId, surface);
+      .redrawCardSetAsAgent(await resolveAgentPlatformEnv(), plan.agentId, surface, scope.turnJobId);
     useTool(createUpdateCardTool({ store, scope, redraw }));
   }
 }

@@ -78,6 +78,7 @@ import {
   type UiSurfaceRpcResponse,
 } from './ui/surface-store.ts';
 import type { UiNamespace } from './ui/surface.ts';
+import type { SlackSpeaker } from './speaker.ts';
 
 export {
   ACTIVE_WORK_TTL_MS,
@@ -142,10 +143,18 @@ export function slackSessionGenerationFromTimestamp(messageTs: string): number {
   return Number(units);
 }
 
+/**
+ * The visible owner of a run, from the speaker its admission chose. The
+ * Agent app's own bot already carries the Agent's name and icon; Chickpea's
+ * bot posts under the Agent's persona. For an Agent with its own app that
+ * persona does not wait on the app's health: Chickpea's bot speaks for it
+ * exactly where the app cannot.
+ */
 export function selectSlackPresentationOwner(input: {
   installationHealth: 'pending' | 'healthy' | 'needs_attention' | 'revoked';
   agentId: string;
   agentName: string;
+  speaker: SlackSpeaker;
   conversationKind?: 'im' | 'mpim' | 'channel';
   avatarUrl?: string;
   slackPresence?: {
@@ -156,9 +165,8 @@ export function selectSlackPresentationOwner(input: {
   };
 }): SlackPresentationOwner {
   if (input.agentId === CHICKPEA_AGENT_ID) return { kind: 'chickpea' };
+  if (input.speaker.kind === 'own_bot') return { kind: 'agent_app', agentName: input.agentName };
   const presence = input.slackPresence;
-  // A live Agent app posts as its own bot, which already carries the Agent's name and icon.
-  if (presence?.kind === 'agent_app' && presence.health === 'healthy') return { kind: 'agent_app', agentName: input.agentName };
   // A routed creator-private DM does not need a published Slack user group.
   // Admission has already checked private use; retain Channel publication gates.
   const privateUnpublished = input.conversationKind === 'im' &&
@@ -167,7 +175,8 @@ export function selectSlackPresentationOwner(input: {
     input.installationHealth !== 'healthy' ||
     !input.avatarUrl ||
     !presence ||
-    (!privateUnpublished && (presence.desiredState !== 'active' || presence.health !== 'healthy')) ||
+    (presence.kind !== 'agent_app' && !privateUnpublished &&
+      (presence.desiredState !== 'active' || presence.health !== 'healthy')) ||
     !Number.isSafeInteger(presence.avatar.revision) ||
     presence.avatar.revision < 1
   ) {

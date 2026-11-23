@@ -13,6 +13,7 @@ import {
   carriedGatewayIdentity,
   resetIdentityVerificationsForTests,
   seedGatewayIdentity,
+  turnJobRunSpeaker,
 } from '../src/slack/installation-execution.ts';
 import { slackTurnExecutor } from '../src/slack/turn-executor-flag.ts';
 import { removeEndedReceipts } from '../src/slack/turn-executor.ts';
@@ -323,6 +324,7 @@ for (const { withPendingTurn, testRun } of [
       sandboxTurnReaders: () => () => [],
       slackAgentThreadKey: () => 'pending-thread',
       effectiveTurnSlackInstallationId: () => 'workspace',
+      turnJobRunSpeaker,
       normalizeSlackInstallationExecutionError: () => ({
         retryable: true, retryAfterMs: 120_000, reasonCode: 'rate_limited',
       }),
@@ -546,6 +548,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
     slackAgentThreadKey: (turn: { thread: string }) => turn.thread,
     StateStoreUnavailable: class StateStoreUnavailable extends Error {},
     effectiveTurnSlackInstallationId: () => 'workspace',
+    turnJobRunSpeaker,
     carriedGatewayIdentity,
     verifySlackInstallationTurnAccess: async () => {},
     replayTextForTurnProgress: () => 'Pull request #12 is already open',
@@ -936,6 +939,7 @@ test('an OAuth continuation already handed to a thread runner is admitted there 
     slackAgentThreadKey: () => 'T1:C1:1.0:owner-i1',
     installationOwnershipOf,
     effectiveTurnSlackInstallationId: () => 'workspace',
+    turnJobRunSpeaker,
     carriedGatewayIdentity: () => undefined,
     threadRunnerStub: (_env: unknown, threadKey: string) => ({
       async admit(job: { id: string }) {
@@ -1008,6 +1012,7 @@ function admissionHarness(runner: { refuse?: boolean } = {}) {
     slackAgentThreadKey,
     installationOwnershipOf,
     effectiveTurnSlackInstallationId: () => 'workspace',
+    turnJobRunSpeaker,
     carriedGatewayIdentity: () => undefined,
     threadRunnerStub: (_env: unknown, threadKey: string) => ({
       async admit(job: { id: string }) {

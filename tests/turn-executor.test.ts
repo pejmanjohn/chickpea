@@ -13,7 +13,7 @@ import {
   type RunRef,
 } from '../src/config/platform-funding.ts';
 import { AgentObservationYield, AgentPromptFailure } from '../src/slack/flue-dispatch.ts';
-import { SlackInstallationUnavailableError } from '../src/slack/installation-execution.ts';
+import { SlackInstallationUnavailableError, type SlackRunSpeaker } from '../src/slack/installation-execution.ts';
 import type { RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import type { ClefCalls } from '../src/slack/interaction-intent.ts';
 import type { RunTurnOptions } from '../src/slack/run-turn.ts';
@@ -59,7 +59,7 @@ function pendingJob(overrides: Partial<PendingTurnJob> = {}): PendingTurnJob {
 }
 
 /** Ports that record every write; `runTurn` follows the given script. */
-function fakePorts(script: RunTurnScript, installation?: (workspaceId: string, agentId?: string) => Promise<unknown>) {
+function fakePorts(script: RunTurnScript, installation?: (workspaceId: string, run?: SlackRunSpeaker) => Promise<unknown>) {
   const calls: string[] = [];
   const runs: RunTurnOptions[] = [];
   const record = (name: string) => (...args: unknown[]) => {
@@ -950,12 +950,18 @@ test('a given-up turn with no receipt asks the host nothing', async (t) => {
   assert.deepEqual(creditBacks, []);
 });
 
-test("the installation is resolved for the turn's Agent, so an Agent with its own app answers as its bot", async () => {
-  const seen: Array<[string, string | undefined]> = [];
-  const h = fakePorts(async (options) => { await options.onDelivered?.('completed' as never); }, async (workspaceId: string, agentId?: string) => {
-    seen.push([workspaceId, agentId]);
+test("the installation is resolved for the turn's Agent and the speaker its admission stored", async () => {
+  const seen: Array<[string, SlackRunSpeaker | undefined]> = [];
+  const h = fakePorts(async (options) => { await options.onDelivered?.('completed' as never); }, async (workspaceId: string, run?: SlackRunSpeaker) => {
+    seen.push([workspaceId, run]);
     return { workspaceId, client: {} as WebClient } as never;
   });
-  assert.equal(await executeTurnJob(pendingJob(), h.ports, h.options), true);
-  assert.deepEqual(seen, [['T1', 'analyst']]);
+  const job = pendingJob();
+  job.turn.speaker = { kind: 'own_bot', botUserId: 'UANALYSTBOT' };
+  assert.equal(await executeTurnJob(job, h.ports, h.options), true);
+  assert.equal(await executeTurnJob(pendingJob({ id: 'turn_2' }), h.ports, h.options), true);
+  assert.deepEqual(seen, [
+    ['T1', { agentId: 'analyst', speaker: { kind: 'own_bot', botUserId: 'UANALYSTBOT' } }],
+    ['T1', { agentId: 'analyst' }],
+  ], 'a row stored before its speaker resolves by its Agent alone');
 });

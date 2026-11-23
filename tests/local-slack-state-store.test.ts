@@ -219,6 +219,7 @@ test('Slack admission freezes selected ownership only from a healthy complete pe
     installationHealth: 'healthy' as const,
     agentId: 'agent_support',
     agentName: 'Support',
+    speaker: { kind: 'chickpea_as_agent' } as const,
     avatarUrl: 'https://chickpea.example/assets/agents/support/avatar/2',
     slackPresence: {
       desiredState: 'active' as const,
@@ -254,6 +255,7 @@ test('creator-private DM admission freezes the unpublished Agent name and curren
   const privateAgent = {
     installationHealth: 'healthy' as const,
     agentId: 'agent_private', agentName: 'Private Helper',
+    speaker: { kind: 'chickpea_as_agent' } as const,
     conversationKind: 'im' as const,
     avatarUrl: 'https://chickpea.example/assets/agents/agent_private/avatar/2',
     slackPresence: { desiredState: 'unpublished' as const, health: 'unpublished' as const, avatar: { revision: 2 } },

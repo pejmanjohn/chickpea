@@ -19,6 +19,7 @@ import { CHICKPEA_SLACK_AGENT_BINDING } from '../src/slack/bounded-agent-observa
 import {
   carriedGatewayIdentity,
   effectiveTurnSlackInstallationId,
+  turnJobRunSpeaker,
 } from '../src/slack/installation-execution.ts';
 import { localSlackPresentationStatePort } from '../src/slack/presentation-state-port.ts';
 import {
@@ -89,6 +90,7 @@ class HandoffProbe { ${[
     slackAgentThreadKey,
     installationOwnershipOf,
     effectiveTurnSlackInstallationId,
+    turnJobRunSpeaker,
     carriedGatewayIdentity,
     threadRunnerStub,
     admissionAgentInstance,

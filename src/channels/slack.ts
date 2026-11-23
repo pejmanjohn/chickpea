@@ -10,6 +10,7 @@ import type { Context } from 'hono';
 import {
   type AgentAppBotCredentials,
   type AgentSlackAppHandoff,
+  admissionSpeaker,
   agentAppBotCredentials,
   agentAppHomeRows,
   agentAppPlacementFacts,
@@ -3593,6 +3594,8 @@ async function processSlackEvent(
   let agentRoutingActor: ResolvedAgentRoutingActor | undefined;
   let agentSourceVisibility: 'public' | 'private' | undefined;
   let liveChannelName: string | undefined;
+  // Slack said the bot that heard this turn is not in its Channel; unverified is not the same.
+  let hearingBotNotInChannel = false;
   let routedReads: {
     activeWork: Promise<boolean>;
     proposal?: ReturnType<typeof resolveHostSlackManagementProposal>;
@@ -3858,6 +3861,7 @@ async function processSlackEvent(
             (channel.contextTeamId === undefined || channel.contextTeamId === turn.workspaceId)) {
           turn.channelMembership = { botUserId: resolvedBotUserId, verifiedAt: Date.now() };
         }
+        hearingBotNotInChannel = channel.id === turn.channelId && !channel.member;
         agentSourceVisibility = channel.private ? 'private' : 'public';
         liveChannelName = channel.name;
         if (liveChannelName && routedAssignment.channelLabel !== liveChannelName) {
@@ -4339,6 +4343,24 @@ async function processSlackEvent(
     platformEnv,
     routedReads?.publicUrl,
   );
+  // The bot that answers this run, from where it was heard; routing read the Agent's current presence.
+  const liveAgent = routedBaseAssignment?.agent.id === assignment.agent.id ? routedBaseAssignment.agent : assignment.agent;
+  turn.speaker = await admissionSpeaker({
+    turn,
+    agentId: assignment.agent.id,
+    // Without the port no Agent app's bot answers.
+    presence: agentSlackAppsHost() ? liveAgent.slackPresence : undefined,
+    hearing: {
+      botUserId: resolvedBotUserId,
+      agentApp: Boolean(execution?.agentApp),
+      ...(ask ? { byHost: true } : {}),
+      ...(hearingBotNotInChannel ? { notInChannel: true } : {}),
+      ...(execution?.installationBot && installation.botUserId
+        ? { installationBot: { botUserId: installation.botUserId, transport: execution.installationBot } }
+        : {}),
+    },
+    env: platformEnv,
+  });
 
   // Canonical Work admission stores a concrete configured model. A missing
   // model is an operator configuration error, but it must still follow the
@@ -4393,6 +4415,7 @@ async function processSlackEvent(
       installationHealth: installation.health,
       agentId: assignment.agent.id,
       agentName: assignment.agent.name,
+      speaker: turn.speaker,
       conversationKind: slackConversationKind(turn),
       ...(assignmentAvatarUrl ? { avatarUrl: assignmentAvatarUrl } : {}),
       ...(assignment.agent.slackPresence
@@ -5058,6 +5081,8 @@ async function settleIdleAgentSession(input: {
       installationHealth: input.installationHealth,
       agentId: agent.id,
       agentName: agent.name,
+      // Its client is Chickpea's bot, which posts as the Agent.
+      speaker: { kind: 'chickpea_as_agent' },
       conversationKind: slackConversationKind(input.turn),
       ...(avatarUrl ? { avatarUrl } : {}),
       ...(agent.slackPresence ? { slackPresence: agent.slackPresence } : {}),

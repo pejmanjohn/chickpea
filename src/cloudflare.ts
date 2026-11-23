@@ -51,6 +51,7 @@ import {
   carriedGatewayIdentity,
   effectiveTurnSlackInstallationId,
   resolveSlackInstallationExecutionContext,
+  turnJobRunSpeaker,
   verifySlackInstallationTurnAccess,
   type SlackInstallationExecutionResolver,
 } from './slack/installation-execution.ts';
@@ -3292,7 +3293,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
         presentation,
         agentId: job.assignment.agent.id,
         state: localSlackPresentationState(stores, this.env as PlatformEnv),
-        client: async () => (await resolveInstallation(effectiveTurnSlackInstallationId(job.turn))).client,
+        client: async () => (await resolveInstallation(effectiveTurnSlackInstallationId(job.turn), turnJobRunSpeaker(job))).client,
         commit: (shown) =>
           stores.presentations.get(shown.runId)?.projectionVersion === presentation.projectionVersion &&
           stores.presentations.putSnapshot(shown),
@@ -3734,7 +3735,7 @@ async function drainSlackInteractionCleanups(
     const progress = job.progress.slackInteraction;
     if (!progress) continue;
     try {
-      const installationContext = await resolveInstallation(effectiveTurnSlackInstallationId(job.turn));
+      const installationContext = await resolveInstallation(effectiveTurnSlackInstallationId(job.turn), turnJobRunSpeaker(job));
       await verifySlackInstallationTurnAccess(installationContext, job.turn);
       await repairSlackInteractionProgress(
         job.turn,

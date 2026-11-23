@@ -43,33 +43,63 @@ thread does not see it.
 ## An Agent with its own Slack app
 
 An Owner can give one Agent its own Slack app in the customer's workspace.
-The Agent then answers its direct messages, mentions of its bot, and clicks on
-its own messages as that bot. Its replies post with the app's bot token under
-the app's name and icon, with no `username` or `icon_url`: the app does not
-ask for `chat:write.customize`. Files it uploads belong to its bot. While the
-app is live, the memory lease accepts its bot as the Agent's delivering bot.
-While Chickpea's record names the app's bot, uninstalling included, that bot
-counts as the installation's own: its posts echoed back by Slack are not
-recorded again as another app's, a thread handed over from the Agent without
-a thread record carries them as that Agent's, and every Agent's Slack context
-reads them as an Agent's, not an app's. When the app is broken, the Agent's
-turn ends unavailable; it never posts as Chickpea's bot. Its Slack reading
-tools read as its bot too, so it reads the Channels its bot is in. A Channel
-its bot is not in is refused with a note that its own app is missing there,
-even where Chickpea's bot is. While the app is not live, its reads use
-Chickpea's bot. Other Agents ask it by its
+The Agent then answers as that app's bot wherever the bot can be: the app's own
+DM with a person, and Channels and group DMs the bot is a member of, including
+clicks on its own messages there. Anywhere else, a thread in Chickpea's DM or a
+Channel or group DM the bot is not in, Chickpea's bot posts under the Agent's
+name and picture, as it does for every other Agent. The same holds while the app is not live (being
+created, waiting for Allow, removed, or with a token Chickpea cannot open). In
+the app's own DM nothing else can post, so there a turn of an app that is not
+live ends unavailable. A DM or group DM neither bot can post in is refused
+before the run starts.
+
+Admission decides the bot once per run, from where the message was heard
+(`speakerFor` in `src/slack/speaker.ts`), and stores it with the turn; the run's
+visible owner follows from it. A DM the app heard is marked with the app's bot,
+and a DM marked with another Agent's bot is never this Agent's own. A turn
+Chickpea builds itself in a DM (an ask, a setup's wake) asks the app's token
+once with `conversations.open` for the person, and is in the app's own DM when
+Slack names this DM. It cannot ask `conversations.info`: an Agent app has no
+`im:read`, and Slack answers `missing_scope` for a DM. When Slack does not
+answer, the turn is not admitted on a guess; its admission is retried, and a
+setup's wake that is still not admitted posts its notice instead. In a group DM
+the app's bot is asked once with `conversations.info` whether it is there. In a Channel the
+bot that heard the message counts as a member unless Slack said it is not, and
+the other bot is asked once with `conversations.info`. Each of these reads is
+kept in the isolate for the admission membership TTL, so a bot that joined or
+left is seen at the next read, not at once.
+Every post, stream, status and card redraw of the run uses the stored bot, so
+a bot added to or removed from the Channel mid-run does not move it. Posts from
+the app's bot use its token under the app's name and icon, with no `username`
+or `icon_url`: the app does not ask for `chat:write.customize`. An app token is
+never used with a persona. Where Chickpea's bot posts for the Agent but no
+persona can be built (the installation is not healthy, or no avatar resolves),
+it posts as Chickpea, as it does for a user-group Agent. When the run's stored
+bot can no longer post, as when the app was removed after admission or the
+Agent apps port is gone, the turn ends unavailable. Files it uploads belong to the bot
+that posts. While the app is live, the memory lease accepts its bot as the
+Agent's delivering bot. While Chickpea's record names the app's bot,
+uninstalling included, that bot counts as the installation's own: its posts
+echoed back by Slack are not recorded again as another app's, a thread handed
+over from the Agent without a thread record carries them as that Agent's, and
+every Agent's Slack context reads them as an Agent's, not an app's. Its Slack
+reading tools read as the run's bot. The app's bot reads the Channels it is in,
+and a Channel it is not in is refused with a note that its own app is missing
+there. A run answered through Chickpea's bot reads as Chickpea's bot, so it
+can read the thread it answers in. Other Agents ask it by its
 bot user (`<@U…>`) instead of a user group. A person's Channel message that
 mentions its bot beside other Agents is answered by each, once, in the order
 named, as long as each Agent's own bot is in the Channel (see
 [Mentioning several Agents at once](agent-conversations.md#mentioning-several-agents-at-once)).
-Without the port, that mention addresses nobody, so no app Agent's turn is
-admitted that would post as Chickpea's bot. Code lives in
+Without the port, that mention addresses nobody, and the Agent's other turns
+answer through Chickpea's bot under its name and picture. Code lives in
 `src/slack/agent-apps/`.
 
 The app's manifest subscribes to no `message.channels` event. A thread
 follow-up in a Channel that does not mention the app's bot reaches the Agent
 only through Chickpea's thread-owner routing, so only when Chickpea's bot is in
-that Channel.
+that Channel. The app's bot answers it when that bot is in the Channel too, and
+Chickpea's bot answers as the Agent otherwise.
 
 ### Channels
 

@@ -42,6 +42,7 @@ import {
   effectiveTurnSlackInstallationId,
   resolveSlackInstallationExecutionContext,
   seedGatewayIdentity,
+  turnJobRunSpeaker,
   verifySlackInstallationTurnAccess,
 } from './installation-execution.ts';
 import { resolveSlackPublicUrl } from './credentials.ts';
@@ -599,7 +600,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
       repairInteraction: async (job) => {
         const progress = job.progress.slackInteraction;
         if (!progress) return;
-        const installation = await resolveInstallation(effectiveTurnSlackInstallationId(job.turn));
+        const installation = await resolveInstallation(effectiveTurnSlackInstallationId(job.turn), turnJobRunSpeaker(job));
         await verifySlackInstallationTurnAccess(installation, job.turn);
         await repairSlackInteractionProgress(
           job.turn,
