@@ -6,6 +6,7 @@ import type {
   AgentAppPresence,
   AgentAppRecord,
   AgentAppResume,
+  AgentAppSwitchProgress,
   AgentPresenceDesiredState,
   AgentPresenceHealth,
   AttachedAgentApp,
@@ -79,8 +80,9 @@ export function isRefusal(result: AgentAppTransition): result is AgentAppRefusal
   return 'refused' in result;
 }
 
-export function initialAgentApp(startedBy: string, at: number): AgentAppLifecycle {
-  return { state: 'releasing_handle', at, startedBy };
+/** The switch step a live app still owes; undefined once the switch is done, as for a record stored before it was tracked. */
+export function pendingSwitchStep(app: AgentAppLifecycle): Exclude<AgentAppSwitchProgress, 'done'> | undefined {
+  return app.state === 'active' && app.switchProgress && app.switchProgress !== 'done' ? app.switchProgress : undefined;
 }
 
 /** A `creating` record Slack never answered within the settle window; nothing creates again until Try again. */
@@ -184,6 +186,8 @@ export function transition(app: AgentAppLifecycle, event: AgentAppEvent): AgentA
             botUserId: event.botUserId,
             installedAt: at,
             installedBy: event.installedBy,
+            // The switch's first step turns off a group that still answers, and passes when none does.
+            switchProgress: 'group_pending',
           }
         : WRONG_STATE;
     case 'consent_undone': {

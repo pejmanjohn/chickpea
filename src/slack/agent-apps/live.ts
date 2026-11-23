@@ -1,6 +1,7 @@
 import { UnknownAgentError } from '../../config/errors.ts';
-import type { SettingsStore } from '../../config/settings-store.ts';
-import { getSettingsStore, type PlatformEnv, resolveStores } from '../../config/state-backend.ts';
+import type { EncryptedCredentialStore, SettingsStore } from '../../config/settings-store.ts';
+import { type AppStores, getSettingsStore, type PlatformEnv, resolveStores } from '../../config/state-backend.ts';
+import type { ManagementAgentAppSwitchJob, ManagementReceiptOutboxRecord } from '../../management/types.ts';
 import type { AgentAppBot, AgentAppPresenceHooks } from '../agent-presence/reconciler.ts';
 import { resolveSlackPublicUrl } from '../credentials.ts';
 import { hostedSlackUpdateGrantsUserGroupToken } from '../hosted-permissions.ts';
@@ -21,7 +22,7 @@ import { agentSlackAppsHost, type AgentAppRetirement, type AgentSlackAppIngress,
 import { FINISH_APP_ACTION, START_APP_ACTION, TRY_AGAIN_ACTION } from './pages.ts';
 import { agentAppIsLive, agentAppRecord } from './lifecycle.ts';
 import { readOwnAppSecrets, type SecretDeps } from './secrets.ts';
-import { AgentSlackApps, type AgentAppTransport } from './service.ts';
+import type { AgentAppSwitchJob, AgentAppTransport, AgentSlackApps } from './service.ts';
 import { createAgentAppSlackApi, logSlackRefusal } from './slack-api.ts';
 import { loadCredentialKeyring } from '../credential-keyring.ts';
 import { slackPlatformErrorCode } from '../errors.ts';
@@ -326,19 +327,64 @@ export async function handleAgentAppHomeAction(input: {
 
 const AGENT_APP_ACTIONS = new Set([START_APP_ACTION, FINISH_APP_ACTION, TRY_AGAIN_ACTION]);
 
-/** The service over an installation's live stores, main bot and public URL. */
-export async function liveAgentSlackApps(env: PlatformEnv | undefined, host: AgentSlackAppsHost): Promise<AgentSlackApps> {
-  const stores = resolveStores(env);
-  const settings = getSettingsStore(env);
+/** The stores the service writes; a caller inside the state store passes its own, so nothing calls back into it. */
+type AgentAppStores = Pick<AppStores, 'config' | 'management'> & { settings: SettingsStore & EncryptedCredentialStore };
+
+/**
+ * The service over an installation's live stores, main bot and public URL.
+ * Loaded where it is used, so Worker startup does not carry it.
+ */
+export async function liveAgentSlackApps(
+  env: PlatformEnv | undefined,
+  host: AgentSlackAppsHost,
+  local?: AgentAppStores,
+): Promise<AgentSlackApps> {
+  const resolved = resolveStores(env);
+  const settings = local?.settings ?? getSettingsStore(env);
+  const management = local?.management ?? resolved.management;
   const credentials = installationCredentials(env);
+  const { AgentSlackApps } = await import('./service.ts');
   return new AgentSlackApps({
     env,
-    stores: { config: stores.config, settings },
+    stores: { config: local?.config ?? resolved.config, settings },
     host,
     transport: mainBotTransport(credentials, settings),
-    publicOrigin: () => resolveSlackPublicUrl(env, stores.settings, stores.identity),
+    armSwitch: async (job) => { await management.putOutbox(agentAppSwitchOutbox(job, Date.now())); },
+    publicOrigin: () => resolveSlackPublicUrl(env, resolved.settings, resolved.identity),
     userGroupPermissionMissing: async () => hostedSlackUpdateGrantsUserGroupToken() && !(await credentials()).userGroupToken,
   });
+}
+
+/**
+ * The switch job as an outbox row: one per app install, so a second Allow of
+ * the same install arms nothing new, and the drain that claims it runs the
+ * switch's remaining steps.
+ */
+export function agentAppSwitchOutbox(job: AgentAppSwitchJob, at: number): ManagementReceiptOutboxRecord {
+  const outboxId = `agent_app_switch:${job.agentId}:${job.appId}:${job.installedAt}`;
+  return {
+    outboxId,
+    operationId: outboxId,
+    destination: { kind: 'slack_dm', workspaceId: job.teamId, slackUserId: job.ownerSlackUserId },
+    receipt: { kind: 'agent_app_switch', agentId: job.agentId },
+    status: 'pending',
+    attempts: 0,
+    nextAttemptAt: at,
+    createdAt: at,
+    updatedAt: at,
+  };
+}
+
+/** The drain's run of one switch job. Without the port it fails and is retried: nothing here can drive an Agent app. */
+export async function continueAgentAppSwitch(
+  env: PlatformEnv | undefined,
+  job: ManagementAgentAppSwitchJob,
+  local?: AgentAppStores,
+): Promise<{ deliveryRef: string }> {
+  const host = agentSlackAppsHost();
+  if (!host) throw Object.assign(new Error('Agent apps are not served here.'), { name: 'agent_apps_unavailable' });
+  const outcome = await (await liveAgentSlackApps(env, host, local)).continueSwitch(job.agentId);
+  return { deliveryRef: `agent_app_switch:${outcome}` };
 }
 
 /**

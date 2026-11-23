@@ -2078,3 +2078,30 @@ test('a mention of an app Agent’s released user group routes to it only while 
   assert.deepEqual(await admittedFor(h, '1900005300.000100', text), []);
   assert.equal((await h.stores.config.getAgent('agent_support')).slackPresence?.kind, 'agent_app', 'nothing rebinds the group');
 }));
+
+// Defects caught: between Allow and the group's disable, a mention of the group or of the bot reaching nobody, or
+// one message reaching the Agent twice when both bots hear it.
+test('after Allow and before the group is off, a mention of the group and a mention of the bot each get one answer', async (t) => withHarness(t, async (h) => {
+  const support = await h.stores.config.getAgent('agent_support');
+  assert.equal(support.slackPresence?.kind, 'agent_app');
+  if (support.slackPresence?.kind !== 'agent_app' || support.slackPresence.app.state !== 'active') return;
+  await h.stores.config.updateAgent(support.id, {
+    slackPresence: {
+      ...support.slackPresence,
+      released: { userGroupId: 'SSUPPORT', desiredState: 'active' as const, health: 'healthy' as const, answers: true },
+      app: { ...support.slackPresence.app, switchProgress: 'group_pending' as const },
+    },
+  }, support.revision);
+  t.mock.method(console, 'info', () => undefined);
+
+  const group = channelMessage('1900006000.000100', '<!subteam^SSUPPORT|@support> what changed?');
+  assert.equal((await h.deliverToChickpea(group.chickpea)).status, 200);
+  const bot = channelMessage('1900006100.000100', `<@${AGENT_BOT_USER}> what changed?`);
+  for (const delivered of [await h.deliver('events', bot.app), await h.deliverToChickpea(bot.chickpea)]) assert.equal(delivered.status, 200);
+
+  const turns = await h.stores.slackState.listPendingTurns!();
+  assert.deepEqual(turns.filter((job) => job.turn.messageTs === '1900006000.000100').map((job) => job.assignment.agentId), ['agent_support'],
+    'the group still reaches Support');
+  assert.deepEqual(turns.filter((job) => job.turn.messageTs === '1900006100.000100').map((job) => job.assignment.agentId), ['agent_support'],
+    'the bot reaches Support once, though both bots heard it');
+}));

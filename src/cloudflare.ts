@@ -1,5 +1,5 @@
 import { GatewayInboxConflictError } from './slack/gateway/inbox.ts';
-import { withAgentAppExecution } from './slack/agent-apps/index.ts';
+import { continueAgentAppSwitch, withAgentAppExecution } from './slack/agent-apps/index.ts';
 import { GATEWAY_HTTP_SETTING, parseHttpDeliveryState, verifyHttpDelivery, httpDeliveryReceipt, HttpDeliveryError } from './slack/gateway/http-delivery.ts';
 import { GATEWAY_BINDING_SETTING } from './slack/gateway/client.ts';
 import type { GatewayAdmissionResult, GatewayInboundDelivery, GatewayWorkspaceBinding } from './slack/gateway/protocol.ts';
@@ -57,6 +57,7 @@ import {
 } from './slack/installation-execution.ts';
 import { SANDBOX_PACKAGE_REGISTRY_HOSTS } from './config/sandbox-settings.ts';
 import type {
+  EncryptedCredentialStore,
   ModelCredentialStore,
   PublishModelCredentialInput,
   ReplaceEncryptedCredentialRevisionInput,
@@ -403,6 +404,7 @@ import {
   completeSettledAgentWelcomeHandoff,
   deliverManagementReceiptToSlack,
   drainManagementReceiptOutbox,
+  isAgentAppSwitchJob,
   failAgentWelcomeTurn,
   isAgentCreatedWelcome,
   reconcileScheduleActionReceipts,
@@ -3805,6 +3807,8 @@ async function drainCloudflareManagementReceipts(
       (await resolveInstallation(workspaceId)).client,
   };
   const work = stores.work as unknown as WorkStore;
+  const appStores = localGatewayAppStores(stores);
+  const agentAppStores = { config: appStores.config, management: appStores.management, settings: localSettingsStore(stores) };
   await drainManagementReceiptOutbox({
     management: stores.management as unknown as ManagementStore,
     onDeliveredSettled: (record) => completeSettledAgentWelcomeHandoff(
@@ -3820,28 +3824,31 @@ async function drainCloudflareManagementReceipts(
     ),
     // Wakes admitted here go into this state store's own queue, as its asks do.
     wake: (request) => admitSetupWake(request, env, localHostAddressedAdmission(stores, env)),
-    deliver: (record) => deliverManagementReceiptToSlack(record, {
-      identity: stores.identity as unknown as IdentityStore,
-      resolveInstallation,
-      onDelivered: async (deliveredRecord, delivery) => {
-        try {
-          await completeAgentWelcomeDelivery(
-            deliveredRecord,
-            delivery,
-            stores.config,
-            presentation,
-            work,
-          );
-        } finally {
-          if (isAgentCreatedWelcome(deliveredRecord.receipt) &&
-              deliveredRecord.receipt.turnJobId) {
-            stores.slack.endTurn(
-              deliveredRecord.receipt.turnJobId, stores.turnJobs, stores.work, stores.presentations,
+    // An Agent app's switch job posts nothing itself: its drain runs the switch, against this store's own rows.
+    deliver: (record) => isAgentAppSwitchJob(record.receipt)
+      ? continueAgentAppSwitch(env, record.receipt, agentAppStores)
+      : deliverManagementReceiptToSlack(record, {
+        identity: stores.identity as unknown as IdentityStore,
+        resolveInstallation,
+        onDelivered: async (deliveredRecord, delivery) => {
+          try {
+            await completeAgentWelcomeDelivery(
+              deliveredRecord,
+              delivery,
+              stores.config,
+              presentation,
+              work,
             );
+          } finally {
+            if (isAgentCreatedWelcome(deliveredRecord.receipt) &&
+                deliveredRecord.receipt.turnJobId) {
+              stores.slack.endTurn(
+                deliveredRecord.receipt.turnJobId, stores.turnJobs, stores.work, stores.presentations,
+              );
+            }
           }
-        }
-      },
-    }),
+        },
+      }),
   });
 }
 
@@ -4134,7 +4141,7 @@ async function loadKeyFormFor(delivery: GatewayInboundDelivery): Promise<typeof 
  * reads and writes its saved model keys only through a store's model
  * credential methods, so this port carries them.
  */
-function localSettingsStore(stores: TagStateStores): SettingsStore & ModelCredentialStore {
+function localSettingsStore(stores: TagStateStores): SettingsStore & ModelCredentialStore & EncryptedCredentialStore {
   return {
     getSetting: async (key) => stores.settings.getSetting(key),
     getSettings: async (keys) => stores.settings.getSettings(keys),
@@ -4146,6 +4153,10 @@ function localSettingsStore(stores: TagStateStores): SettingsStore & ModelCreden
     readModelCredential: async (providerId) => stores.settings.readModelCredential(providerId),
     publishModelCredential: async (input) => stores.settings.publishModelCredential(input),
     rewrapModelCredential: async (input) => stores.settings.rewrapModelCredential(input),
+    getEncryptedCredentialRevision: async (key) => stores.settings.getEncryptedCredentialRevision(key),
+    replaceEncryptedCredentialRevision: async (input) => stores.settings.replaceEncryptedCredentialRevision(input),
+    deleteEncryptedCredentialRevision: async (key, expectedRevision) =>
+      stores.settings.deleteEncryptedCredentialRevision(key, expectedRevision),
   };
 }
 

@@ -7,13 +7,14 @@ import ts from 'typescript';
 import { CfIdentityStore } from '../src/config/cf-state-proxies.ts';
 import type { TagStateRpc } from '../src/config/state-rpc.ts';
 import type { IdentityRpcRequest } from '../src/identity/types.ts';
-import { drainManagementReceiptOutbox } from '../src/management/receipts.ts';
+import { drainManagementReceiptOutbox, isAgentAppSwitchJob } from '../src/management/receipts.ts';
 import { ManagementStoreLogic } from '../src/management/store.ts';
 import type {
   ManagementAgentCreatedWelcome,
   ManagementReceiptOutboxRecord,
   ManagementRpcRequest,
 } from '../src/management/types.ts';
+import { agentAppSwitchOutbox } from '../src/slack/agent-apps/live.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { hostedInstallation } from './helpers/installation-objects.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
@@ -235,5 +236,24 @@ test('claiming Chickpea\'s introduction over the state RPC arms the outbox drain
     assert.equal(claimed.ok, true);
     assert.equal(f.management.nextOutboxDueAt(), NOW);
     assert.deepEqual(f.writes, [NOW], 'the welcome is sent now, not at the next unrelated wake');
+  } finally { f.db.close(); }
+});
+
+// Defects caught: an Agent app's switch armed at Allow that waits for an unrelated wake, or a second Allow of the
+// same install arming a second switch.
+test("an Agent app's switch job put over the state RPC arms the drain at once, and the same install arms it once", async (context) => {
+  context.mock.method(Date, 'now', () => NOW);
+  const f = fixture(LATER_SWEEP);
+  try {
+    const job = { agentId: 'agent_support', appId: 'A0APP1', installedAt: NOW, teamId: 'T_TEST', ownerSlackUserId: 'U_OWNER' };
+    for (const at of [NOW, NOW + 1]) {
+      const put = await f.probe.managementExecute({ kind: 'put_outbox', record: agentAppSwitchOutbox(job, at) });
+      assert.equal(put.ok, true);
+    }
+    assert.equal(f.management.nextOutboxDueAt(), NOW);
+    assert.deepEqual(f.writes, [NOW], 'the switch runs now, not at the next unrelated wake');
+    const claimed = f.management.claimDueOutbox(NOW, 10, NOW + 30_000);
+    assert.deepEqual(claimed.map((record) => record.receipt), [{ kind: 'agent_app_switch', agentId: 'agent_support' }], 'one job');
+    assert.equal(isAgentAppSwitchJob(claimed[0]!.receipt), true, 'the drain runs it rather than posting it');
   } finally { f.db.close(); }
 });

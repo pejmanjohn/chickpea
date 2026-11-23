@@ -9829,6 +9829,12 @@
         "signedBy?": "string"
       }
     },
+    "ManagementAgentAppSwitchJob": {
+      "object": {
+        "agentId": "string",
+        "kind": "\"agent_app_switch\""
+      }
+    },
     "ManagementAgentCreateInput": {
       "object": {
         "apiConnections": {
@@ -11537,6 +11543,7 @@
         "#ManagementRoutineSavedAcknowledgement",
         "#ManagementAgentCreatedWelcome",
         "#ManagementChickpeaIntroduction",
+        "#ManagementAgentAppSwitchJob",
         {
           "object": {
             "code?": "string",

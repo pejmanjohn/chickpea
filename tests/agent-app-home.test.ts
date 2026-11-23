@@ -8,7 +8,8 @@ import { SqliteConfigStore } from '../src/config/store.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { AgentAppLifecycle, AgentSlackPresence, CustomAgentConfig } from '../src/config/types.ts';
 import { type AgentSlackAppsHost, configureAgentSlackApps } from '../src/slack/agent-apps/host.ts';
-import { AgentSlackApps, type AgentAppTransport, handleAgentAppHomeAction } from '../src/slack/agent-apps/index.ts';
+import { handleAgentAppHomeAction } from '../src/slack/agent-apps/index.ts';
+import { AgentSlackApps, type AgentAppTransport } from '../src/slack/agent-apps/service.ts';
 import { START_APP_ACTION } from '../src/slack/agent-apps/pages.ts';
 import { saveConfigurationToken } from '../src/slack/agent-apps/secrets.ts';
 import type { AgentAppSlackApi } from '../src/slack/agent-apps/slack-api.ts';
@@ -59,7 +60,7 @@ async function service(t: TestContext, options: { token?: boolean; now?: number;
   const keyring = generateCredentialKeyring('k1');
   if (options.token) await saveConfigurationToken({ credentials: settings, keyring, slack }, TEAM, 'xoxe-1-pasted-token-0000');
   return new AgentSlackApps({
-    env: ENV, stores: { config, settings }, host: HOST, transport, slack, keyring,
+    env: ENV, stores: { config, settings }, host: HOST, transport, slack, keyring, armSwitch: async () => undefined,
     now: () => options.now ?? NOW, publicOrigin: async () => 'https://core.test/',
     userGroupPermissionMissing: async () => options.permissionMissing ?? false,
   });

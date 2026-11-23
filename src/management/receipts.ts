@@ -28,6 +28,7 @@ import type {
   ManagementReceiptDestination,
   ManagementReceiptOutboxRecord,
   ManagementReceipt,
+  ManagementAgentAppSwitchJob,
   ManagementAgentCreatedWelcome,
   ManagementChickpeaIntroduction,
   ChickpeaIntroductionAgent,
@@ -152,6 +153,7 @@ export function formatManagementSetupReceipt(
   if (isRoutineSavedAcknowledgement(receipt) || isScheduleActionReaction(receipt)) {
     throw new Error('A reaction acknowledgement cannot be formatted as a setup receipt.');
   }
+  if (isAgentAppSwitchJob(receipt)) throw new Error('An Agent app switch job is not a message.');
   if (isScheduleActionAcknowledgement(receipt)) {
     if (receipt.transition === 'pending') {
       return '⏳ I’m still setting up that scheduled work. I’ll post the final outcome here.';
@@ -824,6 +826,10 @@ function isScheduleActionAcknowledgement(
   receipt: ManagementReceipt,
 ): receipt is ManagementScheduleActionAcknowledgement {
   return 'kind' in receipt && receipt.kind === 'schedule_action';
+}
+
+export function isAgentAppSwitchJob(receipt: ManagementReceipt): receipt is ManagementAgentAppSwitchJob {
+  return 'kind' in receipt && receipt.kind === 'agent_app_switch';
 }
 
 export function isAgentCreatedWelcome(
