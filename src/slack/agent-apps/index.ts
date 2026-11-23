@@ -1,5 +1,5 @@
 export { type AgentSlackAppHandoff, agentSlackAppsHost, endAgentSlackApp } from './host.ts';
-export { agentAppIsLive, normalizeAgentAppPresence } from './lifecycle.ts';
+export { agentAppIsLive, attachedAgentApp, normalizeAgentAppPresence } from './lifecycle.ts';
 export {
   type AgentAppBotCredentials,
   agentAppBotCredentials,

@@ -17,6 +17,7 @@ const T0 = 1_800_000_000_000;
 const AT = T0 + 1_000;
 const APP = { appId: 'A0C8APP', clientId: '1.2' };
 const CONSENT = { nonceDigest: 'd1', owner: 'UOWNER', expiresAt: AT + 900_000 };
+const CONSENTS = { UOWNER: { nonceDigest: 'd1', expiresAt: AT + 900_000 } };
 
 const states = {
   releasing_handle: { state: 'releasing_handle', at: T0, startedBy: 'UOWNER' },
@@ -29,7 +30,7 @@ const states = {
     state: 'awaiting_consent', at: T0, startedBy: 'UOWNER', app: APP, icon: 'agent_avatar', allowDm: { channelId: 'D1', ts: '1.1' },
   },
   awaiting_consent_opened: {
-    state: 'awaiting_consent', at: T0, startedBy: 'UOWNER', app: APP, icon: 'agent_avatar', allowDm: { channelId: 'D1', ts: '1.1' }, consent: CONSENT,
+    state: 'awaiting_consent', at: T0, startedBy: 'UOWNER', app: APP, icon: 'agent_avatar', allowDm: { channelId: 'D1', ts: '1.1' }, consents: CONSENTS,
   },
   active: { state: 'active', at: T0, app: APP, icon: 'agent_avatar', botUserId: 'UBOT', installedAt: T0, installedBy: 'UOWNER' },
   uninstalling_uninstall: { state: 'uninstalling', at: T0, startedBy: 'UOWNER', app: APP, botUserId: 'UBOT', next: 'uninstall' },
@@ -61,7 +62,7 @@ const events = {
   allow_dm_posted: { type: 'allow_dm_posted', at: AT, channelId: 'D1', ts: '1.1' },
   consent_opened: { type: 'consent_opened', at: AT, ...CONSENT },
   consent_granted: { type: 'consent_granted', at: AT, botUserId: 'UBOT', installedBy: 'UOWNER2' },
-  consent_undone: { type: 'consent_undone', at: AT },
+  consent_undone: { type: 'consent_undone', at: AT, owner: 'UOWNER' },
   app_removed: { type: 'app_removed', at: AT },
   archive_with_token: { type: 'archive', at: AT, hasBotToken: true },
   archive_without_token: { type: 'archive', at: AT, hasBotToken: false },

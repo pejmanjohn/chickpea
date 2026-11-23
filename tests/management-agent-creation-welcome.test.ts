@@ -31,6 +31,7 @@ import {
 } from './helpers/management-adapter-fixture.ts';
 import { withPersonApproval } from './helpers/slack-person-approval.ts';
 import { slackTurnSignal } from './helpers/slack-turn-signal.ts';
+import { asUserGroup } from './helpers/user-group-presence.ts';
 
 test('catalog aliases resolve to one canonical connector', () => {
   assert.equal(matchingConnectorCatalogPresets('Drive')[0]?.id, 'google-drive');
@@ -282,7 +283,7 @@ test('a Slack creation freezes one welcome with connector handoffs and its publi
     const created = await f.config.getAgent('agent_deck_welcome');
     await f.config.updateAgent(created.id, {
       slackPresence: {
-        ...created.slackPresence!,
+        ...asUserGroup(created.slackPresence),
         kind: 'user_group',
         desiredState: 'active',
         health: 'healthy',
@@ -580,7 +581,7 @@ test('a creation that took a handle variation tells the requester both handles',
       return {
         agent: await f.config.updateAgent(agentId, {
           slackPresence: {
-            ...current.slackPresence!,
+            ...asUserGroup(current.slackPresence),
             kind: 'user_group',
             desiredState: 'active',
             health: 'healthy',
@@ -1174,7 +1175,7 @@ async function createPublishingFixture(suffix: string): Promise<ManagementAdapte
       return {
         agent: await f.config.updateAgent(agentId, {
           slackPresence: {
-            ...current.slackPresence!,
+            ...asUserGroup(current.slackPresence),
             kind: 'user_group',
             desiredState: 'active',
             health: 'healthy',

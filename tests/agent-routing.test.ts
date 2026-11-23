@@ -16,6 +16,7 @@ import {
   repairMentionedAgentUserGroup,
 } from '../src/slack/agent-presence/reconciler.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
+import { asUserGroup } from './helpers/user-group-presence.ts';
 
 type MentionRepairConfig = Parameters<typeof repairMentionedAgentUserGroup>[0]['config'];
 
@@ -261,7 +262,7 @@ test('an authenticated unknown group repairs a proven interrupted-create mapping
     await store.updateAgent(support.id, {
       lifecycle: 'needs_attention',
       slackPresence: {
-        ...support.slackPresence!,
+        ...asUserGroup(support.slackPresence),
         kind: 'user_group',
         userGroupId: 'SOLD',
         health: 'needs_attention',
@@ -357,7 +358,7 @@ test('a proven Agent with a stale group id, mentioned in a Channel it has not be
     await store.updateAgent(support.id, {
       lifecycle: 'needs_attention',
       slackPresence: {
-        ...support.slackPresence!,
+        ...asUserGroup(support.slackPresence),
         kind: 'user_group',
         userGroupId: 'SOLD',
         health: 'needs_attention',
@@ -474,7 +475,7 @@ test('a stored group id with competing Agent claims fails closed without a direc
   const { store, finance } = await fixture();
   try {
     await store.updateAgent(finance.id, {
-      slackPresence: { ...finance.slackPresence!, kind: 'user_group', userGroupId: 'SSUPPORT' },
+      slackPresence: { ...asUserGroup(finance.slackPresence), kind: 'user_group', userGroupId: 'SSUPPORT' },
     }, finance.revision);
     let lookups = 0;
     const resolved = await resolveAgentRoute({
@@ -502,7 +503,7 @@ test('directory repair rejects disabled, ambiguous, inactive, unproven, and comp
       ...support,
       lifecycle: 'needs_attention',
       slackPresence: {
-        ...support.slackPresence!,
+        ...asUserGroup(support.slackPresence),
         kind: 'user_group',
         userGroupId: 'SOLD',
         desiredState: 'active',
@@ -548,13 +549,13 @@ test('directory repair rejects disabled, ambiguous, inactive, unproven, and comp
       { name: 'inactive Agent', agents: [{ ...proven, enabled: false }] },
       {
         name: 'no proof Chickpea created the group',
-        agents: [{ ...proven, slackPresence: { ...support.slackPresence!, kind: 'user_group', userGroupId: 'SOLD' } }],
+        agents: [{ ...proven, slackPresence: { ...asUserGroup(support.slackPresence), kind: 'user_group', userGroupId: 'SOLD' } }],
       },
       {
         name: 'a lease left by a create Slack refused',
         agents: [{
           ...proven,
-          slackPresence: { ...proven.slackPresence!, kind: 'user_group', errorCode: 'handle_collision' },
+          slackPresence: { ...asUserGroup(proven.slackPresence), kind: 'user_group', errorCode: 'handle_collision' },
         }],
       },
       {
@@ -562,7 +563,7 @@ test('directory repair rejects disabled, ambiguous, inactive, unproven, and comp
         agents: [{
           ...proven,
           slackPresence: {
-            ...proven.slackPresence!,
+            ...asUserGroup(proven.slackPresence),
             kind: 'user_group',
             pendingCreate: { name: support.name, handle: 'support', description: 'Another description', startedAt },
           },
@@ -572,7 +573,7 @@ test('directory repair rejects disabled, ambiguous, inactive, unproven, and comp
         name: 'competing group claim',
         agents: [
           proven,
-          { ...finance, slackPresence: { ...finance.slackPresence!, kind: 'user_group', userGroupId: group.id } },
+          { ...finance, slackPresence: { ...asUserGroup(finance.slackPresence), kind: 'user_group', userGroupId: group.id } },
         ],
       },
     ];
@@ -612,7 +613,7 @@ test('directory repair turns a concurrent Agent edit into a retryable safe denia
       ...support,
       lifecycle: 'needs_attention',
       slackPresence: {
-        ...support.slackPresence!,
+        ...asUserGroup(support.slackPresence),
         kind: 'user_group',
         userGroupId: 'SOLD',
         desiredState: 'active',

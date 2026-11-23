@@ -20,6 +20,7 @@ import { ManagementError, type ManagementApplyResult, type ManagementOperation }
 import type { NormalizedSlackTurn, SlackAgentAsk } from '../src/slack/types.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 import { slackTurnSignal } from './helpers/slack-turn-signal.ts';
+import { asUserGroup } from './helpers/user-group-presence.ts';
 
 type ToolResult = Awaited<ReturnType<typeof invokeSlackWorkspaceManagementTool>>;
 type SignalTurn = Parameters<typeof slackTurnSignal>[0]['turn'];
@@ -496,7 +497,7 @@ test('an Agent creation another Agent\'s ask started is created and welcomed onc
       const current = await f.config.getAgent(agentId);
       const agent = await f.config.updateAgent(agentId, {
         slackPresence: {
-          ...current.slackPresence!,
+          ...asUserGroup(current.slackPresence),
           kind: 'user_group',
           desiredState: 'active',
           health: 'healthy',

@@ -1,10 +1,12 @@
 import type { ConfigStore } from '../../config/store.ts';
-import type {
-  AgentChannelGrant,
-  AgentSlackPresence,
-  CustomAgentConfig,
-  PendingUserGroupCreate,
-  UserGroupPresence,
+import {
+  type AgentChannelGrant,
+  type AgentSlackPresence,
+  type CustomAgentConfig,
+  type PendingUserGroupCreate,
+  type UserGroupPresence,
+  answeringUserGroupId,
+  appRecordOf,
 } from '../../config/types.ts';
 import {
   SlackTransportError,
@@ -254,7 +256,7 @@ async function repairMentionedAgentUserGroupOnce(
   // Anyone can make a group with an Agent's handle; only the one Chickpea's
   // interrupted create made is this Agent's, wherever it is mentioned.
   const competingClaim = agents.some((candidate) =>
-    candidate.id !== agent.id && candidate.slackPresence?.userGroupId === lookup.group.id
+    candidate.id !== agent.id && answeringUserGroupId(candidate.slackPresence) === lookup.group.id
   );
   if (!hasAmbiguousCreateOwnershipProof(agent, lookup.group) || competingClaim) {
     limiter.rememberDenied(input.workspaceId, input.userGroupId);
@@ -278,7 +280,7 @@ async function repairMentionedAgentUserGroupOnce(
       agent.revision,
     );
     const claims = (await input.config.listAgents()).filter((candidate) =>
-      candidate.slackPresence?.userGroupId === lookup.group.id
+      answeringUserGroupId(candidate.slackPresence) === lookup.group.id
     );
     if (claims.length !== 1 || claims[0]?.id !== repaired.id) {
       limiter.rememberDenied(input.workspaceId, input.userGroupId);
@@ -625,7 +627,7 @@ export class AgentPresenceReconciler {
         `Choose a replacement default Agent before archiving ${agent.name}.`,
       );
     }
-    if (agent.slackPresence?.kind === 'agent_app') {
+    if (appRecordOf(agent.slackPresence)) {
       const { agentApps } = this.dependencies;
       if (!agentApps) {
         throw new AgentPresenceError(

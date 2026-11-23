@@ -11,13 +11,15 @@ import { installationScopeOf } from '../../config/installation-scope.ts';
 import type { EncryptedCredentialStore, SettingsStore } from '../../config/settings-store.ts';
 import type { PlatformEnv } from '../../config/state-backend.ts';
 import type { ConfigStore } from '../../config/store.ts';
-import type {
-  AgentAppIcon,
-  AgentAppLifecycle,
-  AgentAppPresence,
-  AgentSlackPresence,
-  CustomAgentConfig,
-  UserGroupPresence,
+import {
+  type AgentAppIcon,
+  type AgentAppLifecycle,
+  type AgentAppPresence,
+  type AgentPresenceBase,
+  type AgentSlackPresence,
+  type CustomAgentConfig,
+  type UserGroupPresence,
+  appRecordOf,
 } from '../../config/types.ts';
 import { generatedAgentAvatarPng, readAgentAvatarAsset } from '../agent-presence/avatar-assets.ts';
 import {
@@ -42,10 +44,13 @@ import { SlackTransportError, type SlackTransport } from '../transport/types.ts'
 import type { AgentAppRetirement, AgentSlackAppsHost } from './host.ts';
 import {
   type AgentAppEvent,
+  type AgentAppRefusal,
   type AgentAppStep,
+  type AgentAppTransition,
   CREATE_SETTLE_MS,
   agentAppIsLive,
   agentAppRecord,
+  attachedAgentApp,
   createIsStale,
   initialAgentApp,
   isRefusal,
@@ -126,7 +131,7 @@ export type AgentAppStartOutcome =
 
 interface Run {
   agent: CustomAgentConfig;
-  presence: AgentAppPresence;
+  presence: AgentSlackPresence;
   app: AgentAppLifecycle;
   now: number;
   /** Only the run that wrote `creating` may create; any other run waits for it to settle. */
@@ -183,7 +188,7 @@ export class AgentSlackApps {
     if (agent.kind !== 'user' || agent.lifecycle === 'archived' || agent.lifecycle === 'draft' || !presence) {
       return { kind: 'not_eligible' };
     }
-    if (presence.kind === 'agent_app') return { kind: 'already_started', agent };
+    if (appRecordOf(presence)) return { kind: 'already_started', agent };
     if (presence.userGroupId && await this.userGroupPermissionMissing()) {
       await this.message('permission_needed', agent, ownerSlackUserId, `agent-app-permission:${agent.id}:${this.now()}`);
       return { kind: 'permission_needed' };
@@ -207,7 +212,7 @@ export class AgentSlackApps {
     } catch (error) {
       if (!(error instanceof AgentRevisionConflictError)) throw error;
       const latest = await config.getAgent(agentId);
-      if (latest.slackPresence?.kind === 'agent_app') return { kind: 'already_started', agent: latest };
+      if (appRecordOf(latest.slackPresence)) return { kind: 'already_started', agent: latest };
       return this.start(agentId, ownerSlackUserId);
     }
     return { kind: 'started', agent: await this.advance(agentId) };
@@ -220,16 +225,17 @@ export class AgentSlackApps {
     let wroteCreating = options.wroteCreating ?? false;
     for (let guard = 0; guard < MAX_STEPS_PER_RUN; guard += 1) {
       const presence = agent.slackPresence;
-      if (presence?.kind !== 'agent_app') return agent;
+      const app = appRecordOf(presence);
+      if (!presence || !app) return agent;
       const now = this.now();
-      if (createIsStale(presence.app, now)) {
+      if (createIsStale(app, now)) {
         agent = (await this.commit(agent, { type: 'create_ambiguous', at: now })).agent;
         await this.notifyAttention(agent);
         return agent;
       }
-      const step = nextStep(presence.app, now);
+      const step = nextStep(app, now);
       if (!step) return agent;
-      const outcome = await this.performers[step]({ agent, presence, app: presence.app, now, wroteCreating });
+      const outcome = await this.performers[step]({ agent, presence, app, now, wroteCreating });
       if (outcome === 'wait') return agent;
       const committed = await this.commit(agent, outcome.event);
       agent = committed.agent;
@@ -237,7 +243,7 @@ export class AgentSlackApps {
       wroteCreating = outcome.event.type === 'handle_released' || outcome.event.type === 'recreate';
       if (outcome.after) await outcome.after();
       if (committed.outcome === 'deleted' || committed.outcome === 'withdrawn') return agent;
-      if (agent.slackPresence?.kind === 'agent_app' && agent.slackPresence.app.state === 'needs_attention') {
+      if (appRecordOf(agent.slackPresence)?.state === 'needs_attention') {
         await this.notifyAttention(agent);
         return agent;
       }
@@ -305,13 +311,15 @@ export class AgentSlackApps {
     const presence = agent.slackPresence;
     if (presence?.kind !== 'agent_app') return consentPage('expired', names);
     if (presence.app.state === 'active') return consentPage('already_active', names);
-    if (presence.app.state !== 'awaiting_consent' || !presence.app.consent) return consentPage('expired', names);
-    const { consent, app } = presence.app;
+    if (presence.app.state !== 'awaiting_consent') return consentPage('expired', names);
+    const { consents, app } = presence.app;
     const now = this.now();
-    if (consent.expiresAt <= now || consent.nonceDigest !== await sha256Hex(nonce)) return consentPage('expired', names);
-    if (consent.owner !== ownerSlackUserId) return consentPage('another_person', names);
+    const nonceDigest = await sha256Hex(nonce);
+    const [owner, consent] = Object.entries(consents ?? {}).find(([, open]) => open.nonceDigest === nonceDigest) ?? [];
+    if (!owner || !consent || consent.expiresAt <= now) return consentPage('expired', names);
+    if (owner !== ownerSlackUserId) return consentPage('another_person', names);
     if (query.get('error') || !query.get('code')) {
-      await this.commit(agent, { type: 'consent_undone', at: now });
+      await this.commit(agent, { type: 'consent_undone', at: now, owner });
       return consentPage('cancelled', names);
     }
     const stored = await readOwnAppSecrets(this.secrets, app.appId, agent.id, 'exchange');
@@ -337,10 +345,10 @@ export class AgentSlackApps {
       await this.slack.uninstall({ clientId: app.clientId, clientSecret: stored.secrets.clientSecret, botToken: grant.botToken }).catch((error: unknown) => {
         if (error instanceof SlackRefused) logSlackRefusal('uninstall', { agentId: agent.id, appId: app.appId }, error);
       });
-      await this.commit(agent, { type: 'consent_undone', at: now });
+      await this.commit(agent, { type: 'consent_undone', at: now, owner });
     };
     if (grant.teamId !== teamId) { await undo(); return consentPage('other_workspace', names); }
-    if (grant.appId !== app.appId || grant.installerUserId !== consent.owner) { await undo(); return consentPage('another_person', names); }
+    if (grant.appId !== app.appId || grant.installerUserId !== owner) { await undo(); return consentPage('another_person', names); }
     if (AGENT_APP_BOT_SCOPES.some((scope) => scope !== OLDER_APPS_LACK && !grant.scopes.includes(scope))) {
       await undo();
       return consentPage('missing_permissions', names);
@@ -350,17 +358,19 @@ export class AgentSlackApps {
       type: 'consent_granted', at: now, botUserId: grant.botUserId, installedBy: grant.installerUserId,
     });
     if (granted.outcome !== 'applied') return consentPage('expired', names);
-    await this.message('ready', granted.agent, consent.owner, `agent-app-ready:${agent.id}:${now}`);
+    await this.message('ready', granted.agent, owner, `agent-app-ready:${agent.id}:${now}`);
     return Response.redirect(`https://slack.com/app_redirect?app=${encodeURIComponent(app.appId)}&team=${encodeURIComponent(teamId)}`, 303);
   }
 
   /** A verified app_uninstalled or tokens_revoked of one Agent app: the bot token goes, the Owner is told. */
   async end(appId: string, payload: Record<string, unknown>): Promise<'ended' | 'ignored'> {
     const { config } = this.deps.stores;
-    const agent = (await config.listAgents()).find((candidate) =>
-      agentAppIsLive(candidate.slackPresence) && candidate.slackPresence.app.app.appId === appId
-    );
+    const agent = (await config.listAgents()).find((candidate) => {
+      const app = appRecordOf(candidate.slackPresence);
+      return app !== undefined && agentAppRecord(app)?.appId === appId;
+    });
     const presence = agent?.slackPresence;
+    // Only a live app has a bot Slack can remove; any other record waits for its own step.
     if (!agent || !agentAppIsLive(presence)) return 'ignored';
     const outcome = hostedSlackLifecycleOutcome(payload, {
       installedAt: presence.app.installedAt,
@@ -387,25 +397,26 @@ export class AgentSlackApps {
    */
   async retire(agent: CustomAgentConfig): Promise<{ agent: CustomAgentConfig; outcome: AgentAppRetirement['outcome'] }> {
     const presence = agent.slackPresence;
-    if (presence?.kind !== 'agent_app') return { agent, outcome: 'removed' };
-    const record = agentAppRecord(presence.app);
+    const app = appRecordOf(presence);
+    if (!app) return { agent, outcome: 'removed' };
+    const record = agentAppRecord(app);
     const stored = record ? await readAppSecrets(this.secrets, record.appId).catch(unreadableAsNone) : undefined;
     const archived = await this.commit(agent, { type: 'archive', at: this.now(), hasBotToken: Boolean(stored?.secrets.botToken) });
     if (archived.outcome === 'refused') throw new AgentPresenceError('slack_operation_failed', archiveRefusedCopy({ name: agent.name }));
     if (archived.outcome === 'deleted') {
-      if (presence.app.state === 'needs_attention' && presence.app.reason === 'ambiguous_create') {
-        await this.message('ambiguous_create', agent, presence.app.startedBy, `agent-app-archived-ambiguous:${agent.id}:${this.now()}`);
+      if (app.state === 'needs_attention' && app.reason === 'ambiguous_create') {
+        await this.message('ambiguous_create', agent, app.startedBy, `agent-app-archived-ambiguous:${agent.id}:${this.now()}`);
       }
       return { agent: archived.agent, outcome: 'removed' };
     }
     const settled = await this.advance(agent.id);
-    const after = settled.slackPresence;
-    if (after?.kind !== 'agent_app') {
+    const after = appRecordOf(settled.slackPresence);
+    if (!after) {
       const left = this.leftForOwner.get(agent.id);
       this.leftForOwner.delete(agent.id);
       return { agent: settled, outcome: left ?? 'removed' };
     }
-    if (agentAppIsLive(presence) && after.app.state === 'uninstalling' && after.app.next === 'uninstall') {
+    if (agentAppIsLive(presence) && after.state === 'uninstalling' && after.next === 'uninstall') {
       await this.commit(settled, { type: 'uninstall_unanswered', at: this.now(), restore: presence.app });
     }
     throw new AgentPresenceError('slack_operation_failed', archiveRefusedCopy({ name: agent.name }));
@@ -456,7 +467,7 @@ export class AgentSlackApps {
       if (run.app.state !== 'releasing_handle') return 'wait';
       const { startedBy } = run.app;
       const manifestFingerprint = slackManifestFingerprint(this.createManifest(run.agent));
-      const userGroupId = run.presence.released?.userGroupId;
+      const userGroupId = run.presence.kind === 'agent_app' ? run.presence.released?.userGroupId : undefined;
       if (userGroupId) {
         try {
           await this.deps.transport.disableUserGroup(userGroupId);
@@ -625,14 +636,12 @@ export class AgentSlackApps {
     attempt = 0,
   ): Promise<{ agent: CustomAgentConfig; outcome: 'applied' | 'deleted' | 'withdrawn' | 'refused' }> {
     const presence = agent.slackPresence;
-    if (presence?.kind !== 'agent_app') return { agent, outcome: 'refused' };
-    const next = transition(presence.app, event);
+    const app = appRecordOf(presence);
+    if (!presence || !app) return { agent, outcome: 'refused' };
+    const next = transition(app, event);
     if (isRefusal(next)) return { agent, outcome: 'refused' };
-    const slackPresence: AgentSlackPresence = next.state === 'deleted'
-      ? releasedPresence(presence)
-      : next.state === 'withdrawn'
-        ? withdrawnPresence(presence)
-        : normalizeAgentAppPresence({ ...presence, app: next });
+    const slackPresence = presence.kind === 'agent_app' ? appPresenceAfter(presence, next) : attachedPresenceAfter(presence, next);
+    if (!slackPresence) return { agent, outcome: 'refused' };
     try {
       const updated = await this.deps.stores.config.updateAgent(agent.id, { slackPresence }, agent.revision);
       return { agent: updated, outcome: next.state === 'deleted' || next.state === 'withdrawn' ? next.state : 'applied' };
@@ -662,7 +671,7 @@ export class AgentSlackApps {
   }
 
   /** The Agent's avatar when it is a square PNG Slack accepts; its 512 px default otherwise. */
-  private async icon(agent: CustomAgentConfig, presence: AgentAppPresence): Promise<{ png: Uint8Array<ArrayBuffer>; icon: AgentAppIcon }> {
+  private async icon(agent: CustomAgentConfig, presence: AgentPresenceBase): Promise<{ png: Uint8Array<ArrayBuffer>; icon: AgentAppIcon }> {
     const asset = await readAgentAvatarAsset({
       settings: this.deps.stores.settings,
       agentId: agent.id,
@@ -676,9 +685,9 @@ export class AgentSlackApps {
   }
 
   private async notifyAttention(agent: CustomAgentConfig): Promise<void> {
-    const presence = agent.slackPresence;
-    if (presence?.kind !== 'agent_app' || presence.app.state !== 'needs_attention') return;
-    const { reason, startedBy, at } = presence.app;
+    const app = appRecordOf(agent.slackPresence);
+    if (app?.state !== 'needs_attention') return;
+    const { reason, startedBy, at } = app;
     await this.message(reason, agent, startedBy, `agent-app-attention:${agent.id}:${reason}:${at}`);
   }
 
@@ -751,6 +760,29 @@ function homeRowFor(
     default:
       return now - presence.app.at >= STALLED_AFTER_MS ? { kind: 'stalled' } : { kind: 'setting_up' };
   }
+}
+
+/** An `agent_app` presence after its record moved: the user group back once the app is gone or the start undone. */
+function appPresenceAfter(presence: AgentAppPresence, next: Exclude<AgentAppTransition, AgentAppRefusal>): AgentSlackPresence {
+  if (next.state === 'deleted') return releasedPresence(presence);
+  if (next.state === 'withdrawn') return withdrawnPresence(presence);
+  return normalizeAgentAppPresence({ ...presence, app: next });
+}
+
+/**
+ * A user group's presence after its attached record moved: the group as it
+ * was, with the record gone once the app is, or the record's next state.
+ * Undefined for a record that would go live, which only the switch to an
+ * `agent_app` presence may do.
+ */
+function attachedPresenceAfter(
+  presence: UserGroupPresence,
+  next: Exclude<AgentAppTransition, AgentAppRefusal>,
+): UserGroupPresence | undefined {
+  const { app: _app, ...group } = presence;
+  if (next.state === 'deleted' || next.state === 'withdrawn') return group;
+  const attached = attachedAgentApp(next);
+  return attached ? { ...group, app: attached } : undefined;
 }
 
 /**

@@ -52,6 +52,7 @@ import { confirmThroughService } from './helpers/management-service-result.ts';
 import { approveAsPerson, withPersonApproval } from './helpers/slack-person-approval.ts';
 import { appMention, channelThreadMessage } from './helpers/slack-fixtures.ts';
 import { CONFIRMATION_LIFETIME_MS } from '../src/management/mcp-v5/changes.ts';
+import { asUserGroup } from './helpers/user-group-presence.ts';
 
 const agentInput = {
   id: 'agent_support',
@@ -1270,7 +1271,7 @@ test('one direct create publishes the Slack handle once and replays without dupl
       const current = await f.config.getAgent(agentId);
       const agent = await f.config.updateAgent(agentId, {
         slackPresence: {
-          ...current.slackPresence!,
+          ...asUserGroup(current.slackPresence),
           kind: 'user_group',
           desiredState: 'active',
           health: 'healthy',
@@ -1385,7 +1386,7 @@ test('a Channel-origin direct create atomically includes its trusted source-Chan
       const current = await f.config.getAgent(agentId);
       const agent = await f.config.updateAgent(agentId, {
         slackPresence: {
-          ...current.slackPresence!,
+          ...asUserGroup(current.slackPresence),
           kind: 'user_group',
           desiredState: 'active',
           health: 'healthy',
@@ -1595,7 +1596,7 @@ test('an interrupted direct create reconciles the already-published Agent on rep
           const created = await target.createAgent(...args);
           await target.updateAgent(created.id, {
             slackPresence: {
-              ...created.slackPresence!,
+              ...asUserGroup(created.slackPresence),
               kind: 'user_group',
               desiredState: 'active',
               health: 'healthy',
@@ -2128,7 +2129,7 @@ test('inferred Slack handle collision recovers one Agent with one stable alterna
       return {
         agent: await f.config.updateAgent(agentId, {
           slackPresence: {
-            ...current.slackPresence!,
+            ...asUserGroup(current.slackPresence),
             kind: 'user_group',
             desiredState: 'active',
             health: 'healthy',
@@ -2296,7 +2297,7 @@ function fakeHandlePublisher(
     return {
       agent: await f.config.updateAgent(agentId, {
         slackPresence: {
-          ...current.slackPresence!,
+          ...asUserGroup(current.slackPresence),
           kind: 'user_group',
           desiredState: 'active',
           health: 'healthy',
