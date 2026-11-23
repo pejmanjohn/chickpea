@@ -3802,8 +3802,8 @@ async function drainCloudflareManagementReceipts(
       transitionRunPresentation: (input: SlackPresentationTransitionInput) =>
         (runnerCopy(input.runId) ?? local).transitionRunPresentation!(input),
     } satisfies SlackPresentationStatePort,
-    resolveClient: async (workspaceId: string, turnJobId?: string) =>
-      (await resolveInstallation(workspaceId, turnJobId ? stores.turnJobs.ownBotRun(turnJobId) : undefined)).client,
+    resolveClient: async (workspaceId: string, turnJobId: string) =>
+      (await resolveInstallation(workspaceId, stores.turnJobs.ownBotRun(turnJobId))).client,
   };
   const work = stores.work as unknown as WorkStore;
   await drainManagementReceiptOutbox({

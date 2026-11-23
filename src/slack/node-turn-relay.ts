@@ -883,11 +883,14 @@ async function drainNodeWakePassOnce(options: NodeTurnRelayDrainOptions): Promis
     shouldResolveIdentity ? installationFor : undefined,
     verifyInstallationAccess,
   );
+  // A run stored with its Agent app's own bot is edited by that bot; every other run by the installation's.
+  const runClient = async (workspaceId: string, turnJobId: string) =>
+    (await installationFor(workspaceId, await state.ownBotRun?.(turnJobId))).client;
   await drainPresentationRepairs(
     state,
     options.client,
     env,
-    shouldResolveIdentity ? installationFor : undefined,
+    shouldResolveIdentity ? runClient : undefined,
   );
   await state.maintainRunPresentations?.(100);
   if (!options.state) {
@@ -898,8 +901,7 @@ async function drainNodeWakePassOnce(options: NodeTurnRelayDrainOptions): Promis
     const presentation = presentationState
       ? {
           state: presentationState,
-          resolveClient: async (workspaceId: string, turnJobId?: string) =>
-            (await installationFor(workspaceId, turnJobId ? await state.ownBotRun?.(turnJobId) : undefined)).client,
+          resolveClient: runClient,
         }
       : undefined;
     await drainManagementReceiptOutbox({
@@ -947,7 +949,7 @@ async function drainPresentationRepairs(
   state: SlackStateStore,
   client: WebClient | undefined,
   env: PlatformEnv | undefined,
-  resolveInstallation?: SlackInstallationExecutionResolver,
+  runClient?: (workspaceId: string, turnJobId: string) => Promise<WebClient>,
 ): Promise<void> {
   const presentationState = slackPresentationStatePort(state, env);
   if (!state.listRunPresentationsForRepair || !presentationState) return;
@@ -958,7 +960,7 @@ async function drainPresentationRepairs(
     state: presentationState,
     resolveClient: async (workspaceId, turnJobId) => {
       if (client) return client;
-      if (resolveInstallation) return (await resolveInstallation(workspaceId, await state.ownBotRun?.(turnJobId))).client;
+      if (runClient) return runClient(workspaceId, turnJobId);
       return getClient(env);
     },
     onFailure: (_presentation, error) => {

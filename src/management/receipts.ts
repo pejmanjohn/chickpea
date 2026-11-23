@@ -193,7 +193,8 @@ interface ManagementReceiptDeliveryResult {
 
 interface AgentWelcomePresentationRuntime {
   state: SlackPresentationStatePort;
-  resolveClient(workspaceId: string): Promise<WebClient>;
+  /** The client that edits a turn's presentation: the bot its run speaks with. */
+  resolveClient(workspaceId: string, turnJobId: string): Promise<WebClient>;
 }
 
 /** The Work calls that settle the Run of the turn an Agent welcome finishes. */
