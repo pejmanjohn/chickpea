@@ -47,6 +47,7 @@ import { AGENT_ASK_PAUSE_TEXT, AGENT_ASK_TURN_LIMIT, createAgentAskCollector } f
 import { OPEN_AGENT_DM_ACTION_ID, START_AGENT_ACTION_ID } from '../src/slack/app-home.ts';
 import { CANVASES_NOT_IN_AGENT_DM, createSlackCanvasTools, slackCanvasService } from '../src/slack/canvases/tools.ts';
 import { createSlackChannel } from '../src/slack/channel-creation/runtime.ts';
+import { startSlackGroupDm } from '../src/slack/group-dm/runtime.ts';
 import { AGENT_CHANNEL_ADD_ACTION } from '../src/slack/agent-channel-offer.ts';
 import { invalidateStoredSlackPublicUrl } from '../src/slack/credentials.ts';
 import { configureHostedSlackPermissionsUpdate } from '../src/slack/hosted-permissions.ts';
@@ -301,7 +302,7 @@ async function withHarness(
               response_metadata: { next_cursor: '' },
             }
             : method === 'conversations.open'
-              ? { ok: true, channel: { id: APP_DMS[token ?? ''] ?? 'DOWNER' } }
+              ? { ok: true, channel: { id: (body.get('users') ?? '').includes(',') ? 'GNEW' : APP_DMS[token ?? ''] ?? 'DOWNER' } }
               : method === 'conversations.history' || method === 'conversations.replies'
                 ? { ok: true, messages: (method === 'conversations.history' ? options.history : options.replies) ?? [] }
               : method === 'chat.postMessage' || method === 'chat.startStream'
@@ -2192,4 +2193,24 @@ test("an app Agent asked in its own DM to create a Channel has Chickpea's bot cr
     "the DM it was asked in is read by the app's bot, the one in it");
   assert.deepEqual(['conversations.create', 'conversations.invite'].map((method) => h.calls.find((call) => call.method === method)?.token), [MAIN_BOT, MAIN_BOT]);
   assert.deepEqual(sender(h.calls.find((call) => call.method === 'chat.postMessage' && call.body.get('channel') === 'C9NEW')), AS_SUPPORT);
+}));
+
+test("an app Agent asked in its own DM to start a group DM has Chickpea's bot open it and post as the Agent", async (t) => withHarness(t, async (h) => {
+  const env = withHostedSlackApp(h.base, MAIN_APP);
+  assert.equal((await h.deliver('events', dmEvent())).status, 200);
+  const own = await pendingTurn(h.stores, (job) => job.turn.channelId === 'D1');
+  assert.ok(own);
+  const result = await startSlackGroupDm(
+    { agentId: 'agent_support', actorMembershipId: h.ownerMembershipId },
+    signalOf(own, 'please start a group DM with <@U0SAM> about the Q3 refunds'),
+    env,
+    ['U0SAM'],
+    'Kicking off Q3 refunds here.',
+  );
+  assert.equal(result.status, 'posted', JSON.stringify(result));
+  assert.deepEqual(h.calls.filter((call) => call.method === 'conversations.info' && call.body.get('channel') === 'D1').map((call) => call.token), [AGENT_BOT],
+    "the DM it was asked in is read by the app's bot, the one in it");
+  const opened = h.calls.find((call) => call.method === 'conversations.open' && call.body.get('users')?.includes(','));
+  assert.equal(opened?.token, MAIN_BOT);
+  assert.deepEqual(sender(h.calls.find((call) => call.method === 'chat.postMessage' && call.body.get('text') === 'Kicking off Q3 refunds here.')), AS_SUPPORT);
 }));

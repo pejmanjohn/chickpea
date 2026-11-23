@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { mock, test } from 'node:test';
+import vm from 'node:vm';
+import ts from 'typescript';
 
 // Keep the ambient stores a relay drain opens off any on-disk database.
 process.env.SLACK_STATE_DB_PATH = ':memory:';
@@ -14,6 +17,7 @@ import {
   type SlackRunSpeaker,
 } from '../src/slack/installation-execution.ts';
 import { createLedgerSlackRunHandler } from '../src/slack/ledger-turn-driver.ts';
+import { localSlackStateStore } from '../src/slack/local-state-store.ts';
 import { wakeNodeTurnRelay } from '../src/slack/node-turn-relay.ts';
 import type { SlackSpeaker } from '../src/slack/speaker.ts';
 import type { TurnJob } from '../src/slack/turn-job-types.ts';
@@ -74,13 +78,16 @@ test("the resolver cache passes a run's speaker through and keeps each bot's con
   assert.deepEqual(calls, [undefined, OWN_RUN], 'each is resolved once');
 });
 
-test("a delivered turn still names its app's own bot to a repair while its row is retained", () => {
+test("a delivered turn still names its app's own bot to a repair while its row is retained", async () => {
   const db = openStateDb(':memory:');
   try {
     const store = new TurnJobStoreLogic(db, () => 1_900_000_000_000);
     for (const job of jobs()) store.enqueue(job);
     store.markDelivered('turn_own');
     assert.deepEqual(store.ownBotRun('turn_own'), OWN_RUN);
+    const local = localSlackStateStore({ turnJobs: store, slack: {} as never, work: {} as never, presentations: {} as never });
+    assert.deepEqual(await local.ownBotRun!('turn_own'), OWN_RUN, "the Node relay's state store names it too");
+    assert.equal(await local.ownBotRun!('turn_chickpea'), undefined);
     assert.equal(store.ownBotRun('turn_chickpea'), undefined);
     assert.equal(store.ownBotRun('turn_legacy'), undefined);
     assert.equal(store.ownBotRun('turn_missing'), undefined);
@@ -139,4 +146,50 @@ test("the Node relay runs, and retries the cleanup of, a run stored with its app
   assert.deepEqual(runsFor('T_CHICKPEA'), ['null'], 'as the installation, as before');
   assert.deepEqual(runsFor('T_LEGACY'), ['null'], 'as the installation, as before');
   assert.ok(asked.filter(([asking]) => asking === 'T_OWN').length >= 2, 'both the turn and its cleanup asked');
+});
+
+/** A production function of src/cloudflare.ts, evaluated with `collaborators` as the names it reads. */
+function cloudflareFunction<T>(name: string, collaborators: Record<string, unknown>): T {
+  const source = ts.createSourceFile('cloudflare.ts', readFileSync(new URL('../src/cloudflare.ts', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true);
+  const declaration = source.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === name);
+  assert.ok(declaration, `production ${name} exists`);
+  const compiled = ts.transpileModule(`${declaration.getText(source)}\n${name}`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  return vm.runInNewContext(compiled, collaborators) as T;
+}
+
+test("the Cloudflare state store repairs, and ends welcomes of, a run stored with its app's own bot as that bot; every other run as before", async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const turnJobs = new TurnJobStoreLogic(db, () => 1_900_000_000_000);
+    for (const job of jobs()) turnJobs.enqueue(job);
+    const presentations = jobs().map((job) => ({ runId: job.runId, turnJobId: job.id, root: { workspaceId: job.turn.workspaceId } }));
+    const asked: Array<[string, SlackRunSpeaker | undefined]> = [];
+    const resolve = async (workspaceId: string, run?: SlackRunSpeaker) => {
+      asked.push([workspaceId, run]);
+      return { client: {} } as SlackInstallationExecutionContext;
+    };
+    type Resolving = { resolveClient(workspaceId: string, turnJobId: string): Promise<unknown> };
+    const resolveEach = async ({ resolveClient }: Resolving) => {
+      for (const presentation of presentations) await resolveClient(presentation.root.workspaceId, presentation.turnJobId);
+    };
+    const repairs = cloudflareFunction<(...args: unknown[]) => Promise<unknown>>('drainTerminalPresentationRepairs', {
+      MAX_TURN_DRAIN_BATCH: 10,
+      localSlackPresentationState: () => ({}),
+      drainSlackPresentationRepairs: async (options: Resolving) => resolveEach(options),
+    });
+    await repairs({ presentations: { listAutoRepairableV3: () => presentations }, turnJobs }, {}, resolve);
+    const expected = [['T_OWN', OWN_RUN], ['T_CHICKPEA', undefined], ['T_LEGACY', undefined]];
+    assert.deepEqual(asked, expected, 'terminal repairs');
+
+    asked.length = 0;
+    const receipts = cloudflareFunction<(...args: unknown[]) => Promise<unknown>>('drainCloudflareManagementReceipts', {
+      localSlackPresentationState: () => ({}),
+      drainManagementReceiptOutbox: async (options: { onTerminalFailure(record: object): Promise<void> }) => options.onTerminalFailure({}),
+      failAgentWelcomeTurn: async (_record: object, presentation: Resolving) => resolveEach(presentation),
+    });
+    await receipts({ turnJobs, work: {}, management: {}, config: {} }, {}, resolve);
+    assert.deepEqual(asked, expected, "a welcome's presentation, closed when its delivery is given up");
+  } finally {
+    db.close();
+  }
 });
