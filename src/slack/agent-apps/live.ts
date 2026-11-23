@@ -20,7 +20,7 @@ import type { CustomAgentConfig } from '../../config/types.ts';
 import { agentSlackAppsHost, type AgentAppRetirement, type AgentSlackAppIngress, type AgentSlackAppsHost } from './host.ts';
 import { FINISH_APP_ACTION, START_APP_ACTION, TRY_AGAIN_ACTION } from './pages.ts';
 import { agentAppIsLive, agentAppRecord } from './lifecycle.ts';
-import { loggedUnreadableAsNone, readAppSecrets, type SecretDeps, unreadableAsNone } from './secrets.ts';
+import { readOwnAppSecrets, type SecretDeps } from './secrets.ts';
 import { AgentSlackApps, type AgentAppTransport } from './service.ts';
 import { createAgentAppSlackApi, logSlackRefusal } from './slack-api.ts';
 import { loadCredentialKeyring } from '../credential-keyring.ts';
@@ -54,9 +54,9 @@ async function agentAppExecutionBot(env: PlatformEnv | undefined, agentId: strin
   if (!agent || presence?.kind !== 'agent_app') return { kind: 'not_app' };
   if (!agentAppIsLive(presence)) return { kind: 'unavailable' };
   const appId = presence.app.app.appId;
-  // Only an envelope that cannot be opened makes the app unavailable; a realm read that fails is retried with the turn.
-  const stored = await readAppSecrets(secretDeps(env), appId).catch(unreadableAsNone);
-  if (!stored?.secrets.botToken) return { kind: 'unavailable' };
+  // A record that is missing, unreadable, or another Agent's makes the app unavailable; a realm outage is retried with the turn.
+  const stored = await readOwnAppSecrets(secretDeps(env), appId, agentId, 'execution');
+  if (stored.kind !== 'own' || !stored.secrets.botToken) return { kind: 'unavailable' };
   return {
     kind: 'live',
     bot: { agentId, appId, botToken: stored.secrets.botToken, botUserId: presence.app.botUserId, displayName: agent.name },
@@ -78,14 +78,14 @@ export async function agentAppBotCredentials(
  * Agent's own app's bot for an `own_bot` speaker, the installation's bot for
  * every other. The installation's own resolution runs first either way, so
  * every refusal it enforces (a revoked, erased or gated installation) stands
- * for the Agent app too. Without the port it is the base resolver and never
- * reads the realm. An `own_bot` run whose app is no longer live, or whose
- * token cannot be read, throws: its owner names the app's bot, so Chickpea's
- * bot never posts for it without the Agent's persona. A run stored before its
- * speaker was keeps the earlier rule: the live app's bot, else the
- * installation's for a user-group Agent, else unavailable. A caller whose
- * base context refuses rate-limited calls passes `rejectRateLimitedCalls` so
- * the app's client refuses them too.
+ * for the Agent app too. Without the port it never reads the realm: an
+ * `own_bot` run throws and every other run gets the base. An `own_bot` run
+ * whose app is no longer live, or whose token cannot be read, throws too: its
+ * owner names the app's bot, so Chickpea's bot never posts for it without the
+ * Agent's persona. A run stored before its speaker was keeps the earlier rule:
+ * the live app's bot, else the installation's for a user-group Agent, else
+ * unavailable. A caller whose base context refuses rate-limited calls passes
+ * `rejectRateLimitedCalls` so the app's client refuses them too.
  */
 export function withAgentAppExecution(
   base: SlackInstallationExecutionResolver,
@@ -94,11 +94,13 @@ export function withAgentAppExecution(
 ): SlackInstallationExecutionResolver {
   const contexts = new Map<string, Promise<SlackInstallationExecutionContext>>();
   return (workspaceId, run) => {
-    if (!run || !agentSlackAppsHost()) return base(workspaceId);
+    if (!run) return base(workspaceId);
     const { agentId, speaker } = run;
-    if (speaker?.kind === 'unavailable' && speaker.reason === 'app_removed') {
+    const host = agentSlackAppsHost();
+    if ((speaker?.kind === 'unavailable' && speaker.reason === 'app_removed') || (speaker?.kind === 'own_bot' && !host)) {
       return Promise.reject(new SlackInstallationUnavailableError(workspaceId, 'agent_app_unavailable', { retryable: false }));
     }
+    if (!host) return base(workspaceId);
     // Chickpea's bot answers; where it cannot post, the turn's access check says so.
     if (speaker && speaker.kind !== 'own_bot') return base(workspaceId);
     const key = `${workspaceId}\u0000${agentId}\u0000${speaker ? speaker.botUserId : ''}`;
@@ -173,8 +175,9 @@ export async function agentDmPlacementFacts(
 
 /**
  * What a host needs before it trusts a delivery for this app; undefined for an
- * unknown or deleted app, or one whose secrets cannot be opened, so the host
- * acknowledges rather than asking Slack to retry a delivery nothing can verify.
+ * unknown or deleted app, or one whose record cannot be opened or names
+ * another Agent, so the host acknowledges rather than asking Slack to retry a
+ * delivery nothing can verify.
  */
 export async function agentAppIngressFacts(env: PlatformEnv, appId: string): Promise<AgentSlackAppIngress | undefined> {
   const stores = resolveStores(env);
@@ -182,8 +185,8 @@ export async function agentAppIngressFacts(env: PlatformEnv, appId: string): Pro
     candidate.slackPresence?.kind === 'agent_app' && agentAppRecord(candidate.slackPresence.app)?.appId === appId
   );
   if (!agent) return undefined;
-  const stored = await readAppSecrets(secretDeps(env), appId).catch(loggedUnreadableAsNone);
-  if (!stored) return undefined;
+  const stored = await readOwnAppSecrets(secretDeps(env), appId, agent.id, 'ingress');
+  if (stored.kind !== 'own') return undefined;
   const workspace = (await stores.config.listWorkspaceInstallations())[0];
   const teamId = workspace?.teamId ?? workspace?.workspaceId;
   if (!teamId || workspace?.health === 'revoked') return undefined;

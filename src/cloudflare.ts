@@ -50,8 +50,8 @@ import {
   cacheSlackInstallationExecutionContexts,
   carriedGatewayIdentity,
   effectiveTurnSlackInstallationId,
-  turnJobRunSpeaker,
   resolveSlackInstallationExecutionContext,
+  turnJobRunSpeaker,
   verifySlackInstallationTurnAccess,
   type SlackInstallationExecutionResolver,
 } from './slack/installation-execution.ts';

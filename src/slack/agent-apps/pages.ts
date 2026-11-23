@@ -31,7 +31,7 @@ export interface AgentAppLinks {
   adminUrl?: string;
 }
 
-export type AgentAppMessageKind = 'allow' | 'ready' | 'archived_left' | 'permission_needed' | AgentAppAttention;
+export type AgentAppMessageKind = 'allow' | 'ready' | 'archived_left' | 'archived_installed' | 'permission_needed' | AgentAppAttention;
 
 type Button =
   | { label: string; url: string }
@@ -111,6 +111,12 @@ const DM_COPY = {
   archived_left: {
     text: ({ name }) =>
       `${name} is archived and its Slack app is removed from this workspace. Chickpea couldn't delete the app itself, so delete ${name} in Your Apps in Slack.`,
+    buttons: () => [yourApps],
+  },
+  /** Archived with the app still installed: no record proved it was the Agent's, so Chickpea neither uninstalled nor deleted it. */
+  archived_installed: {
+    text: ({ name }) =>
+      `${name} is archived. Chickpea couldn't remove its Slack app from this workspace, so delete ${name} in Your Apps in Slack.`,
     buttons: () => [yourApps],
   },
 } satisfies Record<AgentAppMessageKind, Copy>;

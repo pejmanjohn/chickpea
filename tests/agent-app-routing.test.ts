@@ -38,35 +38,43 @@ const agents = [live, waiting, grouped];
 const answersWhereLive = async (candidate: CustomAgentConfig) => candidate.slackPresence?.kind === 'agent_app' && candidate.slackPresence.app.state === 'active';
 const answersNowhere = async () => false;
 
-test("an Agent app's own delivery selects its Agent only for a mention of its own bot or a message in its own DM", async () => {
+test("an Agent app's own delivery selects its Agent only for a mention of its own bot, in a Channel or group DM, or a message in its own DM", async () => {
   const own = { agentId: 'support' };
-  assert.deepEqual(await agentAppRouteSelection({ text: 'hello', source: 'dm_message', channelType: 'im' }, 'direct', agents, own, answersWhereLive),
+  assert.deepEqual(await agentAppRouteSelection({ text: 'hello', source: 'dm_message', channelType: 'im' }, agents, own, answersWhereLive),
     { kind: 'select', agentId: 'support' });
-  assert.deepEqual(await agentAppRouteSelection({ text: '<@UBOTSUP> hi', source: 'app_mention' }, 'channel', agents, own, answersWhereLive),
+  assert.deepEqual(await agentAppRouteSelection({ text: '<@UBOTSUP> hi', source: 'app_mention' }, agents, own, answersWhereLive),
     { kind: 'select', agentId: 'support' });
   for (const source of ['implicit_thread_reply', 'agent_mention', 'reaction_added'] as const) {
-    assert.equal(await agentAppRouteSelection({ text: '<!subteam^S1|@finance> hi', source }, 'channel', agents, own, answersWhereLive), undefined,
+    assert.equal(await agentAppRouteSelection({ text: '<!subteam^S1|@finance> hi', source }, agents, own, answersWhereLive), undefined,
       `${source} routes as it would on Chickpea's delivery`);
   }
-  assert.deepEqual(await agentAppRouteSelection({ text: '<@UBOTSUP> hi', source: 'app_mention', channelType: 'mpim' }, 'direct', agents, own, answersWhereLive),
-    { kind: 'ignore' }, 'an app token is never used in a group DM: Chickpea answers there, or nobody does');
+  assert.deepEqual(await agentAppRouteSelection({ text: '<@UBOTSUP> hi', source: 'app_mention', channelType: 'mpim' }, agents, own, answersWhereLive),
+    { kind: 'select', agentId: 'support' }, 'a mention of its bot in a group DM its bot is in');
+  assert.equal(await agentAppRouteSelection({ text: 'hello', source: 'dm_message', channelType: 'mpim' }, agents, own, answersWhereLive), undefined,
+    'a plain group DM message is no DM of its own');
 });
 
-test("Chickpea's delivery ignores a Channel message naming an Agent-app bot only while that app can answer there", async () => {
+test("Chickpea's delivery ignores a Channel or group DM message naming an Agent-app bot only while that app can answer there", async () => {
   const heard = (text: string) => ({ text, source: 'agent_mention' as const });
-  assert.deepEqual(await agentAppRouteSelection(heard('hey <@UBOTSUP|support> can you look'), 'channel', agents, undefined, answersWhereLive), { kind: 'ignore' });
-  assert.equal(await agentAppRouteSelection(heard('hey <@UBOTSUP>'), 'channel', agents, undefined, answersNowhere), undefined,
+  const inGroupDm = (text: string) => ({ text, source: 'dm_message' as const, channelType: 'mpim' as const });
+  assert.deepEqual(await agentAppRouteSelection(heard('hey <@UBOTSUP|support> can you look'), agents, undefined, answersWhereLive), { kind: 'ignore' });
+  assert.equal(await agentAppRouteSelection(heard('hey <@UBOTSUP>'), agents, undefined, answersNowhere), undefined,
     'its bot is not in the Channel, or its token cannot be read: Chickpea routes it');
-  assert.equal(await agentAppRouteSelection(heard('hey <@UBOTSUP>'), 'direct', agents, undefined, answersWhereLive), undefined, "the same text in Chickpea's DM is Chickpea's");
-  assert.equal(await agentAppRouteSelection(heard('hey <@UBOTOTHER>'), 'channel', agents, undefined, answersWhereLive), undefined, 'an unknown bot');
-  assert.equal(await agentAppRouteSelection(heard('<!subteam^S1|@finance> hi'), 'channel', agents, undefined, answersWhereLive), undefined, 'a user-group Agent routes as before');
-  assert.equal(await agentAppRouteSelection(heard('UBOTSUP without brackets'), 'channel', agents, undefined, answersWhereLive), undefined);
-  assert.equal(await agentAppRouteSelection(heard('<@UBOTSUP>'), 'channel', [grouped], undefined, answersWhereLive), undefined, 'no app in the workspace');
+  assert.deepEqual(await agentAppRouteSelection(inGroupDm('hey <@UBOTSUP>'), agents, undefined, answersWhereLive), { kind: 'ignore' },
+    'a group DM the app can answer in is the same');
+  assert.equal(await agentAppRouteSelection(inGroupDm('hey <@UBOTSUP>'), agents, undefined, answersNowhere), undefined,
+    'and a group DM it cannot answer in is routed by Chickpea');
+  assert.equal(await agentAppRouteSelection({ text: 'hey <@UBOTSUP>', source: 'dm_message', channelType: 'im' }, agents, undefined, answersWhereLive), undefined,
+    "the same text in Chickpea's DM is Chickpea's");
+  assert.equal(await agentAppRouteSelection(heard('hey <@UBOTOTHER>'), agents, undefined, answersWhereLive), undefined, 'an unknown bot');
+  assert.equal(await agentAppRouteSelection(heard('<!subteam^S1|@finance> hi'), agents, undefined, answersWhereLive), undefined, 'a user-group Agent routes as before');
+  assert.equal(await agentAppRouteSelection(heard('UBOTSUP without brackets'), agents, undefined, answersWhereLive), undefined);
+  assert.equal(await agentAppRouteSelection(heard('<@UBOTSUP>'), [grouped], undefined, answersWhereLive), undefined, 'no app in the workspace');
 });
 
 test('an app that is not live does not hold back a mention of its bot', async () => {
   const notLive = appAgent('billing', {
     state: 'needs_attention', at: NOW, startedBy: 'UOWNER', reason: 'app_removed', resume: 'icon_set', app: APP, botUserId: 'UBOTBILL',
   });
-  assert.equal(await agentAppRouteSelection({ text: '<@UBOTBILL>', source: 'agent_mention' }, 'channel', [notLive], undefined, answersWhereLive), undefined);
+  assert.equal(await agentAppRouteSelection({ text: '<@UBOTBILL>', source: 'agent_mention' }, [notLive], undefined, answersWhereLive), undefined);
 });

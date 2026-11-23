@@ -11,7 +11,7 @@ import {
   type AgentAppBotCredentials,
   type AgentSlackAppHandoff,
   admissionSpeaker,
-  agentAppAnswersInChannel,
+  agentAppAnswersIn,
   agentAppBotCredentials,
   agentAppHomeRows,
   agentAppPlacementFacts,
@@ -3600,6 +3600,8 @@ async function processSlackEvent(
   let agentRoutingActor: ResolvedAgentRoutingActor | undefined;
   let agentSourceVisibility: 'public' | 'private' | undefined;
   let liveChannelName: string | undefined;
+  // Slack said the bot that heard this turn is not in its Channel; unverified is not the same.
+  let hearingBotNotInChannel = false;
   let routedReads: {
     activeWork: Promise<boolean>;
     proposal?: ReturnType<typeof resolveHostSlackManagementProposal>;
@@ -3716,7 +3718,7 @@ async function processSlackEvent(
           }
           return !chickpea;
         },
-        agentAppAnswersHere: (agent) => agentAppAnswersInChannel(platformEnv, agent, turn.channelId),
+        agentAppAnswersHere: (agent) => agentAppAnswersIn(platformEnv, agent, turn.channelId),
       });
       if (routed.kind === 'ignore') return;
       if (routed.kind !== 'routed' && ui) return;
@@ -3871,6 +3873,7 @@ async function processSlackEvent(
             (channel.contextTeamId === undefined || channel.contextTeamId === turn.workspaceId)) {
           turn.channelMembership = { botUserId: resolvedBotUserId, verifiedAt: Date.now() };
         }
+        hearingBotNotInChannel = channel.id === turn.channelId && !channel.member;
         agentSourceVisibility = channel.private ? 'private' : 'public';
         liveChannelName = channel.name;
         if (liveChannelName && routedAssignment.channelLabel !== liveChannelName) {
@@ -4362,6 +4365,8 @@ async function processSlackEvent(
     hearing: {
       botUserId: resolvedBotUserId,
       agentApp: Boolean(execution?.agentApp),
+      ...(ask ? { byHost: true } : {}),
+      ...(hearingBotNotInChannel ? { notInChannel: true } : {}),
       ...(execution?.installationBot && installation.botUserId
         ? { installationBot: { botUserId: installation.botUserId, transport: execution.installationBot } }
         : {}),

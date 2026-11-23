@@ -6,7 +6,7 @@ export type SlackPlace =
   | { kind: 'agent_dm' }
   /** Chickpea heard it in Chickpea's DM; also what a turn with no DM marker means. */
   | { kind: 'chickpea_dm' }
-  | { kind: 'group_dm'; chickpeaBotIsMember: boolean }
+  | { kind: 'group_dm'; appBotIsMember: boolean; chickpeaBotIsMember: boolean }
   | { kind: 'channel'; appBotIsMember: boolean; chickpeaBotIsMember: boolean };
 
 /** Which bot answers a run, decided once at its admission. */
@@ -20,8 +20,8 @@ export type SlackSpeaker =
 /**
  * An Agent answers as its own Slack app wherever that app is live and its
  * bot can be; anywhere else Chickpea's bot posts as the Agent. An app token
- * is never used outside the app's own DM and its bot's Channels, and never
- * in a group DM.
+ * is never used outside the app's own DM and the Channels and group DMs its
+ * bot is in.
  */
 export function speakerFor(presence: AgentSlackPresence | undefined, place: SlackPlace): SlackSpeaker {
   const ownBot = agentAppIsLive(presence) ? presence.app.botUserId : undefined;
@@ -31,7 +31,6 @@ export function speakerFor(presence: AgentSlackPresence | undefined, place: Slac
     case 'chickpea_dm':
       return { kind: 'chickpea_as_agent' };
     case 'group_dm':
-      return place.chickpeaBotIsMember ? { kind: 'chickpea_as_agent' } : { kind: 'unavailable', reason: 'no_bot_can_post' };
     case 'channel':
       if (ownBot && place.appBotIsMember) return { kind: 'own_bot', botUserId: ownBot };
       return place.chickpeaBotIsMember ? { kind: 'chickpea_as_agent' } : { kind: 'unavailable', reason: 'no_bot_can_post' };

@@ -125,8 +125,9 @@ interface ResolveAgentRouteInput {
    */
   postingBotInChannel?: (agent: CustomAgentConfig) => Promise<boolean>;
   /**
-   * Whether an Agent's own app can answer in this Channel: live, its token
-   * readable, its bot a member. Without the fact, a live app is taken to.
+   * Whether an Agent's own app can answer in this Channel or group DM: live,
+   * its token readable, its bot a member. Without the fact, a live app is
+   * taken to.
    */
   agentAppAnswersHere?: (agent: CustomAgentConfig) => Promise<boolean>;
   /** Live placement-derived authority for the selected user-created Agent. */
@@ -308,7 +309,7 @@ export async function resolveAgentRoute(
   }
 
   const appSelection = await agentAppRouteSelection(
-    turn, surface, agents, input.agentApp,
+    turn, agents, input.agentApp,
     input.agentAppAnswersHere ?? (async (agent) => agentAppIsLive(agent.slackPresence)),
   );
   const mentionedGroupIds = parseAgentUserGroupMentions(turn.text);
@@ -373,7 +374,7 @@ export async function resolveAgentRoute(
   // reachable by this person here, or none is asked; the first is checked
   // below as the routed Agent. In a Channel or a group DM an Agent app's bot
   // is its Agent's handle while the host serves that app. Chickpea's bot and
-  // that app's bot each hear such a Channel message and route it alike, so
+  // that app's bot each hear such a message and route it alike, so
   // whichever hears it first admits every Agent it names and the other
   // delivery finds the message taken.
   const addressed = (surface === 'channel' || groupDm
