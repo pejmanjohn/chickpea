@@ -161,13 +161,14 @@ test('each new shape round-trips through the store', () => {
     }
     const progress: AgentAppSwitchProgress[] = ['live', 'group_pending', 'bring_in_pending', 'owner_told', 'done'];
     for (const switchProgress of progress) {
-      const { written, read } = s.roundTrip({ ...answering, app: { ...LIVE, switchProgress } });
+      const next: AgentAppPresence = { ...answering, app: { ...LIVE, switchProgress } };
+      const { written, read } = s.roundTrip(next);
       assert.deepEqual(read, written);
     }
-    const { read } = s.roundTrip(notInSlackYet);
-    assert.equal(appRecordOf(read)?.state, 'creating');
-    assert.equal(read?.errorCode, 'awaiting_own_app');
-    assert.equal(answeringUserGroupId(read), undefined, 'an Agent not in Slack yet has no group to route');
+    const notYet = s.roundTrip(notInSlackYet).read;
+    assert.equal(appRecordOf(notYet)?.state, 'creating');
+    assert.equal(notYet?.errorCode, 'awaiting_own_app');
+    assert.equal(answeringUserGroupId(notYet), undefined, 'an Agent not in Slack yet has no group to route');
   } finally {
     s.close();
   }
