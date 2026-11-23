@@ -783,3 +783,27 @@ test('a stop note terminal repairs like an answer: the session settles active, n
     db.close();
   }
 });
+
+test("the repair drain asks for each run's client with its turn, so a run stored with an app's own bot is edited by that bot", async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new SlackRunPresentationStoreLogic(db, () => BASE_NOW);
+    const presentation = terminalRepair(store, {
+      runId: 'run_repair_turn', root: root('REPAIR_TURN'),
+      sessionGeneration: 100, sessionCertainty: 'failed', lifecycleSettled: true,
+    });
+    const asked: Array<[string, string]> = [];
+    await drainSlackPresentationRepairs({
+      presentations: [presentation],
+      state: statePort(store),
+      now: () => BASE_NOW,
+      resolveClient: async (workspaceId, turnJobId) => {
+        asked.push([workspaceId, turnJobId]);
+        return repairClient({ calls: [] });
+      },
+    });
+    assert.deepEqual(asked, [[presentation.root.workspaceId, presentation.turnJobId]]);
+  } finally {
+    db.close();
+  }
+});

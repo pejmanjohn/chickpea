@@ -19,7 +19,9 @@ import {
   agentSlackAppsHost,
   endAgentSlackApp,
   handleAgentAppHomeAction,
+  ownBotClient,
 } from '../slack/agent-apps/index.ts';
+import type { SlackSpeaker } from '../slack/speaker.ts';
 
 import { withBetterAuthAccessRevoker } from '../auth/better-auth-environment.ts';
 import {
@@ -68,11 +70,12 @@ import {
   type StateRpcResult,
   type TurnJob,
 } from '../config/state-rpc.ts';
-import type {
-  AgentThreadRoute,
-  CustomAgentConfig,
-  ResolvedAssignment,
-  WorkspaceInstallation,
+import {
+  agentAppIsLive,
+  type AgentThreadRoute,
+  type CustomAgentConfig,
+  type ResolvedAssignment,
+  type WorkspaceInstallation,
 } from '../config/types.ts';
 import {
   resolveSlackBehaviorSettings,
@@ -1311,6 +1314,8 @@ function chickpeaIntroductionUsable(usable: PrivatelyUsableAgents): ChickpeaIntr
         ...(handle ? { handle } : {}),
         ...(purpose ? { purpose } : {}),
         ...(channelId ? { channelId } : {}),
+        // Without the port no Agent app's bot answers its DM.
+        ...(agentSlackAppsHost() && agentAppIsLive(agent.slackPresence) ? { ownApp: true as const } : {}),
       };
     }),
     more: usable.agents.length - listed.length,
@@ -1428,6 +1433,8 @@ async function publishAgentAppHome(input: {
     userId: input.userId,
     view: agentDirectoryAppHome(visible, {
       unavailableNotice: input.unavailableNotice === true,
+      // Without the port no Agent app's bot answers, so its DM would answer nothing.
+      ...(agentSlackAppsHost() ? { agentDmTeamId: installation.teamId ?? input.workspaceId } : {}),
       rowExtras: await agentAppHomeRows({
         env: input.platformEnv,
         viewer: { role: actor.principal?.role },
@@ -2058,6 +2065,7 @@ export async function processSlackAgentAsks(
           platformEnv,
           turn,
           from,
+          ...(asking.speaker ? { speaker: asking.speaker } : {}),
           originMessageTs,
         }),
       }),
@@ -2411,6 +2419,8 @@ async function postAgentAskPause(input: {
   platformEnv: PlatformEnv | undefined;
   turn: NormalizedSlackTurn;
   from: CustomAgentConfig;
+  /** The asking run's speaker, the bot that speaks for `from` in this thread. */
+  speaker?: SlackSpeaker;
   originMessageTs: string;
 }): Promise<void> {
   const { turn, from } = input;
@@ -2419,13 +2429,14 @@ async function postAgentAskPause(input: {
   console.info('[chickpea] agent ask limit reached; exchange paused');
   let posted: Awaited<ReturnType<typeof input.client.chat.postMessage>>;
   try {
-    const avatarUrl = await resolvedAgentAvatarUrl(from, input.stores, input.platformEnv);
-    posted = await input.client.chat.postMessage({
+    // The asking Agent's own app's bot carries its name and picture already, and takes no persona.
+    const ownBot = await ownBotClient(input.platformEnv, turn.workspaceId, from.id, input.speaker);
+    const avatarUrl = ownBot ? undefined : await resolvedAgentAvatarUrl(from, input.stores, input.platformEnv);
+    posted = await (ownBot ?? input.client).chat.postMessage({
       channel: turn.channelId,
       thread_ts: turn.threadTs,
       text: AGENT_ASK_PAUSE_TEXT,
-      username: from.name,
-      ...(avatarUrl ? { icon_url: avatarUrl } : {}),
+      ...(ownBot ? {} : { username: from.name, ...(avatarUrl ? { icon_url: avatarUrl } : {}) }),
     });
   } catch (error) {
     // The note was not posted: give the claim back so the exchange's next

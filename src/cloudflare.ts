@@ -3765,7 +3765,8 @@ async function drainTerminalPresentationRepairs(
   return drainSlackPresentationRepairs({
     presentations,
     state: localSlackPresentationState(stores, env),
-    resolveClient: async (workspaceId) => (await resolveInstallation(workspaceId)).client,
+    resolveClient: async (workspaceId, turnJobId) =>
+      (await resolveInstallation(workspaceId, stores.turnJobs.ownBotRun(turnJobId))).client,
     onFailure: (_presentation, error) => {
       console.warn('[chickpea] Slack presentation repair failed:', sanitizeError(error));
     },
@@ -3801,8 +3802,8 @@ async function drainCloudflareManagementReceipts(
       transitionRunPresentation: (input: SlackPresentationTransitionInput) =>
         (runnerCopy(input.runId) ?? local).transitionRunPresentation!(input),
     } satisfies SlackPresentationStatePort,
-    resolveClient: async (workspaceId: string) =>
-      (await resolveInstallation(workspaceId)).client,
+    resolveClient: async (workspaceId: string, turnJobId?: string) =>
+      (await resolveInstallation(workspaceId, turnJobId ? stores.turnJobs.ownBotRun(turnJobId) : undefined)).client,
   };
   const work = stores.work as unknown as WorkStore;
   await drainManagementReceiptOutbox({
@@ -3822,7 +3823,9 @@ async function drainCloudflareManagementReceipts(
     wake: (request) => admitSetupWake(request, env, localHostAddressedAdmission(stores, env)),
     deliver: (record) => deliverManagementReceiptToSlack(record, {
       identity: stores.identity as unknown as IdentityStore,
+      env,
       resolveInstallation,
+      agentPresence: async (agentId) => stores.config.listAgents().find(({ id }) => id === agentId)?.slackPresence,
       onDelivered: async (deliveredRecord, delivery) => {
         try {
           await completeAgentWelcomeDelivery(

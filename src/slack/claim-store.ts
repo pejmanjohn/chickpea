@@ -79,6 +79,7 @@ import {
 } from './ui/surface-store.ts';
 import type { UiNamespace } from './ui/surface.ts';
 import type { SlackSpeaker } from './speaker.ts';
+import type { SlackRunSpeaker } from './installation-execution.ts';
 
 export {
   ACTIVE_WORK_TTL_MS,
@@ -364,6 +365,11 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
    * listed earlier, since a stop may have held or dropped it meanwhile.
    */
   turnJobView?(id: string): Promise<RunnerTurnJobView>;
+  /**
+   * A retained turn's run, delivered or not, when its stored speaker is its
+   * Agent app's own bot, so a repair edits with that bot. Local stores only.
+   */
+  ownBotRun?(id: string): Promise<SlackRunSpeaker | undefined>;
   /**
    * The Node relay's stop outbox pass (KTD2): offer every due stop notice to
    * `receive`, whose true acknowledges it (false or a rejection retries it

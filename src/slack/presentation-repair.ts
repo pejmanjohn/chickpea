@@ -16,7 +16,8 @@ import { WebClientPresenter } from './web-client-presenter.ts';
 interface SlackPresentationRepairDrainOptions {
   presentations: readonly SlackRunPresentationV3[];
   state: SlackPresentationStatePort;
-  resolveClient(workspaceId: string): Promise<WebClient>;
+  /** The client that edits a run's messages: the bot its turn's stored speaker names. */
+  resolveClient(workspaceId: string, turnJobId: string): Promise<WebClient>;
   now?: () => number;
   onFailure?(presentation: SlackRunPresentationV3, error: unknown): void;
 }
@@ -121,11 +122,12 @@ export async function acknowledgeDeferredTerminalSlackDelivery(input: {
 export async function abandonDeferredTerminalSlackDelivery(input: {
   runId: string;
   state: SlackPresentationStatePort;
-  resolveClient(workspaceId: string): Promise<WebClient>;
+  /** The client that edits a run's messages: the bot its turn's stored speaker names. */
+  resolveClient(workspaceId: string, turnJobId: string): Promise<WebClient>;
 }): Promise<SlackRunPresentationV3 | undefined> {
   const abandoned = await recordDeferredTerminalAbandonment(input.runId, input.state);
   if (!abandoned) return undefined;
-  const client = await input.resolveClient(abandoned.root.workspaceId);
+  const client = await input.resolveClient(abandoned.root.workspaceId, abandoned.turnJobId);
   return repairTerminalSlackPresentation(abandoned, input.state, client);
 }
 
@@ -238,7 +240,7 @@ export async function drainSlackPresentationRepairs(
         options.state,
         scheduledRetryAt,
       );
-      const client = await options.resolveClient(presentation.root.workspaceId);
+      const client = await options.resolveClient(presentation.root.workspaceId, presentation.turnJobId);
       const repaired = await repairTerminalSlackPresentation(
         scheduled,
         options.state,

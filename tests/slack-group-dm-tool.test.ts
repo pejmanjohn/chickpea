@@ -366,7 +366,7 @@ test('only an Agent everyone in the workspace can use starts a group DM, as only
   } finally { f.close(); }
 });
 
-test('an Agent that answers as its own Slack app is refused while the host serves Agent apps', async () => {
+test('an Agent that answers as its own Slack app may start a group DM, with or without the Agent apps port', async () => {
   const { f, agent, grant, standing } = await standingFixture('gdm-agent-app');
   try {
     await grant('C0PROJECT');
@@ -374,7 +374,7 @@ test('an Agent that answers as its own Slack app is refused while the host serve
     assert.equal(await refusalCode(standing({ agent: appAgent })), 'allowed', 'no host: it posts as Chickpea\'s bot');
     configureAgentSlackApps({ requestUrls: () => ({ events: '', interactions: '' }), redirectUri: '', allowUrl: () => '' });
     try {
-      assert.equal(await refusalCode(standing({ agent: appAgent })), 'agent_app');
+      assert.equal(await refusalCode(standing({ agent: appAgent })), 'allowed', "Chickpea's bot starts it, as for a user-group Agent");
     } finally { configureAgentSlackApps(undefined); }
   } finally { f.close(); }
 });

@@ -6,6 +6,7 @@ import { type SlackSpeaker, speakerFor } from '../speaker.ts';
 import { slackConversationKind } from '../thread-key.ts';
 import type { SlackTransport } from '../transport/types.ts';
 import type { NormalizedSlackTurn } from '../types.ts';
+import { agentSlackAppsHost } from './host.ts';
 import { agentAppBotCredentials } from './live.ts';
 
 /** The bot that heard a turn at admission. */
@@ -70,7 +71,7 @@ async function agentBotIsIn(env: PlatformEnv | undefined, agentId: string, appId
  * run's access check reuses it within the same TTL.
  */
 export async function admissionSpeaker(input: {
-  turn: NormalizedSlackTurn;
+  turn: Pick<NormalizedSlackTurn, 'channelId' | 'source' | 'channelType' | 'dmBotUserId' | 'channelMembership'>;
   agentId: string;
   presence: AgentSlackPresence | undefined;
   hearing: SlackTurnHearing;
@@ -121,6 +122,27 @@ export async function admissionSpeaker(input: {
     turn.channelMembership = { botUserId: answering.botUserId, verifiedAt: answering.fact.verifiedAt };
   }
   return speaker;
+}
+
+/**
+ * The speaker of a post Chickpea makes for an Agent outside its runs, such as
+ * a notice in one of its threads: decided as for a turn Chickpea builds there.
+ * Without the port no Agent app's bot answers.
+ */
+export async function hostPostSpeaker(input: {
+  env: PlatformEnv | undefined;
+  agentId: string;
+  presence: AgentSlackPresence | undefined;
+  channelId: string;
+}): Promise<SlackSpeaker> {
+  const dm = input.channelId.startsWith('D');
+  return admissionSpeaker({
+    turn: { channelId: input.channelId, source: dm ? 'dm_message' : 'agent_mention', ...(dm ? { channelType: 'im' as const } : {}) },
+    agentId: input.agentId,
+    presence: agentSlackAppsHost() ? input.presence : undefined,
+    hearing: { botUserId: '', agentApp: false, byHost: true },
+    env: input.env,
+  });
 }
 
 /**

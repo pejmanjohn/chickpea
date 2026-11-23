@@ -6,6 +6,7 @@ import {
 } from '../config/types.ts';
 import { SLACK_CODE_SEGMENT } from './message-format.ts';
 import type { RequesterTextSource } from './requester-text-source.ts';
+import { slackConversationKind } from './thread-key.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 
 /**
@@ -42,7 +43,7 @@ export interface SlackAgentAskRequest {
   turn: Pick<
     NormalizedSlackTurn,
     'workspaceId' | 'channelId' | 'threadTs' | 'messageTs' | 'userId' | 'channelType' |
-    'requesterTimezone' | 'agentAsk'
+    'requesterTimezone' | 'agentAsk' | 'speaker'
   >;
   fromAgentId: string;
   /** The replying Agent is the thread's own, not a guest. */
@@ -174,7 +175,9 @@ export function createAgentAskCollector(input: {
   flush(outcome?: 'succeeded' | 'no_op' | 'failed' | 'stopped'): Promise<void>;
 } {
   const deliveries: Array<{ messageTs: string; text: string }> = [];
-  const eligible = Boolean(input.dispatch) && turnMayAskAgents(input.assignment);
+  // Neither a teammate's bot nor Chickpea's can post in an Agent app's own DM, so nobody is asked there.
+  const inOwnAppDm = slackConversationKind(input.turn) === 'im' && input.turn.dmBotUserId !== undefined;
+  const eligible = Boolean(input.dispatch) && turnMayAskAgents(input.assignment) && !inOwnAppDm;
   // A guest in a chain the thread's own Agent started: its answer goes back.
   const answersOwner = eligible && input.assignment.threadGuest === true &&
     Boolean(input.turn.agentAsk?.threadOwnerAgentId);
@@ -204,6 +207,7 @@ export function createAgentAskCollector(input: {
             ...(turn.channelType ? { channelType: turn.channelType } : {}),
             ...(turn.requesterTimezone ? { requesterTimezone: turn.requesterTimezone } : {}),
             ...(turn.agentAsk ? { agentAsk: turn.agentAsk } : {}),
+            ...(turn.speaker ? { speaker: turn.speaker } : {}),
           },
           fromAgentId: input.assignment.agentId,
           ...(input.assignment.threadGuest === true ? {} : { fromThreadOwner: true as const }),

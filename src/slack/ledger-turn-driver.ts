@@ -42,6 +42,7 @@ import {
   cacheSlackInstallationExecutionContexts,
   effectiveTurnSlackInstallationId,
   normalizeSlackInstallationExecutionError,
+  ownBotRun,
   resolveSlackInstallationExecutionContext,
   verifySlackInstallationTurnAccess,
   type SlackInstallationAccessVerifier,
@@ -178,7 +179,7 @@ export function createLedgerSlackRunHandler(
     if (shouldResolveIdentity) {
       try {
         const workspaceId = effectiveTurnSlackInstallationId(job.turn);
-        installationContext = await installationFor(workspaceId);
+        installationContext = await installationFor(workspaceId, ownBotRun(job));
         await verifyInstallationAccess(installationContext, job.turn);
       } catch (error) {
         const unavailable = normalizeSlackInstallationExecutionError(
