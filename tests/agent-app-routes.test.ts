@@ -15,7 +15,6 @@ import { AgentSlackApps } from '../src/slack/agent-apps/service.ts';
 import type { AgentAppSlackApi } from '../src/slack/agent-apps/slack-api.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
-import { refuseLikeSlack } from './helpers/slack-manifest-rules.ts';
 
 const TOKEN = 'admin-token';
 const TEAM = 'T_TEST';
@@ -99,112 +98,49 @@ async function adminApp(
   return { request, form, service, calls, config, settings };
 }
 
-test('the token page and its form are for Owners with the port, and 404 without it', async (t) => {
-  const owner = await adminApp(t);
-  const page = await owner.request('/admin/agents/agent_support/slack-app');
-  assert.equal(page.status, 200);
-  const html = await page.text();
-  assert.match(html, /Let Chickpea create Slack apps for your Agents/);
-  assert.match(html, /To give Support its own Slack app, Chickpea needs a Slack app configuration token for this workspace\. You only do this once\./);
-  assert.match(html, /name="refreshToken" type="password"/);
-  assert.match(html, /Starts with xoxe-/);
-  assert.match(html, /Create Support(&#39;|')s Slack app/);
-  assert.match(html, /<p>If Slack doesn(&#39;|')t offer this workspace when you choose Generate Token, you already hold as many tokens as Slack allows there\. Delete one you no longer use under Your App Configuration Tokens, or ask another Owner to do this step\.<\/p>/);
-  assert.equal(html.includes('replacing each other'), false);
-  assert.match(html, /Chickpea only changes the apps it creates for your Agents/);
-  assert.equal(html.includes('Remove the configuration token'), false, 'nothing to remove yet');
+/** The Admin page's config island: what the script reads at start-up. */
+async function adminConfig(response: Response): Promise<Record<string, unknown>> {
+  const html = await response.text();
+  const config = html.match(/<script id="chickpea-admin-config" type="application\/json">([\s\S]*?)<\/script>/)?.[1];
+  assert.ok(config, `Admin page config: ${response.status}`);
+  return JSON.parse(config) as Record<string, unknown>;
+}
 
-  const member = await adminApp(t, { role: 'member' });
-  assert.equal((await member.request('/admin/agents/agent_support/slack-app')).status, 403);
-  assert.equal((await member.request('/admin/api/agents/agent_support/slack-app/token', member.form({ action: 'paste', refreshToken: 'xoxe-1-x' }))).status, 403);
-  const admin = await adminApp(t, { role: 'admin' });
-  assert.equal((await admin.request('/admin/agents/agent_support/slack-app')).status, 403);
-  const ownerToken = await adminApp(t, { machine: true });
-  assert.equal((await ownerToken.request('/admin/agents/agent_support/slack-app')).status, 403, 'an Owner\'s personal token is not their session');
-  assert.equal((await ownerToken.request('/admin/api/agents/agent_support/slack-app/token', ownerToken.form({ action: 'paste', refreshToken: 'xoxe-1-x' }))).status, 403);
+test("the older per-Agent token page sends a person to Admin's token page, and is gone without the port", async (t) => {
+  const owner = await adminApp(t);
+  const moved = await owner.request('/admin/agents/agent_support/slack-app');
+  assert.equal(moved.status, 302);
+  assert.equal(moved.headers.get('location'), '/admin/destinations/slack/connection/token');
+  const formPost = await owner.request('/admin/api/agents/agent_support/slack-app/token', owner.form({ action: 'paste', refreshToken: 'xoxe-1-x' }));
+  assert.equal(formPost.status, 415, 'Admin refuses a form post: the token is pasted through the JSON API only');
+  assert.equal(await owner.service.hasConfigurationToken(), false);
 
   const unported = await adminApp(t, { port: false });
   assert.equal((await unported.request('/admin/agents/agent_support/slack-app')).status, 404);
-  assert.equal((await unported.request('/admin/api/agents/agent_support/slack-app/token', unported.form({ action: 'paste', refreshToken: 'xoxe-1-x' }))).status, 404);
-  assert.equal((await owner.request('/admin/agents/agent_missing/slack-app')).status, 404);
 });
 
-test('a cross-origin form post never reaches the token API', async (t) => {
-  const owner = await adminApp(t);
-  const foreign = await owner.request(
-    '/admin/api/agents/agent_support/slack-app/token',
-    owner.form({ action: 'paste', refreshToken: 'xoxe-1-x' }),
-    { origin: 'https://evil.test', 'sec-fetch-site': 'cross-site' },
-  );
-  assert.equal(foreign.status, 403);
-  assert.equal(await owner.service.hasConfigurationToken(), false);
-  assert.deepEqual(owner.calls, []);
+test('Admin offers Agents in Slack only to an Owner signed in as themselves, and only with the port', async (t) => {
+  // A page every role opens; the flag is the same on every Admin page.
+  const path = '/admin';
+  assert.equal((await adminConfig(await (await adminApp(t)).request(path))).agentSlackAppsOffered, true);
+  assert.equal((await adminConfig(await (await adminApp(t)).request('/admin/destinations/slack/connection/token'))).agentSlackAppsOffered, true);
+  // An Owner's personal token opens no page at all; the API refuses it too.
+  for (const options of [{ role: 'admin' as const }, { role: 'member' as const }, { port: false }]) {
+    const response = await (await adminApp(t, options)).request(path);
+    assert.equal((await adminConfig(response)).agentSlackAppsOffered, false, JSON.stringify(options));
+  }
 });
 
-test('a pasted token is checked with Slack, refused with the right sentence, and a good one starts the app', async (t) => {
-  let team = 'T_OTHER';
-  const rotations: string[] = [];
-  const owner = await adminApp(t, {
-    slack: {
-      rotate: async (refreshToken) => { rotations.push(refreshToken); return { accessToken: 'xoxe.xoxp-1-a', refreshToken: 'xoxe-1-r', teamId: team, expiresAt: Date.now() + 3_600_000 }; },
-      create: async (_token, manifest) => {
-        refuseLikeSlack('apps.manifest.create', manifest);
-        return { appId: 'A0APP1', clientId: '1.c', clientSecret: 'cs', signingSecret: 'ss' };
-      },
-      update: async (_token, _appId, manifest) => { refuseLikeSlack('apps.manifest.update', manifest); },
-      setIcon: async () => undefined,
-    },
-  });
-  const api = '/admin/api/agents/agent_support/slack-app/token';
-  const notRefresh = await owner.request(api, owner.form({ action: 'paste', refreshToken: 'xoxe.xoxp-1-access' }));
-  assert.equal(notRefresh.status, 400);
-  assert.match(await notRefresh.text(), /That isn(&#39;|')t a refresh token\. Copy the Refresh Token, which starts with xoxe-\./);
-  assert.deepEqual(rotations, []);
-
-  const other = await owner.request(api, owner.form({ action: 'paste', refreshToken: 'xoxe-1-other-team-0000' }));
-  assert.equal(other.status, 400);
-  assert.match(await other.text(), /That token is for a different Slack workspace\. Generate one for this workspace\./);
-  assert.equal(await owner.service.hasConfigurationToken(), false);
-
-  team = TEAM;
-  const good = await owner.request(api, owner.form({ action: 'paste', refreshToken: 'xoxe-1-good-token-0000' }));
-  assert.equal(good.status, 200);
-  const html = await good.text();
-  assert.match(html, /Creating Support(&#39;|')s Slack app/);
-  assert.match(html, /Go back to Slack\. Chickpea will message you in a moment so you can allow it\./);
-  assert.equal(html.includes('xoxe-1-good-token-0000'), false, 'the token never echoes');
-  assert.deepEqual(owner.calls, ['dm:UOWNER', 'post:D_UOWNER'], 'the user group keeps answering until Allow');
-  const presence = (await owner.config.getAgent('agent_support')).slackPresence;
-  assert.equal(presence?.kind, undefined);
-  assert.equal(presence?.app?.state, 'awaiting_consent', 'Slack accepted the create and the update');
-
-  const again = await owner.request(api, owner.form({ action: 'create' }));
-  assert.equal(again.status, 409);
-  assert.match(await again.text(), /Support already has its own Slack app\./);
-
-  const withToken = await owner.request('/admin/agents/agent_support/slack-app');
-  assert.match(await withToken.text(), /Remove the configuration token/);
-  const removed = await owner.request(api, owner.form({ action: 'remove' }));
-  assert.equal(removed.status, 200);
-  const removal = await removed.text();
-  assert.match(removal, /<p>Chickpea deleted its copy of your configuration token, and the token no longer works\.<\/p>/);
-  assert.equal(removal.includes('Your Apps'), false, 'Slack stops listing a token that still works, so the page never sends the Owner there to check');
-  assert.equal(await owner.service.hasConfigurationToken(), false);
-  assert.deepEqual(rotations.slice(2), ['xoxe-1-r'], 'removal spends the stored refresh token with one rotation');
-});
-
-test("without the Owner's user-group permission a pasted token is kept, nothing starts, and the page sends the Owner to Admin's update", async (t) => {
+test("without the Owner's user-group permission a press starts nothing and says so, and the token is kept", async (t) => {
   const owner = await adminApp(t, {
     permissionMissing: true,
     slack: { rotate: async () => ({ accessToken: 'xoxe.xoxp-1-a', refreshToken: 'xoxe-1-r', teamId: TEAM, expiresAt: Date.now() + 3_600_000 }) },
   });
-  const response = await owner.request('/admin/api/agents/agent_support/slack-app/token', owner.form({ action: 'paste', refreshToken: 'xoxe-1-good-token-0000' }));
-  assert.equal(response.status, 409);
-  const html = await response.text();
-  assert.match(html, /<p>Chickpea needs one more Slack permission to give @support its own Slack app\. In Chickpea Admin, choose Update in Slack, then try again\.<\/p>/);
-  assert.match(html, /<a class="auth-link" href="\/admin">Open Chickpea<\/a>/);
-  assert.equal(html.includes('Creating Support'), false);
-  assert.equal(html.includes('Try again'), false);
+  const json = (method: string, body: unknown): RequestInit => ({ method, body: JSON.stringify(body), headers: { 'content-type': 'application/json' } });
+  assert.equal((await owner.request('/admin/api/slack-apps/token', json('PUT', { refreshToken: 'xoxe-1-good-token-0000' }))).status, 200);
+  const pressed = await owner.request('/admin/api/slack-apps/agents/agent_support/start', json('POST', {}));
+  assert.equal(pressed.status, 409);
+  assert.deepEqual(await pressed.json(), { error: 'permission_needed' });
   assert.deepEqual(owner.calls, ['dm:UOWNER', 'post:D_UOWNER'], 'the Owner is told in Slack too, and no handle is released');
   assert.equal(await owner.service.hasConfigurationToken(), true, 'the token is kept for the next start');
   assert.equal((await owner.config.getAgent('agent_support')).slackPresence?.kind, undefined);

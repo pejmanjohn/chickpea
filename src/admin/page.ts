@@ -54,6 +54,8 @@ export function adminUiConfig(input: {
   usageAdminUi: boolean;
   workspaceAdminUi: boolean;
   installationOwner?: boolean;
+  /** An Owner signed in as themselves, where the host offers each Agent its own Slack app. */
+  agentSlackAppsOffered?: boolean;
   /**
    * Settings › Browser, where the operator connects their own Browserbase
    * project. False on a deployment serving many installations: its host
@@ -90,6 +92,7 @@ export function adminUiConfig(input: {
     usageAdminUi: input.usageAdminUi,
     workspaceAdminUi: input.workspaceAdminUi,
     installationOwner: input.installationOwner === true,
+    agentSlackAppsOffered: input.agentSlackAppsOffered === true,
     browserSetupOffered: input.browserSetupOffered !== false,
     websiteLoginsOffered: input.websiteLoginsOffered !== false,
     websiteLoginsRemoveOnly: input.websiteLoginsOffered === false && input.websiteLoginsRemoveOnly === true,
@@ -153,6 +156,7 @@ export function renderAdminPage(
     usageAdminUi?: boolean;
     workspaceAdminUi?: boolean;
     installationOwner?: boolean;
+    agentSlackAppsOffered?: boolean;
     browserSetupOffered?: boolean;
     websiteLoginsOffered?: boolean;
     websiteLoginsRemoveOnly?: boolean;
@@ -232,6 +236,7 @@ ${onboarding ? `<div id="app" class="frame onboarding-frame" aria-busy="true"><m
 <p id="admin-status" class="sr-only" role="status" aria-live="polite"></p>
 <script id="chickpea-admin-config" type="application/json">${adminUiConfigJson({
     isCloudflare, usageAdminUi, workspaceAdminUi, installationOwner: options.installationOwner === true,
+    agentSlackAppsOffered: options.agentSlackAppsOffered === true,
     browserSetupOffered: options.browserSetupOffered !== false,
     websiteLoginsOffered: options.websiteLoginsOffered !== false,
     websiteLoginsRemoveOnly: options.websiteLoginsRemoveOnly === true, selfHosted,

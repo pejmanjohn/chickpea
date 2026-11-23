@@ -4062,3 +4062,76 @@ button.capability-pill { cursor: pointer; }
   .ready-made-list li { gap: 12px; grid-template-columns: 44px minmax(0, 1fr) auto; }
   .ready-made-list img { border-radius: 12px; height: 44px; width: 44px; }
 }
+
+/* Agents in Slack: Destinations › Slack › Connection, Owners only */
+.slack-apps-section .action-well { margin-top: 13px; }
+.slack-apps-section .section-head .link-btn { flex: none; }
+.slack-apps-callout { margin-top: 16px; }
+.slack-apps-callout > span:not(.g) { flex: 1; }
+.slack-apps-callout .btn { flex: none; }
+.slack-apps-callout strong { color: var(--text); }
+.slack-apps-section .callout { align-items: center; flex-wrap: wrap; }
+.slack-apps-section .callout-success { align-items: flex-start; }
+.slack-apps-list { border: 1px solid var(--line); border-radius: 16px; margin-top: 16px; overflow: hidden; }
+.slack-apps-list-title { background: var(--well); border-bottom: 1px solid var(--line); color: var(--text-3); font-size: .6875rem; font-weight: 700; letter-spacing: .09em; padding: 11px 16px; text-transform: uppercase; }
+.slack-apps-row { align-items: center; display: grid; gap: 14px; grid-template-columns: 42px minmax(0, 1fr) auto; padding: 14px 16px; }
+.slack-apps-row + .slack-apps-row { border-top: 1px solid var(--line); }
+.slack-apps-row.is-ready { background: rgba(221, 160, 51, .08); }
+.slack-apps-row.needs-attention { background: rgba(181, 71, 58, .05); }
+.slack-apps-avatar { border-radius: 11px; display: block; height: 42px; object-fit: cover; width: 42px; }
+.slack-apps-avatar.agent-roster-icon { display: grid; place-items: center; }
+.slack-apps-row-copy { min-width: 0; }
+.slack-apps-row-name { align-items: baseline; display: flex; flex-wrap: wrap; gap: 8px; }
+.slack-apps-row-name strong { color: var(--text); font-size: .9375rem; }
+.slack-apps-row-name .mono { color: var(--text-3); font-size: .75rem; }
+.slack-apps-channels { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.slack-apps-channel { align-items: center; background: var(--semantic-channel-bg); border-radius: 7px; color: var(--semantic-channel-fg); display: inline-flex; font-size: .75rem; font-weight: 700; gap: 3px; padding: 2px 7px; }
+.slack-apps-channel .ic { height: 11px; width: 11px; }
+.slack-apps-row-note { color: var(--text); font-size: .875rem; font-weight: 700; line-height: 1.45; margin-top: 9px; }
+.slack-apps-row.needs-attention .slack-apps-row-note { font-weight: 500; }
+.slack-apps-row-keep { color: var(--text-3); font-size: .75rem; margin-top: 2px; }
+.slack-apps-row .inline-status { margin-top: 8px; }
+.slack-apps-row-action { align-items: center; display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; }
+.slack-apps-status { align-items: center; color: var(--text-2); display: inline-flex; font-size: .8125rem; font-weight: 700; gap: 8px; }
+.slack-apps-own { align-items: center; color: var(--ok); display: inline-flex; font-size: .8125rem; font-weight: 700; gap: 7px; white-space: nowrap; }
+.slack-apps-own .dot { background: currentColor; border-radius: 50%; height: 7px; width: 7px; }
+.slack-apps-token-row { align-items: center; justify-content: space-between; margin-top: 16px; }
+@media (max-width: 640px) {
+  .slack-apps-row { grid-template-columns: 42px minmax(0, 1fr); }
+  .slack-apps-row-action { grid-column: 2; justify-content: flex-start; }
+}
+
+/* The token page */
+.slack-token-page { display: flex; flex-direction: column; margin: 0 auto; max-width: 760px; width: 100%; }
+.slack-token-back { align-self: flex-start; margin-bottom: 18px; }
+.slack-token-title { font-size: 1.75rem; line-height: 1.2; }
+.slack-token-intro { color: var(--text-2); font-size: 1rem; line-height: 1.5; margin-top: 10px; }
+.slack-token-success { align-self: flex-start; margin: 22px 0 18px; }
+.slack-token-steps { display: flex; flex-direction: column; gap: 18px; list-style: none; margin: 26px 0 0; padding: 0; }
+.slack-token-steps li { display: grid; gap: 14px; grid-template-columns: 30px minmax(0, 1fr); }
+.slack-token-steps p { color: var(--text); font-size: .9375rem; line-height: 1.45; padding-top: 5px; }
+.slack-token-steps strong { font-weight: 700; }
+.slack-token-step { align-items: center; background: var(--ember-tint); border-radius: 999px; color: var(--ember-deep); display: inline-flex; font-weight: 800; height: 30px; justify-content: center; width: 30px; }
+.slack-token-open { margin-top: 10px; }
+.slack-token-form { border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; margin-top: 26px; padding-top: 22px; }
+.slack-token-field { display: flex; gap: 10px; }
+.slack-token-field .input { flex: 1; font-size: .9375rem; height: 44px; letter-spacing: .08em; min-width: 0; padding: 0 14px; }
+.slack-token-field .input::placeholder { letter-spacing: 0; }
+.slack-token-checking { align-items: center; color: var(--text-2); display: flex; font-size: .875rem; font-weight: 700; gap: 9px; }
+.slack-token-note { line-height: 1.5; margin-top: 12px; max-width: 38em; }
+.slack-token-illustration { border: 1px solid var(--line-strong); border-radius: 12px; box-shadow: var(--card-shadow); font-family: Lato, -apple-system, "Helvetica Neue", sans-serif; margin-top: 12px; max-width: 520px; overflow: hidden; }
+.slack-token-browser { align-items: center; background: #eceaf0; display: flex; gap: 5px; height: 24px; padding: 0 9px; }
+.slack-token-browser span { background: #c9c6cf; border-radius: 50%; height: 8px; width: 8px; }
+.slack-token-browser em { background: #fff; border-radius: 5px; color: #6b6a70; font-size: 10.5px; font-style: normal; margin-left: 10px; padding: 1px 10px; }
+.slack-token-card { background: #fff; color: #1d1c1d; padding: 14px 16px 16px; }
+.slack-token-head { align-items: center; display: flex; gap: 10px; justify-content: space-between; }
+.slack-token-head strong { font-size: 15px; font-weight: 800; }
+.slack-token-generate { border: 1px solid #bbbabb; border-radius: 6px; font-size: 12px; font-weight: 700; padding: 4px 10px; white-space: nowrap; }
+.slack-token-workspace { align-items: center; display: flex; font-size: 13px; font-weight: 700; gap: 7px; margin: 12px 0 6px; }
+.slack-token-workspace-icon { background: #e8912d; border-radius: 5px; color: #fff; display: inline-grid; font-size: 11px; font-weight: 800; height: 20px; place-items: center; width: 20px; }
+.slack-token-row { align-items: center; border: 1px solid #e2e2e2; border-radius: 6px; display: grid; font-size: 12.5px; gap: 10px; grid-template-columns: 96px minmax(0, 1fr) auto; margin-top: 6px; padding: 7px 10px; }
+.slack-token-label { color: #454245; font-weight: 700; }
+.slack-token-value { background: #f6f6f6; border-radius: 4px; color: #616061; font-family: Menlo, monospace; letter-spacing: 1px; overflow: hidden; padding: 2px 6px; white-space: nowrap; }
+.slack-token-copy { color: #1264a3; font-weight: 700; }
+.slack-token-row.highlighted { background: #fff8e6; border-color: #e5ac44; box-shadow: 0 0 0 3px rgba(229, 172, 68, .35); }
+.slack-token-field .input-error { border-color: var(--danger); }
