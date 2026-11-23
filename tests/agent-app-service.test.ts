@@ -300,7 +300,7 @@ function buttons(message: Posted): Array<[string, string]> {
 }
 
 const PERMISSION_NEEDED = escapeMrkdwn(
-  "Chickpea needs one more Slack permission to give @support its own Slack app. In Chickpea Admin, choose Update in Slack, then choose Give @support its own Slack app in Chickpea's Home tab.",
+  "Chickpea needs one more Slack permission to give @support its own Slack app. In Chickpea Admin, choose Update in Slack, then try again.",
 );
 
 // Defects caught: a start that turns the user group off before the app exists, so the Agent goes quiet until Allow.
@@ -705,7 +705,7 @@ test('refusals at the other steps log too, each with the app it concerns', async
   spent.clock.now = NOW + 13 * 3_600_000;
   spent.slack.rotate = async () => { throw new SlackRefused('tooling.tokens.rotate', 'invalid_refresh_token'); };
   await spent.service.start('agent_support', OWNER);
-  assert.equal(await spent.service.pasteConfigurationToken('xoxe-1-pasted-again-0000'), 'rejected');
+  assert.equal(await spent.service.pasteConfigurationToken('xoxe-1-pasted-again-0000', OWNER), 'rejected');
 
   assert.deepEqual(refusals.map(({ step, agentId, appId, code, errors }) => ({ step, agentId, appId, code, errors })), [
     { step: 'update', agentId: 'agent_support', appId: 'A0APP1', code: 'invalid_manifest', errors: [{ message: 'Invalid URL', pointer: '/settings/event_subscriptions/request_url' }] },

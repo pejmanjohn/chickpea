@@ -1636,7 +1636,7 @@ test("Chickpea's in-Slack Add that leaves the app's bot out tells the person how
   refuse: { [`conversations.invite ${MAIN_BOT}`]: 'missing_scope', [`conversations.join ${AGENT_BOT}`]: 'missing_scope' },
 }));
 
-test("the Owner's App Home reads the permission bar's fact: without the user-group token Finance's offer sends the Owner to Admin", async (t) => withHarness(t, async (h) => {
+test("the Owner's App Home offers no Agent its own Slack app, with or without the user-group permission", async (t) => withHarness(t, async (h) => {
   configureHostedSlackPermissionsUpdate({ path: '/start/reinstall', grantsUserGroupToken: true });
   t.after(() => configureHostedSlackPermissionsUpdate(undefined));
   const home = async (): Promise<string> => {
@@ -1656,8 +1656,7 @@ test("the Owner's App Home reads the permission bar's fact: without the user-gro
   };
 
   const missing = await home();
-  assert.ok(missing.includes(escapeMrkdwn('Chickpea needs one more Slack permission to give @finance its own Slack app. In Chickpea Admin, choose Update in Slack.')));
-  assert.ok(missing.includes('"url":"https://hosted.example/admin"'));
+  assert.equal(missing.includes('one more Slack permission'), false);
   assert.equal(missing.includes(escapeMrkdwn('Give @finance its own Slack app')), false);
 
   await writeHostedSlackBotCredentials({ state: h.stores.identity, keyring: loadCredentialKeyring() }, h.hostedRevision, {
@@ -1666,7 +1665,7 @@ test("the Owner's App Home reads the permission bar's fact: without the user-gro
   });
   invalidateSlackInstallationCredentialCache();
   const held = await home();
-  assert.ok(held.includes(escapeMrkdwn('Give @finance its own Slack app')), 'with the token held the Owner can start');
+  assert.equal(held.includes(escapeMrkdwn('Give @finance its own Slack app')), false, 'starting is in Admin');
   assert.equal(held.includes('one more Slack permission'), false);
 }));
 

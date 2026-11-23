@@ -43,8 +43,8 @@ test('a button never carries more text than Slack takes, however long the name o
   const long = { name: 'S'.repeat(80), handle: 'h'.repeat(80) };
   const allowButton = (agentAppMessage('allow', long, LINKS)!.blocks[1] as { elements: Array<{ text: { text: string } }> }).elements[0]!;
   assert.ok(allowButton.text.text.length <= 75, `Allow label is ${allowButton.text.text.length} characters`);
-  const offer = agentAppHomeBlocks({ kind: 'offer', tokenPageUrl: undefined }, long, 'agent_support')[0] as { elements: Array<{ text: { text: string } }> };
-  assert.ok(offer.elements[0]!.text.text.length <= 75, `offer label is ${offer.elements[0]!.text.text.length} characters`);
+  const finish = agentAppHomeBlocks({ kind: 'stalled' }, long, 'agent_support')[1] as { elements: Array<{ text: { text: string } }> };
+  assert.ok(finish.elements[0]!.text.text.length <= 75, `Finish label is ${finish.elements[0]!.text.text.length} characters`);
 });
 
 // Defect caught: an Agent granted many Channels overflowing Slack's 3,000-character section, so Slack refuses the

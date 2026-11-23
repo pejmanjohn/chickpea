@@ -1,0 +1,426 @@
+import assert from 'node:assert/strict';
+import { test, type TestContext } from 'node:test';
+
+import { createAdminRoutes } from '../src/admin/routes.ts';
+import type { AuthPrincipal } from '../src/auth/types.ts';
+import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
+import { SqliteSettingsStore } from '../src/config/settings-store.ts';
+import { SqliteConfigStore } from '../src/config/store.ts';
+import {
+  AWAITING_OWN_APP,
+  type AgentAppLifecycle,
+  type AgentSlackPresence,
+  type CustomAgentConfig,
+} from '../src/config/types.ts';
+import type { IdentityStore } from '../src/identity/types.ts';
+import { agentRoutineDeletion } from '../src/routines/store.ts';
+import { type AgentSlackAppsHost, configureAgentSlackApps } from '../src/slack/agent-apps/host.ts';
+import { configurationTokenKey } from '../src/slack/agent-apps/secrets.ts';
+import { AgentSlackApps } from '../src/slack/agent-apps/service.ts';
+import { AGENT_SLACK_APPS_SETTING_KEY, readAgentSlackAppsSetting } from '../src/slack/agent-apps/setting.ts';
+import { type AgentAppSlackApi, SlackRefused, SlackUnavailable } from '../src/slack/agent-apps/slack-api.ts';
+import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
+import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
+import { refuseLikeSlack } from './helpers/slack-manifest-rules.ts';
+
+const TOKEN = 'admin-token';
+const TEAM = 'T_TEST';
+const OWNER = 'UOWNER';
+const NOW = 1_800_000_000_000;
+const PASTED = 'xoxe-1-pasted-refresh-token-0000';
+const HOST: AgentSlackAppsHost = {
+  requestUrls: () => ({ events: 'https://cloud.test/e', interactions: 'https://cloud.test/i' }),
+  redirectUri: 'https://cloud.test/slack/agent-apps/callback',
+  allowUrl: (agentId) => `https://cloud.test/slack/agent-apps/allow/${agentId}`,
+};
+const HOSTED = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_a' });
+const API = '/admin/api/slack-apps';
+const APP = { appId: 'A0APP9', clientId: '9.client' };
+const AVATAR = { kind: 'generated' as const, revision: 1, seed: 's' };
+
+function principal(role: AuthPrincipal['role'], machine = false): AuthPrincipal {
+  return {
+    userId: `user_${role}`, membershipId: `membership_${role}`, organizationId: 'org_test', role,
+    authenticatorKind: machine ? 'personal_token' : 'test_slack_session', credentialId: `credential_${role}`,
+    correlationId: `request_${role}`, machine,
+  };
+}
+
+const people = {
+  getMembership: async (id: string) => ({ id, userId: id.replace('membership_', 'user_'), status: 'active' }),
+  getUser: async (id: string) => ({ id, displayName: id, slackUserId: id.replace('user_', 'U').toUpperCase(), slackTeamId: TEAM }),
+  recordAuthAudit: async () => undefined,
+} as unknown as IdentityStore;
+
+function group(handle: string, extra: Partial<AgentSlackPresence> = {}): AgentSlackPresence {
+  return { requestedHandle: handle, normalizedHandle: handle, desiredState: 'active', health: 'healthy', avatar: AVATAR, userGroupId: `S_${handle}`, ...extra } as AgentSlackPresence;
+}
+
+const notInSlack = (handle: string): AgentSlackPresence => ({
+  requestedHandle: handle, normalizedHandle: handle, desiredState: 'active', health: 'pending', avatar: AVATAR, errorCode: AWAITING_OWN_APP,
+});
+
+function ownApp(handle: string, app: AgentAppLifecycle): AgentSlackPresence {
+  return { kind: 'agent_app', requestedHandle: handle, normalizedHandle: handle, desiredState: 'active', health: 'healthy', avatar: AVATAR, app };
+}
+
+function agent(id: string, name: string, slackPresence: AgentSlackPresence): CustomAgentConfig {
+  return {
+    id, kind: 'user', revision: 1, name, instructions: `You are ${name}.`, enabled: true, lifecycle: 'active',
+    editPolicy: 'creator_and_admins', configurationGeneration: 1, slackPresence,
+    skills: [], mcpServers: [], apiConnections: [], repositories: [],
+  };
+}
+
+interface SlackScript {
+  rotate?: AgentAppSlackApi['rotate'] | undefined;
+  deleted: string[];
+  created: number;
+}
+
+async function adminApp(t: TestContext, options: { role?: AuthPrincipal['role']; machine?: boolean; port?: boolean; permissionMissing?: boolean } = {}) {
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => { config.close(); settings.close(); configureAgentSlackApps(undefined); });
+  const support = await config.createAgent(agent('agent_support', 'Support', group('support')));
+  await config.ensureWorkspaceInstallation({ workspaceId: TEAM, teamId: TEAM, transportMode: 'direct', defaultAgentId: support.id, runtimeContract: 'chickpea-v1' });
+  let rotations = 0;
+  const script: SlackScript = { deleted: [], created: 0 };
+  const slack: AgentAppSlackApi = {
+    rotate: async (refreshToken) => {
+      if (script.rotate) return script.rotate(refreshToken);
+      rotations += 1;
+      return { accessToken: `xoxe.xoxp-1-access-${rotations}`, refreshToken: `xoxe-1-rotated-${rotations}-0000`, teamId: TEAM, expiresAt: NOW + 12 * 3_600_000 };
+    },
+    create: async (_token, manifest) => {
+      refuseLikeSlack('apps.manifest.create', manifest);
+      script.created += 1;
+      return { appId: `A0APP${script.created}`, clientId: `${script.created}.client`, clientSecret: 'cs', signingSecret: 'ss' };
+    },
+    update: async (_token, _appId, manifest) => { refuseLikeSlack('apps.manifest.update', manifest); },
+    setIcon: async () => undefined,
+    exchange: async () => { throw new Error('unexpected exchange'); },
+    uninstall: async () => { throw new Error('unexpected uninstall'); },
+    delete: async (_token, appId) => { script.deleted.push(appId); return 'deleted'; },
+  };
+  const calls: string[] = [];
+  const service = new AgentSlackApps({
+    env: HOSTED, stores: { config, settings }, host: HOST, slack, keyring: generateCredentialKeyring('k1'), armSwitch: async () => undefined,
+    now: () => NOW,
+    transport: {
+      disableUserGroup: async (id) => { calls.push(`disable:${id}`); return { id, name: 'x', handle: 'x', disabled: true }; },
+      enableUserGroup: async (id) => { calls.push(`enable:${id}`); return { id, name: 'x', handle: 'x', disabled: false }; },
+      openDirectConversation: async (user) => { calls.push(`dm:${user}`); return { id: `D_${user}`, private: true, member: true, archived: false }; },
+      postMessage: async (input) => { calls.push(`post:${input.channelId}`); return { channelId: input.channelId, ts: '1.0' }; },
+    },
+    userGroupPermissionMissing: async () => options.permissionMissing ?? false,
+  });
+  configureAgentSlackApps(options.port === false ? undefined : HOST);
+  const app = createAdminRoutes({
+    store: config, settings,
+    agentSlackApps: async () => service,
+    ...testAdminAuthority(TOKEN, undefined, people, principal(options.role ?? 'owner', options.machine)),
+  });
+  const request = (path: string, init: RequestInit = {}, headers: Record<string, string> = {}) =>
+    app.request(path, { ...init, headers: { ...testAdminHeaders(TOKEN), ...(init.headers as Record<string, string> | undefined), ...headers } }, HOSTED);
+  const json = (method: string, body?: unknown): RequestInit => ({
+    method, ...(body === undefined ? {} : { body: JSON.stringify(body) }), headers: { 'content-type': 'application/json' },
+  });
+  return { request, json, service, calls, config, settings, script };
+}
+
+/** Every console line written while `run` runs, so a test can show a secret never reaches one. */
+async function consoleLines<T>(run: () => Promise<T>): Promise<{ result: T; lines: string }> {
+  const methods = ['log', 'info', 'warn', 'error', 'debug'] as const;
+  const original = methods.map((method) => console[method]);
+  const lines: string[] = [];
+  for (const method of methods) console[method] = (...args: unknown[]) => { lines.push(args.map((arg) => typeof arg === 'string' ? arg : JSON.stringify(arg)).join(' ')); };
+  try {
+    return { result: await run(), lines: lines.join('\n') };
+  } finally {
+    methods.forEach((method, index) => { console[method] = original[index]!; });
+  }
+}
+
+test('the setting reads as shared when absent or unreadable, and stores who changed it and when', async (t) => {
+  const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => settings.close());
+  assert.deepEqual(await readAgentSlackAppsSetting(settings), { mode: 'shared' });
+  await settings.setSetting(AGENT_SLACK_APPS_SETTING_KEY, '{"mode":"sideways"}');
+  assert.deepEqual(await readAgentSlackAppsSetting(settings), { mode: 'shared' }, 'an unknown mode is not a reason to change behavior');
+  await settings.setSetting(AGENT_SLACK_APPS_SETTING_KEY, JSON.stringify({ mode: 'own_app', changedBy: OWNER, changedAt: NOW }));
+  assert.deepEqual(await readAgentSlackAppsSetting(settings), { mode: 'own_app', changedBy: OWNER, changedAt: NOW });
+});
+
+test('only an Owner signed in as themselves reads or changes anything, and only with the port', async (t) => {
+  const routes: Array<[string, RequestInit]> = [];
+  const build = (app: Awaited<ReturnType<typeof adminApp>>) => {
+    routes.length = 0;
+    routes.push(
+      [API, {}],
+      [`${API}/mode`, app.json('PUT', { mode: 'own_app' })],
+      [`${API}/token`, app.json('PUT', { refreshToken: PASTED })],
+      [`${API}/token`, app.json('DELETE')],
+      [`${API}/agents/agent_support/start`, app.json('POST', {})],
+      [`${API}/agents/agent_support/cancel`, app.json('POST', {})],
+    );
+    return routes;
+  };
+  for (const [label, options, status] of [
+    ['an Admin', { role: 'admin' as const }, 403],
+    ['a Member', { role: 'member' as const }, 403],
+    ["an Owner's personal token", { machine: true }, 403],
+    ['a deployment without the port', { port: false }, 404],
+  ] as const) {
+    const app = await adminApp(t, options);
+    for (const [path, init] of build(app)) {
+      const response = await app.request(path, init);
+      assert.equal(response.status, status, `${label}: ${init.method ?? 'GET'} ${path}`);
+      assert.equal((await response.text()).includes(PASTED), false);
+    }
+    assert.deepEqual(await readAgentSlackAppsSetting(app.settings), { mode: 'shared' });
+    assert.equal(await app.settings.getEncryptedCredentialRevision(configurationTokenKey(TEAM)), undefined);
+    assert.deepEqual(app.calls, []);
+  }
+});
+
+test("a change without Admin's request protection never reaches a route", async (t) => {
+  const owner = await adminApp(t);
+  for (const [path, init] of [
+    [`${API}/mode`, owner.json('PUT', { mode: 'own_app' })],
+    [`${API}/token`, owner.json('PUT', { refreshToken: PASTED })],
+    [`${API}/token`, owner.json('DELETE')],
+    [`${API}/agents/agent_support/start`, owner.json('POST', {})],
+    [`${API}/agents/agent_support/cancel`, owner.json('POST', {})],
+  ] as const) {
+    const foreign = await owner.request(path, init, { origin: 'https://evil.test', 'sec-fetch-site': 'cross-site' });
+    assert.equal(foreign.status, 403, `cross-origin ${init.method} ${path}`);
+    if (init.method === 'DELETE') continue;
+    const form = await owner.request(path, { method: init.method!, body: 'mode=own_app', headers: { 'content-type': 'application/x-www-form-urlencoded' } });
+    assert.equal(form.status, 415, `a form ${init.method} ${path}`);
+  }
+  assert.deepEqual(await readAgentSlackAppsSetting(owner.settings), { mode: 'shared' });
+  assert.deepEqual(owner.calls, []);
+});
+
+test('an Owner turns the mode on and off; a bad mode changes nothing', async (t) => {
+  const owner = await adminApp(t);
+  const read = await owner.request(API);
+  assert.equal(read.status, 200);
+  assert.equal(read.headers.get('cache-control'), 'no-store');
+  assert.deepEqual((await read.json() as { setting: unknown }).setting, { mode: 'shared', changedBy: null, changedAt: null });
+
+  const on = await owner.request(`${API}/mode`, owner.json('PUT', { mode: 'own_app' }));
+  assert.equal(on.status, 200);
+  assert.deepEqual(await on.json(), { setting: { mode: 'own_app', changedBy: OWNER, changedAt: NOW } });
+  assert.equal((await owner.request(`${API}/mode`, owner.json('PUT', { mode: 'everything' }))).status, 400);
+  assert.equal((await owner.request(`${API}/mode`, owner.json('PUT', { mode: 'shared', extra: 1 }))).status, 400);
+  assert.deepEqual(await readAgentSlackAppsSetting(owner.settings), { mode: 'own_app', changedBy: OWNER, changedAt: NOW });
+
+  const off = await owner.request(`${API}/mode`, owner.json('PUT', { mode: 'shared' }));
+  assert.deepEqual(await off.json(), { setting: { mode: 'shared', changedBy: OWNER, changedAt: NOW } });
+});
+
+test('each paste outcome answers as the token page does, and the token never leaves the request', async (t) => {
+  const owner = await adminApp(t);
+  const paste = (refreshToken: string) => owner.request(`${API}/token`, owner.json('PUT', { refreshToken }));
+  const { lines } = await consoleLines(async () => {
+    const access = await paste('xoxe.xoxp-1-access-token-0000');
+    assert.equal(access.status, 400);
+    assert.deepEqual(await access.json(), { error: 'not_refresh_token' });
+
+    owner.script.rotate = async () => { throw new SlackRefused('tooling.tokens.rotate', 'invalid_refresh_token'); };
+    const rejected = await paste(PASTED);
+    assert.equal(rejected.status, 400);
+    assert.deepEqual(await rejected.json(), { error: 'rejected' });
+
+    owner.script.rotate = async () => ({ accessToken: 'xoxe.xoxp-1-other', refreshToken: 'xoxe-1-other-0000', teamId: 'T_OTHER', expiresAt: NOW + 3_600_000 });
+    const other = await paste(PASTED);
+    assert.equal(other.status, 400);
+    assert.deepEqual(await other.json(), { error: 'other_workspace' });
+
+    owner.script.rotate = async () => { throw new SlackUnavailable('tooling.tokens.rotate', 'network_error'); };
+    const down = await paste(PASTED);
+    assert.equal(down.status, 503);
+    assert.deepEqual(await down.json(), { error: 'slack_down' });
+    assert.equal(await owner.settings.getEncryptedCredentialRevision(configurationTokenKey(TEAM)), undefined, 'nothing is stored on any refusal');
+
+    owner.script.rotate = undefined;
+    const saved = await paste(PASTED);
+    assert.equal(saved.status, 200);
+    const body = await saved.text();
+    assert.deepEqual(JSON.parse(body), { token: { stored: true, pastedBy: OWNER, pastedAt: NOW } });
+    for (const secret of [PASTED, 'xoxe-1-rotated-1-0000', 'xoxe.xoxp-1-access-1']) assert.equal(body.includes(secret), false);
+
+    const read = await (await owner.request(API)).text();
+    assert.deepEqual(JSON.parse(read).token, { stored: true, pastedBy: OWNER, pastedAt: NOW });
+    for (const secret of [PASTED, 'xoxe-1-rotated-1-0000', 'xoxe.xoxp-1-access-1']) assert.equal(read.includes(secret), false);
+  });
+  for (const secret of [PASTED, 'xoxe-1-rotated', 'xoxe.xoxp-1-access', 'xoxe-1-other']) assert.equal(lines.includes(secret), false, `${secret} is never logged`);
+  assert.deepEqual(owner.calls, [], 'a paste starts no app');
+});
+
+test('removing the token spends it with one rotation and discards the result; a second remove is harmless', async (t) => {
+  const owner = await adminApp(t);
+  const spent: string[] = [];
+  assert.equal((await owner.request(`${API}/token`, owner.json('PUT', { refreshToken: PASTED }))).status, 200);
+  owner.script.rotate = async (refreshToken) => {
+    spent.push(refreshToken);
+    return { accessToken: 'xoxe.xoxp-1-discarded', refreshToken: 'xoxe-1-discarded-0000', teamId: TEAM, expiresAt: NOW + 3_600_000 };
+  };
+  const { result: removed, lines } = await consoleLines(async () => owner.request(`${API}/token`, owner.json('DELETE')));
+  assert.equal(removed.status, 200);
+  const body = await removed.text();
+  assert.deepEqual(JSON.parse(body), { token: { stored: false }, slackMayStillAccept: false });
+  assert.deepEqual(spent, ['xoxe-1-rotated-1-0000'], 'the stored refresh token is rotated once');
+  assert.equal(await owner.settings.getEncryptedCredentialRevision(configurationTokenKey(TEAM)), undefined, 'and nothing replaces it');
+  for (const secret of ['xoxe-1-discarded-0000', 'xoxe.xoxp-1-discarded', 'xoxe-1-rotated-1-0000']) {
+    assert.equal(body.includes(secret), false);
+    assert.equal(lines.includes(secret), false);
+  }
+  assert.equal(/your apps/i.test(body), false, 'the answer never sends the Owner to Your Apps');
+
+  const again = await owner.request(`${API}/token`, owner.json('DELETE'));
+  assert.equal(again.status, 200);
+  assert.deepEqual(await again.json(), { token: { stored: false }, slackMayStillAccept: false });
+  assert.equal(spent.length, 1, 'nothing left to rotate');
+});
+
+test('a rotation Slack refuses or does not answer still deletes the stored copy, and says Slack may still accept it', async (t) => {
+  for (const failure of [new SlackRefused('tooling.tokens.rotate', 'invalid_refresh_token'), new SlackUnavailable('tooling.tokens.rotate', 'network_error')]) {
+    const owner = await adminApp(t);
+    assert.equal((await owner.request(`${API}/token`, owner.json('PUT', { refreshToken: PASTED }))).status, 200);
+    owner.script.rotate = async () => { throw failure; };
+    const { result: removed, lines } = await consoleLines(async () => owner.request(`${API}/token`, owner.json('DELETE')));
+    assert.equal(removed.status, 200);
+    assert.deepEqual(await removed.json(), { token: { stored: false }, slackMayStillAccept: true });
+    assert.equal(await owner.settings.getEncryptedCredentialRevision(configurationTokenKey(TEAM)), undefined);
+    assert.equal(lines.includes('xoxe-1-rotated-1-0000'), false);
+  }
+});
+
+test('the read lists each user Agent with its name, handle, avatar, Channels and Slack state', async (t) => {
+  const owner = await adminApp(t);
+  const { config } = owner;
+  const at = NOW - 1_000;
+  const states: Array<[string, AgentSlackPresence]> = [
+    ['agent_new', notInSlack('newbie')],
+    ['agent_creating', group('creating', { app: { state: 'creating', at, startedBy: OWNER, manifestFingerprint: 'f' } })],
+    ['agent_waiting', group('waiting', { app: { state: 'awaiting_consent', at, startedBy: OWNER, app: APP, icon: 'agent_avatar', allowDm: { channelId: 'D1', ts: '1.0' } } })],
+    ['agent_switching', ownApp('switching', { state: 'active', at, app: APP, icon: 'agent_avatar', botUserId: 'UBOT1', installedAt: at, installedBy: OWNER, switchProgress: 'group_pending' })],
+    ['agent_own', ownApp('own', { state: 'active', at, app: { appId: 'A0OWN', clientId: '2.c' }, icon: 'agent_avatar', botUserId: 'UBOT2', installedAt: at, installedBy: OWNER })],
+    ['agent_attention', group('attention', { app: { state: 'needs_attention', at, startedBy: OWNER, reason: 'create_refused', resume: 'creating' } })],
+  ];
+  for (const [id, presence] of states) {
+    const created = await config.createAgent(agent(id, id.replace('agent_', ''), group(id.replace('agent_', ''))));
+    await config.updateAgent(id, { slackPresence: presence }, created.revision);
+  }
+  await config.putAgentChannelGrant({ workspaceId: TEAM, channelId: 'C1', agentId: 'agent_support', status: 'active', createdByMembershipId: 'm', channelLabel: 'support', channelIsPrivate: false });
+  await config.putAgentChannelGrant({ workspaceId: TEAM, channelId: 'G2', agentId: 'agent_support', status: 'pending', createdByMembershipId: 'm', channelIsPrivate: true });
+  const archived = await config.createAgent({ ...agent('agent_gone', 'Gone', group('gone')), lifecycle: 'archived' });
+  assert.equal(archived.lifecycle, 'archived');
+
+  const body = await (await owner.request(API)).json() as { agents: Array<{ id: string; name: string; handle: string; avatarUrl: string | null; slack: unknown; channels: unknown }> };
+  const byId = new Map(body.agents.map((row) => [row.id, row]));
+  assert.equal(byId.has('agent_gone'), false, 'an archived Agent is not listed');
+  assert.deepEqual(byId.get('agent_support'), {
+    id: 'agent_support', name: 'Support', handle: 'support', avatarUrl: 'http://localhost/assets/i/inst_a/agents/agent_support/avatar/1',
+    slack: { state: 'user_group' },
+    channels: [
+      { id: 'C1', name: 'support', private: false, status: 'active' },
+      { id: 'G2', name: null, private: true, status: 'pending' },
+    ],
+  });
+  assert.deepEqual(Object.fromEntries(states.map(([id]) => [id, byId.get(id)?.slack])), {
+    agent_new: { state: 'not_in_slack' },
+    agent_creating: { state: 'creating' },
+    agent_waiting: { state: 'waiting_for_allow' },
+    agent_switching: { state: 'switching' },
+    agent_own: { state: 'own_app' },
+    agent_attention: { state: 'needs_attention', reason: 'create_refused' },
+  });
+  assert.match(byId.get('agent_new')!.avatarUrl!, /^http:\/\/localhost\/assets\/i\/inst_a\/agents\/agent_new\/avatar\/\d+$/,
+    'a generated avatar is served by Admin itself');
+});
+
+test('Start moves a user-group Agent: the group keeps answering and the press leads straight to Allow', async (t) => {
+  const owner = await adminApp(t);
+  assert.equal((await owner.request(`${API}/token`, owner.json('PUT', { refreshToken: PASTED }))).status, 200);
+  const started = await owner.request(`${API}/agents/agent_support/start`, owner.json('POST', {}));
+  assert.equal(started.status, 200);
+  const body = await started.json() as { next: string; authorizeUrl: string; agent: { slack: unknown } };
+  assert.equal(body.next, 'authorize');
+  assert.deepEqual(body.agent.slack, { state: 'waiting_for_allow' });
+  const url = new URL(body.authorizeUrl);
+  assert.equal(url.origin + url.pathname, 'https://slack.com/oauth/v2/authorize');
+  assert.equal(url.searchParams.get('client_id'), '1.client');
+  assert.equal(url.searchParams.get('redirect_uri'), HOST.redirectUri);
+  assert.match(url.searchParams.get('state')!, /^agent_support\.[a-f0-9-]{36}$/);
+  const presence = (await owner.config.getAgent('agent_support')).slackPresence;
+  assert.equal(presence?.kind, undefined, 'still a user-group Agent');
+  assert.equal(presence?.userGroupId, 'S_support');
+  assert.equal(presence?.app?.state, 'awaiting_consent');
+  if (presence?.app?.state === 'awaiting_consent') assert.deepEqual(Object.keys(presence.app.consents ?? {}), [OWNER], "the nonce is the pressing Owner's");
+  assert.equal(owner.calls.some((call) => call.startsWith('disable:')), false, 'the group is never turned off before Allow');
+
+  const again = await owner.request(`${API}/agents/agent_support/start`, owner.json('POST', {}));
+  assert.equal(again.status, 200, 'a second press leads to Allow again');
+  assert.equal(owner.script.created, 1, 'two presses create one app');
+});
+
+test('Start adds a not-in-Slack-yet Agent the same way', async (t) => {
+  const owner = await adminApp(t);
+  const created = await owner.config.createAgent(agent('agent_new', 'Newbie', group('newbie')));
+  await owner.config.updateAgent('agent_new', { slackPresence: notInSlack('newbie') }, created.revision);
+  assert.equal((await owner.request(`${API}/token`, owner.json('PUT', { refreshToken: PASTED }))).status, 200);
+  const started = await owner.request(`${API}/agents/agent_new/start`, owner.json('POST', {}));
+  assert.equal(started.status, 200);
+  assert.equal((await started.json() as { next: string }).next, 'authorize');
+  const presence = (await owner.config.getAgent('agent_new')).slackPresence;
+  assert.equal(presence?.userGroupId, undefined);
+  assert.equal(presence?.errorCode, AWAITING_OWN_APP, 'still not in Slack until Allow');
+  assert.equal(presence?.app?.state, 'awaiting_consent');
+});
+
+test('Start with no token, or with one Slack refuses, asks for a token and changes neither the Agent nor the mode', async (t) => {
+  const owner = await adminApp(t);
+  await owner.request(`${API}/mode`, owner.json('PUT', { mode: 'own_app' }));
+  const before = await owner.config.getAgent('agent_support');
+  const none = await owner.request(`${API}/agents/agent_support/start`, owner.json('POST', {}));
+  assert.equal(none.status, 409);
+  assert.deepEqual(await none.json(), { error: 'token_needed' });
+  assert.deepEqual((await owner.config.getAgent('agent_support')).slackPresence, before.slackPresence);
+  assert.equal(owner.script.created, 0);
+
+  // The stored access token is about to expire, and Slack refuses the refresh token behind it.
+  owner.script.rotate = async () => ({ accessToken: 'xoxe.xoxp-1-short', refreshToken: 'xoxe-1-short-0000', teamId: TEAM, expiresAt: NOW + 60_000 });
+  assert.equal((await owner.request(`${API}/token`, owner.json('PUT', { refreshToken: PASTED }))).status, 200);
+  owner.script.rotate = async () => { throw new SlackRefused('tooling.tokens.rotate', 'invalid_refresh_token'); };
+  const refused = await owner.request(`${API}/agents/agent_support/start`, owner.json('POST', {}));
+  assert.equal(refused.status, 409);
+  assert.deepEqual(await refused.json(), { error: 'token_needed' });
+  assert.equal(owner.script.created, 0);
+  assert.equal((await readAgentSlackAppsSetting(owner.settings)).mode, 'own_app', 'the mode stays on');
+  assert.equal((await owner.config.getAgent('agent_support')).slackPresence?.userGroupId, 'S_support', 'the group still answers');
+
+  owner.script.rotate = undefined;
+  assert.equal((await owner.request(`${API}/token`, owner.json('PUT', { refreshToken: PASTED }))).status, 200);
+  const retried = await owner.request(`${API}/agents/agent_support/start`, owner.json('POST', {}));
+  assert.equal(retried.status, 200, 'with a new token the next press goes on');
+  assert.equal((await retried.json() as { next: string }).next, 'authorize');
+  assert.equal(owner.script.created, 1);
+});
+
+test("Cancel deletes an app waiting for Allow and leaves the Agent's user group as it was; anything else is refused", async (t) => {
+  const owner = await adminApp(t);
+  const before = (await owner.config.getAgent('agent_support')).slackPresence;
+  assert.equal((await owner.request(`${API}/agents/agent_support/cancel`, owner.json('POST', {}))).status, 409, 'nothing to cancel');
+  assert.equal((await owner.request(`${API}/token`, owner.json('PUT', { refreshToken: PASTED }))).status, 200);
+  assert.equal((await owner.request(`${API}/agents/agent_support/start`, owner.json('POST', {}))).status, 200);
+  const cancelled = await owner.request(`${API}/agents/agent_support/cancel`, owner.json('POST', {}));
+  assert.equal(cancelled.status, 200);
+  assert.deepEqual((await cancelled.json() as { agent: { slack: unknown } }).agent.slack, { state: 'user_group' });
+  assert.deepEqual(owner.script.deleted, ['A0APP1']);
+  assert.deepEqual((await owner.config.getAgent('agent_support')).slackPresence, before);
+  assert.equal(owner.calls.some((call) => call.startsWith('disable:') || call.startsWith('enable:')), false);
+});

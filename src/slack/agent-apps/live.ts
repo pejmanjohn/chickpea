@@ -310,14 +310,18 @@ export async function retireAgentSlackAppsLive(env: PlatformEnv): Promise<readon
   return outcomes;
 }
 
-/** The Owner's App Home lines, keyed by Agent ID; empty without the port or for anyone but an Owner. */
+/**
+ * The Owner's App Home lines, keyed by Agent ID; empty without the port, for
+ * anyone but an Owner, or when no listed Agent has an app record, so a
+ * workspace that never gave an Agent its own app reads and builds nothing.
+ */
 export async function agentAppHomeRows(input: {
   env: PlatformEnv | undefined;
   viewer: { role?: string | undefined };
   agents: readonly CustomAgentConfig[];
 }): Promise<ReadonlyMap<string, readonly object[]>> {
   const host = agentSlackAppsHost();
-  if (!host || input.viewer.role !== 'owner') return new Map();
+  if (!host || input.viewer.role !== 'owner' || !input.agents.some((agent) => appRecordOf(agent.slackPresence))) return new Map();
   return (await liveAgentSlackApps(input.env, host)).homeRows(input.agents, input.viewer);
 }
 

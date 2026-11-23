@@ -14,6 +14,7 @@ import type { ConfigStore } from '../../config/store.ts';
 import {
   type AgentAppIcon,
   type AgentAppLifecycle,
+  type AgentChannelGrant,
   type AgentAppPresence,
   type AgentAppSwitchProgress,
   type AgentPresenceBase,
@@ -81,10 +82,12 @@ import {
 } from './pages.ts';
 import {
   ConfigTokenNeeded,
+  type ConfigurationTokenStatus,
   LostRevision,
   type SecretDeps,
+  configurationTokenStatus,
   deleteAppSecrets,
-  deleteConfigurationToken,
+  discardConfigurationToken,
   hasConfigurationToken,
   readAppSecrets,
   readOwnAppSecrets,
@@ -93,6 +96,12 @@ import {
   withConfigurationToken,
   writeAppSecrets,
 } from './secrets.ts';
+import {
+  type AgentSlackAppsMode,
+  type AgentSlackAppsSetting,
+  readAgentSlackAppsSetting,
+  writeAgentSlackAppsSetting,
+} from './setting.ts';
 import {
   type AgentAppSlackApi,
   AmbiguousEffect,
@@ -148,6 +157,26 @@ export type AgentAppStartOutcome =
   | { kind: 'permission_needed' }
   | { kind: 'not_eligible' };
 
+/**
+ * An Owner's press to give one Agent its own app: the move for an Agent that
+ * answers through Chickpea, the add for one not in Slack yet. `authorize` is
+ * Slack's Allow page for that Owner; `creating` waits on Slack. A missing or
+ * refused configuration token is `token_needed`.
+ */
+export type AgentAppPressOutcome =
+  | { kind: 'authorize'; url: string; agent: CustomAgentConfig }
+  | { kind: 'creating'; agent: CustomAgentConfig }
+  | { kind: 'needs_attention'; agent: CustomAgentConfig }
+  | { kind: 'already_own_app'; agent: CustomAgentConfig }
+  | { kind: 'token_needed' }
+  | { kind: 'permission_needed' }
+  | { kind: 'not_eligible' };
+
+export type AgentAppCancelOutcome =
+  | { kind: 'cancelled'; agent: CustomAgentConfig }
+  | { kind: 'not_waiting' }
+  | { kind: 'not_eligible' };
+
 interface Run {
   agent: CustomAgentConfig;
   presence: AgentSlackPresence;
@@ -201,6 +230,8 @@ export class AgentSlackApps {
    * configuration token), or still installed because no record proves the app is theirs.
    */
   private readonly leftForOwner = new Map<string, 'uninstalled_left_definition' | 'left_for_owner'>();
+  /** Agents whose app an Owner's Cancel is deleting: an app left behind is the cancel's, not an archive's. */
+  private readonly cancelling = new Set<string>();
 
   constructor(private readonly deps: AgentSlackAppsDeps) {
     this.now = deps.now ?? Date.now;
@@ -327,26 +358,79 @@ export class AgentSlackApps {
     const { config } = this.deps.stores;
     let agent = await config.getAgent(agentId);
     const names = this.names(agent);
-    let app = appRecordOf(agent.slackPresence);
+    const app = appRecordOf(agent.slackPresence);
     if (!app) return consentPage('expired', names);
     if (app.state === 'active') return consentPage('already_active', names);
-    if (app.state === 'needs_attention' && app.reason === 'app_removed') {
-      agent = await this.tryAgain(agent, app, ownerSlackUserId);
-      app = appRecordOf(agent.slackPresence);
-    }
-    if (app?.state !== 'awaiting_consent') return consentPage('expired', names);
+    if (app.state === 'needs_attention' && app.reason === 'app_removed') agent = await this.tryAgain(agent, app, ownerSlackUserId);
+    const url = await this.authorizeUrl(agent, ownerSlackUserId);
+    return url ? Response.redirect(url, 303) : consentPage('expired', names);
+  }
+
+  /** Slack's authorize page for an app waiting for Allow, under a fresh nonce bound to this Owner; undefined for any other record. */
+  private async authorizeUrl(agent: CustomAgentConfig, ownerSlackUserId: string): Promise<string | undefined> {
+    const app = appRecordOf(agent.slackPresence);
+    if (app?.state !== 'awaiting_consent') return undefined;
     const nonce = crypto.randomUUID();
     const now = this.now();
     const opened = await this.commit(agent, {
       type: 'consent_opened', at: now, nonceDigest: await sha256Hex(nonce), owner: ownerSlackUserId, expiresAt: now + CONSENT_TTL_MS,
     });
-    if (opened.outcome !== 'applied') return consentPage('expired', names);
+    if (opened.outcome !== 'applied') return undefined;
     const url = new URL(SLACK_BOT_AUTHORIZE_URL);
     url.searchParams.set('client_id', app.app.clientId);
     url.searchParams.set('scope', AGENT_APP_BOT_SCOPES.join(','));
     url.searchParams.set('redirect_uri', this.deps.host.redirectUri);
     url.searchParams.set('state', `${agent.id}.${nonce}`);
-    return Response.redirect(url.toString(), 303);
+    return url.toString();
+  }
+
+  /**
+   * An Owner's press in Admin: start the app, or pick up a record that
+   * stopped, then lead straight to Allow. A second press while the first is
+   * creating waits for it; one waiting for Allow gets a fresh link.
+   */
+  async press(agentId: string, ownerSlackUserId: string): Promise<AgentAppPressOutcome> {
+    const { config } = this.deps.stores;
+    let agent = await config.getAgent(agentId);
+    if (agent.kind !== 'user' || agent.lifecycle === 'archived' || agent.lifecycle === 'draft' || !agent.slackPresence) {
+      return { kind: 'not_eligible' };
+    }
+    const record = appRecordOf(agent.slackPresence);
+    if (!record) {
+      const started = await this.start(agentId, ownerSlackUserId);
+      if (started.kind === 'token_needed' || started.kind === 'permission_needed' || started.kind === 'not_eligible') return started;
+      agent = started.agent;
+    } else if (record.state === 'needs_attention' && agent.slackPresence.kind !== 'agent_app') {
+      if (record.reason === 'config_token_needed' && !(await this.hasConfigurationToken())) return { kind: 'token_needed' };
+      agent = await this.retry(agentId, ownerSlackUserId);
+    }
+    const app = appRecordOf(agent.slackPresence);
+    if (app?.state === 'awaiting_consent') {
+      const url = await this.authorizeUrl(agent, ownerSlackUserId);
+      return url ? { kind: 'authorize', url, agent: await config.getAgent(agentId) } : { kind: 'creating', agent };
+    }
+    if (app?.state === 'needs_attention' && app.reason === 'config_token_needed') return { kind: 'token_needed' };
+    if (app?.state === 'needs_attention') return { kind: 'needs_attention', agent };
+    if (app?.state === 'active') return { kind: 'already_own_app', agent };
+    return { kind: 'creating', agent };
+  }
+
+  /**
+   * An Owner's Cancel before Allow: the created app is deleted under its own
+   * record, and the Agent goes back to how it answered before the press.
+   */
+  async cancel(agentId: string): Promise<AgentAppCancelOutcome> {
+    const agent = await this.deps.stores.config.getAgent(agentId);
+    if (agent.kind !== 'user' || agent.lifecycle === 'archived') return { kind: 'not_eligible' };
+    if (appRecordOf(agent.slackPresence)?.state !== 'awaiting_consent' || agent.slackPresence?.kind === 'agent_app') {
+      return { kind: 'not_waiting' };
+    }
+    this.cancelling.add(agentId);
+    try {
+      return { kind: 'cancelled', agent: (await this.retire(agent)).agent };
+    } finally {
+      this.cancelling.delete(agentId);
+    }
   }
 
   /** Slack's callback, forwarded untouched: exchange the code with the app's own credentials and validate the grant. */
@@ -490,43 +574,70 @@ export class AgentSlackApps {
     throw new AgentPresenceError('slack_operation_failed', archiveRefusedCopy({ name: agent.name }));
   }
 
-  /** The Owner's App Home line for each Agent, keyed by Agent ID; empty for anyone but an Owner. */
+  /**
+   * The Owner's App Home line for each Agent whose app is being set up, is
+   * live or needs attention, keyed by Agent ID; empty for anyone but an
+   * Owner. Giving an Agent its own app starts in Admin, never here.
+   */
   async homeRows(
     agents: readonly CustomAgentConfig[],
     viewer: { role?: string | undefined },
   ): Promise<ReadonlyMap<string, readonly object[]>> {
     const rows = new Map<string, readonly object[]>();
     if (viewer.role !== 'owner') return rows;
-    const tokenStored = await this.hasConfigurationToken();
-    const permissionMissing = await this.userGroupPermissionMissing();
-    const origin = !tokenStored || permissionMissing ? await this.deps.publicOrigin?.() : undefined;
-    const untold = agents.some((agent) => {
+    const withApps = agents.filter((agent) => agent.kind === 'user' && appRecordOf(agent.slackPresence));
+    const untold = withApps.some((agent) => {
       const app = appRecordOf(agent.slackPresence);
       return app?.state === 'active' && app.ownerNotTold;
     });
     const privateGrants = untold
       ? (await this.deps.stores.config.listAgentChannelGrants()).filter((grant) => grant.status === 'active' && grant.channelIsPrivate)
       : [];
-    const offer = { origin, tokenStored, permissionMissing, privateGrants };
     const now = this.now();
-    for (const agent of agents) {
-      if (agent.kind === 'user') rows.set(agent.id, agentAppHomeBlocks(homeRowFor(agent, now, offer), this.names(agent), agent.id));
+    for (const agent of withApps) {
+      const row = homeRowFor(agent, now, privateGrants);
+      if (row) rows.set(agent.id, agentAppHomeBlocks(row, this.names(agent), agent.id));
     }
     return rows;
   }
 
-  /** The token page: paste once per workspace. */
-  async pasteConfigurationToken(refreshToken: string): Promise<'saved' | 'not_refresh_token' | 'rejected' | 'other_workspace'> {
-    return saveConfigurationToken(this.secrets, (await this.installation()).teamId, refreshToken);
+  /** Paste once per workspace; the Owner who pasted it is kept with it. */
+  async pasteConfigurationToken(
+    refreshToken: string,
+    pastedBy: string,
+  ): Promise<'saved' | 'not_refresh_token' | 'rejected' | 'other_workspace'> {
+    return saveConfigurationToken(this.secrets, (await this.installation()).teamId, refreshToken, pastedBy);
   }
 
   async hasConfigurationToken(): Promise<boolean> {
     return hasConfigurationToken(this.secrets, (await this.installation()).teamId);
   }
 
-  /** Deletes Chickpea's stored pair and nothing in Slack. */
-  async removeConfigurationToken(): Promise<'deleted' | 'none'> {
-    return deleteConfigurationToken(this.secrets, (await this.installation()).teamId);
+  async configurationToken(): Promise<ConfigurationTokenStatus> {
+    return configurationTokenStatus(this.secrets, (await this.installation()).teamId);
+  }
+
+  /** Spends the stored token with one rotation it never keeps, then deletes Chickpea's copy whatever Slack answered. */
+  async removeConfigurationToken(): Promise<'discarded' | 'unconfirmed' | 'none'> {
+    return discardConfigurationToken(this.secrets, (await this.installation()).teamId);
+  }
+
+  /** The Agents an Owner can give their own app: user Agents in use, each with a Slack presence. */
+  async userAgents(): Promise<CustomAgentConfig[]> {
+    return (await this.deps.stores.config.listAgents()).filter((agent) =>
+      agent.kind === 'user' && agent.lifecycle !== 'archived' && agent.lifecycle !== 'draft' && agent.slackPresence);
+  }
+
+  async agentChannelGrants(): Promise<AgentChannelGrant[]> {
+    return this.deps.stores.config.listAgentChannelGrants();
+  }
+
+  async setting(): Promise<AgentSlackAppsSetting> {
+    return readAgentSlackAppsSetting(this.deps.stores.settings);
+  }
+
+  async setMode(mode: AgentSlackAppsMode, changedBy: string): Promise<AgentSlackAppsSetting> {
+    return writeAgentSlackAppsSetting(this.deps.stores.settings, { mode, changedBy, changedAt: this.now() });
   }
 
   /**
@@ -918,7 +1029,7 @@ export class AgentSlackApps {
         await deleteAppSecrets(this.secrets, app.appId, record.revision);
       }
       if (left) this.leftForOwner.set(run.agent.id, stillInstalled ? 'left_for_owner' : 'uninstalled_left_definition');
-      const message = stillInstalled ? 'archived_installed' : 'archived_left';
+      const message = this.cancelling.has(run.agent.id) ? 'cancel_left' : stillInstalled ? 'archived_installed' : 'archived_left';
       // What happened to the app is already committed: a message Chickpea's bot cannot send (at tenant end it is often
       // gone) changes nothing about it.
       const tell = async () => {
@@ -1044,30 +1155,15 @@ function adminUrl(origin: string): string {
   return `${origin.replace(/\/+$/, '')}${ADMIN_PATH}`;
 }
 
-/**
- * What the Owner's App Home says about an Agent's app. Without a stored token
- * the offer links to the token page; without the Owner's user-group
- * permission an Agent whose handle needs freeing is sent to Admin instead.
- */
+/** What the Owner's App Home says about an Agent's app; nothing for an Agent with none. */
 function homeRowFor(
   agent: CustomAgentConfig,
   now: number,
-  offer: {
-    origin: string | undefined;
-    tokenStored: boolean;
-    permissionMissing: boolean;
-    privateGrants: readonly { agentId: string; channelId: string }[];
-  },
-): AgentAppHomeRow {
+  privateGrants: readonly { agentId: string; channelId: string }[],
+): AgentAppHomeRow | undefined {
   const presence = agent.slackPresence;
   const app = appRecordOf(presence);
-  if (!app) {
-    const { origin } = offer;
-    if (offer.permissionMissing && presence?.userGroupId) {
-      return { kind: 'permission_needed', adminUrl: origin ? adminUrl(origin) : undefined };
-    }
-    return { kind: 'offer', tokenPageUrl: origin && !offer.tokenStored ? tokenPageUrl(origin, agent.id) : undefined };
-  }
+  if (!app) return undefined;
   const settling = (): AgentAppHomeRow => now - app.at >= STALLED_AFTER_MS ? { kind: 'stalled' } : { kind: 'setting_up' };
   switch (app.state) {
     case 'active':
@@ -1079,7 +1175,7 @@ function homeRowFor(
             kind: 'active_untold',
             report: {
               joined: [],
-              throughChickpea: offer.privateGrants.filter((grant) => grant.agentId === agent.id).map((grant) => grant.channelId),
+              throughChickpea: privateGrants.filter((grant) => grant.agentId === agent.id).map((grant) => grant.channelId),
               groupStillOn: answeringUserGroupId(presence) !== undefined,
             },
           }

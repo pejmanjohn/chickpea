@@ -198,7 +198,15 @@ interface ConfigurationTokenPair {
   refreshToken: string;
   expiresAt: number;
   rotatingSince?: number;
+  /** The Owner who pasted the token, and when; kept through every rotation. Pairs stored before this was kept lack it. */
+  pastedBy?: string;
+  pastedAt?: number;
 }
+
+/** What Admin may say about the stored token: whether there is one, who pasted it and when; never the token. */
+export type ConfigurationTokenStatus =
+  | { stored: false }
+  | { stored: true; pastedBy: string | null; pastedAt: number | null };
 
 /** A pair that cannot be opened is as good as none: the Owner pastes a new token, which replaces it. */
 async function readPair(
@@ -206,7 +214,14 @@ async function readPair(
   teamId: string,
 ): Promise<{ revision: string; pair: ConfigurationTokenPair } | undefined> {
   const record = await d.credentials.getEncryptedCredentialRevision(configurationTokenKey(teamId));
-  if (!record) return undefined;
+  return record ? { revision: record.revision, pair: await openPair(d, teamId, record) } : undefined;
+}
+
+async function openPair(
+  d: SecretDeps,
+  teamId: string,
+  record: { revision: string; envelope: Parameters<typeof decryptSlackSecretEnvelope>[2] },
+): Promise<ConfigurationTokenPair> {
   let opened: Record<string, string>;
   try {
     opened = await decryptSlackSecretEnvelope<Record<string, string>>(
@@ -219,15 +234,15 @@ async function readPair(
   }
   const expiresAt = Number(opened.expiresAt);
   const rotatingSince = opened.rotatingSince === undefined ? undefined : Number(opened.rotatingSince);
+  const pastedAt = opened.pastedAt === undefined ? undefined : Number(opened.pastedAt);
   if (!opened.accessToken || !opened.refreshToken || !Number.isFinite(expiresAt)) throw new ConfigTokenNeeded(teamId);
   return {
-    revision: record.revision,
-    pair: {
-      accessToken: opened.accessToken,
-      refreshToken: opened.refreshToken,
-      expiresAt,
-      ...(rotatingSince !== undefined && Number.isFinite(rotatingSince) ? { rotatingSince } : {}),
-    },
+    accessToken: opened.accessToken,
+    refreshToken: opened.refreshToken,
+    expiresAt,
+    ...(rotatingSince !== undefined && Number.isFinite(rotatingSince) ? { rotatingSince } : {}),
+    ...(opened.pastedBy ? { pastedBy: opened.pastedBy } : {}),
+    ...(pastedAt !== undefined && Number.isFinite(pastedAt) ? { pastedAt } : {}),
   };
 }
 
@@ -245,6 +260,8 @@ async function writePair(
     refreshToken: pair.refreshToken,
     expiresAt: String(pair.expiresAt),
     ...(pair.rotatingSince !== undefined ? { rotatingSince: String(pair.rotatingSince) } : {}),
+    ...(pair.pastedBy ? { pastedBy: pair.pastedBy } : {}),
+    ...(pair.pastedAt !== undefined ? { pastedAt: String(pair.pastedAt) } : {}),
   });
   const record = await d.credentials.replaceEncryptedCredentialRevision({
     key: configurationTokenKey(teamId),
@@ -256,11 +273,12 @@ async function writePair(
   return record?.revision;
 }
 
-/** Paste: refuses an access token, rotates at once, refuses another team, stores the new pair. */
+/** Paste: refuses an access token, rotates at once, refuses another team, stores the new pair with who pasted it. */
 export async function saveConfigurationToken(
   d: SecretDeps,
   teamId: string,
   refreshToken: string,
+  pastedBy?: string,
 ): Promise<'saved' | 'not_refresh_token' | 'rejected' | 'other_workspace'> {
   const token = refreshToken.trim();
   if (!REFRESH_TOKEN.test(token)) return 'not_refresh_token';
@@ -273,7 +291,12 @@ export async function saveConfigurationToken(
     return 'rejected';
   }
   if (rotated.teamId !== teamId) return 'other_workspace';
-  const pair = { accessToken: rotated.accessToken, refreshToken: rotated.refreshToken, expiresAt: rotated.expiresAt };
+  const pair: ConfigurationTokenPair = {
+    accessToken: rotated.accessToken,
+    refreshToken: rotated.refreshToken,
+    expiresAt: rotated.expiresAt,
+    ...(pastedBy ? { pastedBy, pastedAt: d.now?.() ?? Date.now() } : {}),
+  };
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const currentRevision = (await d.credentials.getEncryptedCredentialRevision(configurationTokenKey(teamId)))?.revision ?? null;
     if (await writePair(d, teamId, pair, currentRevision)) return 'saved';
@@ -285,18 +308,64 @@ export async function hasConfigurationToken(d: SecretDeps, teamId: string): Prom
   return (await d.credentials.getEncryptedCredentialRevision(configurationTokenKey(teamId))) !== undefined;
 }
 
+/** A pair that cannot be opened reads as none, as it does at the next start. */
+export async function configurationTokenStatus(d: SecretDeps, teamId: string): Promise<ConfigurationTokenStatus> {
+  let stored;
+  try {
+    stored = await readPair(d, teamId);
+  } catch (error) {
+    if (error instanceof ConfigTokenNeeded) return { stored: false };
+    throw error;
+  }
+  return stored ? { stored: true, pastedBy: stored.pair.pastedBy ?? null, pastedAt: stored.pair.pastedAt ?? null } : { stored: false };
+}
+
 /**
- * Deletes Chickpea's stored pair and nothing in Slack. A rotation that writes
- * first is deleted on the retry; throws LostRevision when a pair still stays.
+ * Removal. Slack has no revoke call, and stops listing a token while its
+ * refresh token still works, so the stored refresh token is rotated once and
+ * the new pair is never kept: nobody then holds a working one. The stored copy
+ * is deleted whatever Slack answers; `unconfirmed` means the rotation did not
+ * succeed, so Slack may still accept the token. A rotation that writes a newer
+ * pair first has that pair spent and deleted on the retry; throws LostRevision
+ * when a pair still stays.
  */
-export async function deleteConfigurationToken(d: SecretDeps, teamId: string): Promise<'deleted' | 'none'> {
+export async function discardConfigurationToken(d: SecretDeps, teamId: string): Promise<'discarded' | 'unconfirmed' | 'none'> {
   const key = configurationTokenKey(teamId);
+  let spent: boolean | undefined;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const record = await d.credentials.getEncryptedCredentialRevision(key);
-    if (!record) return 'none';
-    if (await d.credentials.deleteEncryptedCredentialRevision(key, record.revision)) return 'deleted';
+    if (!record) break;
+    spent = (await spendRefreshToken(d, teamId, record)) && spent !== false;
+    if (await d.credentials.deleteEncryptedCredentialRevision(key, record.revision)) {
+      return spent ? 'discarded' : 'unconfirmed';
+    }
   }
-  throw new LostRevision(key);
+  if (spent === undefined) return 'none';
+  if (await d.credentials.getEncryptedCredentialRevision(key)) throw new LostRevision(key);
+  return spent ? 'discarded' : 'unconfirmed';
+}
+
+/** One rotation whose result is dropped; false when Slack did not rotate it, or the pair cannot be opened. */
+async function spendRefreshToken(
+  d: SecretDeps,
+  teamId: string,
+  record: { revision: string; envelope: Parameters<typeof decryptSlackSecretEnvelope>[2] },
+): Promise<boolean> {
+  let pair;
+  try {
+    pair = await openPair(d, teamId, record);
+  } catch (error) {
+    if (error instanceof ConfigTokenNeeded) return false;
+    throw error;
+  }
+  try {
+    await d.slack.rotate(pair.refreshToken);
+    return true;
+  } catch (error) {
+    if (error instanceof SlackRefused) logSlackRefusal('rotate', {}, error);
+    else console.warn({ event: 'chickpea.agent_app.token_not_spent', error: error instanceof Error ? error.name : 'unknown' });
+    return false;
+  }
 }
 
 /** Runs `use` with a fresh access token; the rotation is claimed by compare-and-set first. Throws ConfigTokenNeeded. */
@@ -354,6 +423,8 @@ async function rotateHolding(
     accessToken: rotated.accessToken,
     refreshToken: rotated.refreshToken,
     expiresAt: rotated.expiresAt,
+    ...(pair.pastedBy ? { pastedBy: pair.pastedBy } : {}),
+    ...(pair.pastedAt !== undefined ? { pastedAt: pair.pastedAt } : {}),
   }, claimRevision);
   return rotated.accessToken;
 }

@@ -187,11 +187,10 @@ test('a pasted token is checked with Slack, refused with the right sentence, and
   const removed = await owner.request(api, owner.form({ action: 'remove' }));
   assert.equal(removed.status, 200);
   const removal = await removed.text();
-  assert.match(removal, /<p>Chickpea deleted its copy of your configuration token\. To revoke it in Slack too, open Your Apps and choose Delete token for every configuration token listed for this workspace, since Slack can list more than one\. Then reload Your Apps and check that none is left\.<\/p>/);
-  assert.equal(removal.includes('choose Delete token under'), false, 'the old single-token line is gone');
-  assert.match(removal, /href="https:\/\/api\.slack\.com\/apps"[^>]*>Open Your Apps in Slack</);
+  assert.match(removal, /<p>Chickpea deleted its copy of your configuration token, and the token no longer works\.<\/p>/);
+  assert.equal(removal.includes('Your Apps'), false, 'Slack stops listing a token that still works, so the page never sends the Owner there to check');
   assert.equal(await owner.service.hasConfigurationToken(), false);
-  assert.equal(rotations.length, 2, 'removal makes no Slack call');
+  assert.deepEqual(rotations.slice(2), ['xoxe-1-r'], 'removal spends the stored refresh token with one rotation');
 });
 
 test("without the Owner's user-group permission a pasted token is kept, nothing starts, and the page sends the Owner to Admin's update", async (t) => {
@@ -202,7 +201,7 @@ test("without the Owner's user-group permission a pasted token is kept, nothing 
   const response = await owner.request('/admin/api/agents/agent_support/slack-app/token', owner.form({ action: 'paste', refreshToken: 'xoxe-1-good-token-0000' }));
   assert.equal(response.status, 409);
   const html = await response.text();
-  assert.match(html, /<p>Chickpea needs one more Slack permission to give @support its own Slack app\. In Chickpea Admin, choose Update in Slack, then choose Give @support its own Slack app in Chickpea(&#39;|')s Home tab\.<\/p>/);
+  assert.match(html, /<p>Chickpea needs one more Slack permission to give @support its own Slack app\. In Chickpea Admin, choose Update in Slack, then try again\.<\/p>/);
   assert.match(html, /<a class="auth-link" href="\/admin">Open Chickpea<\/a>/);
   assert.equal(html.includes('Creating Support'), false);
   assert.equal(html.includes('Try again'), false);

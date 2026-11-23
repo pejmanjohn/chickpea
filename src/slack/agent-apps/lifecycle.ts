@@ -1,16 +1,18 @@
-import type {
-  ActiveAgentApp,
-  AgentSlackPresence,
-  AgentAppAttention,
-  AgentAppIcon,
-  AgentAppLifecycle,
-  AgentAppPresence,
-  AgentAppRecord,
-  AgentAppResume,
-  AgentAppSwitchProgress,
-  AgentPresenceDesiredState,
-  AgentPresenceHealth,
-  AttachedAgentApp,
+import {
+  AWAITING_OWN_APP,
+  type ActiveAgentApp,
+  type AgentSlackPresence,
+  type AgentAppAttention,
+  type AgentAppIcon,
+  type AgentAppLifecycle,
+  type AgentAppPresence,
+  type AgentAppRecord,
+  type AgentAppResume,
+  type AgentAppSwitchProgress,
+  type AgentPresenceDesiredState,
+  type AgentPresenceHealth,
+  type AttachedAgentApp,
+  appRecordOf,
 } from '../../config/types.ts';
 
 export { agentAppIsLive } from '../../config/types.ts';
@@ -118,6 +120,34 @@ export function agentAppMoveJob(agentId: string, presence: AgentSlackPresence | 
     return { agentId, appId: presence.app.app.appId, teamId, ownerSlackUserId: presence.app.startedBy };
   }
   return undefined;
+}
+
+/**
+ * Where an Agent stands in Slack, as an Owner chooses what to do next:
+ * answering through Chickpea's user group, not in Slack yet, or somewhere on
+ * the way to, or at, its own app.
+ */
+export type AgentSlackState =
+  | { state: 'user_group' | 'not_in_slack' | 'creating' | 'waiting_for_allow' | 'switching' | 'own_app' }
+  | { state: 'needs_attention'; reason: AgentAppAttention };
+
+export function agentSlackState(presence: AgentSlackPresence): AgentSlackState {
+  const app = appRecordOf(presence);
+  const unattached = (): AgentSlackState => ({ state: presence.errorCode === AWAITING_OWN_APP ? 'not_in_slack' : 'user_group' });
+  if (!app) return unattached();
+  switch (app.state) {
+    case 'awaiting_consent':
+      return { state: 'waiting_for_allow' };
+    case 'active':
+      return { state: pendingSwitchStep(app) ? 'switching' : 'own_app' };
+    case 'needs_attention':
+      return { state: 'needs_attention', reason: app.reason };
+    case 'uninstalling':
+      // A cancel leaves the Agent answering as it did before the press; an archive's uninstall is passing.
+      return presence.kind === 'agent_app' ? { state: 'switching' } : unattached();
+    default:
+      return { state: 'creating' };
+  }
 }
 
 /** A `creating` record Slack never answered within the settle window; nothing creates again until Try again. */
