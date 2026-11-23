@@ -178,11 +178,11 @@ interface Slack {
 function slack(input: { chickpeaChannels?: readonly string[]; appChannels?: readonly string[]; appResolves?: boolean } = {}): Slack {
   const calls: string[] = [];
   const chickpea: SlackInstallationExecutionContext = {
-    workspaceId: TEAM, transportMode: 'gateway', botUserId: CHICKPEA_BOT,
+    workspaceId: TEAM, transportMode: 'gateway', sharedAppReads: false, botUserId: CHICKPEA_BOT,
     client: botClient({ botUserId: CHICKPEA_BOT, dm: CHICKPEA_DM, channels: input.chickpeaChannels ?? [CHANNEL], calls }),
   };
   const app: SlackInstallationExecutionContext = {
-    workspaceId: TEAM, transportMode: 'gateway', botUserId: AGENT_BOT,
+    workspaceId: TEAM, transportMode: 'gateway', sharedAppReads: false, botUserId: AGENT_BOT,
     client: botClient({ botUserId: AGENT_BOT, dm: AGENT_DM, channels: input.appChannels ?? [], calls }),
   };
   return {
@@ -422,4 +422,10 @@ test('a schedule in the Agent\'s own DM skips while its app is not live, stays o
     installationExecution: slack().resolver,
   });
   assert.deepEqual(live.speaker, { kind: 'own_bot', botUserId: AGENT_BOT });
+});
+
+test('without the Agent-app port a schedule never speaks as an Agent app', async () => {
+  const fake = slack({ appChannels: [CHANNEL] });
+  assert.equal((await access(channelRoutine, appPresence(), fake)).botUserId, CHICKPEA_BOT);
+  assert.deepEqual(appCalls(fake), []);
 });
