@@ -7650,6 +7650,28 @@ test('Archive disables the same Slack handle and restore re-enables it', async (
   }
 });
 
+test("Admin's restore is refused, asking Slack nothing, while another Agent in Slack took the handle", async () => {
+  const fixture = harness();
+  try {
+    await createAgent(fixture.app);
+    const published = await supportAgentRequest(fixture.app, 'POST', '/channels', { workspaceId: 'T_TEST', channelId: 'C_SUPPORT' });
+    const groupId = published.body.agent.slackPresence.userGroupId as string;
+    const archived = await supportAgentRequest(fixture.app, 'POST', '/archive', { expectedRevision: published.body.agent.revision });
+    assert.equal(archived.status, 200);
+    await appAgentHolding(fixture.store, 'support');
+
+    const restored = await supportAgentRequest(fixture.app, 'POST', '/restore', { expectedRevision: archived.body.agent.revision });
+    assert.equal(restored.status, 409);
+    assert.equal(restored.body.error, 'handle_collision');
+    assert.equal(restored.body.message, 'Another Agent in Slack uses @support. Rename or archive that Agent, then restore this one.');
+    assert.equal((await fixture.store.getAgent('agent_support')).lifecycle, 'archived');
+    assert.equal(fixture.transport.groups.find(({ id }) => id === groupId)?.disabled, true, 'the group stays off');
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
 test('Admin deletes an Agent only after archive has turned its Slack handle off', async () => {
   const fixture = harness();
   try {

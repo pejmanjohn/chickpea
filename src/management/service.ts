@@ -165,8 +165,8 @@ import {
   type RoutineContentAccess,
 } from '../routines/content-access.ts';
 import type { WorkStore } from '../work/types.ts';
-import { alternativeAgentHandles, heldAgentHandles, normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
-import { AgentPresenceError, agentOffError } from '../slack/agent-presence/errors.ts';
+import { alternativeAgentHandles, handlesOtherAgentsStore, normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
+import { AgentPresenceError, agentOffError, restoreHandleRefusal } from '../slack/agent-presence/errors.ts';
 import {
   listPrivatelyUsableAgents,
   logUnavailableFacts,
@@ -7464,6 +7464,7 @@ export class WorkspaceManagementService {
       return withHandleChange(options.prepared.operation, agent);
     }
     const publish = async (): Promise<CreatedAgentPublication> => {
+      await this.refuseHandleAnotherAgentStores(agent.id);
       const published = await publishAgentPresence({ actor, agentId: agent.id });
       return published.warning
         ? published
@@ -7515,6 +7516,21 @@ export class WorkspaceManagementService {
         agent: current,
         warning: `The Agent was created, but its Slack handle needs attention: ${detail}`,
       };
+    }
+  }
+
+  /**
+   * Choosing a handle at creation: one another Agent stores is refused before
+   * Slack is asked, whether or not that Agent is in Slack yet.
+   */
+  private async refuseHandleAnotherAgentStores(agentId: string): Promise<void> {
+    const agents = await this.stores.config.listAgents();
+    const handle = agents.find((candidate) => candidate.id === agentId)?.slackPresence?.normalizedHandle;
+    const stored = handlesOtherAgentsStore(agents, agentId);
+    if (handle && stored.has(handle)) {
+      throw new AgentPresenceError('handle_collision', `@${handle} is already in use.`, {
+        suggestions: alternativeAgentHandles(handle, new Set([handle, ...stored])),
+      });
     }
   }
 
@@ -7607,6 +7623,8 @@ export class WorkspaceManagementService {
         });
       } else {
         requireExpectedRevision(operation.expectedRevision, current.revision);
+        const refused = restoreHandleRefusal(await this.stores.config.listAgents(), current);
+        if (refused) throw refused;
         agent = await this.stores.config.restoreAgent(
           operation.agentId,
           operation.expectedRevision,
@@ -8033,12 +8051,13 @@ export class WorkspaceManagementService {
     const requested = patch.slackPresence;
     if (requested && requested.normalizedHandle !== current.slackPresence?.normalizedHandle) {
       const handle = requested.normalizedHandle;
-      const held = heldAgentHandles(await this.stores.config.listAgents(), agentId);
+      const held = handlesOtherAgentsStore(await this.stores.config.listAgents(), agentId);
       if (held.has(handle)) {
         const taken = new AgentPresenceError('handle_collision', `@${handle} is already in use.`, {
           suggestions: alternativeAgentHandles(handle, new Set([handle, ...held])),
         });
-        throw refusedAgentUpdate(taken, current, { name: patch.name ?? current.name, slackPresence: requested });
+        // Slack was not asked, so its groups may hold a suggestion too.
+        throw refusedAgentUpdate(taken, current, { name: patch.name ?? current.name, slackPresence: requested }, 'Suggested');
       }
     }
     await this.stores.prepareAgentUpdate?.(current, patch);
@@ -8569,13 +8588,14 @@ function refusedAgentUpdate(
   error: unknown,
   kept: CustomAgentConfig | undefined,
   requested: Pick<CustomAgentConfig, 'name' | 'slackPresence'>,
+  suggestionsAre: 'Free' | 'Suggested' = 'Free',
 ): unknown {
   if (!(error instanceof AgentPresenceError)) return error;
   const unsettled = 'Other edits to this Agent landed at the same time, so read it again before saying what changed.';
   if (error.code === 'handle_collision') {
     const handle = normalizeAgentHandle(requested.slackPresence?.requestedHandle || requested.name);
     const next = error.suggestions.length > 0
-      ? `Free handles: ${error.suggestions.map((suggestion) => `@${suggestion}`).join(', ')}. Offer these, or ask for another handle.`
+      ? `${suggestionsAre} handles: ${error.suggestions.map((suggestion) => `@${suggestion}`).join(', ')}. Offer these, or ask for another handle.`
       : 'Ask for another handle.';
     return new AgentPresenceError(
       error.code,

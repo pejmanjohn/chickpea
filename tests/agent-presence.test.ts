@@ -219,24 +219,37 @@ test("a handle another Agent's own app holds is taken: publishing asks Slack for
   }
 });
 
-test("renaming a published Agent to another Agent's handle is refused before Slack, whichever kind of Agent holds it", async () => {
+test("retrying a published Agent onto a handle another Agent holds in Slack is refused before Slack, whichever kind holds it; one only stored is taken", async () => {
   const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const transport = new FakeSlackTransport();
   try {
     await appAgentHolding(config, 'agent_helpdesk', 'helpdesk');
+    await config.createAgent(agent('agent_billing', 'Billing', 'billing'));
     await config.createAgent(agent('agent_drafts', 'Drafts', 'drafts'));
     await config.createAgent(agent('agent_support', 'Support', 'support'));
     const reconciler = new AgentPresenceReconciler({ config, transport, announce: null, now: () => NOW });
+    await reconciler.reconcile('agent_billing');
     await reconciler.reconcile('agent_support');
-    for (const taken of ['helpdesk', 'drafts']) {
+    // Neither handle is a Slack group Support's retry would meet: only Chickpea's own rule can refuse them.
+    transport.groups = transport.groups.filter((group) => group.handle !== 'billing');
+    for (const taken of ['helpdesk', 'billing']) {
       const published = await config.getAgent('agent_support');
       await config.updateAgent(published.id, {
         slackPresence: { ...published.slackPresence!, requestedHandle: taken, normalizedHandle: taken },
       }, published.revision);
       await assert.rejects(() => reconciler.retry('agent_support'), { code: 'handle_collision' });
       assert.equal(transport.updateCalls, 0, `@${taken}: Slack is asked for nothing`);
-      assert.equal(transport.groups[0]?.handle, 'support');
+      assert.equal(transport.groups.find((group) => group.id === published.slackPresence?.userGroupId)?.handle, 'support');
     }
+
+    // Drafts stores @drafts but was never in Slack, so it holds nothing there.
+    const published = await config.getAgent('agent_support');
+    await config.updateAgent(published.id, {
+      slackPresence: { ...published.slackPresence!, requestedHandle: 'drafts', normalizedHandle: 'drafts' },
+    }, published.revision);
+    await reconciler.retry('agent_support');
+    assert.equal(transport.updateCalls, 1, 'Slack is asked');
+    assert.equal(transport.groups.find((group) => group.id === published.slackPresence?.userGroupId)?.handle, 'drafts');
   } finally {
     config.close();
   }
@@ -841,6 +854,92 @@ test('archive disables the alias and removes grants; restore enables the same al
     assert.equal(restored.lifecycle, 'active');
     assert.equal(restored.slackPresence?.desiredState, 'active');
     assert.equal(transport.groups[0]?.disabled, false);
+  } finally {
+    config.close();
+  }
+});
+
+test('restore is refused, asking Slack nothing, while another Agent in Slack took the handle, and makes the same Slack calls as before once it is free', async () => {
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const transport = new FakeSlackTransport();
+  try {
+    await config.createAgent(agent('agent_support', 'Support', 'support'));
+    const reconciler = new AgentPresenceReconciler({ config, transport, announce: null });
+    await reconciler.publish({
+      workspaceId: 'TACME', agentId: 'agent_support', channelId: 'C_SUPPORT',
+      actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA',
+    });
+    await reconciler.archive('agent_support');
+    const helpdesk = await appAgentHolding(config, 'agent_helpdesk', 'support');
+    const calls = () => ({ create: transport.createCalls, update: transport.updateCalls, enable: transport.enableCalls, disable: transport.disableCalls });
+    const before = calls();
+
+    await assert.rejects(() => reconciler.restore('agent_support'), (error: unknown) => {
+      assert.ok(error instanceof AgentPresenceError);
+      assert.equal(error.code, 'handle_collision');
+      assert.equal(error.message, 'Another Agent in Slack uses @support. Rename or archive that Agent, then restore this one.');
+      assert.deepEqual(error.suggestions, ['support-team', 'support-2', 'support-3']);
+      return true;
+    });
+    assert.deepEqual(calls(), before, 'Slack is asked nothing');
+    assert.equal((await config.getAgent('agent_support')).lifecycle, 'archived');
+    assert.equal(transport.groups[0]?.disabled, true);
+
+    await config.updateAgent(helpdesk.id, { lifecycle: 'archived' }, helpdesk.revision);
+    const restored = await reconciler.restore('agent_support');
+    assert.equal(restored.lifecycle, 'active');
+    assert.deepEqual(calls(), { ...before, enable: before.enable + 1 }, 'one enable, as before');
+    assert.equal(transport.groups[0]?.disabled, false);
+  } finally {
+    config.close();
+  }
+});
+
+test('two Agents that store one handle and are not in Slack do not block each other: the first to publish takes it, the second is offered others', async () => {
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const transport = new FakeSlackTransport();
+  try {
+    await config.createAgent(agent('agent_support', 'Support', 'support'));
+    await config.createAgent(agent('agent_helper', 'Helper', 'support'));
+    const reconciler = new AgentPresenceReconciler({ config, transport, announce: null, now: () => NOW });
+    const first = await reconciler.reconcile('agent_support');
+    assert.equal(transport.createCalls, 1, 'Slack is asked');
+    assert.equal(first.slackPresence?.health, 'healthy');
+    assert.equal(transport.groups[0]?.handle, 'support');
+
+    await assert.rejects(() => reconciler.reconcile('agent_helper'), (error: unknown) => {
+      assert.ok(error instanceof AgentPresenceError);
+      assert.equal(error.code, 'handle_collision');
+      assert.deepEqual(error.suggestions, ['support-team', 'support-2', 'support-3']);
+      return true;
+    });
+    assert.equal(transport.createCalls, 1, 'the second is refused before Slack');
+  } finally {
+    config.close();
+  }
+});
+
+test('an Agent whose own group carries its handle retries and edits while a stale unpublished Agent stores the same handle', async () => {
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const transport = new FakeSlackTransport();
+  try {
+    await config.createAgent(agent('agent_support', 'Support', 'support'));
+    const reconciler = new AgentPresenceReconciler({ config, transport, announce: null, now: () => NOW });
+    await reconciler.reconcile('agent_support');
+    // A creation that gave up on @support left this record behind.
+    await config.createAgent(agent('agent_stale', 'Support draft', 'support'));
+    // Someone turned the group off in Slack.
+    transport.groups[0]!.disabled = true;
+
+    const retried = await reconciler.retry('agent_support');
+    assert.equal(retried.slackPresence?.health, 'healthy');
+    assert.equal(transport.groups[0]?.disabled, false, 'Retry turns the group back on');
+
+    const renamed = await config.updateAgent(retried.id, { name: 'Support desk' }, retried.revision);
+    const edited = await reconciler.reconcile(renamed.id);
+    assert.equal(edited.slackPresence?.health, 'healthy');
+    assert.equal(transport.groups[0]?.name, 'Support desk');
+    assert.equal(transport.groups[0]?.handle, 'support');
   } finally {
     config.close();
   }
@@ -1481,6 +1580,10 @@ class FakeSlackTransport implements SlackTransport {
   async createUserGroup(input: { name: string; handle: string; description?: string }) {
     this.createCalls += 1;
     this.refuseLongDescription('usergroups.create', input.description);
+    // As Slack does, a disabled group keeps its handle.
+    if (this.groups.some((group) => group.handle === input.handle)) {
+      throw new SlackTransportError('usergroups.create', 'handle_already_exists');
+    }
     if (this.nameTaken(input.name)) throw new SlackTransportError('usergroups.create', 'name_already_exists');
     const group: SlackUserGroup = {
       id: `S${this.groups.length + 1}`,

@@ -18,12 +18,14 @@ import {
   AgentPresenceError,
   agentOffError,
   classifyAgentPresenceError,
+  restoreHandleRefusal,
 } from './errors.ts';
 import {
   agentUserGroupDescription,
   agentUserGroupName,
   alternativeAgentHandles,
-  heldAgentHandles,
+  handlesOtherAgentsHoldInSlack,
+  handlesOtherAgentsStore,
   normalizeAgentHandle,
 } from './handles.ts';
 
@@ -459,7 +461,9 @@ export class AgentPresenceReconciler {
     );
 
     const groups = await transport.listUserGroups({ includeDisabled: true });
-    const held = heldAgentHandles(await config.listAgents(), agent.id);
+    const agents = await config.listAgents();
+    // Suggestions skip every handle another Agent stores; only one held in Slack refuses.
+    const held = handlesOtherAgentsStore(agents, agent.id);
     let group = groups.find((candidate) => candidate.id === presence.userGroupId);
     if (!group) {
       const handleMatch = groups.find((candidate) => candidate.handle === normalizedHandle);
@@ -485,8 +489,10 @@ export class AgentPresenceReconciler {
     }
 
     // Chickpea's own rule, before Slack is asked to give this Agent the
-    // handle: another Agent holds it, whichever kind of Agent it is.
-    if ((!group || group.disabled || group.handle !== normalizedHandle) && held.has(normalizedHandle)) {
+    // handle: another Agent in Slack holds it, whichever kind of Agent it is.
+    // This Agent's own group already carrying it is never refused.
+    if ((!group || group.handle !== normalizedHandle) &&
+        handlesOtherAgentsHoldInSlack(agents, agent.id).has(normalizedHandle)) {
       throw new AgentPresenceError(
         'handle_collision',
         `@${normalizedHandle} is already in use.`,
@@ -717,6 +723,8 @@ export class AgentPresenceReconciler {
         'The Agent identity changed before restore. Review the change again.',
       );
     }
+    const refused = restoreHandleRefusal(await config.listAgents(), agent);
+    if (refused) throw refused;
     agent = await config.restoreAgent(agent.id, agent.revision, credentialIncarnation);
     let presence = requiredPresence(agent);
     agent = await config.updateAgent(

@@ -674,8 +674,9 @@ import {
   AgentPresenceError,
   agentPresenceRecovery,
   classifyAgentPresenceError,
+  restoreHandleRefusal,
 } from '../slack/agent-presence/errors.ts';
-import { heldAgentHandles, normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
+import { handlesOtherAgentsStore, normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import { agentStillInSlackRefusal } from '../slack/agent-presence/left-slack.ts';
 import { reservedAgentIdentityField } from '../config/agent-id.ts';
 import {
@@ -8525,7 +8526,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       const configStore = store(c);
       const handle = agent.slackPresence!.normalizedHandle;
-      if (heldAgentHandles(await configStore.listAgents(), agent.id).has(handle)) {
+      if (handlesOtherAgentsStore(await configStore.listAgents(), agent.id).has(handle)) {
         return invalidRequest(c, `@${handle} is already in use.`);
       }
       const existingGeneratedSeeds = (await configStore.listUserAgents()).flatMap((existing) => {
@@ -10224,7 +10225,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         if (!presence) throw new Error(`Agent ${agentId} has no Slack presence`);
         const handle = normalizeAgentHandle(requestedHandle);
         if (handle !== presence.normalizedHandle &&
-            heldAgentHandles(await configStore.listAgents(), agentId).has(handle)) {
+            handlesOtherAgentsStore(await configStore.listAgents(), agentId).has(handle)) {
           return invalidRequest(c, `@${handle} is already in use.`);
         }
         patch.slackPresence = {
@@ -10537,6 +10538,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       }
       const workspaceId = parsed.output.workspaceId ?? actor.slackTeamId;
       if (workspaceId !== actor.slackTeamId) throw new AuthorizationError();
+      const refused = restoreHandleRefusal(await store(c).listAgents(), current);
+      if (refused) throw refused;
       const updated = current.slackPresence?.userGroupId
         ? await new AgentPresenceReconciler({
             config: store(c),

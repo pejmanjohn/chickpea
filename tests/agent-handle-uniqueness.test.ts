@@ -26,10 +26,12 @@ import { withEnv } from './helpers/env.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 
 /**
- * A handle another Agent holds is taken in Chickpea, whichever kind of Agent
- * holds it: Slack keeps user-group handles unique, but not the bot names of
- * Agents with their own app. Creation picks a free handle and says so, as for
- * a handle Slack refuses; a rename onto it is refused as Slack's would be.
+ * Slack keeps user-group handles unique, but not the bot names of Agents with
+ * their own app, so Chickpea keeps its own rule. Choosing a handle (creating
+ * or renaming an Agent) refuses one any other unarchived Agent stores:
+ * creation picks a free handle and says so, and a rename is refused as
+ * Slack's would be. Taking a handle in Slack, restore included, refuses one
+ * only another Agent in Slack holds.
  */
 
 const HOSTED = { CHICKPEA_TENANCY: 'installation' } as Record<string, unknown>;
@@ -219,7 +221,7 @@ test("renaming an Agent onto a handle another Agent holds is refused as Slack's 
     const ontoApp = await rename('agent_desk', 'support');
     assert.deepEqual({ disposition: ontoApp.disposition, code: ontoApp.code }, { disposition: 'failed', code: 'handle_collision' });
     assert.equal(ontoApp.instruction,
-      '@support is already taken in this Slack workspace, so nothing changed and the Agent keeps @desk. Free handles: @support-team, @support-2, @support-3. Offer these, or ask for another handle.');
+      '@support is already taken in this Slack workspace, so nothing changed and the Agent keeps @desk. Suggested handles: @support-team, @support-2, @support-3. Offer these, or ask for another handle.');
     assert.equal(await handleOf('agent_desk'), 'desk');
 
     const appOntoGroup = await rename('agent_helpdesk', 'desk');
@@ -272,5 +274,59 @@ test("an Agent that shared its handle with an app Agent before Chickpea kept han
     }]);
     assert.equal(outcome?.disposition, 'applied', inspect(outcome));
     assert.equal(await handleOf('agent_support'), 'support');
+  });
+});
+
+test("an Agent in Slack that shared its handle with an app Agent before Chickpea kept handles unique still saves, and Slack keeps its group", async (t) => {
+  await withEnv({ CHICKPEA_TENANCY: undefined, SLACK_STATE_DB_PATH: ':memory:' }, async () => {
+    const { f, slack, service, context, handleOf } = await handleFixture(t);
+    slack.groups.push({ id: 'S0SUPPORT', name: 'Support', handle: 'support', description: 'Support Agent', date_update: 1, date_delete: 0 });
+    const created = await f.config.createAgent({
+      ...BASE, id: 'agent_support', name: 'Support', description: 'Support Agent', instructions: 'Draft customer replies.',
+      creatorMembershipId: f.admin.membership.id,
+    });
+    await f.config.updateAgent(created.id, {
+      slackPresence: {
+        ...created.slackPresence!, kind: 'user_group', requestedHandle: 'support', normalizedHandle: 'support',
+        desiredState: 'active', health: 'healthy', userGroupId: 'S0SUPPORT',
+      },
+    }, created.revision);
+    const result = await service.applyWorkspaceChanges({
+      context: context(f.admin), idempotencyKey: 's3a-sharer',
+      operations: [{
+        itemId: 'edit', kind: 'update_agent', agentId: 'agent_support',
+        expectedRevision: (await f.config.getAgent('agent_support')).revision,
+        patch: { description: 'The support desk', requestedHandle: 'support' },
+      }],
+    });
+    assert.ok('outcomes' in result, inspect(result));
+    const [outcome] = result.outcomes;
+    assert.equal(outcome?.disposition, 'applied', inspect(outcome));
+    assert.equal(await handleOf('agent_support'), 'support');
+    assert.deepEqual(slack.updated, ['support'], 'Slack is asked, and keeps the handle');
+  });
+});
+
+test("restoring an Agent over MCP while another Agent in Slack took its handle is refused with what to do, and Slack is asked nothing", async (t) => {
+  await withEnv({ CHICKPEA_TENANCY: undefined, SLACK_STATE_DB_PATH: ':memory:' }, async () => {
+    const { f, slack, service, context, handleOf } = await handleFixture(t);
+    const desk = await f.config.getAgent('agent_desk');
+    const archived = await f.config.updateAgent(desk.id, { lifecycle: 'archived' }, desk.revision);
+    const helpdesk = await f.config.getAgent('agent_helpdesk');
+    await f.config.updateAgent(helpdesk.id, {
+      slackPresence: { ...helpdesk.slackPresence!, requestedHandle: 'desk', normalizedHandle: 'desk' },
+    }, helpdesk.revision);
+
+    const result = await service.applyWorkspaceChanges({
+      context: context(f.admin), idempotencyKey: 's3a-restore',
+      operations: [{ itemId: 'restore', kind: 'restore_agent', agentId: 'agent_desk', expectedRevision: archived.revision }],
+    });
+    assert.ok('outcomes' in result, inspect(result));
+    const [outcome] = result.outcomes;
+    assert.deepEqual({ disposition: outcome?.disposition, code: outcome?.code }, { disposition: 'failed', code: 'handle_collision' });
+    assert.equal(outcome?.instruction, 'Another Agent in Slack uses @desk. Rename or archive that Agent, then restore this one.');
+    assert.equal((await f.config.getAgent('agent_desk')).lifecycle, 'archived');
+    assert.equal(await handleOf('agent_desk'), 'desk');
+    assert.deepEqual({ created: slack.created, updated: slack.updated }, { created: [], updated: [] });
   });
 });

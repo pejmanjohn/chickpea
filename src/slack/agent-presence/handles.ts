@@ -19,17 +19,39 @@ export function normalizeAgentHandle(value: string): string {
   return normalized || 'agent';
 }
 
+type HandleHolder = Pick<CustomAgentConfig, 'id' | 'lifecycle' | 'slackPresence'>;
+
+/** An Agent is in Slack when it has a user group or its own app. */
+export function agentIsInSlack(agent: Pick<CustomAgentConfig, 'slackPresence'>): boolean {
+  const presence = agent.slackPresence;
+  return presence?.kind === 'agent_app' || presence?.userGroupId !== undefined;
+}
+
 /**
- * The handles other Agents hold in Chickpea: each one's that is not archived,
- * whether its user group or its own app's bot holds it. Slack keeps user-group
- * handles unique but not bot names, so this is Chickpea's own rule.
+ * Choosing a handle (creating or renaming an Agent): the handles every other
+ * unarchived Agent stores, in Slack or not. Slack keeps user-group handles
+ * unique but not bot names, so this is Chickpea's own rule.
  */
-export function heldAgentHandles(
-  agents: readonly Pick<CustomAgentConfig, 'id' | 'lifecycle' | 'slackPresence'>[],
+export function handlesOtherAgentsStore(agents: readonly HandleHolder[], agentId: string): Set<string> {
+  return otherAgentHandles(agents, agentId, () => true);
+}
+
+/**
+ * Taking a handle in Slack (publish, Retry, turning on, restore): the handles
+ * other unarchived Agents hold there. An Agent not in Slack yet holds none, so
+ * the first of two that store one handle to publish takes it.
+ */
+export function handlesOtherAgentsHoldInSlack(agents: readonly HandleHolder[], agentId: string): Set<string> {
+  return otherAgentHandles(agents, agentId, agentIsInSlack);
+}
+
+function otherAgentHandles(
+  agents: readonly HandleHolder[],
   agentId: string,
+  counts: (agent: HandleHolder) => boolean,
 ): Set<string> {
   return new Set(agents.flatMap((agent) =>
-    agent.id !== agentId && agent.lifecycle !== 'archived' && agent.slackPresence
+    agent.id !== agentId && agent.lifecycle !== 'archived' && agent.slackPresence && counts(agent)
       ? [agent.slackPresence.normalizedHandle]
       : []));
 }
