@@ -171,6 +171,7 @@ function botClient(input: {
   posts: Post[];
   appToken: boolean;
   infoUnanswered?: () => boolean;
+  history?: readonly unknown[];
 }): WebClient {
   const record = (method: string) => input.calls.push(`${input.botUserId}:${method}`);
   return {
@@ -226,7 +227,7 @@ function botClient(input: {
       history: async ({ channel }: { channel: string }) => {
         record('conversations.history');
         if (!input.channels.includes(channel)) throw slackError('not_in_channel');
-        return { ok: true, messages: HISTORY, has_more: false, response_metadata: { next_cursor: '' } };
+        return { ok: true, messages: input.history ?? HISTORY, has_more: false, response_metadata: { next_cursor: '' } };
       },
     },
   } as unknown as WebClient;
@@ -252,6 +253,8 @@ function slack(input: {
   appInfoUnanswered?: number;
   /** Slack does not answer the app's token's conversations.open. */
   appUnanswered?: boolean;
+  /** The Channel's earlier messages, as either bot reads them. */
+  history?: readonly unknown[];
 } = {}): Slack {
   let contextFailures = input.appContextUnanswered ?? 0;
   let infoFailures = input.appInfoUnanswered ?? 0;
@@ -259,13 +262,17 @@ function slack(input: {
   const posts: Post[] = [];
   const chickpea: SlackInstallationExecutionContext = {
     workspaceId: TEAM, transportMode: 'gateway', sharedAppReads: false, botUserId: CHICKPEA_BOT,
-    client: botClient({ botUserId: CHICKPEA_BOT, dm: CHICKPEA_DM, channels: input.chickpeaChannels ?? [CHANNEL], calls, posts, appToken: false }),
+    client: botClient({
+      botUserId: CHICKPEA_BOT, dm: CHICKPEA_DM, channels: input.chickpeaChannels ?? [CHANNEL], calls, posts, appToken: false,
+      history: input.history,
+    }),
   };
   const app: SlackInstallationExecutionContext = {
     workspaceId: TEAM, transportMode: 'gateway', sharedAppReads: false, botUserId: AGENT_BOT,
     client: botClient({
       botUserId: AGENT_BOT, dm: AGENT_DM, channels: input.appChannels ?? [], calls, posts, appToken: true,
       infoUnanswered: () => infoFailures-- > 0,
+      history: input.history,
     }),
   };
   return {
@@ -706,6 +713,51 @@ test("a Channel schedule keeps running when its Agent's app is removed, and post
   assert.equal(await execute(third, appPresence(removedApp), fake, { text: 'Third.' }), 'completed');
   await assertStillOn(store);
   assert.deepEqual(laterPosts(fake), [[CHICKPEA_BOT, 'Second.'], [CHICKPEA_BOT, 'Third.']]);
+});
+
+/** The Channel's history with the app's bot's earlier post carrying no app_id. */
+const HISTORY_WITHOUT_APP_ID = HISTORY.map((row) => {
+  if (row.user !== AGENT_BOT) return row;
+  const { app_id: _appId, bot_profile: _profile, ...rest } = row;
+  return rest;
+});
+
+test("the Agent app's bot's earlier post with no app_id reads the same to the Agent's own bot and to Chickpea's", async (t) => {
+  withHost(t);
+  const rendered = async (fake: Slack) => {
+    const resolved = await access(channelRoutine, appPresence(), fake);
+    const { prompt } = await prepareRoutinePrompt({ ...runOf(channelRoutine), scheduledFor: NOW }, channelRoutine, resolved, undefined, resolved.client, {
+      contextStore: { listSlackPublicContext: () => [], listRecentSlackPublicContext: () => [] },
+      prepareMemory: async () => ({
+        conversationKey: 'schedule', memoryEpoch: 1, selection: { entries: [] }, footerItems: [],
+        visibilityBarrierAt: null, ownerBound: true, validateLease: async () => true, confirmInjection: async () => true,
+      }),
+    });
+    return { speaker: resolved.speaker, line: prompt.split('\n').find((line) => line.includes('Earlier standup post.')) };
+  };
+  const own = await rendered(slack({ appChannels: [CHANNEL], history: HISTORY_WITHOUT_APP_ID }));
+  const chickpea = await rendered(slack({ appChannels: [], history: HISTORY_WITHOUT_APP_ID }));
+  assert.deepEqual(own.speaker, { kind: 'own_bot', botUserId: AGENT_BOT });
+  assert.equal(chickpea.speaker, undefined);
+  assert.match(own.line ?? '', /role=agent/);
+  assert.equal(chickpea.line, own.line);
+});
+
+test("a run that crosses its Agent's app bot joining the Channel is not turned off by that bot's earlier post with no app_id", async (t) => {
+  withHost(t);
+  const appChannels: string[] = [];
+  const fake = slack({ appChannels, history: HISTORY_WITHOUT_APP_ID });
+  const { store, start, execute } = await storedChannelSchedule(t);
+
+  const run = await start();
+  const dispatches = { count: 0 };
+  assert.equal(await execute(run, appPresence(), fake, 'interrupted', dispatches), 'resumable');
+  appChannels.push(CHANNEL);
+  assert.equal(await execute(run, appPresence(), fake, { text: 'Joined.' }, dispatches), 'completed');
+  assert.equal(dispatches.count, 1, 'the run reattaches rather than starting over');
+  assert.equal((await store.getRun(run.id))?.status, 'succeeded');
+  await assertStillOn(store);
+  assert.deepEqual(fake.posts.map((post) => [post.bot, post.payload.text]), [[AGENT_BOT, 'Joined.']]);
 });
 
 test("a schedule in the Agent's own DM skips when Slack does not say whether the DM is the app's", async (t) => {

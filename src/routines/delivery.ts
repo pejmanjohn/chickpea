@@ -48,6 +48,7 @@ const DEFINITIVE_DIRECT_THREAD_ERRORS = new Set([
   'restricted_action_thread_locked',
 ]);
 const UNAVAILABLE_DESTINATION_ERRORS = new Set(['channel_not_found', 'is_archived', 'not_in_channel']);
+/** Slack's answer to a bot no longer in the conversation: a definite refusal, so nothing was posted. */
 const BOT_NOT_THERE_ERRORS = new Set(['channel_not_found', 'not_in_channel']);
 
 export const DIRECT_ROUTINE_RECOVERY_NOTICE =

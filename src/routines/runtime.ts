@@ -207,9 +207,17 @@ export async function resolveRoutineRuntimeAccess(
     agentId,
     speaker: { kind: 'own_bot', botUserId: appBotUserId },
   });
-  const appId = presence?.kind === 'agent_app' && 'app' in presence.app ? presence.app.app.appId : undefined;
-  const siblings = (speaking: string) => appId
-    ? { siblingBots: { siblingBotUserIds: [installationBotUserId].filter((id) => id !== speaking), siblingAppIds: [appId] } }
+  const appRecord = presence?.kind === 'agent_app' && 'app' in presence.app ? presence.app.app : undefined;
+  const siblings = (speaking: string): Pick<RoutineRuntimeAccess, 'siblingBots'> => presence?.kind === 'agent_app'
+    ? {
+        siblingBots: {
+          siblingBotUserIds: [
+            installationBotUserId,
+            ...('botUserId' in presence.app && presence.app.botUserId ? [presence.app.botUserId] : []),
+          ].filter((id) => id !== speaking),
+          ...(appRecord ? { siblingAppIds: [appRecord.appId] } : {}),
+        },
+      }
     : {};
   let speaker: SlackSpeaker | undefined;
   if (routine.destination.kind === 'direct_thread') {
@@ -275,6 +283,7 @@ export async function resolveRoutineRuntimeAccess(
         ({ botToken, botUserId } = app);
         directClient = app.client;
         speaker = { kind: 'own_bot', botUserId };
+        // conversations.open for one person names a DM.
         directConversation = { id: routine.destination.conversationId, is_im: true };
       }
     }
