@@ -8,7 +8,7 @@ import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { AgentAppLifecycle, AttachedAgentApp, CustomAgentConfig } from '../src/config/types.ts';
 import { asUserGroup } from './helpers/user-group-presence.ts';
 import type { AgentSlackAppsHost } from '../src/slack/agent-apps/host.ts';
-import { AgentSlackApps, type AgentAppTransport } from '../src/slack/agent-apps/index.ts';
+import { AgentSlackApps, type AgentAppTransport } from '../src/slack/agent-apps/service.ts';
 import { deleteAppSecrets, readAppSecrets, saveConfigurationToken, writeAppSecrets } from '../src/slack/agent-apps/secrets.ts';
 import { type AgentAppSlackApi, SlackRefused } from '../src/slack/agent-apps/slack-api.ts';
 import { AgentPresenceError } from '../src/slack/agent-presence/errors.ts';
@@ -124,7 +124,7 @@ async function fixture(
   if (options.token !== false) assert.equal(await saveConfigurationToken(secrets, TEAM, 'xoxe-1-pasted-token-0000'), 'saved');
   const transport = new FakeTransport();
   const clock = { now: NOW };
-  const service = new AgentSlackApps({ env: ENV, stores: { config, settings }, host: HOST, transport, slack, keyring, now: () => clock.now });
+  const service = new AgentSlackApps({ env: ENV, stores: { config, settings }, host: HOST, transport, slack, keyring, now: () => clock.now, armSwitch: async () => undefined });
   /** What each finished retirement reported, as tenant end would see it. */
   const retirements: string[] = [];
   const reconciler = new AgentPresenceReconciler({

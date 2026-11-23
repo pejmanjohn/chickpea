@@ -7,6 +7,7 @@ export {
   agentAppPlacementFacts,
   agentAppPresenceHooks,
   agentDmPlacementFacts,
+  continueAgentAppSwitch,
   handleAgentAppHomeAction,
   ownBotClient,
   withAgentAppExecution,
@@ -14,4 +15,3 @@ export {
 export { admissionSpeaker, agentAppAnswersIn, hostPostSpeaker, isAgentAppDm, storedRunSpeaker } from './place.ts';
 export { agentAppPostingBot, agentAppRouteSelection, agentsByAppBot } from './routing.ts';
 export { createAgentSlackAppRoutes } from './routes.ts';
-export { AgentSlackApps, type AgentAppTransport } from './service.ts';

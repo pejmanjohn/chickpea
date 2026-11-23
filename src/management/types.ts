@@ -597,7 +597,18 @@ export type ManagementReceipt =
   | ManagementRoutineSavedAcknowledgement
   | ManagementScheduleActionAcknowledgement
   | ManagementAgentCreatedWelcome
-  | ManagementChickpeaIntroduction;
+  | ManagementChickpeaIntroduction
+  | ManagementAgentAppSwitchJob;
+
+/**
+ * Not a message: the job that finishes moving an Agent's handle to its own
+ * live Slack app. Its drain runs the switch's stored steps; it posts nothing
+ * itself, and the Owner it names is told by the switch's last step.
+ */
+export interface ManagementAgentAppSwitchJob {
+  kind: 'agent_app_switch';
+  agentId: string;
+}
 
 /** Durable, Agent-authored first message after one approved creation. */
 export interface ManagementAgentCreatedWelcome {

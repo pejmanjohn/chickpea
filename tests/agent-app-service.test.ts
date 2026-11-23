@@ -6,9 +6,9 @@ import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
-import type { AgentAppLifecycle, CustomAgentConfig } from '../src/config/types.ts';
+import { type AgentAppLifecycle, type CustomAgentConfig, appRecordOf } from '../src/config/types.ts';
 import type { AgentSlackAppsHost } from '../src/slack/agent-apps/host.ts';
-import { AgentSlackApps, type AgentAppTransport } from '../src/slack/agent-apps/index.ts';
+import { AgentSlackApps, type AgentAppTransport } from '../src/slack/agent-apps/service.ts';
 import { readAppSecrets, saveConfigurationToken, writeAppSecrets } from '../src/slack/agent-apps/secrets.ts';
 import {
   type AgentAppSlackApi,
@@ -236,7 +236,7 @@ async function fixture(
     replaceEncryptedCredentialRevision: async (input: Parameters<SqliteSettingsStore['replaceEncryptedCredentialRevision']>[0]) => {
       if (input.key.startsWith('agent-slack-app.')) {
         const current = await config.getAgent('agent_support');
-        f.realmWrites.push(current.slackPresence?.kind === 'agent_app' ? current.slackPresence.app.state : 'user_group');
+        f.realmWrites.push(appRecordOf(current.slackPresence)?.state ?? 'none');
         if (f.crashRealmWriteOnce) { f.crashRealmWriteOnce = false; throw new Crash('before the realm write'); }
       }
       return settings.replaceEncryptedCredentialRevision(input);
@@ -249,24 +249,32 @@ async function fixture(
     env: ENV, stores: { config, settings: realm }, host: HOST, transport, slack, keyring,
     now: () => clock.now, publicOrigin: async () => 'https://core.test',
     userGroupPermissionMissing: async () => f.permission.missing,
+    armSwitch: async () => undefined,
   });
   return f;
 }
 
 async function appOf(f: Fixture): Promise<AgentAppLifecycle | undefined> {
-  const presence = (await f.config.getAgent('agent_support')).slackPresence;
-  return presence?.kind === 'agent_app' ? presence.app : undefined;
+  return appRecordOf((await f.config.getAgent('agent_support')).slackPresence);
 }
 
-async function setApp(f: Fixture, app: AgentAppLifecycle): Promise<void> {
+/** An `agent_app` presence as the order before this one stored it from the start: the group released at once. */
+async function setApp(
+  f: Fixture,
+  app: AgentAppLifecycle,
+  released: { userGroupId: string; desiredState?: 'active' | 'disabled'; health?: 'healthy' | 'needs_attention' } = { userGroupId: 'S1' },
+): Promise<void> {
   const agent = await f.config.getAgent('agent_support');
   await f.config.updateAgent(agent.id, {
     slackPresence: {
       kind: 'agent_app', requestedHandle: 'support', normalizedHandle: 'support', desiredState: 'active', health: 'pending',
-      avatar: agent.slackPresence!.avatar, released: { userGroupId: 'S1' }, app,
+      avatar: agent.slackPresence!.avatar, released, app,
     },
   }, agent.revision);
 }
+
+/** An older record that has yet to release its group, as that order started every move. */
+const RELEASING: AgentAppLifecycle = { state: 'releasing_handle', at: NOW, startedBy: OWNER };
 
 /** The operator lines for an app Chickpea would not use because its record names another Agent. */
 function recordRefusals(t: TestContext): unknown[] {
@@ -295,12 +303,13 @@ const PERMISSION_NEEDED = escapeMrkdwn(
   "Chickpea needs one more Slack permission to give @support its own Slack app. In Chickpea Admin, choose Update in Slack, then choose Give @support its own Slack app in Chickpea's Home tab.",
 );
 
-test('a start frees the handle, creates without URLs, stores the secrets, adds the URLs, sets the icon and asks the Owner', async (t) => {
+// Defects caught: a start that turns the user group off before the app exists, so the Agent goes quiet until Allow.
+test('a start keeps the user group answering, creates without URLs, stores the secrets, adds the URLs, sets the icon and asks the Owner', async (t) => {
   const f = await fixture(t);
   const outcome = await f.service.start('agent_support', OWNER);
   assert.equal(outcome.kind, 'started');
-  assert.deepEqual(f.calls.log, ['disableUserGroup', 'create', 'update', 'setIcon', 'openDirectConversation', 'postMessage']);
-  assert.deepEqual(f.transport.disabled, ['S1']);
+  assert.deepEqual(f.calls.log, ['create', 'update', 'setIcon', 'openDirectConversation', 'postMessage']);
+  assert.deepEqual(f.transport.disabled, [], 'the group is never touched before Allow');
 
   const [createManifest] = f.slack.manifests;
   assert.ok(createManifest);
@@ -340,10 +349,8 @@ test('a start frees the handle, creates without URLs, stores the secrets, adds t
   assert.equal(dm?.text, escapeMrkdwn("Support's Slack app is ready. Choose Allow to add it to this workspace. After that, people can message @support directly and mention it in channels it's in."));
   assert.deepEqual(buttonUrls(dm!), [HOST.allowUrl('agent_support')]);
   const presence = (await f.config.getAgent('agent_support')).slackPresence;
-  assert.equal(presence?.desiredState, 'active');
-  assert.equal(presence?.health, 'pending');
-  assert.deepEqual(presence?.kind === 'agent_app' ? presence.released : undefined, { userGroupId: 'S1', desiredState: 'active', health: 'healthy' },
-    "the group and how it stood before the start");
+  assert.deepEqual(presence && { kind: presence.kind, userGroupId: presence.userGroupId, desiredState: presence.desiredState, health: presence.health },
+    { kind: undefined, userGroupId: 'S1', desiredState: 'active', health: 'healthy' }, 'the group holds the handle, as it stood before the start');
   assert.equal(JSON.stringify(presence).includes('secret'), false, 'no secret in presence');
 });
 
@@ -370,14 +377,14 @@ test('a crash after any external call reruns to the same end with one create and
   await clean.service.start('agent_support', OWNER);
   const cleanApp = await appOf(clean);
   const total = clean.calls.count;
-  assert.equal(total, 6);
+  assert.equal(total, 5);
   for (let k = 1; k <= total; k += 1) {
     const f = await fixture(t);
     f.calls.crashAfter = k;
     await assert.rejects(() => f.service.start('agent_support', OWNER), Crash, `crash after call ${k}`);
     f.calls.crashAfter = undefined;
     await f.service.advance('agent_support');
-    if (k === 2) {
+    if (k === 1) {
       assert.equal((await appOf(f))?.state, 'creating', 'within the settle window nothing creates again');
       f.clock.now = NOW + 60_000;
       await f.service.advance('agent_support');
@@ -390,7 +397,7 @@ test('a crash after any external call reruns to the same end with one create and
     assert.deepEqual(await appOf(f), cleanApp, `after call ${k}`);
     assert.equal(f.slack.created.length, 1, `one create after call ${k}`);
     assert.equal(f.transport.posted.length, 1, `one Allow message after call ${k}`);
-    assert.deepEqual(f.transport.disabled, ['S1'], `one group after call ${k}`);
+    assert.deepEqual(f.transport.disabled, [], `the group untouched after call ${k}`);
   }
 });
 
@@ -480,7 +487,7 @@ test('each refusal lands in attention with its message, and Try again resumes fr
   app = await appOf(refused);
   assert.equal(app?.state, 'awaiting_consent');
   assert.equal(app?.state === 'awaiting_consent' && app.startedBy, 'UOWNER2');
-  assert.deepEqual(refused.transport.disabled, ['S1'], 'the handle is released once');
+  assert.deepEqual(refused.transport.disabled, [], 'the group is never touched before Allow');
   assert.equal(refused.transport.posted[1]?.channelId, 'D_UOWNER2', 'the Owner who retried is asked to allow');
 
   const busy = await fixture(t);
@@ -502,7 +509,8 @@ test('each refusal lands in attention with its message, and Try again resumes fr
 
   const handle = await fixture(t);
   handle.transport.refuseDisable = true;
-  await handle.service.start('agent_support', OWNER);
+  await setApp(handle, RELEASING);
+  await handle.service.advance('agent_support');
   app = await appOf(handle);
   assert.equal(app?.state === 'needs_attention' && app.reason, 'handle_release_failed');
   assert.equal(handle.transport.posted[0]?.text, escapeMrkdwn("Chickpea couldn't free the name @support in Slack, so it didn't create Support's app. In Chickpea Admin, choose Update in Slack, then choose Try again."));
@@ -542,11 +550,12 @@ test("without the Owner's user-group permission nothing starts, and the Owner is
   assert.equal((await bare.service.start('agent_support', OWNER)).kind, 'started', 'an Agent with no user group to free needs no permission');
 });
 
-test("a release Slack refuses for want of the Owner's permission undoes the start and says so, rather than asking to free the name", async (t) => {
+test("an older record's release Slack refuses for want of the Owner's permission undoes the start and says so, rather than asking to free the name", async (t) => {
   const refusals = captureSlackRefusals(t);
   const f = await fixture(t);
   f.transport.refuseDisable = true;
-  await f.service.start('agent_support', OWNER);
+  await setApp(f, RELEASING, { userGroupId: 'S1', desiredState: 'active', health: 'healthy' });
+  await f.service.advance('agent_support');
   let app = await appOf(f);
   assert.equal(app?.state === 'needs_attention' && app.reason, 'handle_release_failed', 'with the permission held, a refusal is still the name');
   assert.match(f.transport.posted[0]?.text ?? '', /couldn(&#39;|')t free the name/);
@@ -575,11 +584,12 @@ test("a release Slack refuses for want of the Owner's permission undoes the star
   assert.equal(app?.state, 'awaiting_consent');
 });
 
-test("a release Slack refuses as missing_scope or not_allowed, for want of the Owner's permission, undoes the start too", async (t) => {
+test("an older record's release Slack refuses as missing_scope or not_allowed, for want of the Owner's permission, undoes the start too", async (t) => {
   for (const code of ['missing_scope', 'not_allowed']) {
     const f = await fixture(t);
     f.transport.refuseDisable = code;
-    await f.service.start('agent_support', OWNER);
+    await setApp(f, RELEASING);
+    await f.service.advance('agent_support');
     f.permission.missing = true;
     const retried = await f.service.retry('agent_support', OWNER);
     assert.equal(retried.slackPresence?.kind, undefined, `${code}: the start is undone`);
@@ -593,12 +603,9 @@ test("an undone start gives back the user group's state from before the start, a
     return presence && { kind: presence.kind, desiredState: presence.desiredState, health: presence.health, userGroupId: presence.userGroupId };
   };
   const switchedOff = await fixture(t);
-  const before = await switchedOff.config.getAgent('agent_support');
-  await switchedOff.config.updateAgent(before.id, {
-    slackPresence: { ...before.slackPresence!, desiredState: 'disabled', health: 'needs_attention' },
-  }, before.revision);
   switchedOff.transport.refuseDisable = true;
-  await switchedOff.service.start('agent_support', OWNER);
+  await setApp(switchedOff, RELEASING, { userGroupId: 'S1', desiredState: 'disabled', health: 'needs_attention' });
+  await switchedOff.service.advance('agent_support');
   switchedOff.permission.missing = true;
   await switchedOff.service.retry('agent_support', OWNER);
   assert.deepEqual(await presenceOf(switchedOff), { kind: undefined, desiredState: 'disabled', health: 'needs_attention', userGroupId: 'S1' },
@@ -688,7 +695,8 @@ test('refusals at the other steps log too, each with the app it concerns', async
   await icon.service.start('agent_support', OWNER);
   const handle = await fixture(t);
   handle.transport.refuseDisable = true;
-  await handle.service.start('agent_support', OWNER);
+  await setApp(handle, RELEASING);
+  await handle.service.advance('agent_support');
   const spent = await fixture(t);
   spent.clock.now = NOW + 13 * 3_600_000;
   spent.slack.rotate = async () => { throw new SlackRefused('tooling.tokens.rotate', 'invalid_refresh_token'); };

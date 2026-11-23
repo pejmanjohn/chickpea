@@ -7,7 +7,6 @@ import {
   type AgentAppTransition,
   CREATE_SETTLE_MS,
   createIsStale,
-  initialAgentApp,
   isRefusal,
   nextStep,
   transition,
@@ -113,6 +112,7 @@ const allowed: Record<string, AgentAppTransition> = {
   'awaiting_consent -> consent_opened': { ...states.awaiting_consent_opened, at: AT },
   'awaiting_consent -> consent_granted': {
     state: 'active', at: AT, app: APP, icon: 'agent_avatar', botUserId: 'UBOT', installedAt: AT, installedBy: 'UOWNER2',
+    switchProgress: 'group_pending',
   },
   'awaiting_consent -> consent_undone': { ...states.awaiting_consent, at: AT },
   'awaiting_consent -> archive_with_token': { state: 'uninstalling', at: AT, startedBy: 'UOWNER', app: APP, next: 'uninstall' },
@@ -120,6 +120,7 @@ const allowed: Record<string, AgentAppTransition> = {
   'awaiting_consent_opened -> consent_opened': { ...states.awaiting_consent_opened, at: AT },
   'awaiting_consent_opened -> consent_granted': {
     state: 'active', at: AT, app: APP, icon: 'agent_avatar', botUserId: 'UBOT', installedAt: AT, installedBy: 'UOWNER2',
+    switchProgress: 'group_pending',
   },
   'awaiting_consent_opened -> consent_undone': { ...states.awaiting_consent, at: AT },
   'awaiting_consent_opened -> archive_with_token': { state: 'uninstalling', at: AT, startedBy: 'UOWNER', app: APP, next: 'uninstall' },
@@ -185,7 +186,7 @@ test('a fresh create blocks archive until it settles, a stale one is let go with
 
 test('the next step names the one external effect due, and nothing while the record waits', () => {
   const now = AT;
-  assert.equal(nextStep(initialAgentApp('UOWNER', T0), now), 'release_handle');
+  assert.equal(nextStep(states.releasing_handle, now), 'release_handle');
   assert.equal(nextStep(states.creating, now), 'create');
   assert.equal(nextStep(states.creating_stale, now), undefined);
   assert.equal(nextStep(states.created, now), 'set_urls');

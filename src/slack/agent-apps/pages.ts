@@ -31,7 +31,7 @@ export interface AgentAppLinks {
   adminUrl?: string;
 }
 
-export type AgentAppMessageKind = 'allow' | 'ready' | 'archived_left' | 'archived_installed' | 'permission_needed' | AgentAppAttention;
+export type AgentAppMessageKind = 'allow' | 'archived_left' | 'archived_installed' | 'permission_needed' | AgentAppAttention;
 
 type Button =
   | { label: string; url: string }
@@ -62,10 +62,6 @@ const DM_COPY = {
     text: ({ name, handle }) =>
       `${name}'s Slack app is ready. Choose Allow to add it to this workspace. After that, people can message @${handle} directly and mention it in channels it's in.`,
     buttons: allow,
-  },
-  ready: {
-    text: ({ handle }) => `@${handle} is in Slack now. Message it directly, or add it to a channel from the channel's Add people or agents.`,
-    buttons: () => [],
   },
   handle_release_failed: {
     text: ({ name, handle }) =>
@@ -120,6 +116,44 @@ const DM_COPY = {
     buttons: () => [yourApps],
   },
 } satisfies Record<AgentAppMessageKind, Copy>;
+
+/** Where an Agent's own bot is after the switch, by Channel ID. */
+export interface AgentAppSwitchReport {
+  /** Granted Channels its bot is in. */
+  joined: readonly string[];
+  /** Granted Channels its bot is not in, where it answers through Chickpea. */
+  throughChickpea: readonly string[];
+  /** Slack refused to turn the user group off, so it still answers too. */
+  groupStillOn: boolean;
+}
+
+const CHANNEL_ID = /^[CG][A-Z0-9]{2,}$/;
+
+/**
+ * The Owner's one message once an Agent's handle has moved to its own app.
+ * Channels are named with Slack's `<#C…>` reference, which Slack shows as the
+ * Channel's name to anyone who can see it; everything else is escaped.
+ */
+export function agentAppSwitchedMessage(names: AgentAppNames, report: AgentAppSwitchReport): { text: string; blocks: unknown[] } {
+  const { name, handle } = names;
+  const channels = (ids: readonly string[]) => listed(ids.filter((id) => CHANNEL_ID.test(id)).map((id) => `<#${id}>`));
+  const joined = channels(report.joined);
+  const elsewhere = channels(report.throughChickpea);
+  const text = [
+    escapeMrkdwn(`${name} is now its own Slack app. People keep using @${handle}.`),
+    ...(joined ? [`${escapeMrkdwn('It joined')} ${joined}.`] : []),
+    ...(elsewhere ? [`In ${elsewhere} ${escapeMrkdwn('it keeps answering through Chickpea until someone there adds it.')}`] : []),
+    ...(report.groupStillOn
+      ? [escapeMrkdwn(`Slack didn't let Chickpea turn off the @${handle} user group, so people may see @${handle} twice when they mention it. Both reach ${name}.`)]
+      : []),
+  ].join(' ');
+  return { text, blocks: [{ type: 'section', text: { type: 'mrkdwn', text } }] };
+}
+
+function listed(items: readonly string[]): string {
+  if (items.length <= 1) return items[0] ?? '';
+  return `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`;
+}
 
 export type ConsentOutcome =
   | 'cancelled'

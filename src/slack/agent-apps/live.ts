@@ -1,8 +1,9 @@
 import type { WebClient } from '@slack/web-api';
 
 import { UnknownAgentError } from '../../config/errors.ts';
-import type { SettingsStore } from '../../config/settings-store.ts';
-import { getSettingsStore, type PlatformEnv, resolveStores } from '../../config/state-backend.ts';
+import type { EncryptedCredentialStore, SettingsStore } from '../../config/settings-store.ts';
+import { type AppStores, getSettingsStore, type PlatformEnv, resolveStores } from '../../config/state-backend.ts';
+import type { ManagementAgentAppSwitchJob, ManagementReceiptOutboxRecord } from '../../management/types.ts';
 import type { AgentAppBot, AgentAppPresenceHooks } from '../agent-presence/reconciler.ts';
 import { resolveSlackPublicUrl } from '../credentials.ts';
 import { hostedSlackUpdateGrantsUserGroupToken } from '../hosted-permissions.ts';
@@ -24,7 +25,7 @@ import { agentSlackAppsHost, type AgentAppRetirement, type AgentSlackAppIngress,
 import { FINISH_APP_ACTION, START_APP_ACTION, TRY_AGAIN_ACTION } from './pages.ts';
 import { agentAppIsLive, agentAppRecord } from './lifecycle.ts';
 import { readOwnAppSecrets, type SecretDeps } from './secrets.ts';
-import { AgentSlackApps, type AgentAppTransport } from './service.ts';
+import type { AgentAppSwitchJob, AgentAppTransport, AgentSlackApps } from './service.ts';
 import { createAgentAppSlackApi, logSlackRefusal } from './slack-api.ts';
 import { loadCredentialKeyring } from '../credential-keyring.ts';
 import { slackPlatformErrorCode } from '../errors.ts';
@@ -350,32 +351,106 @@ export async function handleAgentAppHomeAction(input: {
 
 const AGENT_APP_ACTIONS = new Set([START_APP_ACTION, FINISH_APP_ACTION, TRY_AGAIN_ACTION]);
 
-/** The service over an installation's live stores, main bot and public URL. */
-export async function liveAgentSlackApps(env: PlatformEnv | undefined, host: AgentSlackAppsHost): Promise<AgentSlackApps> {
-  const stores = resolveStores(env);
-  const settings = getSettingsStore(env);
-  const credentials = installationCredentials(env);
+/**
+ * The stores the service reads and writes; a caller inside the state store
+ * passes its own, so nothing calls back into it, the main bot's credentials
+ * included.
+ */
+type AgentAppStores = Pick<AppStores, 'config' | 'management' | 'identity'> & { settings: SettingsStore & EncryptedCredentialStore };
+
+/**
+ * The service over an installation's live stores, main bot and public URL.
+ * Loaded where it is used, so Worker startup does not carry it.
+ */
+export async function liveAgentSlackApps(
+  env: PlatformEnv | undefined,
+  host: AgentSlackAppsHost,
+  local?: AgentAppStores,
+): Promise<AgentSlackApps> {
+  const resolved = resolveStores(env);
+  const settings = local?.settings ?? getSettingsStore(env);
+  const management = local?.management ?? resolved.management;
+  const credentials = installationCredentials(env, local?.identity);
+  const { AgentSlackApps } = await import('./service.ts');
   return new AgentSlackApps({
     env,
-    stores: { config: stores.config, settings },
+    stores: { config: local?.config ?? resolved.config, settings },
     host,
     transport: mainBotTransport(credentials, settings),
-    publicOrigin: () => resolveSlackPublicUrl(env, stores.settings, stores.identity),
+    armSwitch: (job) => armAgentAppSwitch(management, job, Date.now()),
+    publicOrigin: () => resolveSlackPublicUrl(env, resolved.settings, resolved.identity),
     userGroupPermissionMissing: async () => hostedSlackUpdateGrantsUserGroupToken() && !(await credentials()).userGroupToken,
   });
+}
+
+/**
+ * The switch job as an outbox row: one per app install, so a second Allow of
+ * the same install arms nothing new, and the drain that claims it runs the
+ * switch's remaining steps. `rearm` numbers the rows that follow one that
+ * settled with the switch unfinished.
+ */
+export function agentAppSwitchOutbox(job: AgentAppSwitchJob, at: number, rearm = 0): ManagementReceiptOutboxRecord {
+  const outboxId = `agent_app_switch:${job.agentId}:${job.appId}:${job.installedAt}${rearm ? `:${rearm}` : ''}`;
+  return {
+    outboxId,
+    operationId: outboxId,
+    destination: { kind: 'slack_dm', workspaceId: job.teamId, slackUserId: job.ownerSlackUserId },
+    receipt: { kind: 'agent_app_switch', agentId: job.agentId },
+    status: 'pending',
+    attempts: 0,
+    nextAttemptAt: at,
+    createdAt: at,
+    updatedAt: at,
+  };
+}
+
+/**
+ * Arm the switch job for an install whose switch has steps left. The outbox
+ * keeps a row it already has, settled or not, so a row that settled without
+ * finishing the switch (every attempt failed, or it ran while the app was not
+ * live) is followed by a new one. A row still waiting or running is left
+ * alone: one install never has two unsettled jobs.
+ */
+export async function armAgentAppSwitch(
+  management: Pick<AppStores['management'], 'putOutbox'>,
+  job: AgentAppSwitchJob,
+  at: number,
+): Promise<void> {
+  for (let rearm = 0; ; rearm += 1) {
+    const row = await management.putOutbox(agentAppSwitchOutbox(job, at, rearm));
+    if (row.status !== 'delivered' && row.status !== 'failed') return;
+  }
+}
+
+/** The drain's run of one switch job. Without the port it fails and is retried: nothing here can drive an Agent app. */
+export async function continueAgentAppSwitch(
+  env: PlatformEnv | undefined,
+  job: ManagementAgentAppSwitchJob,
+  local?: AgentAppStores,
+): Promise<{ deliveryRef: string }> {
+  const host = agentSlackAppsHost();
+  if (!host) throw Object.assign(new Error('Agent apps are not served here.'), { name: 'agent_apps_unavailable' });
+  const outcome = await (await liveAgentSlackApps(env, host, local)).continueSwitch(job.agentId);
+  return { deliveryRef: `agent_app_switch:${outcome}` };
 }
 
 /**
  * The installation's own credentials, read only when a step needs them (an
  * Owner's DM, the handle's user group, the permission it needs). Uninstalling
  * and deleting an app use that app's credentials and the configuration token,
- * so they go on when these cannot be read.
+ * so they go on when these cannot be read. `identity` is the state store's
+ * own, when the caller runs inside it.
  */
-function installationCredentials(env: PlatformEnv | undefined): () => Promise<ResolvedSlackInstallationCredentials> {
+function installationCredentials(
+  env: PlatformEnv | undefined,
+  identity?: AppStores['identity'],
+): () => Promise<ResolvedSlackInstallationCredentials> {
   let resolved: Promise<ResolvedSlackInstallationCredentials> | undefined;
   return () => {
     if (!resolved) {
-      resolved = resolveSlackInstallationCredentials(slackInstallationCredentialId(env), env);
+      resolved = resolveSlackInstallationCredentials(
+        slackInstallationCredentialId(env), env, identity ? { state: identity, env } : undefined,
+      );
       resolved.catch(() => { resolved = undefined; });
     }
     return resolved;

@@ -7,13 +7,14 @@ import ts from 'typescript';
 import { CfIdentityStore } from '../src/config/cf-state-proxies.ts';
 import type { TagStateRpc } from '../src/config/state-rpc.ts';
 import type { IdentityRpcRequest } from '../src/identity/types.ts';
-import { drainManagementReceiptOutbox } from '../src/management/receipts.ts';
+import { drainManagementReceiptOutbox, isAgentAppSwitchJob } from '../src/management/receipts.ts';
 import { ManagementStoreLogic } from '../src/management/store.ts';
 import type {
   ManagementAgentCreatedWelcome,
   ManagementReceiptOutboxRecord,
   ManagementRpcRequest,
 } from '../src/management/types.ts';
+import { agentAppSwitchOutbox, armAgentAppSwitch } from '../src/slack/agent-apps/live.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { hostedInstallation } from './helpers/installation-objects.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
@@ -235,5 +236,65 @@ test('claiming Chickpea\'s introduction over the state RPC arms the outbox drain
     assert.equal(claimed.ok, true);
     assert.equal(f.management.nextOutboxDueAt(), NOW);
     assert.deepEqual(f.writes, [NOW], 'the welcome is sent now, not at the next unrelated wake');
+  } finally { f.db.close(); }
+});
+
+// Defects caught: an Agent app's switch armed at Allow that waits for an unrelated wake, or a second Allow of the
+// same install arming a second switch.
+test("an Agent app's switch job put over the state RPC arms the drain at once, and the same install arms it once", async (context) => {
+  context.mock.method(Date, 'now', () => NOW);
+  const f = fixture(LATER_SWEEP);
+  try {
+    const job = { agentId: 'agent_support', appId: 'A0APP1', installedAt: NOW, teamId: 'T_TEST', ownerSlackUserId: 'U_OWNER' };
+    for (const at of [NOW, NOW + 1]) {
+      const put = await f.probe.managementExecute({ kind: 'put_outbox', record: agentAppSwitchOutbox(job, at) });
+      assert.equal(put.ok, true);
+    }
+    assert.equal(f.management.nextOutboxDueAt(), NOW);
+    assert.deepEqual(f.writes, [NOW], 'the switch runs now, not at the next unrelated wake');
+    const claimed = f.management.claimDueOutbox(NOW, 10, NOW + 30_000);
+    assert.deepEqual(claimed.map((record) => record.receipt), [{ kind: 'agent_app_switch', agentId: 'agent_support' }], 'one job');
+    assert.equal(isAgentAppSwitchJob(claimed[0]!.receipt), true, 'the drain runs it rather than posting it');
+  } finally { f.db.close(); }
+});
+
+// Defect caught: a switch whose job failed every attempt left with no driver, because the outbox keeps the settled
+// row and arming the same ID again inserts nothing; and an Owner's second press arming a second job beside one waiting.
+test("an Agent app's switch job that settled unfinished is armed afresh, and one still waiting is never armed twice", async () => {
+  const f = fixture(null);
+  try {
+    const job = { agentId: 'agent_support', appId: 'A0APP1', installedAt: NOW, teamId: 'T_TEST', ownerSlackUserId: 'U_OWNER' };
+    const management = { putOutbox: async (record: ManagementReceiptOutboxRecord) => f.management.putOutbox(record) };
+    const unsettled = () => f.db.all(
+      `SELECT outbox_id FROM management_receipt_outbox WHERE status IN ('pending', 'delivering') ORDER BY outbox_id`,
+    ).map((row) => (row as { outbox_id: string }).outbox_id);
+    const first = agentAppSwitchOutbox(job, NOW).outboxId;
+    let now = NOW;
+    await armAgentAppSwitch(management, job, now);
+    await armAgentAppSwitch(management, job, now + 1);
+    assert.deepEqual(unsettled(), [first], 'a second press beside a waiting job arms nothing');
+
+    // Slack down for longer than the outbox retries: the job fails every attempt and settles failed.
+    for (let due = f.management.nextOutboxDueAt(); due !== undefined; due = f.management.nextOutboxDueAt()) {
+      now = Math.max(now, due);
+      await drainManagementReceiptOutbox({
+        management: f.management as never, now: () => now,
+        deliver: async () => { throw Object.assign(new Error('Slack is down'), { name: 'slack_unreachable' }); },
+      });
+    }
+    assert.equal(f.management.getOutboxForOperation(first)?.status, 'failed');
+    assert.deepEqual(unsettled(), [], 'nothing drives the switch');
+
+    await armAgentAppSwitch(management, job, now);
+    await armAgentAppSwitch(management, job, now + 1);
+    assert.deepEqual(unsettled(), [`${first}:1`], 'Finish setting up arms one new job');
+    assert.equal(f.management.nextOutboxDueAt(), now, 'which is due at once');
+
+    // A job that ran while the app was not live settles delivered; the switch it left is armed again too.
+    await drainManagementReceiptOutbox({
+      management: f.management as never, now: () => now, deliver: async () => ({ deliveryRef: 'agent_app_switch:not_live' }),
+    });
+    await armAgentAppSwitch(management, job, now);
+    assert.deepEqual(unsettled(), [`${first}:2`]);
   } finally { f.db.close(); }
 });
