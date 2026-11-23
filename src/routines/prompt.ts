@@ -141,6 +141,7 @@ export async function prepareRoutinePrompt(
         state: getSlackStateStore(env),
         sharedAppReads: sharesSlackAppReadBudget({ env, client: readClient }),
         ...(access.botUserId ? { botUserId: access.botUserId } : {}),
+        ...access.siblingBots,
         ...(options?.maxMessages !== undefined ? { maxMessages: options.maxMessages } : {}),
       }));
   const prepareMemory = dependencies.prepareMemory ?? prepareMemoryTurn;

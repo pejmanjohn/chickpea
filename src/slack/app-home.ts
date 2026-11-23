@@ -1,10 +1,17 @@
 import type { View } from '@slack/types';
 import type { SlackInteractionPayload } from '@flue/slack';
 
-import type { CustomAgentConfig } from '../config/types.ts';
+import { agentAppIsLive, type CustomAgentConfig } from '../config/types.ts';
 import { escapeSlackControlCharacters } from './message-format.ts';
 
 export const START_AGENT_ACTION_ID = 'chickpea.agent.start';
+/** A link button: Slack opens the Agent app's own DM, and the click it also delivers needs nothing. */
+export const OPEN_AGENT_DM_ACTION_ID = 'chickpea.agent.open_dm';
+
+/** Slack's link to an app's own DM in one workspace. */
+export function agentAppDmUrl(appId: string, teamId: string): string {
+  return `https://slack.com/app_redirect?${new URLSearchParams({ app: appId, team: teamId })}`;
+}
 
 export function agentAppHomeStarterMessage(agentName: string): string {
   return `${agentName} is ready.`;
@@ -12,7 +19,12 @@ export function agentAppHomeStarterMessage(agentName: string): string {
 
 export function agentDirectoryAppHome(
   agents: readonly CustomAgentConfig[],
-  options: { unavailableNotice?: boolean; rowExtras?: ReadonlyMap<string, readonly object[]> } = {},
+  options: {
+    unavailableNotice?: boolean;
+    rowExtras?: ReadonlyMap<string, readonly object[]>;
+    /** Set where Agent apps answer: a live app Agent's Message opens its own DM in this Slack team. */
+    agentDmTeamId?: string;
+  } = {},
 ): View {
   const blocks: Array<Record<string, unknown>> = [
     {
@@ -49,6 +61,10 @@ export function agentDirectoryAppHome(
     for (const agent of agents.slice(0, 24)) {
       const handle = agent.slackPresence?.normalizedHandle;
       const description = agent.description?.trim();
+      const presence = agent.slackPresence;
+      const ownDm = options.agentDmTeamId && agentAppIsLive(presence)
+        ? agentAppDmUrl(presence.app.app.appId, options.agentDmTeamId)
+        : undefined;
       blocks.push({
         type: 'section',
         text: {
@@ -59,8 +75,9 @@ export function agentDirectoryAppHome(
         },
         accessory: {
           type: 'button',
-          action_id: START_AGENT_ACTION_ID,
+          action_id: ownDm ? OPEN_AGENT_DM_ACTION_ID : START_AGENT_ACTION_ID,
           value: agent.id,
+          ...(ownDm ? { url: ownDm } : {}),
           text: { type: 'plain_text', text: 'Message', emoji: true },
           accessibility_label: `Message ${agent.name}`,
         },

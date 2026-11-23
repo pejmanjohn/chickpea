@@ -64,6 +64,19 @@ export function turnJobRunSpeaker(job: { turn: NormalizedSlackTurn; assignment: 
   return { agentId: job.assignment.agentId, ...(job.turn.speaker ? { speaker: job.turn.speaker } : {}) };
 }
 
+/**
+ * A turn job's run when its stored speaker is its Agent app's own bot, so a
+ * repair or relay edits and posts with that bot; undefined for every other
+ * run, which keeps the installation's bot as before speakers were stored.
+ */
+export function ownBotRun(job: {
+  turn: Pick<NormalizedSlackTurn, 'speaker'>;
+  assignment: { agentId: string };
+}): SlackRunSpeaker | undefined {
+  const { speaker } = job.turn;
+  return speaker?.kind === 'own_bot' ? { agentId: job.assignment.agentId, speaker } : undefined;
+}
+
 export type SlackInstallationAccessVerifier = (
   context: SlackInstallationExecutionContext,
   turn: NormalizedSlackTurn,
@@ -77,11 +90,13 @@ export function cacheSlackInstallationExecutionContexts(
   resolve: SlackInstallationExecutionResolver,
 ): SlackInstallationExecutionResolver {
   const pending = new Map<string, Promise<SlackInstallationExecutionContext>>();
-  return (workspaceId) => {
-    let resolution = pending.get(workspaceId);
+  return (workspaceId, run) => {
+    // A run's speaker can pick another bot, so it is part of the key.
+    const key = run ? `${workspaceId}\u0000${run.agentId}\u0000${JSON.stringify(run.speaker ?? null)}` : workspaceId;
+    let resolution = pending.get(key);
     if (!resolution) {
-      resolution = resolve(workspaceId);
-      pending.set(workspaceId, resolution);
+      resolution = resolve(workspaceId, run);
+      pending.set(key, resolution);
     }
     return resolution;
   };

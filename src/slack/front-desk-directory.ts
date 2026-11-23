@@ -1,7 +1,6 @@
 import type { ConfigStore } from '../config/store.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import {
-  agentAppIsLive,
   type AgentConnectionBinding,
   type ConnectionAccount,
   type CustomAgentConfig,
@@ -50,14 +49,13 @@ export interface FrontDeskFacts {
 }
 
 /**
- * The usable Agents the front desk may list. An Agent with its own live
- * Slack app is left out: it posts as its own bot, which is not in this DM.
- * So is one with neither a name that survives cleaning nor a handle.
+ * The usable Agents the front desk may list. An Agent with its own Slack app
+ * is listed too: in this DM Chickpea's bot answers for it, under its name.
+ * One with neither a name that survives cleaning nor a handle is left out.
  */
 function frontDeskCandidates(usable: FrontDeskUsable): CustomAgentConfig[] {
   return usable.agents.filter((agent) =>
-    agent.kind === 'user' && agent.id !== CHICKPEA_AGENT_ID && !agentAppIsLive(agent.slackPresence) &&
-    frontDeskName(agent) !== '');
+    agent.kind === 'user' && agent.id !== CHICKPEA_AGENT_ID && frontDeskName(agent) !== '');
 }
 
 /** The Agent's name as the block, the card, and the plan show it: one short line, else its handle. */

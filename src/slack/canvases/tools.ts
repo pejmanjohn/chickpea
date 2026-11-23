@@ -9,14 +9,15 @@ import {
   getSlackCredentialResolutionDependencies,
   type PlatformEnv,
 } from '../../config/state-backend.ts';
-import { parseSlackManagementSignal } from '../../management/slack-tools.ts';
+import { parseSlackManagementSignal, type SlackManagementSignal } from '../../management/slack-tools.ts';
+import { storedRunSpeaker } from '../agent-apps/index.ts';
 import { resolveSlackInstallationExecutionContext } from '../installation-execution.ts';
 import { assertSlackListsAccess } from '../lists/tools.ts';
 import { ListWriteLedger } from '../lists/writes.ts';
 import { turnSlackReadAuthority } from '../reading/tools.ts';
 import { byteLength, MAX_SLACK_READ_RESULT_BYTES } from '../reading/service.ts';
 import type { SlackCanvasService } from './service.ts';
-import type { JsonObject } from './types.ts';
+import { type JsonObject, SlackCanvasError } from './types.ts';
 
 export const SLACK_CANVAS_TOOL_NAMES = ['read_slack_canvas', 'create_slack_canvas', 'update_slack_canvas'] as const;
 
@@ -27,6 +28,9 @@ export const SLACK_CANVASES_INSTRUCTION = [
 ].join(' ');
 
 const MAX_CANVAS_MARKDOWN_CHARS = 100_000;
+
+export const CANVASES_NOT_IN_AGENT_DM =
+  'Canvases are not available in this conversation. Nothing was read or changed. If the requester needs a canvas, suggest asking for it in a channel.';
 
 const text = (max: number) => v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(max));
 const markdown = v.pipe(v.string(), v.maxLength(MAX_CANVAS_MARKDOWN_CHARS), v.check((value) => value.trim().length > 0, 'Markdown is required.'));
@@ -87,29 +91,42 @@ export function createSlackCanvasTools(resolve: (signal: AbortSignal | undefined
 export function useSlackCanvasTools(plan: RuntimePlanV2, resolveEnv: () => Promise<PlatformEnv | undefined>): void {
   const signal = parseSlackManagementSignal(useDelivery(), plan);
   if (!signal || !plan.actorMembershipId) return;
-  for (const tool of createSlackCanvasTools(async (abort) => {
-    const env = await resolveEnv();
-    const config = getConfigStore(env);
-    const identity = getIdentityStore(env);
-    await assertSlackListsAccess(plan, signal, config, identity);
-    const settings = getSettingsStore(env);
-    const [installation, { SlackCanvasService, createSlackCanvasesCall }] = await Promise.all([
-      resolveSlackInstallationExecutionContext(signal.workspaceId, env, {
-        config,
-        settings,
-        credentialDependencies: getSlackCredentialResolutionDependencies(env),
-        rejectRateLimitedCalls: true,
-      }),
-      import('./service.ts'),
-    ]);
-    return new SlackCanvasService({
-      workspaceId: signal.workspaceId,
-      botUserId: installation.botUserId,
-      call: createSlackCanvasesCall(installation.client),
-      authority: turnSlackReadAuthority(plan, signal, config, identity, installation.client),
-      ledger: new ListWriteLedger(settings, signal.workspaceId, signal.turnJobId, 'canvas'),
-      signal: abort,
-      hosted: deploymentTenancy(env) === 'installation',
-    });
-  })) useTool(tool);
+  for (const tool of createSlackCanvasTools(async (abort) => slackCanvasService(plan, signal, await resolveEnv(), abort))) {
+    useTool(tool);
+  }
+}
+
+/** The canvas service of one turn, through Chickpea's bot. */
+export async function slackCanvasService(
+  plan: RuntimePlanV2,
+  signal: SlackManagementSignal,
+  env: PlatformEnv | undefined,
+  abort?: AbortSignal,
+): Promise<SlackCanvasService> {
+  const config = getConfigStore(env);
+  const identity = getIdentityStore(env);
+  await assertSlackListsAccess(plan, signal, config, identity);
+  // Chickpea's bot is not in an Agent app's own DM.
+  if (signal.conversationKind === 'im' && (await storedRunSpeaker(env, signal.turnJobId))?.kind === 'own_bot') {
+    throw new SlackCanvasError('not_in_this_conversation', CANVASES_NOT_IN_AGENT_DM);
+  }
+  const settings = getSettingsStore(env);
+  const [installation, { SlackCanvasService, createSlackCanvasesCall }] = await Promise.all([
+    resolveSlackInstallationExecutionContext(signal.workspaceId, env, {
+      config,
+      settings,
+      credentialDependencies: getSlackCredentialResolutionDependencies(env),
+      rejectRateLimitedCalls: true,
+    }),
+    import('./service.ts'),
+  ]);
+  return new SlackCanvasService({
+    workspaceId: signal.workspaceId,
+    botUserId: installation.botUserId,
+    call: createSlackCanvasesCall(installation.client),
+    authority: turnSlackReadAuthority(plan, signal, config, identity, installation.client),
+    ledger: new ListWriteLedger(settings, signal.workspaceId, signal.turnJobId, 'canvas'),
+    ...(abort ? { signal: abort } : {}),
+    hosted: deploymentTenancy(env) === 'installation',
+  });
 }

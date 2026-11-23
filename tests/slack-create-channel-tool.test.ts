@@ -643,7 +643,7 @@ test('Chickpea itself makes a public channel without any Channel grant', async (
   } finally { f.close(); }
 });
 
-test('the requester must keep access, the Agent must still be added where it was asked, and an own-app Agent is refused', async () => {
+test('the requester must keep access, the Agent must still be added where it was asked, and an own-app Agent may create one', async () => {
   const { f, agent, signal, grant, standing } = await standingFixture('chan-standing');
   try {
     await grant('C0ELSEWHERE');
@@ -652,7 +652,8 @@ test('the requester must keep access, the Agent must still be added where it was
     configureAgentSlackApps({ requestUrls: () => ({ events: '', interactions: '' }), redirectUri: '', allowUrl: () => '' });
     try {
       const appAgent = { ...agent, slackPresence: { kind: 'agent_app' } } as unknown as CustomAgentConfig;
-      assert.equal(await refusalCode(standing({ agent: appAgent, signal: { ...signal, conversationKind: 'im' } })), 'agent_app');
+      assert.equal(await refusalCode(standing({ agent: appAgent, signal: { ...signal, conversationKind: 'im' } })), 'allowed',
+        "Chickpea's bot creates it and posts as the Agent, as for a user-group Agent");
     } finally { configureAgentSlackApps(undefined); }
     await f.identity.setMembershipAccessOverlay({
       membershipId: f.admin.membership.id,

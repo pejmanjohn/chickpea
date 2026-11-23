@@ -1,4 +1,6 @@
 import type { CustomAgentConfig } from '../../config/types.ts';
+import { agentAppBots } from '../agent-app-bots.ts';
+import { slackConversationKind } from '../thread-key.ts';
 import type { NormalizedSlackTurn } from '../types.ts';
 import { agentSlackAppsHost } from './host.ts';
 import { agentAppIsLive } from './lifecycle.ts';
@@ -17,25 +19,46 @@ export function agentAppPostingBot(agent: CustomAgentConfig): string | undefined
 }
 
 /**
- * An Agent app's own ingress selects its Agent. On Chickpea's ingress a
- * Channel message that mentions a live Agent-app bot is that bot's to answer,
- * so it is ignored there unless the caller finds a user-group Agent named in it
- * too; the same text in Chickpea's DM is Chickpea's.
+ * The Agent each Agent-app bot names, while the host serves Agent apps: every
+ * app whose record names its bot, live or not, since Chickpea's bot answers
+ * for an app that cannot.
  */
-export function agentAppRouteSelection(
-  turn: Pick<NormalizedSlackTurn, 'text'>,
-  surface: 'channel' | 'direct',
+export function agentsByAppBot(agents: readonly CustomAgentConfig[]): Map<string, CustomAgentConfig> {
+  return agentSlackAppsHost() ? appAgentsByBot(agents) : new Map();
+}
+
+function appAgentsByBot(agents: readonly CustomAgentConfig[]): Map<string, CustomAgentConfig> {
+  const byId = new Map(agents.map((agent) => [agent.id, agent]));
+  return new Map(agentAppBots(agents).map(({ agentId, botUserId }) => [botUserId, byId.get(agentId)!]));
+}
+
+/**
+ * An Agent app's own delivery selects its Agent only for a mention of its own
+ * bot, in a Channel or a group DM, or a message in its own DM; anything else it
+ * hears routes as it would on Chickpea's delivery. On Chickpea's delivery a
+ * Channel or group DM message that names an Agent app's bot is ignored while
+ * that app can answer there, so one bot answers whichever delivery arrives
+ * first; it is routed here when the app cannot (`appAnswersHere`): its bot is
+ * not a member, the app is not live, or its token cannot be read. The same
+ * text in Chickpea's DM is Chickpea's.
+ */
+export async function agentAppRouteSelection(
+  turn: Pick<NormalizedSlackTurn, 'text' | 'source' | 'channelType'>,
   agents: readonly CustomAgentConfig[],
   agentApp: { agentId: string } | undefined,
-): AgentAppRouteSelection | undefined {
-  if (agentApp) return { kind: 'select', agentId: agentApp.agentId };
-  if (surface !== 'channel') return undefined;
-  const liveBots = new Set(
-    agents.flatMap((agent) => agentAppIsLive(agent.slackPresence) ? [agent.slackPresence.app.botUserId] : []),
-  );
-  if (liveBots.size === 0) return undefined;
+  appAnswersHere: (agent: CustomAgentConfig) => Promise<boolean>,
+): Promise<AgentAppRouteSelection | undefined> {
+  const conversation = slackConversationKind(turn);
+  if (agentApp) {
+    // A message in its own DM that names its bot is normalized as a mention.
+    const ownAddress = turn.source === 'app_mention' || (conversation === 'im' && turn.source === 'dm_message');
+    return ownAddress ? { kind: 'select', agentId: agentApp.agentId } : undefined;
+  }
+  if (conversation === 'im') return undefined;
+  const apps = appAgentsByBot(agents);
   for (const match of turn.text.matchAll(USER_MENTION)) {
-    if (liveBots.has(match[1]!)) return { kind: 'ignore' };
+    const agent = apps.get(match[1]!);
+    if (agent && await appAnswersHere(agent)) return { kind: 'ignore' };
   }
   return undefined;
 }
