@@ -20,6 +20,7 @@ import {
   resolveSlackInstallationExecutionContext,
   type SlackInstallationExecutionContext,
   type SlackInstallationExecutionResolver,
+  SlackInstallationUnavailableError,
 } from '../slack/installation-execution.ts';
 import {
   classifySlackUserForAdmission,
@@ -28,10 +29,11 @@ import {
 import { createSlackWebClient } from '../slack/web-client.ts';
 import { slackPendingExternalShare } from '../slack/transport/shared.ts';
 import { resolvePrivateAgentAccess } from '../slack/agent-access.ts';
-import { agentAppBotSees, agentDmPlacementFacts, withAgentAppExecution } from '../slack/agent-apps/index.ts';
+import { agentDmPlacementFacts, isAgentAppDm, withAgentAppExecution } from '../slack/agent-apps/index.ts';
 import { agentSlackAppsHost } from '../slack/agent-apps/host.ts';
 import { agentAppIsLive } from '../config/types.ts';
 import type { SlackSpeaker } from '../slack/speaker.ts';
+import type { SlackContextSelf } from '../slack/thread-context.ts';
 import { createDirectSlackTransportFromWebClient } from '../slack/transport/direct.ts';
 import { agentAvatarInstallation } from '../slack/agent-presence/avatar-assets.ts';
 import { hashRoutineValue } from './ids.ts';
@@ -63,6 +65,12 @@ export interface RoutineRuntimeAccess {
    * destination. Absent means Chickpea's bot under the Agent's name.
    */
   speaker?: SlackSpeaker;
+  /**
+   * The Agent's other Slack bot, and its own app by ID, for an Agent with an
+   * app: its earlier posts then read alike whichever of its two bots reads
+   * them, even after the app is removed and its bot's user ID is gone.
+   */
+  siblingBots?: Pick<SlackContextSelf, 'siblingBotUserIds' | 'siblingAppIds'>;
   publicUrl?: string | undefined;
   /** The installation the Agent's avatar URL names (agentAvatarInstallation). */
   avatarInstallationId?: string | undefined;
@@ -91,9 +99,9 @@ export class RoutineRuntimeError extends Error {
 }
 
 /**
- * A schedule in its Agent's own DM while that Agent's app is not live: only
- * the app's bot can post there, so the occurrence is skipped and the schedule
- * stays on for when the app is live again.
+ * A schedule in its Agent's own DM while that Agent's app is not live, or
+ * while Slack does not say whether the DM is the app's: only the app's bot
+ * can post there, so the occurrence is skipped and the schedule stays on.
  */
 export class RoutineAgentAppUnavailableError extends RoutineRuntimeError {
   constructor() {
@@ -113,7 +121,7 @@ interface RoutineAccessDependencies {
     env: PlatformEnv | undefined,
   ) => Promise<EffectiveSlackConfig>;
   installationExecution?: SlackInstallationExecutionResolver;
-  agentAppBotSees?: typeof agentAppBotSees;
+  agentAppDm?: typeof isAgentAppDm;
   authority?: (
     routine: RoutineDefinition,
     env: PlatformEnv | undefined,
@@ -197,12 +205,25 @@ export async function resolveRoutineRuntimeAccess(
   }
   const installationBotUserId = botUserId;
   // The Agent's own app speaks where its bot can be; Chickpea's bot speaks as the Agent everywhere else.
-  const presence = authority && useInstallationGate && agentSlackAppsHost() ? authority.agent.slackPresence : undefined;
-  const ownBotUserId = agentAppIsLive(presence) ? presence.app.botUserId : undefined;
-  const ownBot = (appBotUserId: string) => resolveInstallation(routine.workspaceId, {
-    agentId: authority!.agent.id,
+  const presence = authority && useInstallationGate ? authority.agent.slackPresence : undefined;
+  const portInstalled = Boolean(agentSlackAppsHost());
+  const ownBotUserId = portInstalled && agentAppIsLive(presence) ? presence.app.botUserId : undefined;
+  const ownBot = (agentId: string, appBotUserId: string) => resolveInstallation(routine.workspaceId, {
+    agentId,
     speaker: { kind: 'own_bot', botUserId: appBotUserId },
   });
+  const appRecord = presence?.kind === 'agent_app' && 'app' in presence.app ? presence.app.app : undefined;
+  const siblings = (speaking: string): Pick<RoutineRuntimeAccess, 'siblingBots'> => presence?.kind === 'agent_app'
+    ? {
+        siblingBots: {
+          siblingBotUserIds: [
+            installationBotUserId,
+            ...('botUserId' in presence.app && presence.app.botUserId ? [presence.app.botUserId] : []),
+          ].filter((id) => id !== speaking),
+          ...(appRecord ? { siblingAppIds: [appRecord.appId] } : {}),
+        },
+      }
+    : {};
   let speaker: SlackSpeaker | undefined;
   if (routine.destination.kind === 'direct_thread') {
     if (!authority || routine.authorityMode !== 'live_direct_member_v1') {
@@ -232,42 +253,6 @@ export async function resolveRoutineRuntimeAccess(
         'Current direct-message access could not be verified.',
       );
     }
-    // A DM Chickpea's bot does not open, for an Agent with an app, is that
-    // app's DM when its bot can see it, as for a turn Chickpea builds there.
-    if (
-      directConversation && directConversation.id !== routine.destination.conversationId &&
-      presence?.kind === 'agent_app'
-    ) {
-      if (!agentAppIsLive(presence)) throw new RoutineAgentAppUnavailableError();
-      let app: SlackInstallationExecutionContext;
-      let sees: boolean | undefined;
-      try {
-        app = await ownBot(presence.app.botUserId);
-        sees = await (dependencies.agentAppBotSees ?? agentAppBotSees)(
-          env,
-          authority.agent.id,
-          presence.app,
-          routine.destination.conversationId,
-        );
-      } catch (error) {
-        if (isCredentialKeyringUnavailable(error)) throw error;
-        throw new RoutineAgentAppUnavailableError();
-      }
-      if (sees === undefined) throw new RoutineAgentAppUnavailableError();
-      if (sees) {
-        ({ botToken, botUserId } = app);
-        directClient = app.client;
-        speaker = { kind: 'own_bot', botUserId };
-        try {
-          directConversation = await openDirect(app.client);
-        } catch (error) {
-          throw unverifiedAccess(
-            isRetryableDependencyFailure(error),
-            'Current direct-message access could not be verified.',
-          );
-        }
-      }
-    }
     const user = slackWebClientUserFacts(rawUser);
     if (
       user?.id !== actorSlackUserId ||
@@ -278,6 +263,37 @@ export async function resolveRoutineRuntimeAccess(
         'creator_ineligible',
         'The direct schedule owner is no longer eligible.',
       );
+    }
+    // A DM Chickpea's bot does not open, for an Agent with an app, is that
+    // app's DM when the app's token opens it with the person, as for a turn
+    // Chickpea builds there. Without the port, or while the app is not live,
+    // it may be the app's DM still: the occurrence is skipped.
+    if (
+      directConversation && directConversation.id !== routine.destination.conversationId &&
+      presence?.kind === 'agent_app'
+    ) {
+      if (!portInstalled || !agentAppIsLive(presence)) throw new RoutineAgentAppUnavailableError();
+      let app: SlackInstallationExecutionContext;
+      let appDm: boolean;
+      try {
+        app = await ownBot(authority.agent.id, presence.app.botUserId);
+        appDm = await (dependencies.agentAppDm ?? isAgentAppDm)(env, {
+          agentId: authority.agent.id,
+          appId: presence.app.app.appId,
+          userId: actorSlackUserId,
+          channelId: routine.destination.conversationId,
+        });
+      } catch (error) {
+        if (isCredentialKeyringUnavailable(error)) throw error;
+        throw new RoutineAgentAppUnavailableError();
+      }
+      if (appDm) {
+        ({ botToken, botUserId } = app);
+        directClient = app.client;
+        speaker = { kind: 'own_bot', botUserId };
+        // conversations.open for one person names a DM.
+        directConversation = { id: routine.destination.conversationId, is_im: true };
+      }
     }
     if (
       !directConversation ||
@@ -337,6 +353,7 @@ export async function resolveRoutineRuntimeAccess(
       botUserId,
       client: directClient,
       ...(speaker ? { speaker } : {}),
+      ...siblings(botUserId),
       publicUrl: await resolveSlackPublicUrl(env).catch(() => undefined),
       avatarInstallationId: agentAvatarInstallation(env),
       actorMembershipId: authority.reference.runsAsMembershipId,
@@ -349,10 +366,13 @@ export async function resolveRoutineRuntimeAccess(
     ? getConversation(token, routine.channelId)
     : conversationFromClient(reader!, routine.channelId);
   let conversation: Awaited<ReturnType<typeof readConversation>> | undefined;
-  if (ownBotUserId) {
+  // The app's side gave no definite answer, so its bot may be in the Channel.
+  let appUnanswered = false;
+  if (ownBotUserId && authority) {
     // Its own bot speaks only in a Channel it is in; Chickpea's is not asked then.
-    const app = await ownBot(ownBotUserId).catch((error: unknown) => {
+    const app = await ownBot(authority.agent.id, ownBotUserId).catch((error: unknown) => {
       if (isCredentialKeyringUnavailable(error)) throw error;
+      appUnanswered = !(error instanceof SlackInstallationUnavailableError && error.reasonCode === 'agent_app_unavailable');
       return undefined;
     });
     const read = app ? await readConversation(app.botToken, app.client) : undefined;
@@ -360,6 +380,8 @@ export async function resolveRoutineRuntimeAccess(
       ({ botToken, botUserId, client } = app);
       speaker = { kind: 'own_bot', botUserId };
       conversation = read;
+    } else if (read && !read.ok && !terminalChannelError(read.error) && read.error !== 'not_in_channel') {
+      appUnanswered = true;
     }
   }
   conversation ??= await readConversation(botToken, client);
@@ -375,6 +397,12 @@ export async function resolveRoutineRuntimeAccess(
     facts.mpim ||
     !facts.member
   ) {
+    const channelIsKnownGone = conversation.error === 'channel_deleted' ||
+      !!facts && (facts.archived || facts.frozen || facts.im || facts.mpim);
+    // Chickpea's bot is not in it, and the Agent's own bot may be: one outage never disables it.
+    if (appUnanswered && !channelIsKnownGone) {
+      throw unverifiedAccess(true, 'Current Slack channel access could not be verified.');
+    }
     const channelIsKnownIneligible = !!facts && (
       facts.archived || facts.frozen || facts.im || facts.mpim || !facts.member
     );
@@ -447,6 +475,7 @@ export async function resolveRoutineRuntimeAccess(
     botUserId,
     ...(client ? { client } : {}),
     ...(speaker ? { speaker } : {}),
+    ...siblings(botUserId),
     publicUrl: await resolveSlackPublicUrl(env).catch(() => undefined),
     avatarInstallationId: agentAvatarInstallation(env),
     ...(authority

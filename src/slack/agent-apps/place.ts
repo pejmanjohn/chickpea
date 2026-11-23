@@ -84,23 +84,6 @@ export async function isAgentAppDm(
 }
 
 /**
- * Whether a live Agent app's bot can see a conversation, asked on its own
- * token and cached as at admission. Undefined when Slack did not answer.
- */
-export async function agentAppBotSees(
-  env: PlatformEnv | undefined,
-  agentId: string,
-  app: ActiveAgentApp,
-  channelId: string,
-): Promise<boolean | undefined> {
-  try {
-    return (await botMembership(app.botUserId, channelId, () => agentBotIsIn(env, agentId, app.app.appId, channelId))).member;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
  * Where an admitted turn was heard, and so the bot that answers its run
  * (speakerFor). A DM an Agent's own app heard is marked with that app's bot;
  * a DM turn Chickpea built is the app's own when the app's DM with the

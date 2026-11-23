@@ -181,6 +181,8 @@ interface PreparedExecution {
   sandboxUnavailableFallback: boolean;
   productTelemetry?: ProductTelemetryCapture;
   threadRecord: RoutineThreadRecord;
+  /** Resolves this run's access afresh, for a post its own bot was refused. */
+  resolveAccess(): Promise<RoutineRuntimeAccess>;
 }
 
 /** Execute or reattach one durable routine attempt from app-owned checkpoints. */
@@ -250,6 +252,10 @@ export async function executeRoutineOccurrence(
     const failure = runtimeFailure(error, false);
     // Its Agent's app is away from the DM it posts in: this occurrence is skipped and the schedule stays on.
     const agentAppAway = error instanceof RoutineAgentAppUnavailableError && current.status === 'admitting';
+    // A one-time schedule has no later slot, and a skip would complete it: it waits for the app until its deadline.
+    if (agentAppAway && current.triggerSource === 'once' && routine.triggerKind === 'once' && now() < current.deadlineAt) {
+      return 'resumable';
+    }
     if (!agentAppAway && [
       'assignment_missing',
       'creator_ineligible',
@@ -690,6 +696,7 @@ async function prepareExecution(
     sandboxUnavailableFallback,
     ...(dependencies.productTelemetry ? { productTelemetry: dependencies.productTelemetry } : {}),
     threadRecord: dependencies.threadRecord ?? getConfigStore(input.env),
+    resolveAccess: () => (dependencies.resolveAccess ?? resolveRoutineRuntimeAccess)(run, input.routine, input.env),
   };
 }
 
@@ -920,6 +927,7 @@ async function finalizeSettlement(
             ...(settlement.result.artifacts ? { artifacts: settlement.result.artifacts } : {}),
             ...(prepared.workLifecycle ? { workLifecycle: prepared.workLifecycle } : {}),
             threadRecord: prepared.threadRecord,
+            respeak: prepared.resolveAccess,
           }, prepared.access.client);
         } catch (error) {
           if (!(error instanceof RoutineRuntimeError)) throw error;

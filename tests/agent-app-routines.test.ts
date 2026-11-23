@@ -13,6 +13,7 @@ import { deliverRoutineRecoveryNotice, deliverRoutineResult } from '../src/routi
 import { ROUTINE_RESULT_DATA_NAME } from '../src/agents/routine-execution.ts';
 import { executeRoutineOccurrence } from '../src/routines/execution.ts';
 import { routineDestinationBindingDigest } from '../src/routines/ids.ts';
+import { prepareRoutinePrompt } from '../src/routines/prompt.ts';
 import {
   resolveRoutineRuntimeAccess,
   RoutineAgentAppUnavailableError,
@@ -23,7 +24,12 @@ import { agentRoutineDeletion, SqliteRoutineStore } from '../src/routines/store.
 import type { RoutineDefinition, RoutineDestination, RoutineRun, RoutineStore } from '../src/routines/types.ts';
 import type { AgentAppLifecycle, AgentSlackPresence, CustomAgentConfig } from '../src/config/types.ts';
 import { type AgentSlackAppsHost, configureAgentSlackApps } from '../src/slack/agent-apps/host.ts';
-import type { SlackInstallationExecutionContext, SlackRunSpeaker } from '../src/slack/installation-execution.ts';
+import {
+  type SlackInstallationExecutionContext,
+  SlackInstallationUnavailableError,
+  type SlackRunSpeaker,
+} from '../src/slack/installation-execution.ts';
+import { SlackTransportError } from '../src/slack/transport/types.ts';
 
 const TEAM = 'T_TEST';
 const CHICKPEA_BOT = 'UBOT';
@@ -136,10 +142,26 @@ const slackError = (error: string) =>
 
 interface Post { bot: string; payload: Record<string, unknown> }
 
+/** The Channel's earlier messages: one by the Agent app's bot, one by Chickpea's bot under the Agent's name, one by a person. */
+const HISTORY = [
+  { ts: '1779990300.000100', user: OWNER, text: 'Thanks, both.' },
+  {
+    ts: '1779990200.000100', user: CHICKPEA_BOT, bot_id: 'B_CHICKPEA', app_id: 'A_CHICKPEA', username: 'Support',
+    text: 'Earlier post by Chickpea for the Agent.',
+  },
+  {
+    ts: '1779990100.000100', user: AGENT_BOT, bot_id: 'B_AGENT', app_id: 'A0AGENT1',
+    bot_profile: { app_id: 'A0AGENT1', name: 'Support' }, text: 'Earlier standup post.',
+  },
+];
+
+const rateLimited = () => Object.assign(new Error('rate limited'), { code: 'slack_webapi_rate_limited_error', retryAfter: 30 });
+
 /**
- * One bot's Slack, as Slack answers that bot: it opens and sees only its own
- * DM, lists members only of Channels it is in, and an Agent app's token (no
- * chat:write.customize) refuses a persona.
+ * One bot's Slack, as Slack answers that bot: it opens only its own DM, lists
+ * members and reads history only of Channels it is in, and an Agent app's
+ * token (no chat:write.customize, no im:read) refuses a persona and any DM's
+ * conversations.info.
  */
 function botClient(input: {
   botUserId: string;
@@ -148,6 +170,7 @@ function botClient(input: {
   calls: string[];
   posts: Post[];
   appToken: boolean;
+  infoUnanswered?: () => boolean;
 }): WebClient {
   const record = (method: string) => input.calls.push(`${input.botUserId}:${method}`);
   return {
@@ -176,6 +199,8 @@ function botClient(input: {
       open: async () => { record('conversations.open'); return { ok: true, channel: { id: input.dm, is_im: true } }; },
       info: async ({ channel }: { channel: string }) => {
         record('conversations.info');
+        if (input.infoUnanswered?.()) throw rateLimited();
+        if (channel.startsWith('D') && input.appToken) throw slackError('missing_scope');
         if (channel === input.dm) return { ok: true, channel: { id: channel, is_im: true, is_member: true } };
         if (channel.startsWith('D')) throw slackError('channel_not_found');
         return {
@@ -194,6 +219,11 @@ function botClient(input: {
         }
         return { ok: true, members: [OWNER, input.botUserId], response_metadata: { next_cursor: '' } };
       },
+      history: async ({ channel }: { channel: string }) => {
+        record('conversations.history');
+        if (!input.channels.includes(channel)) throw slackError('not_in_channel');
+        return { ok: true, messages: HISTORY, has_more: false, response_metadata: { next_cursor: '' } };
+      },
     },
   } as unknown as WebClient;
 }
@@ -204,15 +234,23 @@ interface Slack {
   chickpea: SlackInstallationExecutionContext;
   app: SlackInstallationExecutionContext;
   resolver: (workspaceId: string, run?: SlackRunSpeaker) => Promise<SlackInstallationExecutionContext>;
-  /** The admission question, asked on the app's own token: whether its bot can see a conversation. */
-  sees: (env: unknown, agentId: string, app: unknown, channelId: string) => Promise<boolean | undefined>;
+  /** isAgentAppDm on this Slack: the app's token opens its DM with the person, or Slack does not answer. */
+  agentAppDm: (env: unknown, input: { userId: string; channelId: string }) => Promise<boolean>;
 }
 function slack(input: {
   chickpeaChannels?: readonly string[];
   appChannels?: readonly string[];
+  /** False: the Agent's app is not live. */
   appResolves?: boolean;
+  /** The app's context cannot be built, for a reason other than the app not being live, this many times. */
+  appContextUnanswered?: number;
+  /** Slack does not answer the app's token's conversations.info this many times. */
+  appInfoUnanswered?: number;
+  /** Slack does not answer the app's token's conversations.open. */
   appUnanswered?: boolean;
 } = {}): Slack {
+  let contextFailures = input.appContextUnanswered ?? 0;
+  let infoFailures = input.appInfoUnanswered ?? 0;
   const calls: string[] = [];
   const posts: Post[] = [];
   const chickpea: SlackInstallationExecutionContext = {
@@ -221,24 +259,27 @@ function slack(input: {
   };
   const app: SlackInstallationExecutionContext = {
     workspaceId: TEAM, transportMode: 'gateway', sharedAppReads: false, botUserId: AGENT_BOT,
-    client: botClient({ botUserId: AGENT_BOT, dm: AGENT_DM, channels: input.appChannels ?? [], calls, posts, appToken: true }),
+    client: botClient({
+      botUserId: AGENT_BOT, dm: AGENT_DM, channels: input.appChannels ?? [], calls, posts, appToken: true,
+      infoUnanswered: () => infoFailures-- > 0,
+    }),
   };
   return {
     calls, posts, chickpea, app,
     resolver: async (_workspaceId, run) => {
       if (run?.speaker?.kind !== 'own_bot') return chickpea;
-      if (input.appResolves === false) throw new Error('agent_app_unavailable');
+      if (input.appResolves === false) {
+        throw new SlackInstallationUnavailableError(TEAM, 'agent_app_unavailable', { retryable: false });
+      }
+      if (contextFailures-- > 0) throw new Error('app record unreadable');
       return app;
     },
-    sees: async (_env, _agentId, _app, channelId) => {
-      if (input.appUnanswered) return undefined;
-      try {
-        const info = await app.client.conversations.info({ channel: channelId });
-        const channel = info.channel as { id?: string; is_im?: boolean; is_member?: boolean };
-        return channel.id === channelId && Boolean(channel.is_im || channel.is_member);
-      } catch {
-        return false;
+    agentAppDm: async (_env, { userId, channelId }) => {
+      if (input.appUnanswered) {
+        throw new SlackTransportError('conversations.open', 'ratelimited', { retryable: true, effectOutcome: 'failed' });
       }
+      const opened = await app.client.conversations.open({ users: userId });
+      return (opened.channel as { id?: string }).id === channelId;
     },
   };
 }
@@ -255,7 +296,7 @@ function accessDependencies(presence: AgentSlackPresence, slackFake: Slack, gran
       ...(grants ? { agentGrants: grants } : {}),
     }),
     installationExecution: slackFake.resolver,
-    agentAppBotSees: slackFake.sees,
+    agentAppDm: slackFake.agentAppDm,
   };
 }
 
@@ -392,7 +433,7 @@ test('a schedule made in the Agent\'s own DM runs as the Agent app\'s bot', asyn
   assert.equal(resolved.botUserId, AGENT_BOT);
   assert.equal(resolved.client, fake.app.client);
   assert.deepEqual(resolved.speaker, { kind: 'own_bot', botUserId: AGENT_BOT });
-  assert.deepEqual(appCalls(fake), [`${AGENT_BOT}:conversations.info`, `${AGENT_BOT}:conversations.open`]);
+  assert.deepEqual(appCalls(fake), [`${AGENT_BOT}:conversations.open`], "the app's token only opens its DM with the person");
 });
 
 test('a user-group Agent\'s schedules never ask an Agent app', async (t) => {
@@ -490,17 +531,26 @@ test('without the Agent-app port a schedule never speaks as an Agent app', async
   assert.deepEqual(appCalls(fake), []);
 });
 
+test("without the Agent-app port a schedule in the Agent's own DM is skipped, never turned off", async () => {
+  const fake = slack();
+  await assert.rejects(access(directRoutine(AGENT_DM), appPresence(), fake), RoutineAgentAppUnavailableError);
+  assert.deepEqual(appCalls(fake), []);
+});
+
 test('a DM schedule neither bot can open stays ineligible, app or not', async (t) => {
   withHost(t);
   const ineligible = (error: unknown) => error instanceof RoutineRuntimeError &&
     !(error instanceof RoutineAgentAppUnavailableError) && error.failureClass === 'channel_ineligible';
   const fake = slack();
   await assert.rejects(access(directRoutine('D_ELSEWHERE'), appPresence(), fake), ineligible);
-  assert.deepEqual(appCalls(fake), [`${AGENT_BOT}:conversations.info`], "the app's bot opens no DM with the person for a DM it cannot see");
+  assert.deepEqual(appCalls(fake), [`${AGENT_BOT}:conversations.open`], "the app's DM with the person is another DM");
   await assert.rejects(access(directRoutine(AGENT_DM), GROUP, slack()), ineligible);
 });
 
-/** A scheduled Channel routine in a file store, run by the real executor against an Agent that answers with one message. */
+/**
+ * A scheduled Channel routine in a file store, run by the real executor and
+ * the real prompt against an Agent that answers with one message.
+ */
 async function storedChannelSchedule(t: TestContext) {
   const dir = mkdtempSync(join(tmpdir(), 'chickpea-schedule-speaker-'));
   const store = new SqliteRoutineStore(join(dir, 'state.db'), () => NOW);
@@ -527,7 +577,7 @@ async function storedChannelSchedule(t: TestContext) {
     data: { [ROUTINE_RESULT_DATA_NAME]: [{ outcome: 'succeeded', message: text }] },
   });
   /** An Agent run that answers, or whose reader stops mid-run so the occurrence resumes and reattaches later. */
-  const handle = (answer: { text: string } | 'interrupted', dispatches: { count: number }): AgentInstanceHandle => ({
+  const handle = (answer: Answer, dispatches: { count: number }): AgentInstanceHandle => ({
     id: 'routineagent_test',
     async dispatch() {
       dispatches.count += 1;
@@ -535,6 +585,7 @@ async function storedChannelSchedule(t: TestContext) {
     },
     async read() {
       if (answer === 'interrupted') throw new DOMException('reader stopped', 'AbortError');
+      answer.whileRunning?.();
       return reply(answer.text);
     },
     async abort() {},
@@ -554,7 +605,7 @@ async function storedChannelSchedule(t: TestContext) {
     occurrence: { id: string; attempt: number },
     presence: AgentSlackPresence,
     slackFake: Slack,
-    answer: { text: string } | 'interrupted',
+    answer: Answer,
     dispatches = { count: 0 },
   ) => executeRoutineOccurrence({ env: {}, store, occurrenceId: occurrence.id, attempt: occurrence.attempt }, {
     now: () => NOW + 1,
@@ -563,22 +614,20 @@ async function storedChannelSchedule(t: TestContext) {
     resolveAccess: (run, current) => resolveRoutineRuntimeAccess(run, current, undefined, accessDependencies(presence, slackFake)),
     resolveModel: async () => ({ model: 'anthropic/claude-sonnet-4-6' }),
     codingWorkspaceConfigured: async () => false,
-    preparePrompt: async (run, routine) => ({
-      prompt: `Execute ${run.id}`,
-      turn: {
-        workspaceId: routine.workspaceId, channelId: routine.channelId, eventId: run.id, text: 'Summarize.',
-        userId: OWNER, messageTs: '1785100000.000100', threadTs: '1785100000.000100',
-        source: 'app_mention' as const, contextMode: 'channel_history' as const,
-      },
-      memoryEpoch: 1,
-      validateMemoryLease: async () => true,
-      confirmMemory: async () => undefined,
-      matchesApartFromMemory: (dispatched: string) => dispatched === `Execute ${run.id}`,
+    preparePrompt: (run, routine, resolved, _env, client) => prepareRoutinePrompt(run, routine, resolved, undefined, client, {
+      contextStore: { listSlackPublicContext: () => [], listRecentSlackPublicContext: () => [] },
+      prepareMemory: async () => ({
+        conversationKey: 'schedule', memoryEpoch: 1, selection: { entries: [] }, footerItems: [],
+        visibilityBarrierAt: null, ownerBound: true, validateLease: async () => true, confirmInjection: async () => true,
+      }),
     }),
     handle: handle(answer, dispatches),
   });
   return { store, start, execute };
 }
+
+/** What the Agent run does: answers (after something changes while it runs), or is interrupted. */
+type Answer = { text: string; whileRunning?: () => void } | 'interrupted';
 
 async function assertStillOn(store: SqliteRoutineStore) {
   const routine = await store.getRoutine('routine_channel');
@@ -653,7 +702,7 @@ test("a Channel schedule keeps running when its Agent's app is removed, and post
   assert.deepEqual(laterPosts(fake), [[CHICKPEA_BOT, 'Second.'], [CHICKPEA_BOT, 'Third.']]);
 });
 
-test("a schedule in the Agent's own DM skips when Slack does not say whether the app's bot sees it", async (t) => {
+test("a schedule in the Agent's own DM skips when Slack does not say whether the DM is the app's", async (t) => {
   withHost(t);
   await assert.rejects(
     access(directRoutine(AGENT_DM), appPresence(), slack({ appUnanswered: true })),
@@ -667,4 +716,127 @@ test("a schedule in the Agent's own DM reads the Agent's Channels through Chickp
   const grants = authorityFor(channelRoutine, appPresence()).agentGrants;
   const resolved = await access(directRoutine(AGENT_DM), appPresence(), slack({ appChannels: [] }), grants);
   assert.deepEqual(resolved.speaker, { kind: 'own_bot', botUserId: AGENT_BOT });
+});
+
+test("a Channel only the Agent's bot is in is not turned off when the app's side does not answer once", async (t) => {
+  withHost(t);
+  const rateLimitedFailure = (error: unknown) => error instanceof RoutineRuntimeError &&
+    error.failureClass === 'slack_rate_limited';
+  // Chickpea's bot is not in the Channel; the Agent's bot is.
+  await assert.rejects(
+    access(channelRoutine, appPresence(), slack({ chickpeaChannels: [], appChannels: [CHANNEL], appContextUnanswered: 1 })),
+    rateLimitedFailure,
+    "the app's context could not be built",
+  );
+  await assert.rejects(
+    access(channelRoutine, appPresence(), slack({ chickpeaChannels: [], appChannels: [CHANNEL], appInfoUnanswered: 1 })),
+    rateLimitedFailure,
+    "Slack did not answer the app's token",
+  );
+  const ineligible = (error: unknown) => error instanceof RoutineRuntimeError && error.failureClass === 'channel_ineligible';
+  await assert.rejects(
+    access(channelRoutine, appPresence(), slack({ chickpeaChannels: [], appChannels: [] })),
+    ineligible,
+    "Slack said the app's bot is not in it either",
+  );
+  await assert.rejects(
+    access(channelRoutine, appPresence(), slack({ chickpeaChannels: [], appChannels: [CHANNEL], appResolves: false })),
+    ineligible,
+    "the app is not live, so only Chickpea's bot could post",
+  );
+});
+
+test("a run whose app token Slack does not answer once fails without turning off a Channel only the Agent's bot is in", async (t) => {
+  withHost(t);
+  const fake = slack({ chickpeaChannels: [], appChannels: [CHANNEL], appInfoUnanswered: 1 });
+  const { store, start, execute } = await storedChannelSchedule(t);
+  const first = await start();
+  assert.equal(await execute(first, appPresence(), fake, { text: 'First.' }), 'completed');
+  const failed = await store.getRun(first.id);
+  assert.equal(failed?.status, 'failed');
+  assert.equal(failed?.failureClass, 'slack_rate_limited');
+  const routine = await store.getRoutine('routine_channel');
+  assert.equal(routine?.state, 'active', 'the schedule stays on');
+  assert.equal(routine?.disabledReason, null);
+  assert.equal(routine?.consecutiveFailures, 1, 'it counts toward the failures that pause it');
+  assert.equal(fake.posts.length, 0, "nothing posts");
+
+  const second = await start();
+  assert.equal(await execute(second, appPresence(), fake, { text: 'Second.' }), 'completed');
+  assert.deepEqual(fake.posts.map((post) => [post.bot, post.payload.text]), [[AGENT_BOT, 'Second.']]);
+});
+
+test("a result the Agent's bot can no longer post, because it left the Channel mid-run, posts as Chickpea under the Agent's name", async (t) => {
+  withHost(t);
+  const appChannels = [CHANNEL];
+  const fake = slack({ appChannels });
+  const { store, start, execute } = await storedChannelSchedule(t);
+  const run = await start();
+  const leave = () => appChannels.splice(0);
+  assert.equal(await execute(run, appPresence(), fake, { text: 'Done.', whileRunning: leave }), 'completed');
+  assert.equal((await store.getRun(run.id))?.status, 'succeeded');
+  await assertStillOn(store);
+  assert.deepEqual(
+    fake.calls.filter((call) => call.endsWith('chat.postMessage')),
+    [`${AGENT_BOT}:chat.postMessage`, `${CHICKPEA_BOT}:chat.postMessage`],
+    "the app's bot is refused once, then Chickpea's bot posts",
+  );
+  assert.deepEqual(fake.posts.map((post) => [post.bot, post.payload.text, post.payload.username]), [[CHICKPEA_BOT, 'Done.', 'Support']]);
+});
+
+test("a one-time schedule in the Agent's own DM waits for its app until its deadline rather than being used up", async (t) => {
+  withHost(t);
+  const dir = mkdtempSync(join(tmpdir(), 'chickpea-agent-dm-once-'));
+  const path = join(dir, 'state.db');
+  const store = new SqliteRoutineStore(path, () => NOW);
+  const configStore = new SqliteConfigStore(path, agentRoutineDeletion, { agents: [] });
+  t.after(() => {
+    configStore.close();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const destination = directDestination(AGENT_DM);
+  await configStore.createAgent(agent(appPresence(removedApp)));
+  const saved = await store.save({
+    actorId: OWNER, actorClass: 'member', workspaceId: TEAM, channelId: AGENT_DM, destination,
+    draft: {
+      action: 'create', routineId: 'routine_agent_dm_once',
+      definition: {
+        name: 'Reminder', description: '', taskText: 'Remind me.', triggerKind: 'once', scheduleInput: '2026-07-27T11:00',
+        scheduleJson: JSON.stringify({ version: 1, kind: 'once', localDateTime: '2026-07-27T11:00', at: NOW }),
+        timezone: 'UTC', outputPolicy: 'post', authorityMode: 'live_direct_member_v1',
+      },
+      nextRunAt: NOW, projectedDailyStarts: 0, reservations: [{ windowStart: NOW, count: 1 }],
+    },
+    idempotencyKey: 'create:agent-dm-once', sourceVisibility: 'private',
+  });
+  const digest = routineDestinationBindingDigest(saved.id, TEAM, destination);
+  const reference = await configStore.putAgentScheduleReference({
+    boundRoutineVersion: saved.authorityBindingVersion ?? saved.version, scheduleId: saved.id,
+    agentId: 'agent_support', workspaceId: TEAM, channelId: AGENT_DM, destinationKind: 'direct_thread',
+    destinationBindingDigest: digest, createdByMembershipId: 'membership_owner', runsAsMembershipId: 'membership_owner',
+    authorityReceiptId: 'receipt_owner', requiredConnectionAccountIds: [], state: 'active',
+  });
+  const routine = await store.activateDirectRoutine({
+    routineId: saved.id, expectedVersion: saved.version, expectedReferenceRevision: reference.revision, destinationBindingDigest: digest,
+  });
+  const run = await store.createOccurrence({
+    runId: 'rrun_once', idempotencyKey: 'run:once', routineId: routine.id, routineVersion: routine.version,
+    scheduledFor: NOW, triggerSource: 'once', queuedAt: NOW, deadlineAt: NOW + 60_000,
+  });
+  const attempt = await store.startAdmissionAttempt({
+    occurrenceId: run.id, owner: 'heartbeat', invokeStartedAt: NOW, leaseUntil: NOW + 30_000,
+  });
+  const execute = (at: number) => executeRoutineOccurrence({ env: {}, store, occurrenceId: run.id, attempt: attempt.attempt }, {
+    now: () => at,
+    usageRecordingEnabled: false,
+    resolveAccess: (current, saved) => resolveRoutineRuntimeAccess(current, saved, undefined, accessDependencies(appPresence(removedApp), slack())),
+  });
+
+  assert.equal(await execute(NOW + 1), 'resumable', 'the app is away: the reminder waits for the next heartbeat');
+  assert.equal((await store.getRun(run.id))?.status, 'admitting');
+  assert.equal((await store.getRoutine(routine.id))?.state, 'active');
+
+  assert.equal(await execute(NOW + 60_001), 'completed', 'past its deadline it is skipped as before');
+  assert.equal((await store.getRun(run.id))?.skipReason, 'agent_app_unavailable');
 });
