@@ -22,7 +22,7 @@ import {
   handleAgentAppHomeAction,
   ownBotClient,
 } from '../slack/agent-apps/index.ts';
-import { type SlackSpeaker, speakerFor } from '../slack/speaker.ts';
+import type { SlackSpeaker } from '../slack/speaker.ts';
 
 import { withBetterAuthAccessRevoker } from '../auth/better-auth-environment.ts';
 import {
@@ -847,7 +847,10 @@ function handleAgentAppSlackEvents(
       return;
     }
     const bot = await agentAppBotCredentials(platformEnv, handoff.agentId, handoff.appId);
-    if (!bot) return;
+    if (!bot) {
+      if (eventType === 'agent_session_stopped') logSlackStopButton('app_not_live');
+      return;
+    }
     const execution = agentAppExecution(bot, platformEnv, gate.botToken);
     if (eventType === 'agent_session_stopped') {
       await processSlackStopButton(payload as unknown as SlackEventFixture, platformEnv, execution);
@@ -4933,10 +4936,13 @@ async function removeLateMidRunReaction(input: MidRunReaction, name: string): Pr
  * A Stop button press that stopped nothing, as one content-free
  * `steering.stop_button` token, so a button that does nothing shows in the
  * field: `invalid` (an unreadable event), `no_route` (not an Agent thread),
- * `no_running_job` (nothing undelivered to stop) or `not_allowed` (someone
- * who may not use the Agent there, and is not told: a guest, say).
+ * `no_running_job` (nothing undelivered to stop), `not_allowed` (someone
+ * who may not use the Agent there, and is not told: a guest, say),
+ * `not_own_run` (an Agent app's press about a run that is not speaking as
+ * that app's bot) or `app_not_live` (a press for an Agent app that is not
+ * live, or whose token cannot be read).
  */
-type SlackStopButtonToken = 'invalid' | 'no_route' | 'no_running_job' | 'not_allowed' | 'not_own_dm';
+type SlackStopButtonToken = 'invalid' | 'no_route' | 'no_running_job' | 'not_allowed' | 'not_own_run' | 'app_not_live';
 
 function logSlackStopButton(outcome: SlackStopButtonToken): void {
   console.info('[chickpea] steering.stop_button', { outcome });
@@ -4966,8 +4972,11 @@ function logSteeringAdmission(
  * the press is held and one posted after it is a new turn. Recording is
  * idempotent and the press is claimed, so a Slack retry, a second press and a
  * typed stop record one stop. Slack leaves the session in `processing`; the
- * stopped ending settles it. An Agent app's press is its own only in its own
- * DM, and runs as its bot there; any other press it hears selects nothing.
+ * stopped ending settles it. Slack draws an Agent app's Stop wherever its bot
+ * answers, so its press stops only a run speaking as that bot (its stored
+ * speaker), in its DM, a Channel or a group DM: the presser is checked against
+ * the app's Agent, without routing or moving the thread, and any other run is
+ * left alone.
  */
 async function processSlackStopButton(
   payload: SlackEventFixture,
@@ -4979,11 +4988,7 @@ async function processSlackStopButton(
     logSlackStopButton('invalid');
     return;
   }
-  const direct = press.channelId.startsWith('D');
-  if (execution?.agentApp && !direct) {
-    logSlackStopButton('not_own_dm');
-    return;
-  }
+  const ownApp = execution?.agentApp ? { agentId: execution.agentApp.agentId, botUserId: execution.botUserId } : undefined;
   const stores = execution?.stores ?? resolveStores(platformEnv);
   const installation = await stores.config.getWorkspaceInstallation(payload.team_id);
   if (!installation || installation.health === 'revoked') return;
@@ -5009,6 +5014,7 @@ async function processSlackStopButton(
   const placementFacts = execution?.placementFacts ?? transport;
 
   // The press, as a reply of that person's in the Agent Session's thread.
+  const direct = press.channelId.startsWith('D');
   const turn: NormalizedSlackTurn = {
     workspaceId: payload.team_id,
     channelId: press.channelId,
@@ -5023,7 +5029,8 @@ async function processSlackStopButton(
   };
   let surface: AssignmentSurface;
   let actor: ResolvedAgentRoutingActor;
-  let routed: AgentRoutingResult;
+  // The Agent the presser was checked against, or why there is none.
+  let routed: { kind: 'checked'; agentId: string } | Exclude<AgentRoutingResult, { kind: 'routed' }>;
   try {
     await resolveTurnConversation(turn, transport);
     surface = slackTurnSurface(turn);
@@ -5036,22 +5043,30 @@ async function processSlackStopButton(
       transport,
       stores,
     });
-    routed = await resolveAgentRoute({
-      turn,
-      surface,
-      actor: actor.routing,
-      ...(execution?.agentApp ? { agentApp: execution.agentApp } : {}),
-      config: stores.config,
-      transport,
-      authorizeUserAgent: async (agent) => resolveTurnAgentAccess({
-        agent,
-        conversation: slackConversationKind(turn),
-        workspaceId: turn.workspaceId,
-        grants: await stores.config.listAgentChannelGrants(turn.workspaceId),
-        actor: privateAgentActor(actor, turn.userId),
-        transport: placementFacts,
-      }),
-    });
+    if (ownApp) {
+      // The app's own Agent, by the rule routing applies to a reply to it here.
+      const allowed = await mayUseRunningSlackAgent({
+        agentId: ownApp.agentId, turn, surface, actor, config: stores.config, placementFacts,
+      });
+      routed = allowed ? { kind: 'checked', agentId: ownApp.agentId } : { kind: 'denied', reason: 'not_available', alternatives: [] };
+    } else {
+      const result = await resolveAgentRoute({
+        turn,
+        surface,
+        actor: actor.routing,
+        config: stores.config,
+        transport,
+        authorizeUserAgent: async (agent) => resolveTurnAgentAccess({
+          agent,
+          conversation: slackConversationKind(turn),
+          workspaceId: turn.workspaceId,
+          grants: await stores.config.listAgentChannelGrants(turn.workspaceId),
+          actor: privateAgentActor(actor, turn.userId),
+          transport: placementFacts,
+        }),
+      });
+      routed = result.kind === 'routed' ? { kind: 'checked', agentId: result.assignment.agentId } : result;
+    }
   } catch (err) {
     // Nothing is claimed yet: a rate-limited or unreachable lookup is retried
     // by the durable gateway inbox, as for a message.
@@ -5065,7 +5080,7 @@ async function processSlackStopButton(
     installation.runtimeContract ? { runtimeContract: installation.runtimeContract } : {},
   );
   const keys = [`evt:${payload.event_id}`, `stop:${press.channelId}:${press.eventTs}`] as const;
-  if (routed.kind !== 'routed') {
+  if (routed.kind !== 'checked') {
     // As for a typed stop, only a full member is told (AE4); a guest keeps
     // Chickpea's silence.
     const refusal = routed.kind === 'denied' &&
@@ -5094,7 +5109,8 @@ async function processSlackStopButton(
     source: 'button',
     stopperUserId: press.userId,
     cutoffTs: press.eventTs,
-    agentId: routed.assignment.agentId,
+    agentId: routed.agentId,
+    ...(ownApp ? { speakerBotUserId: ownApp.botUserId } : {}),
   };
   let decision: TurnSteeringDecision | undefined;
   try {
@@ -5106,7 +5122,10 @@ async function processSlackStopButton(
     throw err;
   }
   if (!decision) return;
-  if (decision.outcome !== 'enqueue') {
+  // The run is not this app's bot's (another Agent's, or its Agent's through
+  // Chickpea): the press is for nobody, and the app's own indicator is idle.
+  const notOwnRun = decision.outcome === 'other_speaker' || (ownApp !== undefined && decision.outcome === 'other_agent');
+  if (!notOwnRun && decision.outcome !== 'enqueue') {
     const settled = await settleSlackSteering({
       decision,
       request,
@@ -5129,14 +5148,15 @@ async function processSlackStopButton(
   }
   // Nothing was running, or the run ended while the presser was checked
   // against it: the indicator is idle.
-  logSlackStopButton('no_running_job');
+  logSlackStopButton(notOwnRun ? 'not_own_run' : 'no_running_job');
   await settleIdleAgentSession({
     client,
     press,
     turn,
-    assignment: routed.assignment,
+    agentId: routed.agentId,
     installationHealth: installation.health,
-    ownApp: Boolean(execution?.agentApp),
+    // An app's client is its own bot; Chickpea's posts as the Agent.
+    speaker: ownApp ? { kind: 'own_bot', botUserId: ownApp.botUserId } : { kind: 'chickpea_as_agent' },
     stores,
     platformEnv,
   });
@@ -5154,22 +5174,22 @@ async function settleIdleAgentSession(input: {
   client: ReturnType<typeof createSlackWebClient>;
   press: SlackStopButtonPress;
   turn: NormalizedSlackTurn;
-  assignment: ResolvedAssignment;
+  agentId: string;
   installationHealth: Parameters<typeof selectSlackPresentationOwner>[0]['installationHealth'];
-  /** The press came through the Agent's own app, in its own DM, and its client is that app's bot. */
-  ownApp: boolean;
+  /** The bot `client` is: an Agent app's own, or Chickpea's posting as the Agent. */
+  speaker: Extract<SlackSpeaker, { kind: 'own_bot' | 'chickpea_as_agent' }>;
   stores: AppStores;
   platformEnv: PlatformEnv | undefined;
 }): Promise<void> {
   try {
-    const { agent } = input.assignment;
+    const agent = await input.stores.config.getAgent(input.agentId);
+    if (!agent) return;
     const avatarUrl = await resolvedAgentAvatarUrl(agent, input.stores, input.platformEnv);
     const owner = selectSlackPresentationOwner({
       installationHealth: input.installationHealth,
       agentId: agent.id,
       agentName: agent.name,
-      // Otherwise its client is Chickpea's bot, which posts as the Agent.
-      speaker: input.ownApp ? speakerFor(agent.slackPresence, { kind: 'agent_dm' }) : { kind: 'chickpea_as_agent' },
+      speaker: input.speaker,
       conversationKind: slackConversationKind(input.turn),
       ...(avatarUrl ? { avatarUrl } : {}),
       ...(agent.slackPresence ? { slackPresence: agent.slackPresence } : {}),
@@ -5261,7 +5281,8 @@ async function settleSlackSteering(input: {
     }
     return 'refused';
   }
-  if (decision.outcome === 'enqueue') {
+  // A stop bound to an app's bot is settled by its caller; none reaches here.
+  if (decision.outcome === 'enqueue' || decision.outcome === 'other_speaker') {
     logSteeringAdmission('ended', input.source);
     return 'ended';
   }

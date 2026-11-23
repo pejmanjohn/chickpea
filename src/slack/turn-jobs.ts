@@ -756,7 +756,7 @@ export class TurnJobStoreLogic {
         row.messageTs !== undefined && compareSlackTs(row.messageTs, request.cutoffTs) < 0);
       const head = stopped ?? before.find((row) => row.dispatched) ?? before[0];
       if (head) {
-        return this.otherAgent(request, head.id) ?? {
+        return this.otherAgent(request, head.id) ?? this.otherSpeaker(request, head.id) ?? {
           outcome: 'stopped',
           stop: stopped ? this.stopResult(stopped.id, false) : this.recordStop(request, before, head),
         };
@@ -790,6 +790,24 @@ export class TurnJobStoreLogic {
     );
     const agentId = typeof row?.agent_id === 'string' ? row.agent_id : '';
     return agentId === request.agentId ? undefined : { outcome: 'other_agent', agentId };
+  }
+
+  /**
+   * A stop bound to an Agent app's bot never acts on a run speaking as anyone
+   * else: Chickpea's bot, or another app's. A row with no stored speaker is
+   * not that bot's.
+   */
+  private otherSpeaker(
+    request: Extract<TurnSteeringRequest, { kind: 'stop' }>,
+    rowId: string,
+  ): Extract<TurnSteeringDecision, { outcome: 'other_speaker' }> | undefined {
+    if (request.speakerBotUserId === undefined) return undefined;
+    const row = this.db.get(
+      `SELECT json_extract(turn_json, '$.speaker.kind') AS kind, json_extract(turn_json, '$.speaker.botUserId') AS bot
+       FROM turn_jobs WHERE id = ?`,
+      rowId,
+    );
+    return row?.kind === 'own_bot' && row.bot === request.speakerBotUserId ? undefined : { outcome: 'other_speaker' };
   }
 
   /**
@@ -3301,6 +3319,9 @@ function validateSteeringRequest(request: TurnSteeringRequest, enqueue?: TurnJob
     }
     validateBoundedString(request.stopperUserId, 'stopper user id', 128);
     if (!validSlackTs(request.cutoffTs)) throw new Error('Stop cutoff timestamp is invalid.');
+    if (request.speakerBotUserId !== undefined) {
+      validateBoundedString(request.speakerBotUserId, 'stop speaker bot user id', 128);
+    }
   }
   if (request.kind !== 'message' && request.agentId !== undefined) {
     validateBoundedString(request.agentId, 'steering agent id', 128);

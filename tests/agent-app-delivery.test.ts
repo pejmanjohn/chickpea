@@ -1616,7 +1616,7 @@ async function readingTokens(h: Harness, job: PendingTurnJob): Promise<Array<str
 }
 
 function personaOnAppToken(h: Harness): SlackCall[] {
-  return h.calls.filter((call) => call.token === AGENT_BOT && call.method.startsWith('chat.') &&
+  return h.calls.filter((call) => call.token === AGENT_BOT && (call.method.startsWith('chat.') || call.method.startsWith('agents.')) &&
     (call.body.has('username') || call.body.has('icon_url')));
 }
 
@@ -1967,7 +1967,7 @@ function heardByApp(event: Record<string, unknown>) {
   };
 }
 
-test("the app's delivery selects its Agent only for its own mention or DM: any other event routes as on Chickpea's", async (t) => withHarness(t, async (h) => {
+test("the app's delivery selects its Agent only for its own mention, its DM, or a Stop press on its own bot's run: any other event routes as on Chickpea's", async (t) => withHarness(t, async (h) => {
   const root = '1900004700.000100';
   await financeThread(h, root);
   const reply = '1900004700.000200';
@@ -1984,6 +1984,12 @@ test("the app's delivery selects its Agent only for its own mention or DM: any o
     type: 'reaction_added', reaction: 'eyes', event_ts: reacted, item: { type: 'message', channel: 'C1', ts: root },
   }))).status, 200);
   assert.equal((await answersTo(h, reacted)).some(([agentId]) => agentId === 'agent_support'), false, "a reaction in Finance's thread is not Support's");
+  assert.equal((await h.stores.config.getAgentThreadRoute(TEAM, 'C1', root))?.agentId, 'agent_finance');
+
+  const financeRun = await pendingTurn(h.stores, (pending) => pending.turn.messageTs === reply);
+  assert.ok(financeRun);
+  assert.equal((await h.deliver('events', stopPress('C1', root, '1900004700.000400'), { settle: true })).status, 200);
+  assert.equal(await stopOf(h, financeRun), undefined, "a press in Finance's thread stops nobody");
   assert.equal((await h.stores.config.getAgentThreadRoute(TEAM, 'C1', root))?.agentId, 'agent_finance');
 }, { replies: [{ ts: '1900004700.000100', thread_ts: '1900004700.000100', user: 'U1', text: 'What did we refund?' }] }));
 
@@ -2539,16 +2545,98 @@ test("Slack's Stop button in an Agent app's own DM stops the run there, and its 
   assert.deepEqual(personaOnAppToken(h), []);
 }));
 
-test("Slack's Stop button an Agent app hears anywhere but its own DM selects no Agent and stops nothing", async (t) => withHarness(t, async (h) => {
+/** The `steering.stop_button` outcomes logged while `info` was mocked. */
+function stopButtonOutcomes(info: { mock: { calls: Array<{ arguments: unknown[] }> } }): unknown[] {
+  return info.mock.calls.filter(({ arguments: [line] }) => line === '[chickpea] steering.stop_button').map(({ arguments: [, token] }) => token);
+}
+
+/** Each `agents.sessions.setStatus` since `before`: who sent it, and the status it set. */
+function sessionSettles(h: Harness, before = 0) {
+  return h.calls.slice(before).filter((call) => call.method === 'agents.sessions.setStatus')
+    .map((call) => ({ ...sender(call), channel: call.body.get('channel_id'), status: call.body.get('status') }));
+}
+
+/** A stop the press recorded on `job`, read back from the store. */
+async function stopOf(h: Harness, job: PendingTurnJob) {
+  return (await h.stores.slackState.listPendingTurns!()).find((pending) => pending.id === job.id)?.stop;
+}
+
+test("Slack's Stop button in a Channel thread where the app's bot answers stops the run, once, and its ending speaks as that bot with no persona", async (t) => withHarness(t, async (h) => {
   const root = '1900009100.000100';
   const job = await admitSupportTurn(h, 'C1', root, '1900009100.000200');
+  assert.deepEqual(job.turn.speaker, { kind: 'own_bot', botUserId: AGENT_BOT_USER });
+  const press = stopPress('C1', root, '1900009100.000300');
+  assert.equal((await h.deliver('events', press, { settle: true })).status, 200);
+  const stopped = await stopOf(h, job);
+  assert.equal(stopped?.role, 'stopped', "a Channel thread's run stops at the press");
+  assert.equal((await h.deliver('events', press, { settle: true })).status, 200);
+  assert.equal((await h.deliver('events', stopPress('C1', root, '1900009100.000400'), { settle: true })).status, 200);
+  assert.deepEqual(await stopOf(h, job), stopped, "Slack's retry and a second press record no second stop");
+  const ended = (await h.stores.slackState.listPendingTurns!()).find((pending) => pending.id === job.id)!;
+  assert.deepEqual(sender(await endStoppedAsRun(h, ended)), OWN_BOT);
+  assert.deepEqual(sessionSettles(h).filter((settle) => settle.token === AGENT_BOT && (settle.username !== null || settle.picture)), []);
+  assert.deepEqual(personaOnAppToken(h), []);
+}));
+
+test("Slack's Stop button in a group DM where the app's bot answers stops the run there", async (t) => withHarness(t, async (h) => {
+  const ts = '1900009150.000100';
+  assert.equal((await h.deliver('events', dmEvent({ event_id: 'EvStopMpim' }, {
+    type: 'app_mention', channel: 'G1', channel_type: 'mpim', text: `<@${AGENT_BOT_USER}> refunds?`, ts, event_ts: ts,
+  }), { settle: true })).status, 200);
+  const job = await pendingTurn(h.stores, (pending) => pending.turn.channelId === 'G1');
+  assert.ok(job);
+  assert.deepEqual(job.turn.speaker, { kind: 'own_bot', botUserId: AGENT_BOT_USER });
+  assert.equal((await h.deliver('events', stopPress('G1', ts, '1900009150.000200'), { settle: true })).status, 200);
+  assert.equal((await stopOf(h, job))?.role, 'stopped');
+  assert.deepEqual(personaOnAppToken(h), []);
+}));
+
+test("Slack's Stop button delivered to an Agent app about another Agent's run stops nothing, logs it, and settles the app's own indicator as its bot", async (t) => withHarness(t, async (h) => {
+  const root = '1900009160.000100';
+  const job = await admitChannelTurnOf(h, 'agent_finance', root, '1900009160.000200');
   const info = t.mock.method(console, 'info', () => undefined);
-  assert.equal((await h.deliver('events', stopPress('C1', root, '1900009100.000300'), { settle: true })).status, 200);
-  assert.equal((await h.stores.slackState.listPendingTurns!()).find((pending) => pending.id === job.id)?.stop, undefined,
-    "a Channel thread's run keeps going");
-  assert.deepEqual(info.mock.calls.filter(({ arguments: [line] }) => line === '[chickpea] steering.stop_button').map(({ arguments: [, token] }) => token),
-    [{ outcome: 'not_own_dm' }]);
-  assert.deepEqual(h.calls.filter((call) => call.method.startsWith('chat.') || call.method.includes('setStatus')), [], 'and nothing is posted');
+  const before = h.calls.length;
+  assert.equal((await h.deliver('events', stopPress('C1', root, '1900009160.000300'), { settle: true })).status, 200);
+  assert.equal(await stopOf(h, job), undefined, "Finance's run keeps going");
+  assert.deepEqual(stopButtonOutcomes(info), [{ outcome: 'not_own_run' }]);
+  assert.deepEqual(sessionSettles(h, before), [{ ...OWN_BOT, channel: 'C1', status: 'active' }]);
+  assert.equal((await h.stores.config.getAgentThreadRoute(TEAM, 'C1', root))?.agentId, 'agent_finance', 'and Finance keeps the thread');
+}));
+
+test("Slack's Stop button delivered to an Agent app about its Agent's run through Chickpea stops nothing and logs it", async (t) => withHarness(t, async (h) => {
+  const root = '1900009170.000100';
+  const job = await admitSupportTurn(h, 'C1', root, '1900009170.000200');
+  assert.deepEqual(job.turn.speaker, { kind: 'chickpea_as_agent' }, "the app's bot is not in #C1, so Chickpea's speaks as Support");
+  const info = t.mock.method(console, 'info', () => undefined);
+  const before = h.calls.length;
+  assert.equal((await h.deliver('events', stopPress('C1', root, '1900009170.000300'), { settle: true })).status, 200);
+  assert.equal(await stopOf(h, job), undefined, "the run through Chickpea's bot keeps going");
+  assert.deepEqual(stopButtonOutcomes(info), [{ outcome: 'not_own_run' }]);
+  assert.deepEqual(sessionSettles(h, before), [{ ...OWN_BOT, channel: 'C1', status: 'active' }]);
+}, { notMemberOf: { [AGENT_BOT]: ['C1'] } }));
+
+test("Slack's Stop button pressed by someone who may not use the app's Agent stops nothing, in a Channel as in its DM", async (t) => withHarness(t, async (h) => {
+  const root = '1900009180.000100';
+  const channelJob = await admitSupportTurn(h, 'C1', root, '1900009180.000200');
+  assert.equal((await h.deliver('events', dmEvent({ event_id: 'EvStopDenied' }, { ts: '1900009180.000300', event_ts: '1900009180.000300' }), { settle: true })).status, 200);
+  const dmJob = await pendingTurn(h.stores, (pending) => pending.turn.messageTs === '1900009180.000300');
+  assert.ok(dmJob);
+  // Support leaves #C1, its only placement: no one may use it there, or in its DM.
+  assert.equal(await h.stores.config.deleteAgentChannelGrant(TEAM, 'C1', 'agent_support'), true);
+  assert.equal((await h.deliver('events', stopPress('C1', root, '1900009180.000400'), { settle: true })).status, 200);
+  assert.equal((await h.deliver('events', stopPress('D1', '1900009180.000300', '1900009180.000500'), { settle: true })).status, 200);
+  assert.equal(await stopOf(h, channelJob), undefined, "the Channel's run keeps going");
+  assert.equal(await stopOf(h, dmJob), undefined, "the DM's run keeps going");
+}));
+
+test("Slack's Stop button for an Agent app that is not live stops nothing and logs it", async (t) => withHarness(t, async (h) => {
+  const root = '1900009190.000100';
+  const job = await admitSupportTurn(h, 'C1', root, '1900009190.000200');
+  await setSupportApp(h, { state: 'needs_attention', at: Date.now(), startedBy: 'U1', reason: 'app_removed', resume: 'icon_set', app: { appId: AGENT_APP, clientId: '1.client' } });
+  const info = t.mock.method(console, 'info', () => undefined);
+  await h.deliver('events', stopPress('C1', root, '1900009190.000300'), { settle: true });
+  assert.equal(await stopOf(h, job), undefined);
+  assert.deepEqual(stopButtonOutcomes(info), [{ outcome: 'app_not_live' }]);
 }));
 
 test("Slack's Stop button in an Agent app's own DM with nothing running settles the indicator as the Agent's own bot", async (t) => withHarness(t, async (h) => {
