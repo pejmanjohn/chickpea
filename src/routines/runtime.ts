@@ -65,11 +65,7 @@ export interface RoutineRuntimeAccess {
    * destination. Absent means Chickpea's bot under the Agent's name.
    */
   speaker?: SlackSpeaker;
-  /**
-   * The Agent's other Slack bot, and its own app by ID, for an Agent with an
-   * app: its earlier posts then read alike whichever of its two bots reads
-   * them, even after the app is removed and its bot's user ID is gone.
-   */
+  /** So an app Agent's earlier posts read alike whichever of its bots reads them, its app known by ID. */
   siblingBots?: Pick<SlackContextSelf, 'siblingBotUserIds' | 'siblingAppIds'>;
   publicUrl?: string | undefined;
   /** The installation the Agent's avatar URL names (agentAvatarInstallation). */
@@ -99,9 +95,8 @@ export class RoutineRuntimeError extends Error {
 }
 
 /**
- * A schedule in its Agent's own DM while that Agent's app is not live, or
- * while Slack does not say whether the DM is the app's: only the app's bot
- * can post there, so the occurrence is skipped and the schedule stays on.
+ * A schedule in its Agent's own DM while that app is not live or Slack does
+ * not answer: the occurrence is skipped and the schedule stays on.
  */
 export class RoutineAgentAppUnavailableError extends RoutineRuntimeError {
   constructor() {
@@ -212,17 +207,9 @@ export async function resolveRoutineRuntimeAccess(
     agentId,
     speaker: { kind: 'own_bot', botUserId: appBotUserId },
   });
-  const appRecord = presence?.kind === 'agent_app' && 'app' in presence.app ? presence.app.app : undefined;
-  const siblings = (speaking: string): Pick<RoutineRuntimeAccess, 'siblingBots'> => presence?.kind === 'agent_app'
-    ? {
-        siblingBots: {
-          siblingBotUserIds: [
-            installationBotUserId,
-            ...('botUserId' in presence.app && presence.app.botUserId ? [presence.app.botUserId] : []),
-          ].filter((id) => id !== speaking),
-          ...(appRecord ? { siblingAppIds: [appRecord.appId] } : {}),
-        },
-      }
+  const appId = presence?.kind === 'agent_app' && 'app' in presence.app ? presence.app.app.appId : undefined;
+  const siblings = (speaking: string) => appId
+    ? { siblingBots: { siblingBotUserIds: [installationBotUserId].filter((id) => id !== speaking), siblingAppIds: [appId] } }
     : {};
   let speaker: SlackSpeaker | undefined;
   if (routine.destination.kind === 'direct_thread') {
@@ -264,10 +251,7 @@ export async function resolveRoutineRuntimeAccess(
         'The direct schedule owner is no longer eligible.',
       );
     }
-    // A DM Chickpea's bot does not open, for an Agent with an app, is that
-    // app's DM when the app's token opens it with the person, as for a turn
-    // Chickpea builds there. Without the port, or while the app is not live,
-    // it may be the app's DM still: the occurrence is skipped.
+    // Another DM may be the app's own (isAgentAppDm); without the port or a live app, skip.
     if (
       directConversation && directConversation.id !== routine.destination.conversationId &&
       presence?.kind === 'agent_app'
@@ -291,7 +275,6 @@ export async function resolveRoutineRuntimeAccess(
         ({ botToken, botUserId } = app);
         directClient = app.client;
         speaker = { kind: 'own_bot', botUserId };
-        // conversations.open for one person names a DM.
         directConversation = { id: routine.destination.conversationId, is_im: true };
       }
     }
@@ -366,7 +349,7 @@ export async function resolveRoutineRuntimeAccess(
     ? getConversation(token, routine.channelId)
     : conversationFromClient(reader!, routine.channelId);
   let conversation: Awaited<ReturnType<typeof readConversation>> | undefined;
-  // The app's side gave no definite answer, so its bot may be in the Channel.
+  // Its bot may be in the Channel: the app's side gave no definite answer.
   let appUnanswered = false;
   if (ownBotUserId && authority) {
     // Its own bot speaks only in a Channel it is in; Chickpea's is not asked then.
@@ -399,7 +382,7 @@ export async function resolveRoutineRuntimeAccess(
   ) {
     const channelIsKnownGone = conversation.error === 'channel_deleted' ||
       !!facts && (facts.archived || facts.frozen || facts.im || facts.mpim);
-    // Chickpea's bot is not in it, and the Agent's own bot may be: one outage never disables it.
+    // One outage never disables a Channel only the Agent's bot may be in.
     if (appUnanswered && !channelIsKnownGone) {
       throw unverifiedAccess(true, 'Current Slack channel access could not be verified.');
     }

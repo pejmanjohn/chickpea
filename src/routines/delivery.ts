@@ -48,7 +48,6 @@ const DEFINITIVE_DIRECT_THREAD_ERRORS = new Set([
   'restricted_action_thread_locked',
 ]);
 const UNAVAILABLE_DESTINATION_ERRORS = new Set(['channel_not_found', 'is_archived', 'not_in_channel']);
-/** Slack's answer to a bot no longer in the conversation: a definite refusal, so nothing was posted. */
 const BOT_NOT_THERE_ERRORS = new Set(['channel_not_found', 'not_in_channel']);
 
 export const DIRECT_ROUTINE_RECOVERY_NOTICE =
@@ -249,11 +248,7 @@ export interface ClaimedRoutineMessageInput {
   recordedPost?: Omit<SlackPublicDelivery, 'messageTs'>;
   unfurlArtifacts?: boolean;
   workLifecycle?: ShadowWorkLifecycle;
-  /**
-   * The run's access resolved afresh. A post the Agent's own bot was refused
-   * because that bot is no longer in the conversation is posted once more
-   * with what it returns.
-   */
+  /** Fresh access, for one more post when the Agent's own bot is no longer there. */
   respeak?: () => Promise<RoutineRuntimeAccess>;
   now?: () => number;
   sleep?: (delayMs: number) => Promise<void>;
@@ -309,14 +304,10 @@ async function postClaimedRoutineMessage(
       : undefined;
     return {
       channel: input.routine.channelId,
-      ...(input.routine.destination.threadTs
-        ? { thread_ts: input.routine.destination.threadTs }
-        : {}),
+      ...(input.routine.destination.threadTs ? { thread_ts: input.routine.destination.threadTs } : {}),
       ...(typeof message === 'string' ? { text: message } : message),
       ...(persona ? { username: access.config.agent.name } : {}),
-      ...(agentAvatarUrl
-        ? { icon_url: agentAvatarUrl }
-        : {}),
+      ...(agentAvatarUrl ? { icon_url: agentAvatarUrl } : {}),
       unfurl_links: input.unfurlArtifacts === true,
       unfurl_media: input.unfurlArtifacts === true,
     };

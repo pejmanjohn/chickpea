@@ -181,7 +181,6 @@ interface PreparedExecution {
   sandboxUnavailableFallback: boolean;
   productTelemetry?: ProductTelemetryCapture;
   threadRecord: RoutineThreadRecord;
-  /** Resolves this run's access afresh, for a post its own bot was refused. */
   resolveAccess(): Promise<RoutineRuntimeAccess>;
 }
 
@@ -252,7 +251,7 @@ export async function executeRoutineOccurrence(
     const failure = runtimeFailure(error, false);
     // Its Agent's app is away from the DM it posts in: this occurrence is skipped and the schedule stays on.
     const agentAppAway = error instanceof RoutineAgentAppUnavailableError && current.status === 'admitting';
-    // A one-time schedule has no later slot, and a skip would complete it: it waits for the app until its deadline.
+    // A skip would use up a one-time schedule: it waits for the app until its deadline.
     if (agentAppAway && current.triggerSource === 'once' && routine.triggerKind === 'once' && now() < current.deadlineAt) {
       return 'resumable';
     }
