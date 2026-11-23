@@ -21,6 +21,8 @@ export function parseMemoryCommand(
   rawText: string,
   resolvedBotUserId?: string,
   resolvedAgentUserGroupId?: string,
+  /** The Agent's own app's bot, which addresses it as its user group would. */
+  resolvedAgentBotUserId?: string,
 ): ParsedMemoryCommand | undefined {
   if (resolvedBotUserId === undefined && resolvedAgentUserGroupId === undefined) {
     const withoutUnresolvedAddress = stripUnresolvedSlackCommandAddress(rawText);
@@ -36,6 +38,7 @@ export function parseMemoryCommand(
   const text = stripResolvedSlackCommandAddress(rawText, {
     botUserId: resolvedBotUserId,
     agentUserGroupId: resolvedAgentUserGroupId,
+    agentBotUserId: resolvedAgentBotUserId,
   }).trim().replace(/\r\n?/g, '\n');
   if (!text) return undefined;
 
