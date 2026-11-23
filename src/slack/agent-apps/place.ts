@@ -21,7 +21,12 @@ export interface SlackTurnHearing {
   installationBot?: { botUserId: string; transport: Pick<SlackTransport, 'lookupChannel'> };
 }
 
-interface MembershipFact { member: boolean; verifiedAt: number }
+interface MembershipFact {
+  member: boolean;
+  verifiedAt: number;
+  /** Slack did not answer; such a fact is never cached. */
+  unread?: true;
+}
 
 const MEMBERSHIP_CACHE_LIMIT = 512;
 const memberships = new Map<string, MembershipFact>();
@@ -36,7 +41,7 @@ async function botMembership(botUserId: string, channelId: string, read: () => P
   try {
     member = await read();
   } catch {
-    return { member: false, verifiedAt: now };
+    return { member: false, verifiedAt: now, unread: true };
   }
   if (memberships.size >= MEMBERSHIP_CACHE_LIMIT) memberships.clear();
   const fact = { member, verifiedAt: now };
@@ -56,6 +61,22 @@ async function agentBotIsIn(env: PlatformEnv | undefined, agentId: string, appId
   if (!info.ok && (info.error === 'channel_not_found' || info.error === 'not_in_channel')) return false;
   if (!info.ok) throw new Error('conversations.info failed');
   return info.facts?.id === channelId && (info.facts.im || info.facts.mpim || info.facts.member);
+}
+
+/**
+ * Whether a live Agent app's bot can see a conversation, asked on its own
+ * token and cached as at admission. A bot sees a DM only when it is one side
+ * of it, so a DM no bot heard is the app's own exactly when this is true.
+ * Undefined when Slack did not answer.
+ */
+export async function agentAppBotSees(
+  env: PlatformEnv | undefined,
+  agentId: string,
+  app: ActiveAgentApp,
+  channelId: string,
+): Promise<boolean | undefined> {
+  const fact = await botMembership(app.botUserId, channelId, () => agentBotIsIn(env, agentId, app.app.appId, channelId));
+  return fact.unread ? undefined : fact.member;
 }
 
 /**
@@ -83,7 +104,9 @@ export async function admissionSpeaker(input: {
     agentBotIsIn(input.env, input.agentId, live.app.appId, turn.channelId));
   if (conversation === 'im') {
     if (hearing.agentApp) turn.dmBotUserId = hearing.botUserId;
-    else if (hearing.byHost && app && !turn.dmBotUserId && (await appBotIn(app)).member) turn.dmBotUserId = app.botUserId;
+    else if (hearing.byHost && app && !turn.dmBotUserId && await agentAppBotSees(input.env, input.agentId, app, turn.channelId)) {
+      turn.dmBotUserId = app.botUserId;
+    }
     if (!turn.dmBotUserId) return speakerFor(presence, { kind: 'chickpea_dm' });
     if (presence?.kind !== 'agent_app' || (app && app.botUserId !== turn.dmBotUserId)) {
       return { kind: 'unavailable', reason: 'no_bot_can_post' };

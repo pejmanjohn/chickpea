@@ -19,7 +19,7 @@ import {
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import type { EncryptedCredentialStore } from '../src/config/settings-store.ts';
 import { closeNodeStateStores, getSettingsStore, resolveStores, type AppStores, type PlatformEnv } from '../src/config/state-backend.ts';
-import type { AgentAppLifecycle, CustomAgentConfig } from '../src/config/types.ts';
+import { type AgentAppLifecycle, agentAppIsLive, type CustomAgentConfig } from '../src/config/types.ts';
 import { createLiveWorkspaceManagementService } from '../src/management/live-service.ts';
 import { invokeWorkspaceManagementTool } from '../src/management/tool-adapter.ts';
 import type { ManagementActorContext } from '../src/management/types.ts';
@@ -37,7 +37,7 @@ import {
   createAgentSlackAppRoutes,
   withAgentAppExecution,
 } from '../src/slack/agent-apps/index.ts';
-import { clearAdmissionMembershipsForTests } from '../src/slack/agent-apps/place.ts';
+import { agentAppBotSees, clearAdmissionMembershipsForTests } from '../src/slack/agent-apps/place.ts';
 import { readAppSecrets, saveConfigurationToken, writeAppSecrets } from '../src/slack/agent-apps/secrets.ts';
 import { createAgentAppSlackApi } from '../src/slack/agent-apps/slack-api.ts';
 import { generateCredentialKeyring, loadCredentialKeyring } from '../src/slack/credential-keyring.ts';
@@ -1745,6 +1745,13 @@ test("a setup's wake in the app Agent's own DM is that app's DM, and its reply p
   assert.deepEqual(sender(await postAsRun(h, throughChickpea)), AS_SUPPORT);
   assert.deepEqual(personaOnAppToken(h), []);
 }));
+
+test("whether the app's bot sees a DM is unknown, not no, when Slack does not answer its token", async (t) => withHarness(t, async (h) => {
+  const env = withHostedSlackApp(h.base, MAIN_APP);
+  const support = await h.stores.config.getAgent('agent_support');
+  assert.ok(agentAppIsLive(support.slackPresence));
+  assert.equal(await agentAppBotSees(env, support.id, support.slackPresence.app, 'D1'), undefined);
+}, { rateLimited: [`conversations.info ${AGENT_BOT}`] }));
 
 const FINANCE_APP = 'A0AGENT2';
 const FINANCE_BOT = 'xoxb-finance-bot';
