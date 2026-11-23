@@ -5,6 +5,7 @@ import {
   type AgentThreadRoute,
   type CustomAgentConfig,
   type ResolvedAssignment,
+  answeringUserGroupId,
 } from '../config/types.ts';
 import { agentAppPostingBot, agentAppRouteSelection } from './agent-apps/index.ts';
 import { agentMayAskTeammates, agentSlackHandle } from './agent-asks.ts';
@@ -200,10 +201,11 @@ export async function resolveAgentRoute(
   const agentsById = new Map(agents.map((agent) => [agent.id, agent]));
   const agentClaimsByGroupId = new Map<string, CustomAgentConfig[]>();
   for (const agent of agents) {
-    if (agent.kind !== 'user' || !agent.slackPresence?.userGroupId) continue;
-    const claims = agentClaimsByGroupId.get(agent.slackPresence.userGroupId) ?? [];
+    const userGroupId = answeringUserGroupId(agent.slackPresence);
+    if (agent.kind !== 'user' || !userGroupId) continue;
+    const claims = agentClaimsByGroupId.get(userGroupId) ?? [];
     claims.push(agent);
-    agentClaimsByGroupId.set(agent.slackPresence.userGroupId, claims);
+    agentClaimsByGroupId.set(userGroupId, claims);
   }
   const agentsByGroupId = new Map(
     [...agentClaimsByGroupId.entries()].flatMap(([groupId, claims]) =>

@@ -16,7 +16,7 @@ import { createDirectSlackTransport } from '../transport/direct.ts';
 import { SlackTransportError, type SlackTransport } from '../transport/types.ts';
 import { ownerUserGroupToken } from '../user-group-authority.ts';
 import { createSlackWebClient } from '../web-client.ts';
-import type { CustomAgentConfig } from '../../config/types.ts';
+import { appRecordOf, type CustomAgentConfig } from '../../config/types.ts';
 import { agentSlackAppsHost, type AgentAppRetirement, type AgentSlackAppIngress, type AgentSlackAppsHost } from './host.ts';
 import { FINISH_APP_ACTION, START_APP_ACTION, TRY_AGAIN_ACTION } from './pages.ts';
 import { agentAppIsLive, agentAppRecord } from './lifecycle.ts';
@@ -181,9 +181,10 @@ export async function agentDmPlacementFacts(
  */
 export async function agentAppIngressFacts(env: PlatformEnv, appId: string): Promise<AgentSlackAppIngress | undefined> {
   const stores = resolveStores(env);
-  const agent = (await stores.config.listAgents()).find((candidate) =>
-    candidate.slackPresence?.kind === 'agent_app' && agentAppRecord(candidate.slackPresence.app)?.appId === appId
-  );
+  const agent = (await stores.config.listAgents()).find((candidate) => {
+    const app = appRecordOf(candidate.slackPresence);
+    return app !== undefined && agentAppRecord(app)?.appId === appId;
+  });
   if (!agent) return undefined;
   const stored = await readOwnAppSecrets(secretDeps(env), appId, agent.id, 'ingress');
   if (stored.kind !== 'own') return undefined;
@@ -269,7 +270,7 @@ async function joinRefusal(
 export async function retireAgentSlackAppsLive(env: PlatformEnv): Promise<readonly AgentAppRetirement[]> {
   const host = agentSlackAppsHost();
   const stores = resolveStores(env);
-  const agents = (await stores.config.listAgents()).filter((agent) => agent.slackPresence?.kind === 'agent_app');
+  const agents = (await stores.config.listAgents()).filter((agent) => appRecordOf(agent.slackPresence));
   if (agents.length === 0) return [];
   if (!host) return agents.map((agent) => ({ agentId: agent.id, outcome: 'left_for_owner' as const }));
   const service = await liveAgentSlackApps(env, host);

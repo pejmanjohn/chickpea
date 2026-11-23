@@ -1,5 +1,5 @@
 import type { ConfigStore } from '../config/store.ts';
-import type { CustomAgentConfig } from '../config/types.ts';
+import { appRecordOf, type CustomAgentConfig } from '../config/types.ts';
 import { agentSlackAppsHost } from './agent-apps/host.ts';
 
 /** The bot user an Agent's own Slack app posts as. */
@@ -15,7 +15,7 @@ export interface AgentAppBot {
  */
 export function agentAppBots(agents: readonly Pick<CustomAgentConfig, 'id' | 'slackPresence'>[]): AgentAppBot[] {
   return agents.flatMap((agent) => {
-    const app = agent.slackPresence?.kind === 'agent_app' ? agent.slackPresence.app : undefined;
+    const app = appRecordOf(agent.slackPresence);
     return app && 'botUserId' in app && app.botUserId ? [{ agentId: agent.id, botUserId: app.botUserId }] : [];
   });
 }

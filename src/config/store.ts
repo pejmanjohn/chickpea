@@ -96,7 +96,7 @@ import { agentModelEffortAfterPatch, isModelEffort, type ModelEffort } from './m
 import { canonicalMcpServerUrl, sameMcpServerUrl } from './mcp-url.ts';
 import { MemoryStoreLogic } from '../memory/store.ts';
 import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
-import { normalizeAgentAppPresence } from '../slack/agent-apps/index.ts';
+import { attachedAgentApp, normalizeAgentAppPresence } from '../slack/agent-apps/index.ts';
 import { type AgentAppBot, agentAppBots } from '../slack/agent-app-bots.ts';
 import {
   isDefaultAgentAvatarSeed,
@@ -4189,7 +4189,10 @@ function parseAgentSlackPresence(
       if (!parsed.app) return fallback;
       return normalizeAgentAppPresence({ ...fallback, ...parsed, kind: 'agent_app', app: parsed.app, avatar });
     }
-    return { ...fallback, ...(parsed as Partial<UserGroupPresence>), avatar };
+    // A user group never carries a released group, and holds only an app record that is not live.
+    const { app, released: _released, ...group } = parsed as Partial<UserGroupPresence> & { released?: unknown };
+    const attached = attachedAgentApp(app);
+    return { ...fallback, ...group, avatar, ...(attached ? { app: attached } : {}) };
   } catch {
     return defaultAgentSlackPresence(agentId, name);
   }

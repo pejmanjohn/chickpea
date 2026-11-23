@@ -1966,3 +1966,83 @@ test("a turn Chickpea builds in a Channel its bot is not in answers as the app's
   assert.deepEqual(own.turn.speaker, { kind: 'own_bot', botUserId: AGENT_BOT_USER });
   assert.deepEqual(sender(await postAsRun(h, own)), OWN_BOT);
 }, { notMemberOf: { [MAIN_BOT]: ['C1'], [AGENT_BOT]: ['C1'] } }));
+
+/** Support back on its user group with its app's record attached and not live, as while the app waits for Allow. */
+async function attachSupportApp(h: Harness): Promise<void> {
+  const support = await h.stores.config.getAgent('agent_support');
+  await h.stores.config.updateAgent(support.id, {
+    slackPresence: {
+      requestedHandle: 'support', normalizedHandle: 'support', desiredState: 'active', health: 'healthy',
+      avatar: support.slackPresence!.avatar, userGroupId: 'SSUPPORT',
+      app: {
+        state: 'awaiting_consent', at: Date.now(), startedBy: 'U1', app: { appId: AGENT_APP, clientId: '1.client' },
+        icon: 'agent_avatar', allowDm: { channelId: 'DOWNER', ts: '1.1' },
+      },
+    },
+  }, support.revision);
+}
+
+/** The Agents a Channel message Chickpea's bot heard was admitted for. */
+async function admittedFor(h: Harness, ts: string, text: string): Promise<string[]> {
+  assert.equal((await h.deliverToChickpea(channelMessage(ts, text).chickpea)).status, 200);
+  return (await h.stores.slackState.listPendingTurns!()).filter((job) => job.turn.messageTs === ts).map((job) => job.assignment.agentId);
+}
+
+// Defects caught: Slack's URL check finding apps by kind, so an app being created beside its group fails the check;
+// a removal event acting on an app that is not live; and the attached record making the Agent answer as its app.
+test("an app record attached to a user group is found by Slack's URL check, while the Agent routes, speaks and is listed as a user-group Agent", async (t) => withHarness(t, async (h) => {
+  await attachSupportApp(h);
+  const before = (await h.stores.config.getAgent('agent_support')).slackPresence;
+  assert.deepEqual(await agentSlackAppIngress(h.base, AGENT_APP), { agentId: 'agent_support', teamId: TEAM, signingSecret: AGENT_SECRET });
+  assert.equal(await agentAppBotCredentials(h.base, 'agent_support', AGENT_APP), undefined, 'the app does not speak for the Agent');
+  assert.deepEqual(await h.stores.config.listAgentAppBots(), [], 'no bot of an app never allowed is listed');
+  assert.equal(await endAgentSlackApp(h.base, AGENT_APP, dmEvent({}, { type: 'app_uninstalled' })), 'ignored',
+    'Slack removing an app that is not live ends nothing');
+  assert.deepEqual((await h.stores.config.getAgent('agent_support')).slackPresence, before);
+  assert.equal((await readAppSecrets(h.secrets(), AGENT_APP))?.secrets.botToken, AGENT_BOT);
+
+  const ts = '1900005000.000100';
+  assert.deepEqual(await admittedFor(h, ts, '<!subteam^SSUPPORT|@support> what changed?'), ['agent_support'], 'its group still routes to it');
+  const job = await pendingTurn(h.stores, (pending) => pending.turn.messageTs === ts);
+  assert.ok(job);
+  assert.deepEqual(job.turn.speaker, { kind: 'chickpea_as_agent' });
+  assert.deepEqual(sender(await postAsRun(h, job)), AS_SUPPORT);
+  assert.equal(h.calls.some((call) => call.token === AGENT_BOT), false, 'nothing runs as the app bot');
+}));
+
+// Defects caught: tenant end finding apps by kind, so an app attached to a user group outlives its tenant; and a
+// retire that rewrites the group instead of only dropping the record.
+test("a tenant's end retires an app record attached to a user group and leaves the group as it was", async (t) => withHarness(t, async (h) => {
+  const rotated = { accessToken: 'xoxe.xoxp-1-config-access', refreshToken: 'xoxe-1-config-refresh', teamId: TEAM, expiresAt: Date.now() + 12 * 3_600_000 };
+  assert.equal(await saveConfigurationToken({ ...h.secrets(), slack: { rotate: async () => rotated } }, TEAM, 'xoxe-1-pasted-token-0000'), 'saved');
+  await attachSupportApp(h);
+  const { app: _app, ...group } = (await h.stores.config.getAgent('agent_support')).slackPresence!;
+  h.calls.length = 0;
+  assert.deepEqual(await retireAgentSlackApps(h.base), [{ agentId: 'agent_support', outcome: 'removed' }]);
+  assert.deepEqual(h.calls.map(({ method, token }) => [method, token]), [
+    ['apps.uninstall', AGENT_BOT],
+    ['apps.manifest.delete', rotated.accessToken],
+  ]);
+  assert.deepEqual((await h.stores.config.getAgent('agent_support')).slackPresence, group);
+  assert.equal(await readAppSecrets(h.secrets(), AGENT_APP), undefined);
+}));
+
+// Defects caught: the user-group lookup ignoring a released group that still answers, so a mention of it reaches
+// nobody between the app going live and the group being disabled; or honoring one that no longer answers.
+test('a mention of an app Agent’s released user group routes to it only while that group answers', async (t) => withHarness(t, async (h) => {
+  const setAnswers = async (answers: boolean | undefined) => {
+    const support = await h.stores.config.getAgent('agent_support');
+    assert.equal(support.slackPresence?.kind, 'agent_app');
+    if (support.slackPresence?.kind !== 'agent_app') return;
+    const released = { userGroupId: 'SSUPPORT', ...(answers === undefined ? {} : { answers }) };
+    await h.stores.config.updateAgent(support.id, { slackPresence: { ...support.slackPresence, released } }, support.revision);
+  };
+  const text = '<!subteam^SSUPPORT|@support> what changed?';
+  await setAnswers(true);
+  assert.deepEqual(await admittedFor(h, '1900005100.000100', text), ['agent_support']);
+  await setAnswers(false);
+  assert.deepEqual(await admittedFor(h, '1900005200.000100', text), []);
+  await setAnswers(undefined);
+  assert.deepEqual(await admittedFor(h, '1900005300.000100', text), []);
+  assert.equal((await h.stores.config.getAgent('agent_support')).slackPresence?.kind, 'agent_app', 'nothing rebinds the group');
+}));
