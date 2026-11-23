@@ -162,8 +162,8 @@ test('the directory shows what this person would get from each Agent and nothing
     nowMs: NOW,
   });
   assert.ok(directory);
-  assert.deepEqual(directory.agents.map(({ id }) => id), ['agent_research', 'agent_support'],
-    'an Agent with its own live app is left out');
+  assert.deepEqual(directory.agents.map(({ id }) => id), ['agent_app', 'agent_research', 'agent_support'],
+    "an Agent with its own live app is listed: in Chickpea's DM Chickpea's bot answers for it");
   const listed = directory.agents.find(({ id }) => id === 'agent_support')!;
   assert.deepEqual(listed.connections, ['Zendesk', 'My Calendar'], 'another member\'s personal account is never listed');
   assert.deepEqual(listed.websiteHosts, ['portal.example.test']);
@@ -180,9 +180,9 @@ test('the directory shows what this person would get from each Agent and nothing
     recentReplies: [], nowMs: NOW,
   });
   assert.deepEqual(offline?.agents[0]?.websiteHosts, []);
-  assert.equal(assembleFrontDeskDirectory({
+  assert.deepEqual(assembleFrontDeskDirectory({
     usable: { agents: [ownApp], incomplete: false }, accounts: [], bindings: new Map(), recentReplies: [], nowMs: NOW,
-  }), undefined, 'no Agent left: no front desk');
+  })?.agents.map(({ id, handle }) => [id, handle]), [['agent_app', 'app']], 'an app Agent alone still makes a front desk');
 
   // A name that cleans to nothing, with no handle to stand in for it, cannot be named.
   const { slackPresence: _handle, ...nameless } = userAgent('agent_nameless', '<>');

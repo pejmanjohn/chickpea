@@ -5971,6 +5971,7 @@
         "channelId?": "string",
         "handle?": "string",
         "name": "string",
+        "ownApp?": "true",
         "purpose?": "string"
       }
     },

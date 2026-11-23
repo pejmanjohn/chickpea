@@ -1,6 +1,7 @@
 import type { WebClient } from '@slack/web-api';
 
 import type { PlatformEnv } from '../config/state-backend.ts';
+import type { AgentSlackPresence } from '../config/types.ts';
 import type { ConfigStore } from '../config/store.ts';
 import { managedConnectorReadCopy } from '../connections/managed-copy.ts';
 import type { IdentityStore } from '../identity/types.ts';
@@ -8,6 +9,7 @@ import {
   resolveSlackInstallationExecutionContext,
   type SlackInstallationExecutionResolver,
 } from '../slack/installation-execution.ts';
+import { agentSlackAppsHost, hostPostSpeaker, ownBotClient } from '../slack/agent-apps/index.ts';
 import { renderSlackActionLink } from '../slack/message-format.ts';
 import type { SlackPresentationStatePort } from '../slack/agent-view-presentation.ts';
 import {
@@ -193,7 +195,8 @@ interface ManagementReceiptDeliveryResult {
 
 interface AgentWelcomePresentationRuntime {
   state: SlackPresentationStatePort;
-  resolveClient(workspaceId: string): Promise<WebClient>;
+  /** The client that edits a turn's presentation: the bot its run speaks with. */
+  resolveClient(workspaceId: string, turnJobId: string): Promise<WebClient>;
 }
 
 /** The Work calls that settle the Run of the turn an Agent welcome finishes. */
@@ -629,6 +632,8 @@ export async function deliverManagementReceiptToSlack(
       Partial<Pick<IdentityStore, 'resolveSlackIdentity'>>;
     env?: PlatformEnv;
     resolveInstallation?: SlackInstallationExecutionResolver;
+    /** An Agent's Slack presence, so a notice in its thread posts as the bot that speaks for it there. */
+    agentPresence?: (agentId: string) => Promise<AgentSlackPresence | undefined>;
     onDelivered?: (
       record: ManagementReceiptOutboxRecord,
       delivery: {
@@ -721,6 +726,20 @@ export async function deliverManagementReceiptToSlack(
   // A connector's Agent says it in its own thread; Chickpea says it in a DM.
   const agentReceipt = isConnectorConnectedReceipt(record.receipt) && !initiatorDm ? record.receipt : undefined;
   const text = formatManagementSetupReceipt(record.receipt, { groupDm, initiatorDm });
+  // Where the Agent's own app would answer, its bot says it, with no persona; Chickpea's bot cannot post in that app's DM.
+  const ownBot = agentReceipt && agentSlackAppsHost()
+    ? await ownBotClient(input.env, workspaceId, agentReceipt.agentId, await hostPostSpeaker({
+        env: input.env,
+        agentId: agentReceipt.agentId,
+        presence: await input.agentPresence?.(agentReceipt.agentId),
+        channelId: channel,
+        // A setup's thread names the person who finished it; a DM Chickpea opened above is its own.
+        ...(record.destination.kind === 'thread' && record.destination.wake
+          ? { userId: record.destination.wake.slackUserId }
+          : {}),
+      }))
+    : undefined;
+  const client = ownBot ?? execution.client;
   const baseMessage = {
     channel,
     ...(threadTs ? { thread_ts: threadTs } : {}),
@@ -728,8 +747,10 @@ export async function deliverManagementReceiptToSlack(
     client_msg_id: record.outboxId,
     ...(agentReceipt
       ? {
-          username: agentReceipt.agentName,
-          ...(agentReceipt.avatarUrl ? { icon_url: agentReceipt.avatarUrl } : {}),
+          ...(ownBot ? {} : {
+            username: agentReceipt.agentName,
+            ...(agentReceipt.avatarUrl ? { icon_url: agentReceipt.avatarUrl } : {}),
+          }),
           unfurl_links: false,
           unfurl_media: false,
         }
@@ -769,7 +790,7 @@ export async function deliverManagementReceiptToSlack(
       }
     }
   } else {
-    response = await execution.client.chat.postMessage(baseMessage);
+    response = await client.chat.postMessage(baseMessage);
   }
   if (!response.ok || !response.ts) throw new Error('Slack did not acknowledge the receipt.');
   try {
@@ -780,7 +801,7 @@ export async function deliverManagementReceiptToSlack(
       messageTs: response.ts,
       text: deliveredText,
       persona,
-      client: execution.client,
+      client,
     });
   } catch (error) {
     // Slack has already acknowledged the irreversible post. A follow-up route
@@ -1009,7 +1030,7 @@ function formatChickpeaIntroduction(receipt: ManagementChickpeaIntroduction): st
           ...listed.map(introductionAgentLine),
           ...(unlisted > 0 ? [`Plus ${unlisted} more on my Home tab.`] : []),
         ].join('\n'),
-        'Mention an Agent in its Channel, or press Message next to it on my Home tab to talk to it privately. To set up a new Agent for work you repeat, tell me what it should do.',
+        joinerClose(listed, unlisted),
       ].join('\n\n');
     }
     case 'no_agents':
@@ -1025,6 +1046,24 @@ function formatChickpeaIntroduction(receipt: ManagementChickpeaIntroduction): st
   }
 }
 
+const JOINER_NEW_AGENT = 'To set up a new Agent for work you repeat, tell me what it should do.';
+
+/** How to reach the listed Agents. One with its own Slack app is messaged directly, by its handle. */
+function joinerClose(listed: readonly ChickpeaIntroductionAgent[], unlisted: number): string {
+  const direct = listed.flatMap((agent) => {
+    const handle = agent.ownApp && agent.handle ? introductionHandle(agent.handle) : '';
+    return handle ? [`@${handle}`] : [];
+  });
+  if (direct.length === 0) {
+    return `Mention an Agent in its Channel, or press Message next to it on my Home tab to talk to it privately. ${JOINER_NEW_AGENT}`;
+  }
+  const names = direct.length === 1 ? direct[0]! : `${direct.slice(0, -1).join(', ')} or ${direct.at(-1)!}`;
+  if (direct.length === listed.length && unlisted === 0) {
+    return `Mention an Agent in its Channel, or message ${names} directly to talk privately. ${JOINER_NEW_AGENT}`;
+  }
+  return `Mention an Agent in its Channel, or press Message next to it on my Home tab to talk to it privately. You can also message ${names} directly. ${JOINER_NEW_AGENT}`;
+}
+
 const SLACK_CHANNEL_ID = /^[CG][A-Z0-9]+$/;
 /**
  * A handle whose underscores sit inside it. Slack reads those as text, and
@@ -1032,10 +1071,13 @@ const SLACK_CHANNEL_ID = /^[CG][A-Z0-9]+$/;
  */
 const INERT_AGENT_HANDLE = /^[a-z0-9](?:[a-z0-9_-]{0,78}[a-z0-9])?$/;
 
+function introductionHandle(handle: string): string {
+  return INERT_AGENT_HANDLE.test(handle) ? handle : boundedSlackText(handle, 80);
+}
+
 /** One listed Agent. Its name, handle and purpose are user-entered, so they render inert. */
 function introductionAgentLine(agent: ChickpeaIntroductionAgent): string {
-  const handle = !agent.handle ? ''
-    : INERT_AGENT_HANDLE.test(agent.handle) ? agent.handle : boundedSlackText(agent.handle, 80);
+  const handle = agent.handle ? introductionHandle(agent.handle) : '';
   const purpose = agent.purpose ? boundedSlackText(agent.purpose, 200) : '';
   const channel = agent.channelId && SLACK_CHANNEL_ID.test(agent.channelId) ? agent.channelId : undefined;
   const name = boundedSlackText(agent.name, 80);

@@ -12,6 +12,7 @@ import { currentHumanIdentityDirectory } from '../identity/current-directory.ts'
 import type { IdentityStore } from '../identity/types.ts';
 import { isStateStoreDisconnect } from '../config/cf-state-proxies.ts';
 import { outsideTurnReads } from '../config/turn-reads.ts';
+import { agentSlackAddress } from '../slack/agent-app-bots.ts';
 import { resolveSlackCredentials } from '../slack/credentials.ts';
 import {
   hasLeadingSlackCommandAddress,
@@ -89,12 +90,13 @@ export async function handleMemoryCommand(input: {
     ? await resolveCommandBotUserId(input.platformEnv, input.client, input.botToken, input.botUserId)
     : undefined;
   if (leadingUserAddress && !resolvedBotUserId) return false;
-  const resolvedAgentUserGroupId = input.assignment.agent.slackPresence?.userGroupId;
-  if (leadingAddress && !resolvedBotUserId && !resolvedAgentUserGroupId) return false;
+  const { agentUserGroupId, agentBotUserId } = agentSlackAddress(input.assignment.agent);
+  if (leadingAddress && !resolvedBotUserId && !agentUserGroupId) return false;
   const command = parseMemoryCommand(
     input.turn.text,
     resolvedBotUserId ?? '',
-    resolvedAgentUserGroupId ?? '',
+    agentUserGroupId ?? '',
+    agentBotUserId,
   );
   if (!command || command.kind === 'candidate') return false;
 

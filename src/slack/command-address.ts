@@ -1,6 +1,8 @@
 export interface SlackCommandAddress {
   botUserId?: string | undefined;
   agentUserGroupId?: string | undefined;
+  /** The Agent's own Slack app's bot, which names the Agent wherever Chickpea's bot answers for it. */
+  agentBotUserId?: string | undefined;
 }
 
 const UNRESOLVED_ADDRESS =
@@ -16,8 +18,8 @@ export function stripResolvedSlackCommandAddress(
   address: SlackCommandAddress = {},
 ): string {
   const identities: string[] = [];
-  if (address.botUserId) {
-    identities.push(`<@${escapeRegExp(address.botUserId)}>`);
+  for (const bot of [address.botUserId, address.agentBotUserId]) {
+    if (bot) identities.push(`<@${escapeRegExp(bot)}>`);
   }
   if (address.agentUserGroupId) {
     identities.push(

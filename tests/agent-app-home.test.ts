@@ -13,7 +13,9 @@ import { AgentSlackApps, type AgentAppTransport } from '../src/slack/agent-apps/
 import { START_APP_ACTION } from '../src/slack/agent-apps/pages.ts';
 import { saveConfigurationToken } from '../src/slack/agent-apps/secrets.ts';
 import type { AgentAppSlackApi } from '../src/slack/agent-apps/slack-api.ts';
-import { agentDirectoryAppHome } from '../src/slack/app-home.ts';
+import { formatManagementSetupReceipt } from '../src/management/receipts.ts';
+import type { ChickpeaIntroductionAgent } from '../src/management/types.ts';
+import { agentDirectoryAppHome, OPEN_AGENT_DM_ACTION_ID, START_AGENT_ACTION_ID } from '../src/slack/app-home.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { escapeMrkdwn } from '../src/slack/ui/text.ts';
 
@@ -145,4 +147,49 @@ test('a click on an Agent app control is an Owner-only control, and other clicks
   assert.equal(viewers, 1, "a Member's click is ours and does nothing");
   configureAgentSlackApps(undefined);
   assert.equal(await handleAgentAppHomeAction({ env: ENV, payload: { type: 'block_actions', user: { id: 'U1' }, actions: [{ action_id: START_APP_ACTION, value: 'agent_support' }] }, viewer }), false, 'without the port the control does not exist');
+});
+
+test("the directory's Message opens a live app Agent's own DM only when given the team; every other Agent starts a thread", () => {
+  const live: AgentAppLifecycle = { state: 'active', at: NOW, app: APP, icon: 'agent_avatar', botUserId: 'UBOT', installedAt: NOW, installedBy: 'U1' };
+  const agents = [
+    agent('agent_live', 'user', presence(live)),
+    agent('agent_waiting', 'user', presence({ state: 'awaiting_consent', at: NOW, startedBy: 'U1', app: APP, icon: 'agent_avatar', allowDm: { channelId: 'D1', ts: '1.0' } })),
+    agent('agent_group', 'user', presence()),
+  ];
+  const buttons = (options?: { agentDmTeamId?: string }) => Object.fromEntries(
+    ((agentDirectoryAppHome(agents, options) as unknown as { blocks: Array<{ accessory?: { action_id: string; value: string; url?: string } }> }).blocks)
+      .flatMap(({ accessory }) => accessory ? [[accessory.value, [accessory.action_id, accessory.url]]] : []),
+  );
+  assert.deepEqual(buttons({ agentDmTeamId: TEAM }), {
+    agent_live: [OPEN_AGENT_DM_ACTION_ID, `https://slack.com/app_redirect?app=${APP.appId}&team=${TEAM}`],
+    agent_waiting: [START_AGENT_ACTION_ID, undefined],
+    agent_group: [START_AGENT_ACTION_ID, undefined],
+  });
+  assert.deepEqual(buttons(), {
+    agent_live: [START_AGENT_ACTION_ID, undefined],
+    agent_waiting: [START_AGENT_ACTION_ID, undefined],
+    agent_group: [START_AGENT_ACTION_ID, undefined],
+  });
+});
+
+test("the joiner welcome names app Agents to message directly, and keeps today's line when none is listed", () => {
+  const welcome = (agents: ChickpeaIntroductionAgent[], more = 0) => formatManagementSetupReceipt({
+    kind: 'chickpea_introduction', trigger: 'first_interaction', usable: { agents, more },
+  }).split('\n\n').at(-1);
+  const close = 'To set up a new Agent for work you repeat, tell me what it should do.';
+  const group = { name: 'Finance', handle: 'finance' };
+  const sales = { name: 'Sales Desk', handle: 'sales_desk', ownApp: true as const };
+  const support = { name: 'Support', handle: 'support', ownApp: true as const };
+  assert.equal(welcome([group]), `Mention an Agent in its Channel, or press Message next to it on my Home tab to talk to it privately. ${close}`);
+  assert.equal(welcome([sales]), `Mention an Agent in its Channel, or message @sales_desk directly to talk privately. ${close}`);
+  assert.equal(welcome([sales, support, { ...support, handle: 'ops' }]),
+    `Mention an Agent in its Channel, or message @sales_desk, @support or @ops directly to talk privately. ${close}`);
+  assert.equal(welcome([group, support]),
+    `Mention an Agent in its Channel, or press Message next to it on my Home tab to talk to it privately. You can also message @support directly. ${close}`);
+  assert.equal(welcome([support], 2),
+    `Mention an Agent in its Channel, or press Message next to it on my Home tab to talk to it privately. You can also message @support directly. ${close}`,
+    'Agents not listed may have no app');
+  assert.equal(welcome([{ name: 'Nameless', ownApp: true }, { name: 'Inert', handle: '***', ownApp: true }]),
+    `Mention an Agent in its Channel, or press Message next to it on my Home tab to talk to it privately. ${close}`,
+    'an app Agent with no handle to write is reached from the Home tab');
 });

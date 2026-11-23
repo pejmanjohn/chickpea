@@ -698,6 +698,8 @@ export interface ChickpeaIntroductionAgent {
   purpose?: string;
   /** A Channel the Agent answers in that this person can see. */
   channelId?: string;
+  /** The Agent answers as its own Slack app, so people message it directly by its handle. */
+  ownApp?: true;
 }
 
 /** Internal durable record. Digest members must never cross a public adapter. */

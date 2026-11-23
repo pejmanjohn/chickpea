@@ -3,10 +3,9 @@ import { isActiveConnectionActor } from '../../connections/runtime.ts';
 import type { AgentChannelGrant, CustomAgentConfig } from '../../config/types.ts';
 import type { IdentityStore } from '../../identity/types.ts';
 import { resolveSlackManagementActor, type SlackManagementSignal } from '../../management/slack-tools.ts';
-import { agentSlackAppsHost } from '../agent-apps/index.ts';
 import { agentIsActive } from '../agent-routing.ts';
 
-export type RequesterAgentRefusal = 'requester_unavailable' | 'agent_unavailable' | 'agent_app';
+export type RequesterAgentRefusal = 'requester_unavailable' | 'agent_unavailable';
 
 export async function requesterAgentRefusal(input: {
   plan: Pick<RuntimePlanV2, 'agentId' | 'actorMembershipId'>;
@@ -22,7 +21,6 @@ export async function requesterAgentRefusal(input: {
     return 'requester_unavailable';
   }
   if (!agentIsActive(agent)) return 'agent_unavailable';
-  if (agentSlackAppsHost() && agent.slackPresence?.kind === 'agent_app') return 'agent_app';
   if (agent.kind !== 'user') return undefined;
   const direct = signal.conversationKind === 'im' || signal.conversationKind === 'mpim';
   if (!direct && !(await input.grants()).some((grant) =>

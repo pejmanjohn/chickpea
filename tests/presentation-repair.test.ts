@@ -783,3 +783,63 @@ test('a stop note terminal repairs like an answer: the session settles active, n
     db.close();
   }
 });
+
+test("the repair drain asks for each run's client with its turn, so a run stored with an app's own bot is edited by that bot", async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new SlackRunPresentationStoreLogic(db, () => BASE_NOW);
+    const presentation = terminalRepair(store, {
+      runId: 'run_repair_turn', root: root('REPAIR_TURN'),
+      sessionGeneration: 100, sessionCertainty: 'failed', lifecycleSettled: true,
+    });
+    const asked: Array<[string, string]> = [];
+    await drainSlackPresentationRepairs({
+      presentations: [presentation],
+      state: statePort(store),
+      now: () => BASE_NOW,
+      resolveClient: async (workspaceId, turnJobId) => {
+        asked.push([workspaceId, turnJobId]);
+        return repairClient({ calls: [] });
+      },
+    });
+    assert.deepEqual(asked, [[presentation.root.workspaceId, presentation.turnJobId]]);
+  } finally {
+    db.close();
+  }
+});
+
+test("the Node relay repairs a run stored with its app's own bot with that bot, and every other run with the installation's", async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new SlackRunPresentationStoreLogic(db, () => BASE_NOW);
+    const own = terminalRepair(store, {
+      runId: 'run_relay_own', root: root('RELAY_OWN'), sessionGeneration: 100, sessionCertainty: 'failed', lifecycleSettled: true,
+    });
+    const other = terminalRepair(store, {
+      runId: 'run_relay_other', root: root('RELAY_OTHER'), sessionGeneration: 100, sessionCertainty: 'failed', lifecycleSettled: true,
+    });
+    const ownRun = { agentId: 'agent_support', speaker: { kind: 'own_bot' as const, botUserId: 'USUPPORTBOT' } };
+    const noop = async () => undefined;
+    const state = {
+      ...statePort(store),
+      listRunPresentationsForRepair: async () => [own, other],
+      ownBotRun: async (turnJobId: string) => turnJobId === own.turnJobId ? ownRun : undefined,
+      listPendingTurns: async () => [],
+      listPendingSlackInteractionCleanups: async () => [],
+      markTurnDelivered: noop,
+    } as unknown as SlackStateStore;
+    const asked: Array<[string, unknown]> = [];
+    await wakeNodeTurnRelay(undefined, {
+      state,
+      work: { claimNextInteractiveRun: async () => undefined } as unknown as WorkStore,
+      executeTurn: noop as never,
+      resolveInstallation: async (workspaceId, run) => {
+        asked.push([workspaceId, run]);
+        return { workspaceId, client: repairClient() } as never;
+      },
+    });
+    assert.deepEqual(asked, [[own.root.workspaceId, ownRun], [other.root.workspaceId, undefined]]);
+  } finally {
+    db.close();
+  }
+});

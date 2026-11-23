@@ -151,7 +151,7 @@ import {
   foldedRequestText,
   type FoldedMessage,
 } from './follow-ups.ts';
-import { listAgentAppBots } from './agent-app-bots.ts';
+import { agentSlackAddress, listAgentAppBots } from './agent-app-bots.ts';
 import { createSlackReadGate, sharesSlackAppReadBudget } from './read-budget.ts';
 import { resolveSlackContextNames } from './context-names.ts';
 import type { FlueDispatchReceiptV1 } from './turn-job-types.ts';
@@ -698,7 +698,7 @@ async function runTurnAttempt(
   const ledgerAuthority = options.executionAuthority === 'ledger';
   const commandAddress = {
     botUserId: installationContext?.botUserId,
-    agentUserGroupId: assignment.agent.slackPresence?.userGroupId,
+    ...agentSlackAddress(assignment.agent),
   };
   const settingsStore = options.settingsStore ?? options.appStores?.settings;
   // env (SLACK_TAG_PUBLIC_URL) → stored slack.publicUrl (the origin the admin

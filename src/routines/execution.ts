@@ -106,6 +106,7 @@ import {
 } from '../slack/artifact-receipts.ts';
 import {
   resolveRoutineRuntimeAccess,
+  RoutineAgentAppUnavailableError,
   RoutineRuntimeError,
   type RoutineRuntimeAccess,
 } from './runtime.ts';
@@ -180,6 +181,7 @@ interface PreparedExecution {
   sandboxUnavailableFallback: boolean;
   productTelemetry?: ProductTelemetryCapture;
   threadRecord: RoutineThreadRecord;
+  resolveAccess(): Promise<RoutineRuntimeAccess>;
 }
 
 /** Execute or reattach one durable routine attempt from app-owned checkpoints. */
@@ -247,7 +249,13 @@ export async function executeRoutineOccurrence(
     // for a later heartbeat, and nothing is failed, paused or posted for it.
     if (isCredentialKeyringUnavailable(error)) return 'resumable';
     const failure = runtimeFailure(error, false);
-    if ([
+    // Its Agent's app is away from the DM it posts in: this occurrence is skipped and the schedule stays on.
+    const agentAppAway = error instanceof RoutineAgentAppUnavailableError && current.status === 'admitting';
+    // A skip would use up a one-time schedule: it waits for the app until its deadline.
+    if (agentAppAway && current.triggerSource === 'once' && routine.triggerKind === 'once' && now() < current.deadlineAt) {
+      return 'resumable';
+    }
+    if (!agentAppAway && [
       'assignment_missing',
       'creator_ineligible',
       'channel_ineligible',
@@ -282,6 +290,8 @@ export async function executeRoutineOccurrence(
         publicError: failure.publicError,
         skipReason: 'unresolved_assignment',
       });
+    } else if (agentAppAway) {
+      await skipRun(input.store, current.id, now(), { ...failure, skipReason: 'agent_app_unavailable' });
     } else {
       await failUnsettledRun(
         input.store,
@@ -685,6 +695,7 @@ async function prepareExecution(
     sandboxUnavailableFallback,
     ...(dependencies.productTelemetry ? { productTelemetry: dependencies.productTelemetry } : {}),
     threadRecord: dependencies.threadRecord ?? getConfigStore(input.env),
+    resolveAccess: () => (dependencies.resolveAccess ?? resolveRoutineRuntimeAccess)(run, input.routine, input.env),
   };
 }
 
@@ -915,6 +926,7 @@ async function finalizeSettlement(
             ...(settlement.result.artifacts ? { artifacts: settlement.result.artifacts } : {}),
             ...(prepared.workLifecycle ? { workLifecycle: prepared.workLifecycle } : {}),
             threadRecord: prepared.threadRecord,
+            respeak: prepared.resolveAccess,
           }, prepared.access.client);
         } catch (error) {
           if (!(error instanceof RoutineRuntimeError)) throw error;

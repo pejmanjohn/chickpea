@@ -59,6 +59,8 @@ import { CLAIM_TTL_MS } from './state-limits.ts';
 import { validSlackTs, type NormalizedSlackTurn } from './types.ts';
 import type { UsagePersistenceEvent } from '../usage/runtime-recorder.ts';
 import type { SlackInteractionIntent } from './interaction-intent.ts';
+import type { SlackRunSpeaker } from './installation-execution.ts';
+import type { SlackSpeaker } from './speaker.ts';
 import { conversationThreadTs, slackAgentThreadKey, slackConversationKind } from './thread-key.ts';
 import { runtimePlanGuestSandboxKey } from '../sandbox/thread-key.ts';
 import {
@@ -1886,6 +1888,21 @@ export class TurnJobStoreLogic {
       workspaceId,
     ) as { count?: number } | undefined;
     return Number(row?.count ?? 0);
+  }
+
+  /**
+   * A retained turn's run, delivered or not, when its stored speaker is its
+   * Agent app's own bot; undefined for any other turn, or one not retained.
+   */
+  ownBotRun(id: string): SlackRunSpeaker | undefined {
+    const row = this.db.get(
+      `SELECT json_extract(turn_json, '$.speaker') AS speaker, json_extract(assignment_json, '$.agentId') AS agent_id
+       FROM turn_jobs WHERE id = ?`,
+      id,
+    ) as { speaker: string | null; agent_id: string | null } | undefined;
+    if (!row?.speaker || !row.agent_id) return undefined;
+    const speaker = JSON.parse(row.speaker) as SlackSpeaker;
+    return speaker.kind === 'own_bot' ? { agentId: row.agent_id, speaker } : undefined;
   }
 
   getPendingByRunId(runId: string): PendingTurnJob | undefined {
