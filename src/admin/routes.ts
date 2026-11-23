@@ -10230,7 +10230,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         patch.slackPresence = {
           ...presence,
           requestedHandle,
-          normalizedHandle: normalizeAgentHandle(requestedHandle),
+          normalizedHandle: handle,
           health: presence.desiredState === 'active' ? 'pending' : presence.health,
         };
       }

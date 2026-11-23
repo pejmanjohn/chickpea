@@ -8030,14 +8030,15 @@ export class WorkspaceManagementService {
       throw new AgentRevisionConflictError(agentId, expectedRevision, current.revision);
     }
     // Another Agent's handle is refused as Slack refuses a taken one, before anything is written.
-    const handle = patch.slackPresence?.normalizedHandle;
-    if (handle && handle !== current.slackPresence?.normalizedHandle) {
+    const requested = patch.slackPresence;
+    if (requested && requested.normalizedHandle !== current.slackPresence?.normalizedHandle) {
+      const handle = requested.normalizedHandle;
       const held = heldAgentHandles(await this.stores.config.listAgents(), agentId);
       if (held.has(handle)) {
         const taken = new AgentPresenceError('handle_collision', `@${handle} is already in use.`, {
           suggestions: alternativeAgentHandles(handle, new Set([handle, ...held])),
         });
-        throw refusedAgentUpdate(taken, current, { ...current, ...patch } as CustomAgentConfig);
+        throw refusedAgentUpdate(taken, current, { name: patch.name ?? current.name, slackPresence: requested });
       }
     }
     await this.stores.prepareAgentUpdate?.(current, patch);
@@ -8567,7 +8568,7 @@ function refusedUpdatePutBack(
 function refusedAgentUpdate(
   error: unknown,
   kept: CustomAgentConfig | undefined,
-  requested: CustomAgentConfig,
+  requested: Pick<CustomAgentConfig, 'name' | 'slackPresence'>,
 ): unknown {
   if (!(error instanceof AgentPresenceError)) return error;
   const unsettled = 'Other edits to this Agent landed at the same time, so read it again before saying what changed.';
