@@ -140,7 +140,7 @@ export async function readOwnAppSecrets(
   d: SecretDeps,
   appId: string,
   agentId: string,
-  use: AgentAppSlackStep | 'execution' | 'ingress' | 'end',
+  use: Extract<AgentAppSlackStep, 'update' | 'icon' | 'exchange' | 'uninstall' | 'delete'> | 'execution' | 'ingress' | 'end',
 ): Promise<OwnAppSecrets> {
   let stored;
   try {

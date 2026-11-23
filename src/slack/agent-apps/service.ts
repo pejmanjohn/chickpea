@@ -158,7 +158,7 @@ export class AgentSlackApps {
   private readonly slack: AgentAppSlackApi;
   private readonly secrets: SecretDeps;
   private facts: Promise<{ teamId: string; installationId: string }> | undefined;
-  /** Agents whose app Slack would not delete (refused, or no configuration token): the definition stays for the Owner. */
+  /** Agents whose app was not deleted (Slack refused, no configuration token, or no record proves it is theirs): the definition stays for the Owner. */
   private readonly leftDefinition = new Set<string>();
 
   constructor(private readonly deps: AgentSlackAppsDeps) {

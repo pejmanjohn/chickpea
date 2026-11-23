@@ -32,7 +32,7 @@ export type AgentAppEvent =
   | { type: 'created'; at: number; app: AgentAppRecord }
   | { type: 'create_refused'; at: number; reason: 'create_refused' | 'slack_busy' }
   | { type: 'create_ambiguous'; at: number }
-  /** The recorded app had no secrets and was deleted; create again. */
+  /** The recorded app has no record, so it is left for the Owner; create again. */
   | { type: 'recreate'; at: number; manifestFingerprint: string }
   | { type: 'urls_set'; at: number }
   | { type: 'urls_refused'; at: number }
