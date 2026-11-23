@@ -18066,6 +18066,7 @@
                 "cutoffTs": "string",
                 "kind": "\"stop\"",
                 "source": "#TurnStopSource",
+                "speakerBotUserId?": "string",
                 "stopperUserId": "string",
                 "threadKey": "string"
               }
@@ -22306,6 +22307,11 @@
         },
         {
           "object": {
+            "outcome": "\"other_speaker\""
+          }
+        },
+        {
+          "object": {
             "outcome": "\"stopped\"",
             "stop": "#TurnStopResult"
           }
@@ -22328,6 +22334,11 @@
         },
         {
           "object": {
+            "outcome": "\"other_speaker\""
+          }
+        },
+        {
+          "object": {
             "outcome": "\"stopped\"",
             "stop": "#TurnStopResult"
           }
@@ -22342,6 +22353,7 @@
             "cutoffTs": "string",
             "kind": "\"stop\"",
             "source": "#TurnStopSource",
+            "speakerBotUserId?": "string",
             "stopperUserId": "string",
             "threadKey": "string"
           }
