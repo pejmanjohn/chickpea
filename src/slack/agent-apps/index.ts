@@ -13,6 +13,7 @@ export {
   ownBotClient,
   withAgentAppExecution,
 } from './live.ts';
+export { START_APP_ACTION } from './pages.ts';
 export { admissionSpeaker, agentAppAnswersIn, hostPostSpeaker, isAgentAppDm, storedRunSpeaker } from './place.ts';
 export { agentAppPostingBot, agentAppRouteSelection, agentsByAppBot } from './routing.ts';
 export { createAgentSlackAppRoutes } from './routes.ts';

@@ -9,8 +9,7 @@ import {
   resolveSlackInstallationExecutionContext,
   type SlackInstallationExecutionResolver,
 } from '../slack/installation-execution.ts';
-import { agentSlackAppsHost, hostPostSpeaker, ownBotClient } from '../slack/agent-apps/index.ts';
-import { START_APP_ACTION } from '../slack/agent-apps/pages.ts';
+import { START_APP_ACTION, agentSlackAppsHost, hostPostSpeaker, ownBotClient } from '../slack/agent-apps/index.ts';
 import { renderSlackActionLink } from '../slack/message-format.ts';
 import type { SlackPresentationStatePort } from '../slack/agent-view-presentation.ts';
 import {
