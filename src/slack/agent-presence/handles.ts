@@ -1,3 +1,4 @@
+import type { CustomAgentConfig } from '../../config/types.ts';
 import type { SlackUserGroup } from '../transport/types.ts';
 
 const SLACK_AGENT_HANDLE_MAX_LENGTH = 80;
@@ -16,6 +17,21 @@ export function normalizeAgentHandle(value: string): string {
     .slice(0, SLACK_AGENT_HANDLE_MAX_LENGTH)
     .replace(/-+$/g, '');
   return normalized || 'agent';
+}
+
+/**
+ * The handles other Agents hold in Chickpea: each one's that is not archived,
+ * whether its user group or its own app's bot holds it. Slack keeps user-group
+ * handles unique but not bot names, so this is Chickpea's own rule.
+ */
+export function heldAgentHandles(
+  agents: readonly Pick<CustomAgentConfig, 'id' | 'lifecycle' | 'slackPresence'>[],
+  agentId: string,
+): Set<string> {
+  return new Set(agents.flatMap((agent) =>
+    agent.id !== agentId && agent.lifecycle !== 'archived' && agent.slackPresence
+      ? [agent.slackPresence.normalizedHandle]
+      : []));
 }
 
 export function alternativeAgentHandles(

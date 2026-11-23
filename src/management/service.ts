@@ -165,7 +165,7 @@ import {
   type RoutineContentAccess,
 } from '../routines/content-access.ts';
 import type { WorkStore } from '../work/types.ts';
-import { alternativeAgentHandles, normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
+import { alternativeAgentHandles, heldAgentHandles, normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import { AgentPresenceError, agentOffError } from '../slack/agent-presence/errors.ts';
 import {
   listPrivatelyUsableAgents,
@@ -8028,6 +8028,17 @@ export class WorkspaceManagementService {
     const current = await this.stores.config.getAgent(agentId);
     if (current.revision !== expectedRevision) {
       throw new AgentRevisionConflictError(agentId, expectedRevision, current.revision);
+    }
+    // Another Agent's handle is refused as Slack refuses a taken one, before anything is written.
+    const handle = patch.slackPresence?.normalizedHandle;
+    if (handle && handle !== current.slackPresence?.normalizedHandle) {
+      const held = heldAgentHandles(await this.stores.config.listAgents(), agentId);
+      if (held.has(handle)) {
+        const taken = new AgentPresenceError('handle_collision', `@${handle} is already in use.`, {
+          suggestions: alternativeAgentHandles(handle, new Set([handle, ...held])),
+        });
+        throw refusedAgentUpdate(taken, current, { ...current, ...patch } as CustomAgentConfig);
+      }
     }
     await this.stores.prepareAgentUpdate?.(current, patch);
     const agent = await this.stores.config.updateAgent(agentId, patch, expectedRevision);

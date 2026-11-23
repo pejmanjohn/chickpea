@@ -23,6 +23,7 @@ import {
   agentUserGroupDescription,
   agentUserGroupName,
   alternativeAgentHandles,
+  heldAgentHandles,
   normalizeAgentHandle,
 } from './handles.ts';
 
@@ -458,6 +459,7 @@ export class AgentPresenceReconciler {
     );
 
     const groups = await transport.listUserGroups({ includeDisabled: true });
+    const held = heldAgentHandles(await config.listAgents(), agent.id);
     let group = groups.find((candidate) => candidate.id === presence.userGroupId);
     if (!group) {
       const handleMatch = groups.find((candidate) => candidate.handle === normalizedHandle);
@@ -469,7 +471,7 @@ export class AgentPresenceReconciler {
           throw new AgentPresenceError(
             'handle_collision',
             `@${normalizedHandle} is already in use.`,
-            { suggestions: suggestedHandles(normalizedHandle, groups) },
+            { suggestions: suggestedHandles(normalizedHandle, groups, held) },
           );
         }
         if (!hasAmbiguousCreateOwnershipProof({ slackPresence: presence }, handleMatch)) {
@@ -482,6 +484,15 @@ export class AgentPresenceReconciler {
       }
     }
 
+    // Chickpea's own rule, before Slack is asked to give this Agent the
+    // handle: another Agent holds it, whichever kind of Agent it is.
+    if ((!group || group.disabled || group.handle !== normalizedHandle) && held.has(normalizedHandle)) {
+      throw new AgentPresenceError(
+        'handle_collision',
+        `@${normalizedHandle} is already in use.`,
+        { suggestions: suggestedHandles(normalizedHandle, groups, held) },
+      );
+    }
     if (!group) {
       const pendingCreate = {
         name: agentUserGroupName(agent.name, groups),
@@ -515,7 +526,7 @@ export class AgentPresenceReconciler {
             { retryable: true },
           );
         }
-        throw withHandleSuggestions(error, normalizedHandle, groups);
+        throw withHandleSuggestions(error, normalizedHandle, groups, held);
       }
     } else {
       try {
@@ -526,7 +537,7 @@ export class AgentPresenceReconciler {
           agentUserGroupName(agent.name, groups, group.id),
         );
       } catch (error) {
-        throw withHandleSuggestions(error, normalizedHandle, groups);
+        throw withHandleSuggestions(error, normalizedHandle, groups, held);
       }
       if (group.disabled) group = await transport.enableUserGroup(group.id);
     }
@@ -846,20 +857,22 @@ function handleIsLive(agent: CustomAgentConfig): boolean {
   return agent.slackPresence?.health === 'healthy' && agentSlackHandle(agent) !== undefined;
 }
 
-function suggestedHandles(handle: string, groups: readonly SlackUserGroup[]): string[] {
-  return alternativeAgentHandles(handle, new Set(groups.map((group) => group.handle)));
+/** Free handles: no Slack group's and no other Agent's. */
+function suggestedHandles(handle: string, groups: readonly SlackUserGroup[], held: ReadonlySet<string>): string[] {
+  return alternativeAgentHandles(handle, new Set([...groups.map((group) => group.handle), ...held]));
 }
 
 function withHandleSuggestions(
   error: unknown,
   handle: string,
   groups: readonly SlackUserGroup[],
+  held: ReadonlySet<string>,
 ): unknown {
   const classified = classifyAgentPresenceError(error);
   if (classified.code !== 'handle_collision') return error;
   return new AgentPresenceError(classified.code, classified.message, {
     ...classified.options,
-    suggestions: suggestedHandles(handle, groups),
+    suggestions: suggestedHandles(handle, groups, held),
   });
 }
 

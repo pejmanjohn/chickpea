@@ -173,6 +173,73 @@ test('renaming a published Agent to a handle Slack already uses offers suggested
   }
 });
 
+/** An Agent whose handle its own Slack app's bot holds; Slack keeps no group for it. */
+async function appAgentHolding(config: SqliteConfigStore, id: string, handle: string): Promise<CustomAgentConfig> {
+  const created = await config.createAgent(agent(id, 'Helpdesk', handle));
+  return config.updateAgent(id, {
+    slackPresence: {
+      kind: 'agent_app', requestedHandle: handle, normalizedHandle: handle, desiredState: 'active', health: 'healthy',
+      avatar: created.slackPresence!.avatar,
+      app: {
+        state: 'active', at: NOW, app: { appId: 'A_HELPDESK', clientId: '1.client' }, icon: 'agent_avatar',
+        botUserId: 'U_HELPDESK_BOT', installedAt: NOW, installedBy: 'UADA',
+      },
+    },
+  }, created.revision);
+}
+
+test("a handle another Agent's own app holds is taken: publishing asks Slack for nothing and offers free handles, until that Agent is archived", async () => {
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const transport = new FakeSlackTransport();
+  try {
+    const holder = await appAgentHolding(config, 'agent_helpdesk', 'support');
+    await config.createAgent(agent('agent_support', 'Support', 'support'));
+    transport.groups.push({ id: 'S_TEAM', name: 'Support team', handle: 'support-team', disabled: false });
+    const reconciler = new AgentPresenceReconciler({ config, transport, announce: null, now: () => NOW });
+
+    await assert.rejects(
+      () => reconciler.retry('agent_support'),
+      (error: unknown) => error instanceof AgentPresenceError && error.code === 'handle_collision' &&
+        error.suggestions.join() === 'support-2,support-3,support-4',
+    );
+    assert.equal(transport.createCalls, 0, 'Slack is asked for nothing');
+    assert.deepEqual((await config.getAgent('agent_support')).slackPresence?.handleSuggestions, ['support-2', 'support-3', 'support-4']);
+
+    await config.updateAgent(holder.id, { lifecycle: 'archived' }, holder.revision);
+    const published = await reconciler.retry('agent_support');
+    assert.deepEqual(
+      { handle: published.slackPresence?.normalizedHandle, health: published.slackPresence?.health },
+      { handle: 'support', health: 'healthy' },
+      'an archived Agent holds no handle',
+    );
+  } finally {
+    config.close();
+  }
+});
+
+test("renaming a published Agent to another Agent's handle is refused before Slack, whichever kind of Agent holds it", async () => {
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const transport = new FakeSlackTransport();
+  try {
+    await appAgentHolding(config, 'agent_helpdesk', 'helpdesk');
+    await config.createAgent(agent('agent_drafts', 'Drafts', 'drafts'));
+    await config.createAgent(agent('agent_support', 'Support', 'support'));
+    const reconciler = new AgentPresenceReconciler({ config, transport, announce: null, now: () => NOW });
+    await reconciler.reconcile('agent_support');
+    for (const taken of ['helpdesk', 'drafts']) {
+      const published = await config.getAgent('agent_support');
+      await config.updateAgent(published.id, {
+        slackPresence: { ...published.slackPresence!, requestedHandle: taken, normalizedHandle: taken },
+      }, published.revision);
+      await assert.rejects(() => reconciler.retry('agent_support'), { code: 'handle_collision' });
+      assert.equal(transport.updateCalls, 0, `@${taken}: Slack is asked for nothing`);
+      assert.equal(transport.groups[0]?.handle, 'support');
+    }
+  } finally {
+    config.close();
+  }
+});
+
 test('Slack name and handle collisions each name their own fix', () => {
   const qa = agent('agent_qa', 'QA fixtures', 'qa-fixtures');
 

@@ -2229,6 +2229,60 @@ test('Agent create owns its handle, generated avatar, edit policy, and creator',
   }
 });
 
+/** An Agent whose own Slack app's bot holds `handle`. */
+async function appAgentHolding(store: SqliteConfigStore, handle: string) {
+  const created = await store.createAgent({
+    id: 'agent_helpdesk', name: 'Helpdesk', instructions: 'Answer tickets.', enabled: true, lifecycle: 'active',
+    skills: [], mcpServers: [], apiConnections: [], repositories: [],
+  });
+  return store.updateAgent(created.id, {
+    slackPresence: {
+      kind: 'agent_app', requestedHandle: handle, normalizedHandle: handle, desiredState: 'active', health: 'healthy',
+      avatar: { kind: 'generated', revision: 1, seed: 'helpdesk' },
+      app: {
+        state: 'active', at: 1, app: { appId: 'A0HELPDESK', clientId: '1.client' }, icon: 'agent_avatar',
+        botUserId: 'UHELPDESKBOT', installedAt: 1, installedBy: 'U_OWNER',
+      },
+    },
+  }, created.revision);
+}
+
+test("Admin refuses to create an Agent, or rename one, onto a handle another Agent's own app holds, until that Agent is archived", async () => {
+  const fixture = harness();
+  try {
+    const holder = await appAgentHolding(fixture.store, 'support');
+    const refused = await fixture.app.request('http://localhost/admin/api/agents', {
+      method: 'POST', headers: auth(),
+      body: JSON.stringify({
+        id: 'agent_support', name: 'Support Triage', handle: 'Support', editPolicy: 'creator_and_admins',
+        instructions: 'Answer support questions.', enabled: true, model: 'local-stub/admin-agent',
+      }),
+    });
+    assert.equal(refused.status, 400);
+    assert.deepEqual(await refused.json(), { error: 'invalid_request', message: '@support is already in use.' });
+    assert.equal((await fixture.store.listUserAgents()).some(({ id }) => id === 'agent_support'), false, 'nothing is created');
+
+    const triage = await fixture.store.createAgent({
+      id: 'agent_triage', name: 'Triage', instructions: 'Sort questions.', enabled: true, lifecycle: 'active', model: 'local-stub/admin-agent',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const rename = (handle: string, revision: number) => fixture.app.request(`http://localhost/admin/api/agents/${triage.id}`, {
+      method: 'PATCH', headers: auth(), body: JSON.stringify({ expectedRevision: revision, handle }),
+    });
+    const renamed = await rename('support', triage.revision);
+    assert.equal(renamed.status, 400);
+    assert.deepEqual(await renamed.json(), { error: 'invalid_request', message: '@support is already in use.' });
+    assert.equal((await fixture.store.getAgent(triage.id)).slackPresence?.normalizedHandle, triage.slackPresence?.normalizedHandle);
+
+    await fixture.store.updateAgent(holder.id, { lifecycle: 'archived' }, holder.revision);
+    assert.equal((await rename('support', triage.revision)).status, 200, 'an archived Agent holds no handle');
+    assert.equal((await fixture.store.getAgent(triage.id)).slackPresence?.normalizedHandle, 'support');
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
 test('Agent create keeps a ready-made Agent\'s default avatar, refuses any other, and still picks one when none is asked for', async () => {
   const fixture = harness();
   try {

@@ -675,7 +675,7 @@ import {
   agentPresenceRecovery,
   classifyAgentPresenceError,
 } from '../slack/agent-presence/errors.ts';
-import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
+import { heldAgentHandles, normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import { agentStillInSlackRefusal } from '../slack/agent-presence/left-slack.ts';
 import { reservedAgentIdentityField } from '../config/agent-id.ts';
 import {
@@ -8524,6 +8524,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
     try {
       const configStore = store(c);
+      const handle = agent.slackPresence!.normalizedHandle;
+      if (heldAgentHandles(await configStore.listAgents(), agent.id).has(handle)) {
+        return invalidRequest(c, `@${handle} is already in use.`);
+      }
       const existingGeneratedSeeds = (await configStore.listUserAgents()).flatMap((existing) => {
         const avatar = existing.slackPresence?.avatar;
         return avatar?.kind === 'generated' ? [avatar.seed ?? existing.id] : [];
@@ -10218,6 +10222,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         const requestedHandle = parsed.output.handle;
         const presence = current.slackPresence;
         if (!presence) throw new Error(`Agent ${agentId} has no Slack presence`);
+        const handle = normalizeAgentHandle(requestedHandle);
+        if (handle !== presence.normalizedHandle &&
+            heldAgentHandles(await configStore.listAgents(), agentId).has(handle)) {
+          return invalidRequest(c, `@${handle} is already in use.`);
+        }
         patch.slackPresence = {
           ...presence,
           requestedHandle,
