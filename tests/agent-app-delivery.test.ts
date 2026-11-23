@@ -1645,3 +1645,11 @@ test("a run whose own bot can no longer post ends unavailable: nothing posts, no
     error instanceof SlackInstallationUnavailableError && error.reasonCode === 'agent_app_unavailable' && error.retryable === false);
   assert.deepEqual(h.calls.slice(before).filter((call) => call.method.startsWith('chat.')), []);
 }));
+
+test("without the port no app bot answers: an app Agent's reply in a Channel its bot is in answers through Chickpea under its name", async (t) => withHarness(t, async (h) => {
+  configureAgentSlackApps(undefined);
+  const job = await admitSupportTurn(h, 'C1', '1900003700.000100', '1900003700.000200');
+  assert.deepEqual(job.turn.speaker, { kind: 'chickpea_as_agent' });
+  assert.deepEqual(sender(await postAsRun(h, job)), AS_SUPPORT);
+  assert.deepEqual(personaOnAppToken(h), []);
+}));

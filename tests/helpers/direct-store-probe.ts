@@ -22,6 +22,7 @@ import {
   cacheSlackInstallationExecutionContexts,
   carriedGatewayIdentity,
   effectiveTurnSlackInstallationId,
+  turnJobRunSpeaker,
   resolveSlackInstallationExecutionContext,
 } from '../../src/slack/installation-execution.ts';
 import { localSlackPresentationStatePort } from '../../src/slack/presentation-state-port.ts';
@@ -100,6 +101,7 @@ class StoreProbe { ${[
     slackAgentThreadKey,
     installationOwnershipOf,
     effectiveTurnSlackInstallationId,
+    turnJobRunSpeaker,
     carriedGatewayIdentity,
     admissionAgentInstance,
     wakeSlackAgentObject,

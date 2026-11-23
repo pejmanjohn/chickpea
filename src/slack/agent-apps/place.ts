@@ -88,7 +88,7 @@ export async function admissionSpeaker(input: {
       : await botMembership(app.botUserId, turn.channelId, () =>
         agentBotInChannel(input.env, input.agentId, app.app.appId, turn.channelId));
   const chickpea = hearing.installationBot;
-  // Where the live app's bot is in the Channel it answers, whatever Chickpea's bot is: that is not asked.
+  // Chickpea's bot is asked only when the live app's bot is not in the Channel; otherwise the app's bot answers either way.
   const chickpeaFact = !hearing.agentApp
     ? heard
     : chickpea && !appFact?.member
