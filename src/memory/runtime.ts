@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { getConfigStore, getIdentityStore, getMemoryStateStore } from '../config/state-backend.ts';
 import type { ConfigStore } from '../config/store.ts';
-import { agentAppIsLive, type CustomAgentConfig, type ResolvedAssignment, type WorkspaceInstallation } from '../config/types.ts';
+import { agentAppIsLive, answeringUserGroupId, type CustomAgentConfig, type ResolvedAssignment, type WorkspaceInstallation } from '../config/types.ts';
 import { currentHumanIdentityDirectory } from '../identity/current-directory.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import { isStateStoreDisconnect } from '../config/cf-state-proxies.ts';
@@ -89,7 +89,7 @@ export async function handleMemoryCommand(input: {
     ? await resolveCommandBotUserId(input.platformEnv, input.client, input.botToken, input.botUserId)
     : undefined;
   if (leadingUserAddress && !resolvedBotUserId) return false;
-  const resolvedAgentUserGroupId = input.assignment.agent.slackPresence?.userGroupId;
+  const resolvedAgentUserGroupId = answeringUserGroupId(input.assignment.agent.slackPresence);
   if (leadingAddress && !resolvedBotUserId && !resolvedAgentUserGroupId) return false;
   const command = parseMemoryCommand(
     input.turn.text,

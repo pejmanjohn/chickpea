@@ -7,6 +7,7 @@ import ts from 'typescript';
 
 import { assertInstallationOwnership, objectInstallationEnv } from '../src/config/installation-scope.ts';
 import type { ConfigStoreLogic } from '../src/config/store.ts';
+import type { AgentSlackPresence } from '../src/config/types.ts';
 import {
   opaqueTurnRef,
   resetRunnerActivationsForTest,
@@ -148,6 +149,26 @@ test('a delivery that cannot become a turn wakes no runner', async () => {
     for (const [name, received, options] of silent) {
       assert.equal(await receiptStoreWakes(config, received, options), 0, `${name} wakes no runner`);
     }
+  });
+});
+
+// Defect caught: a mention of a moving Agent's released group, which still answers until Slack turns it off, waking no
+// runner, so that turn pays a cold start.
+test("a mention of a released user group that still answers wakes the runner; one Slack turned off does not", async () => {
+  await withLane(async ({ config, help }) => {
+    const moving = (answers: boolean): AgentSlackPresence => ({
+      kind: 'agent_app', requestedHandle: 'moving', normalizedHandle: 'moving', desiredState: 'active', health: 'healthy',
+      avatar: { kind: 'generated', revision: 1, seed: 'moving', url: 'https://example.com/moving.svg' },
+      app: {
+        state: 'active', at: 1, app: { appId: 'A0MOVING', clientId: '1.client' }, icon: 'agent_avatar', botUserId: 'UMOVINGBOT',
+        installedAt: 1, installedBy: 'U1', switchProgress: answers ? 'group_pending' : 'done',
+      },
+      released: { userGroupId: 'SMOVING', answers },
+    });
+    const agent = config.createAgent({ ...help, id: 'agent_moving', name: 'Moving', slackPresence: moving(true) });
+    assert.equal(await receiptStoreWakes(config, delivery(message({ ts: '8100.000100', text: '<!subteam^SMOVING|@moving> around?' }))), 1);
+    config.updateAgent(agent.id, { slackPresence: moving(false) }, agent.revision);
+    assert.equal(await receiptStoreWakes(config, delivery(message({ ts: '8100.000200', text: '<!subteam^SMOVING|@moving> around?' }))), 0);
   });
 });
 

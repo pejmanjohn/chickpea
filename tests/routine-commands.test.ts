@@ -163,6 +163,33 @@ test('exact Routine commands parse without model interpretation', () => {
   assert.equal(parseRoutineCommand('Every weekday at 9 AM, post the support summary.'), undefined);
 });
 
+// Defect caught: a command addressed to a moving Agent's released group, which still answers until Slack turns it
+// off, not parsed, so it reaches the Agent as an ordinary message.
+test("a Routine command addressed to a released user group that still answers is the Agent's command", async () => {
+  const store = new SqliteRoutineStore(':memory:', () => NOW);
+  try {
+    const assignment = (answers: boolean) => ({
+      agent: {
+        id: 'agent_moving', slackPresence: {
+          kind: 'agent_app', requestedHandle: 'moving', normalizedHandle: 'moving', desiredState: 'active', health: 'healthy',
+          avatar: { kind: 'generated', revision: 1, seed: 'moving' },
+          app: {
+            state: 'active', at: 1, app: { appId: 'A0MOVING', clientId: '1.client' }, icon: 'agent_avatar', botUserId: 'UMOVINGBOT',
+            installedAt: 1, installedBy: 'U1',
+          },
+          released: { userGroupId: 'S0MOVING', answers },
+        },
+      },
+    }) as unknown as ResolvedAssignment;
+    const help = (answers: boolean) =>
+      handleRoutineSlackRequest(turn('<!subteam^S0MOVING|@moving> !routines help'), store, { assignment: assignment(answers) });
+    assert.match(await help(true) ?? '', /routines/i);
+    assert.equal(await help(false), undefined, 'a group Slack turned off addresses nothing');
+  } finally {
+    store.close();
+  }
+});
+
 test('the Routine command handler cannot interpret or persist natural language', async () => {
   const store = new SqliteRoutineStore(':memory:', () => NOW);
   try {
