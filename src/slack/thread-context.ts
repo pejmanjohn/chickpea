@@ -110,6 +110,8 @@ export interface SlackContextSelf {
   botUserId?: string;
   /** The other bots this installation answers as: their messages are Agents' too. */
   siblingBotUserIds?: readonly string[];
+  /** Apps whose messages are Agents' too. */
+  siblingAppIds?: readonly string[];
 }
 
 export const DEFAULT_MAX_MESSAGES = 50;
@@ -261,8 +263,8 @@ function slackContextAuthor(
   if (self.botUserId !== undefined && message.user === self.botUserId) {
     return { userId: message.user ?? 'agent', role: 'agent', ...(postingName ? { authorName: postingName } : {}) };
   }
-  if (message.user && self.siblingBotUserIds?.includes(message.user)) {
-    return { userId: message.user, role: 'agent', ...(postingName ? { authorName: postingName } : {}) };
+  if ((message.user && self.siblingBotUserIds?.includes(message.user)) || (appId && self.siblingAppIds?.includes(appId))) {
+    return { userId: message.user ?? 'agent', role: 'agent', ...(postingName ? { authorName: postingName } : {}) };
   }
   // Slackbot (reminders, workflow notices) is Slack's own bot, not a person.
   if (message.user === 'USLACKBOT' || message.user === 'USLACK') {

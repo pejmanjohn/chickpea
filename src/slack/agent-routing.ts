@@ -6,7 +6,7 @@ import {
   type CustomAgentConfig,
   type ResolvedAssignment,
 } from '../config/types.ts';
-import { agentAppPostingBot, agentAppRouteSelection } from './agent-apps/index.ts';
+import { agentAppIsLive, agentAppRouteSelection, agentsByAppBot } from './agent-apps/index.ts';
 import { agentMayAskTeammates, agentSlackHandle } from './agent-asks.ts';
 import type { NormalizedSlackTurn, SlackCoAddressed } from './types.ts';
 import { slackConversationKind } from './thread-key.ts';
@@ -124,6 +124,12 @@ interface ResolveAgentRouteInput {
    * through another Agent's bot.
    */
   postingBotInChannel?: (agent: CustomAgentConfig) => Promise<boolean>;
+  /**
+   * Whether an Agent's own app can answer in this Channel or group DM: live,
+   * its token readable, its bot a member. Without the fact, a live app is
+   * taken to.
+   */
+  agentAppAnswersHere?: (agent: CustomAgentConfig) => Promise<boolean>;
   /** Live placement-derived authority for the selected user-created Agent. */
   authorizeUserAgent?: (
     agent: CustomAgentConfig,
@@ -302,7 +308,10 @@ export async function resolveAgentRoute(
     }), []);
   }
 
-  const appSelection = agentAppRouteSelection(turn, surface, agents, input.agentApp);
+  const appSelection = await agentAppRouteSelection(
+    turn, agents, input.agentApp,
+    input.agentAppAnswersHere ?? (async (agent) => agentAppIsLive(agent.slackPresence)),
+  );
   const mentionedGroupIds = parseAgentUserGroupMentions(turn.text);
   // A message that also names one of this installation's user-group Agents
   // addresses every Agent it names, here as on the app's own ingress.
@@ -363,12 +372,14 @@ export async function resolveAgentRoute(
   // Several handles address each of those Agents, in order: the first takes
   // the thread and the rest answer after it, as guests. Every one must be
   // reachable by this person here, or none is asked; the first is checked
-  // below as the routed Agent. In a Channel an Agent app's bot is its
-  // Agent's handle while the host serves that app. Chickpea's bot and that
-  // app's bot each hear such a message and route it alike, so whichever hears
-  // it first admits every Agent it names and the other delivery finds the
-  // message taken.
-  const addressed = (surface === 'channel'
+  // below as the routed Agent. In a Channel or a group DM an Agent app's bot
+  // is its Agent's handle while the host serves that app. In a Channel,
+  // Chickpea's bot and that app's bot each hear such a message and route it
+  // alike, so whichever hears it first admits every Agent it names and the
+  // other delivery finds the message taken. In a group DM an app's delivery
+  // admits only its own Agent, so the two deliveries do not route it alike:
+  // any other Agent named there answers only if Chickpea's delivery admits it.
+  const addressed = (surface === 'channel' || groupDm
     ? agentsNamed(turn.text, agentsByGroupId, agents)
     : mentionedAgents).slice(0, MAX_ADDRESSED_AGENTS);
   const severalAgents = addressed.length > 1 && !input.appHomeAgentId &&
@@ -406,9 +417,9 @@ export async function resolveAgentRoute(
   } else if (input.appHomeAgentId) {
     source = 'app_home';
     selected = agentsById.get(input.appHomeAgentId);
-  } else if (mentionedAgents[0]) {
+  } else if (addressed[0]) {
     source = 'agent_handle';
-    selected = mentionedAgents[0];
+    selected = addressed[0];
   } else if (turn.source === 'app_mention') {
     // The base app mention is the workspace-management entry point. It must
     // remain available anywhere Chickpea has joined for another Agent, even
@@ -481,16 +492,13 @@ function mentionLabelNamesAgent(text: string, userGroupId: string, agents: reado
 
 const AGENT_ADDRESS = /<!subteam\^([A-Z0-9]+)(?:\|[^>]*)?>|<@([UW][A-Z0-9]+)(?:\|[^>]*)?>/g;
 
-/** The Agents a Channel message names by user group or by served app bot, once each, in the order it names them. */
+/** The Agents a Channel or group DM message names by user group or by served app bot, once each, in the order it names them. */
 function agentsNamed(
   text: string,
   byGroupId: ReadonlyMap<string, CustomAgentConfig>,
   agents: readonly CustomAgentConfig[],
 ): CustomAgentConfig[] {
-  const byBotUserId = new Map(agents.flatMap((agent) => {
-    const bot = agentAppPostingBot(agent);
-    return bot ? [[bot, agent] as const] : [];
-  }));
+  const byBotUserId = agentsByAppBot(agents);
   const named = new Map<string, CustomAgentConfig>();
   for (const [, groupId, userId] of text.matchAll(AGENT_ADDRESS)) {
     const agent = groupId ? byGroupId.get(groupId) : byBotUserId.get(userId!);
