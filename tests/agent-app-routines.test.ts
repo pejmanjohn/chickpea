@@ -650,7 +650,7 @@ async function assertStillOn(store: SqliteRoutineStore) {
   assert.equal(routine?.consecutiveFailures, 0);
 }
 
-const removedApp: AgentAppLifecycle = {
+const removedApp: AttachedAgentApp = {
   state: 'needs_attention', at: NOW, startedBy: OWNER, reason: 'app_removed', resume: 'icon_set',
   app: { appId: 'A0AGENT1', clientId: '1.client' },
 };
@@ -914,7 +914,7 @@ async function earlierAppPostLine(presence: AgentSlackPresence, fake: Slack): Pr
 
 test("after its app is removed and its user group holds the handle again, a schedule reads the app's bot's earlier posts as the Agent's own", async (t) => {
   withHost(t);
-  const line = await earlierAppPostLine({ ...GROUP, app: removedApp as AttachedAgentApp }, slack());
+  const line = await earlierAppPostLine({ ...GROUP, app: removedApp }, slack());
   assert.match(line ?? '', /role=agent/);
 });
 
@@ -930,7 +930,7 @@ test("while a removed app is still being uninstalled beside its user group, a sc
 
 test("an Agent with no app reads another app's bot's posts as an app's, and one with a live app reads its bot's as its own, as before", async (t) => {
   withHost(t);
-  assert.doesNotMatch(await earlierAppPostLine(GROUP, slack()) ?? '', /role=agent/);
+  assert.match(await earlierAppPostLine(GROUP, slack()) ?? '', /role=app/);
   assert.match(await earlierAppPostLine(appPresence(), slack()) ?? '', /role=agent/);
   assert.match(await earlierAppPostLine(appPresence(), slack({ history: HISTORY_WITHOUT_APP_ID })) ?? '', /role=agent/);
 });
