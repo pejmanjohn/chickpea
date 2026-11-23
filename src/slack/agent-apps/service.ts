@@ -88,7 +88,6 @@ import {
   configurationTokenStatus,
   deleteAppSecrets,
   discardConfigurationToken,
-  hasConfigurationToken,
   readAppSecrets,
   readOwnAppSecrets,
   saveConfigurationToken,
@@ -168,12 +167,20 @@ export type AgentAppPressOutcome =
   | { kind: 'creating'; agent: CustomAgentConfig }
   | { kind: 'needs_attention'; agent: CustomAgentConfig }
   | { kind: 'already_own_app'; agent: CustomAgentConfig }
+  /** A Cancel's removal was pending: the press finished what it could and created nothing. */
+  | { kind: 'cancelling'; agent: CustomAgentConfig }
   | { kind: 'token_needed' }
   | { kind: 'permission_needed' }
   | { kind: 'not_eligible' };
 
+/**
+ * An Owner's Cancel. `cancelled` says whether the app is deleted or was left
+ * for the Owner to delete; `unfinished` is a removal Slack did not finish,
+ * which the next Cancel or Start finishes.
+ */
 export type AgentAppCancelOutcome =
-  | { kind: 'cancelled'; agent: CustomAgentConfig }
+  | { kind: 'cancelled'; agent: CustomAgentConfig; app: 'deleted' | 'left_for_owner' }
+  | { kind: 'unfinished'; agent: CustomAgentConfig }
   | { kind: 'not_waiting' }
   | { kind: 'not_eligible' };
 
@@ -184,6 +191,8 @@ interface Run {
   now: number;
   /** Only the run that wrote `creating` may create; any other run waits for it to settle. */
   wroteCreating: boolean;
+  /** An archive's own run; any other removal of an app attached to a user group is a Cancel's. */
+  archiving: boolean;
 }
 
 type Outcome = { event: AgentAppEvent; after?: () => Promise<void> } | 'wait';
@@ -230,8 +239,6 @@ export class AgentSlackApps {
    * configuration token), or still installed because no record proves the app is theirs.
    */
   private readonly leftForOwner = new Map<string, 'uninstalled_left_definition' | 'left_for_owner'>();
-  /** Agents whose app an Owner's Cancel is deleting: an app left behind is the cancel's, not an archive's. */
-  private readonly cancelling = new Set<string>();
 
   constructor(private readonly deps: AgentSlackAppsDeps) {
     this.now = deps.now ?? Date.now;
@@ -265,7 +272,7 @@ export class AgentSlackApps {
       return { kind: 'permission_needed' };
     }
     const { teamId } = await this.installation();
-    if (!(await hasConfigurationToken(this.secrets, teamId))) return { kind: 'token_needed' };
+    if (!(await configurationTokenStatus(this.secrets, teamId)).stored) return { kind: 'token_needed' };
     const manifestFingerprint = slackManifestFingerprint(this.createManifest(agent));
     const started: UserGroupPresence = {
       ...presence,
@@ -283,10 +290,11 @@ export class AgentSlackApps {
   }
 
   /** Perform the next step, commit by compare-and-set, repeat until the record waits. */
-  async advance(agentId: string, options: { wroteCreating?: boolean } = {}): Promise<CustomAgentConfig> {
+  async advance(agentId: string, options: { wroteCreating?: boolean; archiving?: boolean } = {}): Promise<CustomAgentConfig> {
     const { config } = this.deps.stores;
     let agent = await config.getAgent(agentId);
     let wroteCreating = options.wroteCreating ?? false;
+    const archiving = options.archiving ?? false;
     for (let guard = 0; guard < MAX_STEPS_PER_RUN; guard += 1) {
       const presence = agent.slackPresence;
       const app = appRecordOf(presence);
@@ -299,7 +307,7 @@ export class AgentSlackApps {
       }
       const step = nextStep(app, now);
       if (!step) return agent;
-      const outcome = await this.performers[step]({ agent, presence, app, now, wroteCreating });
+      const outcome = await this.performers[step]({ agent, presence, app, now, wroteCreating, archiving });
       if (outcome === 'wait') return agent;
       const committed = await this.commit(agent, outcome.event);
       agent = committed.agent;
@@ -386,8 +394,10 @@ export class AgentSlackApps {
 
   /**
    * An Owner's press in Admin: start the app, or pick up a record that
-   * stopped, then lead straight to Allow. A second press while the first is
-   * creating waits for it; one waiting for Allow gets a fresh link.
+   * stopped, then lead straight to Allow. A record on its way to Allow is
+   * advanced from where it stopped, and only the run that wrote `creating`
+   * creates, so two presses make one app. One waiting for Allow gets a fresh
+   * link. A Cancel's unfinished removal is finished, and nothing is created.
    */
   async press(agentId: string, ownerSlackUserId: string): Promise<AgentAppPressOutcome> {
     const { config } = this.deps.stores;
@@ -396,13 +406,18 @@ export class AgentSlackApps {
       return { kind: 'not_eligible' };
     }
     const record = appRecordOf(agent.slackPresence);
+    const attached = agent.slackPresence.kind !== 'agent_app';
     if (!record) {
       const started = await this.start(agentId, ownerSlackUserId);
       if (started.kind === 'token_needed' || started.kind === 'permission_needed' || started.kind === 'not_eligible') return started;
       agent = started.agent;
-    } else if (record.state === 'needs_attention' && agent.slackPresence.kind !== 'agent_app') {
+    } else if (attached && record.state === 'uninstalling') {
+      return { kind: 'cancelling', agent: await this.advance(agentId) };
+    } else if (attached && record.state === 'needs_attention') {
       if (record.reason === 'config_token_needed' && !(await this.hasConfigurationToken())) return { kind: 'token_needed' };
       agent = await this.retry(agentId, ownerSlackUserId);
+    } else if (attached && record.state !== 'awaiting_consent') {
+      agent = await this.advance(agentId);
     }
     const app = appRecordOf(agent.slackPresence);
     if (app?.state === 'awaiting_consent') {
@@ -417,20 +432,28 @@ export class AgentSlackApps {
 
   /**
    * An Owner's Cancel before Allow: the created app is deleted under its own
-   * record, and the Agent goes back to how it answered before the press.
+   * record, and the Agent goes back to how it answered before the press. The
+   * check that the app still waits for Allow is the `cancel` event itself, so
+   * an Allow that lands first wins and nothing is deleted. A removal an
+   * earlier Cancel left unfinished is finished.
    */
   async cancel(agentId: string): Promise<AgentAppCancelOutcome> {
     const agent = await this.deps.stores.config.getAgent(agentId);
     if (agent.kind !== 'user' || agent.lifecycle === 'archived') return { kind: 'not_eligible' };
-    if (appRecordOf(agent.slackPresence)?.state !== 'awaiting_consent' || agent.slackPresence?.kind === 'agent_app') {
+    const app = appRecordOf(agent.slackPresence);
+    if (!app || agent.slackPresence?.kind === 'agent_app') return { kind: 'not_waiting' };
+    if (app.state === 'awaiting_consent') {
+      const stored = await readAppSecrets(this.secrets, app.app.appId).catch(unreadableAsNone);
+      const cancelled = await this.commit(agent, { type: 'cancel', at: this.now(), hasBotToken: Boolean(stored?.secrets.botToken) });
+      if (cancelled.outcome === 'refused') return { kind: 'not_waiting' };
+    } else if (app.state !== 'uninstalling') {
       return { kind: 'not_waiting' };
     }
-    this.cancelling.add(agentId);
-    try {
-      return { kind: 'cancelled', agent: (await this.retire(agent)).agent };
-    } finally {
-      this.cancelling.delete(agentId);
-    }
+    const settled = await this.advance(agentId);
+    const left = this.leftForOwner.get(agentId);
+    this.leftForOwner.delete(agentId);
+    if (appRecordOf(settled.slackPresence)) return { kind: 'unfinished', agent: settled };
+    return { kind: 'cancelled', agent: settled, app: left ? 'left_for_owner' : 'deleted' };
   }
 
   /** Slack's callback, forwarded untouched: exchange the code with the app's own credentials and validate the grant. */
@@ -561,7 +584,7 @@ export class AgentSlackApps {
       }
       return { agent: archived.agent, outcome: 'removed' };
     }
-    const settled = await this.advance(agent.id);
+    const settled = await this.advance(agent.id, { archiving: true });
     const after = appRecordOf(settled.slackPresence);
     if (!after) {
       const left = this.leftForOwner.get(agent.id);
@@ -608,8 +631,9 @@ export class AgentSlackApps {
     return saveConfigurationToken(this.secrets, (await this.installation()).teamId, refreshToken, pastedBy);
   }
 
+  /** A stored pair that cannot be opened is no token: the Owner pastes a new one. */
   async hasConfigurationToken(): Promise<boolean> {
-    return hasConfigurationToken(this.secrets, (await this.installation()).teamId);
+    return (await this.configurationToken()).stored;
   }
 
   async configurationToken(): Promise<ConfigurationTokenStatus> {
@@ -635,8 +659,11 @@ export class AgentSlackApps {
     return readAgentSlackAppsSetting(this.deps.stores.settings);
   }
 
-  async setMode(mode: AgentSlackAppsMode, changedBy: string): Promise<AgentSlackAppsSetting> {
-    return writeAgentSlackAppsSetting(this.deps.stores.settings, { mode, changedBy, changedAt: this.now() });
+  /** The mode already stored changes nothing, not even who chose it and when. */
+  async setMode(mode: AgentSlackAppsMode, changedBy: string): Promise<{ setting: AgentSlackAppsSetting; changed: boolean }> {
+    const current = await this.setting();
+    if (current.mode === mode) return { setting: current, changed: false };
+    return { setting: await writeAgentSlackAppsSetting(this.deps.stores.settings, { mode, changedBy, changedAt: this.now() }), changed: true };
   }
 
   /**
@@ -1028,7 +1055,7 @@ export class AgentSlackApps {
         await deleteAppSecrets(this.secrets, app.appId, record.revision);
       }
       if (left) this.leftForOwner.set(run.agent.id, stillInstalled ? 'left_for_owner' : 'uninstalled_left_definition');
-      const message = this.cancelling.has(run.agent.id) ? 'cancel_left' : stillInstalled ? 'archived_installed' : 'archived_left';
+      const message = cancelRemoval(run) ? 'cancel_left' : stillInstalled ? 'archived_installed' : 'archived_left';
       // What happened to the app is already committed: a message Chickpea's bot cannot send (at tenant end it is often
       // gone) changes nothing about it.
       const tell = async () => {
@@ -1054,6 +1081,8 @@ export class AgentSlackApps {
     const presence = agent.slackPresence;
     const app = appRecordOf(presence);
     if (!presence || !app) return { agent, outcome: 'refused' };
+    // Only a Cancel of an app attached to a user group goes back to the group; a removed app's Allow is not cancelled.
+    if (event.type === 'cancel' && presence.kind === 'agent_app') return { agent, outcome: 'refused' };
     const next = transition(app, event);
     if (isRefusal(next)) return { agent, outcome: 'refused' };
     const slackPresence = presence.kind === 'agent_app'
@@ -1154,6 +1183,15 @@ function adminUrl(origin: string): string {
   return `${origin.replace(/\/+$/, '')}${ADMIN_PATH}`;
 }
 
+/**
+ * A removal that is a Cancel's, told by the Agent itself: not an archive's own
+ * run, the Agent not archived, and the app attached to its user group. A
+ * Cancel a later run finishes is never reported as an archive.
+ */
+function cancelRemoval(run: Pick<Run, 'agent' | 'presence' | 'archiving'>): boolean {
+  return !run.archiving && run.agent.lifecycle !== 'archived' && run.presence.kind !== 'agent_app';
+}
+
 /** What the Owner's App Home says about an Agent's app. */
 function homeRowFor(
   agent: CustomAgentConfig,
@@ -1182,6 +1220,9 @@ function homeRowFor(
       return { kind: 'waiting' };
     case 'needs_attention':
       return { kind: 'attention' };
+    case 'uninstalling':
+      if (presence?.kind !== 'agent_app') return now - app.at >= STALLED_AFTER_MS ? { kind: 'removing_stalled' } : { kind: 'removing' };
+      return settling();
     default:
       return settling();
   }
