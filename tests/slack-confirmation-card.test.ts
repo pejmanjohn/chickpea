@@ -25,6 +25,7 @@ import { deliverHostApprovalSurfaces, type UiSurfaceMessenger } from '../src/sla
 import type { RenderedUiSurface } from '../src/slack/ui/render.ts';
 import type { UiSurfaceRecord } from '../src/slack/ui/surface.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
+import { asUserGroup } from './helpers/user-group-presence.ts';
 
 const BOT_USER_ID = 'UCHICKPEA1';
 const SPROUT_GROUP_ID = 'SSPROUT1';
@@ -71,7 +72,7 @@ async function confirmationFixture(
     });
     return await f.config.updateAgent(created.id, {
       slackPresence: {
-        ...created.slackPresence!,
+        ...asUserGroup(created.slackPresence),
         kind: 'user_group',
         desiredState: 'active',
         health: 'healthy',

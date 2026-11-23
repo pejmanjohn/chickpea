@@ -601,7 +601,7 @@ import type {
   WorkspaceInstallation,
   WorkspaceModelRole,
 } from '../config/types.ts';
-import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
+import { appRecordOf, WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
 import {
   envManagedSlackBehaviorKeys,
   resolveSlackBehaviorSettings,
@@ -10491,7 +10491,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const archiveOptions = parsed.output.replacementDefaultAgentId
         ? { replacementDefaultAgentId: parsed.output.replacementDefaultAgentId }
         : {};
-      const updated = current.slackPresence?.userGroupId || current.slackPresence?.kind === 'agent_app'
+      const updated = current.slackPresence?.userGroupId || appRecordOf(current.slackPresence)
         ? await presenceReconciler(c, await agentSlackTransport(c, actor.slackTeamId), null).archive(agentId, archiveOptions)
         : await store(c).archiveAgent(agentId, {
             expectedRevision: current.revision,

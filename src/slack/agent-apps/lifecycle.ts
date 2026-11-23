@@ -314,13 +314,18 @@ interface SingleConsent {
   expiresAt: number;
 }
 
-/** A record stored with the single consent field reads as that one Owner's open link. */
+/**
+ * A record stored with the single consent field reads as that one Owner's open link. Beside a per-Owner entry
+ * for the same Owner, the link that expires later is the one opened last, so it wins.
+ */
 function normalizeAgentApp(app: AgentAppLifecycle): AgentAppLifecycle {
   if (app.state !== 'awaiting_consent' || !('consent' in app)) return app;
   const { consent, ...waiting } = app as typeof app & { consent?: SingleConsent };
   if (!consent?.owner) return waiting;
+  const stored = waiting.consents?.[consent.owner];
+  if (stored && stored.expiresAt >= consent.expiresAt) return waiting;
   return {
     ...waiting,
-    consents: { [consent.owner]: { nonceDigest: consent.nonceDigest, expiresAt: consent.expiresAt }, ...waiting.consents },
+    consents: { ...waiting.consents, [consent.owner]: { nonceDigest: consent.nonceDigest, expiresAt: consent.expiresAt } },
   };
 }

@@ -26,6 +26,7 @@ import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
 import { withEnv } from './helpers/env.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 import { approveAsPerson } from './helpers/slack-person-approval.ts';
+import { asUserGroup } from './helpers/user-group-presence.ts';
 
 const HOSTED = { CHICKPEA_TENANCY: 'installation' } as Record<string, unknown>;
 // Slack publishes no user-group name limit; this fake picks one to exercise `name_too_long`.
@@ -97,7 +98,7 @@ async function renameFixture(t: TestContext) {
   });
   await f.config.updateAgent(created.id, {
     slackPresence: {
-      ...created.slackPresence!,
+      ...asUserGroup(created.slackPresence),
       kind: 'user_group', requestedHandle: 'desk', normalizedHandle: 'desk',
       desiredState: 'active', health: 'healthy', userGroupId: 'S0DESK',
     },

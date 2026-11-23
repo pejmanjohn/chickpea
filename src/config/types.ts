@@ -238,14 +238,14 @@ export const AWAITING_OWN_APP = 'awaiting_own_app';
  * handle: an app being created or waiting for Allow, or one that was removed
  * after the group took the handle back. It never derives the group's
  * `desiredState` or `health`, and it is never live: once the app holds the
- * handle the presence is an `AgentAppPresence`. The read boundary drops a live
- * one (`AttachedAgentApp`), and no transition writes one.
+ * handle the presence is an `AgentAppPresence`, so the type admits no live
+ * record here, and the read boundary drops a stored one with an operator line.
  */
 export interface UserGroupPresence extends AgentPresenceBase {
   kind?: 'user_group';
   userGroupId?: string;
   pendingCreate?: PendingUserGroupCreate;
-  app?: AgentAppLifecycle;
+  app?: AttachedAgentApp;
 }
 
 /** The Slack app Chickpea created for one Agent, without its secrets. */

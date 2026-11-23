@@ -1,4 +1,4 @@
-import type { AgentReferenceSummary, CustomAgentConfig } from '../../config/types.ts';
+import { appRecordOf, type AgentReferenceSummary, type CustomAgentConfig } from '../../config/types.ts';
 
 /**
  * Why an Agent cannot be deleted yet, or undefined once it has left Slack: no
@@ -12,7 +12,7 @@ export function agentStillInSlackRefusal(
 ): string | undefined {
   const presence = agent.slackPresence;
   const userGroupOff = presence?.desiredState === 'disabled' && presence.health === 'healthy';
-  if (references.channelGrants.length > 0 || presence?.kind === 'agent_app' ||
+  if (references.channelGrants.length > 0 || appRecordOf(presence) !== undefined ||
       (presence?.userGroupId !== undefined && !userGroupOff)) {
     return archiveBeforeDeleting(agent.name);
   }

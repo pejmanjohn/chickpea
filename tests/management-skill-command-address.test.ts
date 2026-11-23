@@ -11,6 +11,7 @@ import {
 } from '../src/management/slack-tools.ts';
 import type { WorkspaceManagementToolArguments } from '../src/management/tool-adapter.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
+import { asUserGroup } from './helpers/user-group-presence.ts';
 
 const BOT_USER_ID = 'UCHICKPEA1';
 const SPROUT_GROUP_ID = 'SSPROUT1';
@@ -92,7 +93,7 @@ async function skillCommandFixture(suffix: string, runtimeContract: 'legacy' | '
     }, created.revision);
   };
   const withHandle = (id: string, name: string, userGroupId: string) => withPresence(id, name, (created) => ({
-    ...created, kind: 'user_group', desiredState: 'active', health: 'healthy', userGroupId,
+    ...asUserGroup(created), kind: 'user_group', desiredState: 'active', health: 'healthy', userGroupId,
   }));
   const sprout = await withHandle('agent_skill_command_sprout', 'Sprout', SPROUT_GROUP_ID);
   await withHandle('agent_skill_command_other', 'Other', OTHER_GROUP_ID);

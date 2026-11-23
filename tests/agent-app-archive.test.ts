@@ -5,7 +5,8 @@ import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
-import type { AgentAppLifecycle, CustomAgentConfig } from '../src/config/types.ts';
+import type { AgentAppLifecycle, AttachedAgentApp, CustomAgentConfig } from '../src/config/types.ts';
+import { asUserGroup } from './helpers/user-group-presence.ts';
 import type { AgentSlackAppsHost } from '../src/slack/agent-apps/host.ts';
 import { AgentSlackApps, type AgentAppTransport } from '../src/slack/agent-apps/index.ts';
 import { deleteAppSecrets, readAppSecrets, saveConfigurationToken, writeAppSecrets } from '../src/slack/agent-apps/secrets.ts';
@@ -27,7 +28,7 @@ const HOST: AgentSlackAppsHost = {
 const ENV = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_a' });
 const ARCHIVED_LEFT = "Support is archived and its Slack app is removed from this workspace. Chickpea couldn't delete the app itself, so delete Support in Your Apps in Slack.";
 const ARCHIVED_INSTALLED = "Support is archived. Chickpea couldn't remove its Slack app from this workspace, so delete Support in Your Apps in Slack.";
-const WAITING: AgentAppLifecycle = {
+const WAITING: AttachedAgentApp = {
   state: 'awaiting_consent', at: NOW, startedBy: 'UOWNER', app: APP, icon: 'agent_avatar', allowDm: { channelId: 'D_UOWNER', ts: '1.0' },
 };
 const LIVE: AgentAppLifecycle = { state: 'active', at: NOW, app: APP, icon: 'agent_avatar', botUserId: 'UBOT', installedAt: NOW, installedBy: 'UOWNER' };
@@ -86,11 +87,11 @@ function recordRefusals(t: TestContext): unknown[] {
 
 /**
  * `recordAgentId` writes the app's record as that Agent's. `attached` keeps the Agent on its user group with
- * the app record attached to it, instead of the app holding the handle.
+ * that app record attached to it, instead of the app holding the handle.
  */
 async function fixture(
   t: TestContext,
-  options: { token?: boolean; botToken?: boolean; app?: AgentAppLifecycle; recordAgentId?: string; attached?: boolean } = {},
+  options: { token?: boolean; botToken?: boolean; app?: AgentAppLifecycle; recordAgentId?: string; attached?: AttachedAgentApp } = {},
 ) {
   const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
@@ -110,7 +111,7 @@ async function fixture(
   await config.ensureWorkspaceInstallation({ workspaceId: TEAM, teamId: TEAM, transportMode: 'direct', defaultAgentId: fallback.id, runtimeContract: 'chickpea-v1' });
   const agent = await config.updateAgent(created.id, {
     slackPresence: options.attached
-      ? { ...created.slackPresence!, app: options.app ?? WAITING }
+      ? { ...asUserGroup(created.slackPresence), app: options.attached }
       : {
         kind: 'agent_app', requestedHandle: 'support', normalizedHandle: 'support', desiredState: 'active', health: 'healthy',
         avatar: created.slackPresence!.avatar, app: options.app ?? LIVE, released: { userGroupId: 'S1' },
@@ -326,7 +327,7 @@ test('an archive that stopped after the delete removed the record, before it was
 // Defects caught: archive finding an app by kind, so an app record attached to the user group is left behind with
 // its app in Slack; and a retire that rewrites the group instead of only dropping the record.
 test('archiving a user-group Agent with an app record attached retires that app, then archives the group as before', async (t) => {
-  const f = await fixture(t, { attached: true, botToken: false });
+  const f = await fixture(t, { attached: WAITING, botToken: false });
   const group = f.agent.slackPresence;
   const archived = await f.reconciler.archive('agent_support');
   assert.equal(archived.lifecycle, 'archived');
@@ -343,7 +344,7 @@ test('archiving a user-group Agent with an app record attached retires that app,
 // Defects caught: a tenant end or archive that, with Slack refusing the delete, deletes the record anyway or
 // rewrites the group; the attached record is left for the Owner as an app record is.
 test("an attached app whose delete Slack refuses is left for the Owner, who is told, and the group is archived", async (t) => {
-  const f = await fixture(t, { attached: true, botToken: false });
+  const f = await fixture(t, { attached: WAITING, botToken: false });
   f.slack.refuseDelete = 'invalid_app';
   const capture = captureSlackRefusals(t);
   const archived = await f.reconciler.archive('agent_support');
@@ -358,7 +359,7 @@ test("an attached app whose delete Slack refuses is left for the Owner, who is t
 // Defects caught: the double-start guard reading the presence's kind, so a second start of an Agent whose app is
 // attached to its group creates a second app.
 test('a start for an Agent with an app record attached to its group is refused as already started, and changes nothing', async (t) => {
-  const f = await fixture(t, { attached: true });
+  const f = await fixture(t, { attached: WAITING });
   const outcome = await f.service.start('agent_support', 'UOWNER');
   assert.equal(outcome.kind, 'already_started');
   assert.deepEqual((await f.config.getAgent('agent_support')).slackPresence, f.agent.slackPresence);

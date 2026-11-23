@@ -19,7 +19,7 @@ import {
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import type { EncryptedCredentialStore } from '../src/config/settings-store.ts';
 import { closeNodeStateStores, getSettingsStore, resolveStores, type AppStores, type PlatformEnv } from '../src/config/state-backend.ts';
-import type { AgentAppLifecycle, CustomAgentConfig } from '../src/config/types.ts';
+import { AWAITING_OWN_APP, type AgentAppLifecycle, type CustomAgentConfig } from '../src/config/types.ts';
 import { createLiveWorkspaceManagementService } from '../src/management/live-service.ts';
 import { invokeWorkspaceManagementTool } from '../src/management/tool-adapter.ts';
 import type { ManagementActorContext } from '../src/management/types.ts';
@@ -1098,6 +1098,38 @@ test("a tenant's end that cannot tell the Owner about a left app still uninstall
   assert.deepEqual(h.calls.map(({ method, token }) => [method, token]), [['apps.uninstall', AGENT_BOT]],
     'the app is uninstalled with its own bot; without a configuration token its definition stays, and the Owner cannot be messaged');
 }, { lostHostedBot: true }));
+
+// Defects caught: Admin's archive door choosing the reconciler by the presence's kind, so an Agent with no user
+// group whose app record is attached is archived straight in the store and its Slack app is left behind.
+test("Admin's archive of an Agent not in Slack yet, with its app attached, retires that app", async (t) => withHarness(t, async (h) => {
+  const rotated = { accessToken: 'xoxe.xoxp-1-config-access', refreshToken: 'xoxe-1-config-refresh', teamId: TEAM, expiresAt: Date.now() + 12 * 3_600_000 };
+  assert.equal(await saveConfigurationToken({ ...h.secrets(), slack: { rotate: async () => rotated } }, TEAM, 'xoxe-1-pasted-token-0000'), 'saved');
+  const support = await h.stores.config.getAgent('agent_support');
+  const waiting = await h.stores.config.updateAgent(support.id, {
+    slackPresence: {
+      requestedHandle: 'support', normalizedHandle: 'support', desiredState: 'active', health: 'pending',
+      errorCode: AWAITING_OWN_APP, avatar: support.slackPresence!.avatar,
+      app: {
+        state: 'awaiting_consent', at: Date.now(), startedBy: 'U1', app: { appId: AGENT_APP, clientId: '1.client' },
+        icon: 'agent_avatar', allowDm: { channelId: 'D_U1', ts: '1.0' },
+      },
+    },
+  }, support.revision);
+  h.calls.length = 0;
+
+  const response = await (await ownerAdmin(h))('/admin/api/agents/agent_support/archive', {
+    method: 'POST', body: JSON.stringify({ expectedRevision: waiting.revision }),
+  });
+  assert.equal(response.status, 200, await response.clone().text());
+  const archived = await h.stores.config.getAgent('agent_support');
+  assert.equal(archived.lifecycle, 'archived');
+  assert.equal(archived.slackPresence?.app, undefined, 'nothing of the app is left on the Agent');
+  assert.deepEqual(h.calls.map(({ method, token }) => [method, token]), [
+    ['apps.uninstall', AGENT_BOT],
+    ['apps.manifest.delete', rotated.accessToken],
+  ], 'the app is uninstalled and its definition deleted in Slack');
+  assert.equal(await readAppSecrets(h.secrets(), AGENT_APP), undefined, "and the app's secrets are gone");
+}));
 
 const SUPPORT_READY = '@support is ready in this channel. Mention @support to start a conversation.';
 const SUPPORT_WELCOME = 'Hi, I’m *Support*.\n\nMention <@UAGENTBOT> to start a thread with me. I only join conversations that mention me';

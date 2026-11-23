@@ -280,7 +280,7 @@ async function repairMentionedAgentUserGroupOnce(
       agent.revision,
     );
     const claims = (await input.config.listAgents()).filter((candidate) =>
-      candidate.slackPresence?.userGroupId === lookup.group.id
+      answeringUserGroupId(candidate.slackPresence) === lookup.group.id
     );
     if (claims.length !== 1 || claims[0]?.id !== repaired.id) {
       limiter.rememberDenied(input.workspaceId, input.userGroupId);

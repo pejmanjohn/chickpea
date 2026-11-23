@@ -9,6 +9,7 @@ import {
   type AgentAppSwitchProgress,
   type AgentCreateInput,
   type AgentSlackPresence,
+  type CustomAgentConfig,
   type UserGroupPresence,
   agentAppIsLive,
   answeringUserGroupId,
@@ -16,6 +17,7 @@ import {
 } from '../src/config/types.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { agentAppBots } from '../src/slack/agent-app-bots.ts';
+import { agentStillInSlackRefusal } from '../src/slack/agent-presence/left-slack.ts';
 import {
   AgentPresenceReconciler,
   AgentUserGroupLookupLimiter,
@@ -146,6 +148,25 @@ test("a record stored with the single consent field reads as that one Owner's op
   }
 });
 
+// Defects caught: a reader that keeps the older single consent over a per-Owner entry opened after it, or the
+// reverse, so the Owner's newest Allow link reads as expired.
+test("when both consent fields are stored for one Owner, the link opened last wins", () => {
+  const s = store();
+  try {
+    const older = { nonceDigest: 'older', expiresAt: NOW + 900_000 };
+    const newer = { nonceDigest: 'newer', expiresAt: NOW + 1_800_000 };
+    const other = { nonceDigest: 'other', expiresAt: NOW + 900_000 };
+    const read = (consent: typeof older, stored: typeof older) => appRecordOf(s.read(JSON.stringify({
+      kind: 'agent_app', ...BASE, desiredState: 'active', health: 'pending',
+      app: { ...WAITING, consent: { ...consent, owner: 'UOWNER' }, consents: { UOWNER: stored, UOTHER: other } },
+    })));
+    assert.deepEqual(read(newer, older), { ...WAITING, consents: { UOWNER: newer, UOTHER: other } }, 'the single field opened later wins');
+    assert.deepEqual(read(older, newer), { ...WAITING, consents: { UOWNER: newer, UOTHER: other } }, 'the per-Owner entry opened later wins');
+  } finally {
+    s.close();
+  }
+});
+
 // Defects caught: a new shape the store's writer or reader drops, rewrites, or derives flags for.
 test('each new shape round-trips through the store', () => {
   const s = store();
@@ -197,14 +218,30 @@ test('the app record is found in either home, and a plain user group has none', 
 
 // Defects caught: a read boundary that lets a user group carry a live app or a released group, or that keeps
 // a record that is not a lifecycle at all; any of them would let a reader treat the group as an app Agent.
-test('a user group stored with a live app, a released group, or a malformed record reads without them', () => {
+test('a user group stored with a live app, a released group, or a malformed record reads without them', (t) => {
   const s = store();
+  const warn = t.mock.method(console, 'warn', () => undefined);
   try {
     const group = { ...BASE, desiredState: 'active', health: 'healthy', userGroupId: 'S1' };
+    const dropped = () => {
+      const lines = warn.mock.calls.map((call) => JSON.parse(String(call.arguments[0])));
+      warn.mock.resetCalls();
+      return lines;
+    };
     assert.deepEqual(s.read(JSON.stringify({ ...group, app: LIVE })), group);
+    assert.deepEqual(dropped(), [
+      { event: 'chickpea.agent_app.attached_record_dropped', agentId: 'agent_support', state: 'active', appId: 'A0APP1' },
+    ], 'the operator is told which app the record named');
     assert.deepEqual(s.read(JSON.stringify({ ...group, released: { userGroupId: 'S2', answers: true } })), group);
+    assert.deepEqual(dropped(), [], 'a released group on a user group is not an app record');
     assert.deepEqual(s.read(JSON.stringify({ ...group, app: 'A0APP1' })), group);
     assert.deepEqual(s.read(JSON.stringify({ ...group, app: { appId: 'A0APP1' } })), group);
+    assert.deepEqual(dropped(), [
+      { event: 'chickpea.agent_app.attached_record_dropped', agentId: 'agent_support', state: null, appId: null },
+      { event: 'chickpea.agent_app.attached_record_dropped', agentId: 'agent_support', state: null, appId: null },
+    ]);
+    assert.deepEqual(s.read(JSON.stringify({ ...group, app: WAITING })), { ...group, app: WAITING });
+    assert.deepEqual(dropped(), [], 'a record the group may hold is kept without a word');
     const answers = s.read(JSON.stringify({
       kind: 'agent_app', ...BASE, desiredState: 'active', health: 'healthy', app: LIVE, released: { userGroupId: 'S1', answers: 'yes' },
     }));
@@ -222,6 +259,24 @@ test("an attached record that names its bot keeps that bot its Agent's; one that
   assert.deepEqual(agentAppBots([{ id: 'agent_support', slackPresence: removing }]), [{ agentId: 'agent_support', botUserId: 'UBOT' }]);
   assert.deepEqual(agentAppBots([{ id: 'agent_support', slackPresence: { ...group, app: WAITING } }]), []);
   assert.deepEqual(agentAppBots([{ id: 'agent_support', slackPresence: group }]), []);
+});
+
+// Defects caught: the delete refusal finding an app by the presence's kind, so an Agent with no user group whose
+// app record is attached is deleted and its Slack app is left with nothing pointing at it.
+test('an Agent whose app record is attached to its user group cannot be deleted until it has left Slack', () => {
+  const unpublished: UserGroupPresence = { ...BASE, desiredState: 'disabled', health: 'unpublished' };
+  const support = (slackPresence: AgentSlackPresence): CustomAgentConfig => ({
+    ...agent('agent_support'), kind: 'user', revision: 1, lifecycle: 'active', editPolicy: 'creator_and_admins',
+    configurationGeneration: 1, slackPresence,
+  });
+  const none = { agentId: 'agent_support', channelGrants: [] };
+  assert.equal(agentStillInSlackRefusal(support(unpublished), none), undefined, 'an Agent that has left Slack can be deleted');
+  for (const app of [WAITING, { state: 'creating', at: NOW, startedBy: 'UOWNER', manifestFingerprint: 'f1' }] as const) {
+    assert.equal(
+      agentStillInSlackRefusal(support({ ...unpublished, errorCode: AWAITING_OWN_APP, app }), none),
+      'Archive Support first, then delete it. Archiving takes it out of its Slack Channels and turns off its Slack handle.',
+    );
+  }
 });
 
 /** Every Slack call fails the test. */
