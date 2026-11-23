@@ -63,6 +63,10 @@ import { deliverAgentFailureFinal } from '../src/slack/run-turn.ts';
 import { redrawCardSetAsAgent } from '../src/slack/ui/agent-card-redraw.ts';
 import { validatePresentCards } from '../src/slack/ui/presentation-tools.ts';
 import { renderCards } from '../src/slack/ui/render-display.ts';
+import type { ResolvedRoutineAuthority } from '../src/routines/agent-authority.ts';
+import { routineDestinationBindingDigest } from '../src/routines/ids.ts';
+import { resolveRoutineRuntimeAccess } from '../src/routines/runtime.ts';
+import type { RoutineDefinition, RoutineRun } from '../src/routines/types.ts';
 import { recordDeliveredSlackAgentMessage } from '../src/slack/public-context.ts';
 import { SLACK_READ_MESSAGES, SlackReadError } from '../src/slack/reading/errors.ts';
 import { slackReadingService } from '../src/slack/reading/tools.ts';
@@ -1742,6 +1746,53 @@ test("without the port no app bot answers: an app Agent's reply in a Channel its
   assert.deepEqual(job.turn.speaker, { kind: 'chickpea_as_agent' });
   assert.deepEqual(sender(await postAsRun(h, job)), AS_SUPPORT);
   assert.deepEqual(personaOnAppToken(h), []);
+}));
+
+test("a schedule made in the app Agent's own DM runs as the app's bot, and the app's token only opens that DM to find out", async (t) => withHarness(t, async (h) => {
+  const env = withHostedSlackApp(h.base, MAIN_APP);
+  // The Owner made Support, so it is theirs to use in a DM.
+  const agent = { ...await h.stores.config.getAgent('agent_support'), creatorMembershipId: h.ownerMembershipId };
+  const destination = {
+    kind: 'direct_thread' as const, conversationId: 'D1', threadTs: '1900003900.000100', ownerMembershipId: h.ownerMembershipId,
+  };
+  const routine: RoutineDefinition = {
+    id: 'routine_own_dm', workspaceId: TEAM, channelId: 'D1', creatorUserId: 'U1', destination,
+    name: 'Standup', description: '', taskText: 'Summarize.', triggerKind: 'schedule',
+    scheduleInput: '0 * * * *', scheduleJson: '{"version":1,"kind":"cron","expression":"0 * * * *"}',
+    timezone: 'UTC', outputPolicy: 'post', authorityMode: 'live_direct_member_v1',
+    state: 'active', version: 1, nextRunAt: 1, lastScheduledAt: null, lastFinishedAt: null,
+    consecutiveFailures: 0, lastChangeKeyHash: null, projectedDailyStarts: 24,
+    reservationWindows: [{ windowStart: 1, count: 1 }], createdAt: 1, createdBy: 'U1',
+    updatedAt: 1, updatedBy: 'U1', pausedAt: null, pausedBy: null, pausedReason: null,
+    disabledAt: null, disabledBy: null, disabledReason: null, deletedAt: null, deletedBy: null,
+  };
+  const run = {
+    id: 'rrun_own_dm', routineId: routine.id, status: 'admitting',
+    revision: { name: routine.name, description: '', taskText: routine.taskText, triggerKind: 'schedule',
+      scheduleInput: routine.scheduleInput, scheduleJson: routine.scheduleJson, timezone: 'UTC', outputPolicy: 'post',
+      authorityMode: routine.authorityMode },
+  } as unknown as RoutineRun;
+  const authority = async (): Promise<ResolvedRoutineAuthority> => ({
+    reference: {
+      scheduleId: routine.id, agentId: agent.id, workspaceId: TEAM, channelId: 'D1', destinationKind: 'direct_thread',
+      destinationBindingDigest: routineDestinationBindingDigest(routine.id, TEAM, destination),
+      createdByMembershipId: h.ownerMembershipId, runsAsMembershipId: h.ownerMembershipId,
+      authorityReceiptId: 'receipt_owner', requiredConnectionAccountIds: [], state: 'active',
+      revision: 1, createdAt: 1, updatedAt: 1,
+    },
+    agent, agentGrants: [],
+    assignment: {
+      workspaceId: TEAM, channelId: 'D1', agentId: agent.id, agent,
+      model: 'local-stub/agent-app', modelAttribution: { source: 'pinned', providerId: 'local-stub' },
+    },
+    actorSlackUserId: 'U1',
+    effectiveConnections: [],
+  } as ResolvedRoutineAuthority);
+  const before = h.calls.length;
+  // Only the authority is injected: the installation, the app's context and the DM question are the defaults.
+  const access = await resolveRoutineRuntimeAccess(run, routine, env, { authority });
+  assert.deepEqual(access.speaker, { kind: 'own_bot', botUserId: AGENT_BOT_USER });
+  assert.deepEqual(dmQuestions(h, AGENT_BOT, before), ['conversations.open U1'], "the app's token only opened its DM with the Owner");
 }));
 
 /** A person's message in `channel` as each bot hears it; `G…` is a group DM, `thread` a reply under that root. */

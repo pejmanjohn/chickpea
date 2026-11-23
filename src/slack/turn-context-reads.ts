@@ -38,6 +38,7 @@ export async function hydrateTurnSlackContext(input: {
   botUserId?: string;
   /** The other bots this installation answers as; their rows read as Agents' too. */
   siblingBotUserIds?: readonly string[];
+  siblingAppIds?: readonly string[];
   state?: Pick<SlackStateStore, 'reserveSlackRead' | 'applySlackReadCooldown'>;
   record?: ThreadRecordStore;
   /**
@@ -65,14 +66,11 @@ export async function hydrateTurnSlackContext(input: {
   const readGate = createSlackReadGate({ state: input.state, workspaceId: turn.workspaceId, gated });
   const context = await hydrateSlackContextViaWebClient(client, turn, {
     readGate,
-    ...(input.botUserId || input.siblingBotUserIds?.length
-      ? {
-          self: {
-            ...(input.botUserId ? { botUserId: input.botUserId } : {}),
-            ...(input.siblingBotUserIds?.length ? { siblingBotUserIds: input.siblingBotUserIds } : {}),
-          },
-        }
-      : {}),
+    self: {
+      ...(input.botUserId ? { botUserId: input.botUserId } : {}),
+      ...(input.siblingBotUserIds?.length ? { siblingBotUserIds: input.siblingBotUserIds } : {}),
+      ...(input.siblingAppIds?.length ? { siblingAppIds: input.siblingAppIds } : {}),
+    },
     ...(threadRecord ? { threadRecord } : {}),
     ...(input.maxMessages !== undefined ? { maxMessages: input.maxMessages } : {}),
     ...(input.maxPages !== undefined ? { maxPages: input.maxPages } : {}),
