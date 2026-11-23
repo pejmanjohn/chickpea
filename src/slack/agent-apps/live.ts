@@ -78,10 +78,11 @@ export async function agentAppBotCredentials(
  * Agent's own app's bot for an `own_bot` speaker, the installation's bot for
  * every other. The installation's own resolution runs first either way, so
  * every refusal it enforces (a revoked, erased or gated installation) stands
- * for the Agent app too. Without the port it is the base resolver and never
- * reads the realm. An `own_bot` run whose app is no longer live, or whose
- * token cannot be read, throws: its owner names the app's bot, so Chickpea's
- * bot never posts for it without the Agent's persona. A run stored before its
+ * for the Agent app too. Without the port it never reads the realm: an
+ * `own_bot` run throws and every other run gets the base. An `own_bot` run
+ * whose app is no longer live, or whose token cannot be read, throws too: its
+ * owner names the app's bot, so Chickpea's bot never posts for it without the
+ * Agent's persona. A run stored before its
  * speaker was keeps the earlier rule: the live app's bot, else the
  * installation's for a user-group Agent, else unavailable. A caller whose
  * base context refuses rate-limited calls passes `rejectRateLimitedCalls` so
@@ -94,11 +95,13 @@ export function withAgentAppExecution(
 ): SlackInstallationExecutionResolver {
   const contexts = new Map<string, Promise<SlackInstallationExecutionContext>>();
   return (workspaceId, run) => {
-    if (!run || !agentSlackAppsHost()) return base(workspaceId);
+    if (!run) return base(workspaceId);
     const { agentId, speaker } = run;
-    if (speaker?.kind === 'unavailable' && speaker.reason === 'app_removed') {
+    const host = agentSlackAppsHost();
+    if ((speaker?.kind === 'unavailable' && speaker.reason === 'app_removed') || (speaker?.kind === 'own_bot' && !host)) {
       return Promise.reject(new SlackInstallationUnavailableError(workspaceId, 'agent_app_unavailable', { retryable: false }));
     }
+    if (!host) return base(workspaceId);
     // Chickpea's bot answers; where it cannot post, the turn's access check says so.
     if (speaker && speaker.kind !== 'own_bot') return base(workspaceId);
     const key = `${workspaceId}\u0000${agentId}\u0000${speaker ? speaker.botUserId : ''}`;

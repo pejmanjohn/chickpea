@@ -203,7 +203,13 @@ export async function verifySlackInstallationTurnAccess(
   if (context.workspaceId !== turn.workspaceId) {
     throw new SlackInstallationUnavailableError(context.workspaceId, 'workspace_mismatch');
   }
-  if (slackTurnSurface(turn) === 'direct') return;
+  if (slackTurnSurface(turn) === 'direct') {
+    // A DM or group DM has no membership to ask Slack about: admission already found no bot that can post there.
+    if (turn.speaker?.kind === 'unavailable') {
+      throw new SlackInstallationUnavailableError(context.workspaceId, 'not_in_channel', { retryable: false });
+    }
+    return;
+  }
   const membership = turn.channelMembership;
   if (membership && membership.botUserId === context.botUserId) {
     const age = Date.now() - membership.verifiedAt;
