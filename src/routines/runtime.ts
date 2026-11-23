@@ -198,14 +198,11 @@ export async function resolveRoutineRuntimeAccess(
   const presence = authority && useInstallationGate && agentSlackAppsHost() ? authority.agent.slackPresence : undefined;
   const ownBotUserId = agentAppIsLive(presence) ? presence.app.botUserId : undefined;
   const ownBot = async () => {
-    const context = await resolveInstallation(routine.workspaceId, {
+    if (!ownBotUserId) throw new RoutineAgentAppUnavailableError();
+    return resolveInstallation(routine.workspaceId, {
       agentId: authority!.agent.id,
-      speaker: { kind: 'own_bot', botUserId: ownBotUserId! },
+      speaker: { kind: 'own_bot', botUserId: ownBotUserId },
     });
-    if (context.workspaceId !== routine.workspaceId || context.botUserId !== ownBotUserId) {
-      throw new Error('agent app mismatch');
-    }
-    return context;
   };
   let speaker: SlackSpeaker | undefined;
   const speakAs = (context: SlackInstallationExecutionContext) => {
@@ -248,7 +245,6 @@ export async function resolveRoutineRuntimeAccess(
       directConversation && directConversation.id !== routine.destination.conversationId &&
       presence?.kind === 'agent_app'
     ) {
-      if (!ownBotUserId) throw new RoutineAgentAppUnavailableError();
       let app: SlackInstallationExecutionContext;
       try {
         app = await ownBot();

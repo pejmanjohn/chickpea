@@ -14,6 +14,7 @@ import { routineDestinationBindingDigest } from '../src/routines/ids.ts';
 import {
   resolveRoutineRuntimeAccess,
   RoutineAgentAppUnavailableError,
+  RoutineRuntimeError,
   type RoutineRuntimeAccess,
 } from '../src/routines/runtime.ts';
 import { agentRoutineDeletion, SqliteRoutineStore } from '../src/routines/store.ts';
@@ -292,7 +293,8 @@ test('a scheduled post on an Agent app\'s token carries no persona; Chickpea\'s 
     const client = postingClient(posts, appToken);
     const run = runOf(routine);
     await deliverRoutineResult({ store: deliveryStore(), run, routine, access: resolved, message: 'Done.', changeKeyHash: 'b'.repeat(64) }, client);
-    await deliverRoutineRecoveryNotice({ store: deliveryStore(), run, routine, access: resolved }, client);
+    assert.equal(await deliverRoutineRecoveryNotice({ store: deliveryStore(), run, routine, access: resolved }, client), 'accepted');
+    assert.equal(posts.length, 2, 'the result and the pause notice both post');
     return posts;
   };
   const own = await access(channelRoutine, appPresence(), slack({ appChannels: [CHANNEL] }));
@@ -428,4 +430,12 @@ test('without the Agent-app port a schedule never speaks as an Agent app', async
   const fake = slack({ appChannels: [CHANNEL] });
   assert.equal((await access(channelRoutine, appPresence(), fake)).botUserId, CHICKPEA_BOT);
   assert.deepEqual(appCalls(fake), []);
+});
+
+test('a DM schedule neither bot can open stays ineligible, app or not', async (t) => {
+  withHost(t);
+  const ineligible = (error: unknown) => error instanceof RoutineRuntimeError &&
+    !(error instanceof RoutineAgentAppUnavailableError) && error.failureClass === 'channel_ineligible';
+  await assert.rejects(access(directRoutine('D_ELSEWHERE'), appPresence(), slack()), ineligible);
+  await assert.rejects(access(directRoutine(AGENT_DM), GROUP, slack()), ineligible);
 });
