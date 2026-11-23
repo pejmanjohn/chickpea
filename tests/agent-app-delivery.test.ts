@@ -434,7 +434,9 @@ async function drainMoves(h: Harness): Promise<string[]> {
       management: h.stores.management as unknown as ManagementStore,
       deliver: async (record) => {
         assert.equal(isAgentAppSwitchJob(record.receipt), true, 'only move jobs are due');
-        const delivered = await continueAgentAppSwitch(h.base, record.receipt as ManagementAgentAppSwitchJob, undefined, {
+        // The store's own rows, as its drain passes them: the main bot's credentials are read from these, not through the env.
+        const local = { ...h.stores, settings: getSettingsStore(h.base) };
+        const delivered = await continueAgentAppSwitch(h.base, record.receipt as ManagementAgentAppSwitchJob, local, {
           finalAttempt: isFinalOutboxAttempt(record),
         });
         refs.push(delivered.deliveryRef);
