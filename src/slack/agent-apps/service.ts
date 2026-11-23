@@ -39,7 +39,7 @@ import { SLACK_BOT_AUTHORIZE_URL } from '../install-oauth.ts';
 import { AGENT_APP_BOT_SCOPES } from '../scopes.ts';
 import type { CredentialKeyring } from '../secret-envelope.ts';
 import { SlackTransportError, type SlackTransport } from '../transport/types.ts';
-import type { AgentSlackAppsHost } from './host.ts';
+import type { AgentAppRetirement, AgentSlackAppsHost } from './host.ts';
 import {
   type AgentAppEvent,
   type AgentAppStep,
@@ -158,8 +158,11 @@ export class AgentSlackApps {
   private readonly slack: AgentAppSlackApi;
   private readonly secrets: SecretDeps;
   private facts: Promise<{ teamId: string; installationId: string }> | undefined;
-  /** Agents whose app was not deleted (Slack refused, no configuration token, or no record proves it is theirs): the definition stays for the Owner. */
-  private readonly leftDefinition = new Set<string>();
+  /**
+   * Agents whose app the delete step left for the Owner: uninstalled with its definition kept (Slack refused, or no
+   * configuration token), or still installed because no record proves the app is theirs.
+   */
+  private readonly leftForOwner = new Map<string, 'uninstalled_left_definition' | 'left_for_owner'>();
 
   constructor(private readonly deps: AgentSlackAppsDeps) {
     this.now = deps.now ?? Date.now;
@@ -382,7 +385,7 @@ export class AgentSlackApps {
    * the same way. A live app Slack did not answer about is still installed, so
    * it goes back to answering until the archive is tried again.
    */
-  async retire(agent: CustomAgentConfig): Promise<{ agent: CustomAgentConfig; outcome: 'removed' | 'uninstalled_left_definition' }> {
+  async retire(agent: CustomAgentConfig): Promise<{ agent: CustomAgentConfig; outcome: AgentAppRetirement['outcome'] }> {
     const presence = agent.slackPresence;
     if (presence?.kind !== 'agent_app') return { agent, outcome: 'removed' };
     const record = agentAppRecord(presence.app);
@@ -398,7 +401,9 @@ export class AgentSlackApps {
     const settled = await this.advance(agent.id);
     const after = settled.slackPresence;
     if (after?.kind !== 'agent_app') {
-      return { agent: settled, outcome: this.leftDefinition.delete(agent.id) ? 'uninstalled_left_definition' : 'removed' };
+      const left = this.leftForOwner.get(agent.id);
+      this.leftForOwner.delete(agent.id);
+      return { agent: settled, outcome: left ?? 'removed' };
     }
     if (agentAppIsLive(presence) && after.app.state === 'uninstalling' && after.app.next === 'uninstall') {
       await this.commit(settled, { type: 'uninstall_unanswered', at: this.now(), restore: presence.app });
@@ -563,7 +568,7 @@ export class AgentSlackApps {
     uninstall: async (run) => {
       const app = agentAppRecord(run.app)!;
       const record = await readOwnAppSecrets(this.secrets, app.appId, run.agent.id, 'uninstall');
-      if (record.kind === 'another_agent') return { event: { type: 'record_refused', at: run.now } };
+      // Without its own record the app is not provably this Agent's: nothing is sent, and the delete step leaves it for the Owner.
       if (record.kind !== 'own' || !record.secrets.botToken) return { event: { type: 'uninstalled', at: run.now } };
       try {
         await this.slack.uninstall({
@@ -583,10 +588,11 @@ export class AgentSlackApps {
 
     delete: async (run) => {
       if (run.app.state !== 'uninstalling') return 'wait';
-      const { app, startedBy } = run.app;
+      const { app, startedBy, botUserId } = run.app;
       const record = await readOwnAppSecrets(this.secrets, app.appId, run.agent.id, 'delete');
-      if (record.kind === 'another_agent') return { event: { type: 'record_refused', at: run.now } };
-      // With no record, even one this step deleted before a crash, the app is not provably this Agent's: it is left for the Owner.
+      // With no record of its own, even one this step deleted before a crash, the app is not provably this Agent's: it is
+      // left for the Owner, and the record, if any, is left as it is. An app that was live was not uninstalled either.
+      const stillInstalled = record.kind !== 'own' && Boolean(botUserId);
       let left = record.kind !== 'own';
       if (record.kind === 'own') {
         const { teamId } = await this.installation();
@@ -601,11 +607,12 @@ export class AgentSlackApps {
         }
         await deleteAppSecrets(this.secrets, app.appId, record.revision);
       }
-      if (left) this.leftDefinition.add(run.agent.id);
+      if (left) this.leftForOwner.set(run.agent.id, stillInstalled ? 'left_for_owner' : 'uninstalled_left_definition');
+      const message = stillInstalled ? 'archived_installed' : 'archived_left';
       return {
         event: { type: 'deleted', at: run.now },
         ...(left
-          ? { after: async () => { await this.message('archived_left', run.agent, startedBy, `agent-app-left:${run.agent.id}:${app.appId}`); } }
+          ? { after: async () => { await this.message(message, run.agent, startedBy, `agent-app-left:${run.agent.id}:${app.appId}`); } }
           : {}),
       };
     },

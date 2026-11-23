@@ -26,7 +26,7 @@ const HOST: AgentSlackAppsHost = {
 };
 const ENV = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_a' });
 const ARCHIVED_LEFT = "Support is archived and its Slack app is removed from this workspace. Chickpea couldn't delete the app itself, so delete Support in Your Apps in Slack.";
-const ARCHIVE_REFUSED = "Chickpea couldn't remove Support's Slack app, so Support is not archived. Try again in a minute.";
+const ARCHIVED_INSTALLED = "Support is archived. Chickpea couldn't remove its Slack app from this workspace, so delete Support in Your Apps in Slack.";
 const LIVE: AgentAppLifecycle = { state: 'active', at: NOW, app: APP, icon: 'agent_avatar', botUserId: 'UBOT', installedAt: NOW, installedBy: 'UOWNER' };
 
 class FakeSlack implements AgentAppSlackApi {
@@ -113,14 +113,20 @@ async function fixture(t: TestContext, options: { token?: boolean; botToken?: bo
   const transport = new FakeTransport();
   const clock = { now: NOW };
   const service = new AgentSlackApps({ env: ENV, stores: { config, settings }, host: HOST, transport, slack, keyring, now: () => clock.now });
+  /** What each finished retirement reported, as tenant end would see it. */
+  const retirements: string[] = [];
   const reconciler = new AgentPresenceReconciler({
     config, transport: transport as unknown as SlackTransport, announce: null, now: () => clock.now,
     agentApps: {
-      retire: async (current) => (await service.retire(current)).agent,
+      retire: async (current) => {
+        const retired = await service.retire(current);
+        retirements.push(retired.outcome);
+        return retired.agent;
+      },
       bringBotIn: async () => { throw new Error('archive brings no bot in'); },
     },
   });
-  return { config, settings, secrets, slack, transport, clock, service, reconciler, agent };
+  return { config, settings, secrets, slack, transport, clock, service, reconciler, agent, retirements };
 }
 
 test('archiving an Agent app uninstalls, deletes with a rotated token, hands the handle back disabled, and restore brings it back', async (t) => {
@@ -208,7 +214,8 @@ test('without a configuration token the definition is left for the Owner, who is
   assert.equal(f.slack.uninstalls.length, 1);
   assert.deepEqual(f.slack.deletes, []);
   assert.deepEqual(f.transport.posted.map((m) => m.channelId), ['D_UOWNER']);
-  assert.match(f.transport.posted[0]!.text, /Support is archived and its Slack app is removed from this workspace\. Chickpea couldn't delete the app itself, so delete Support in Your Apps in Slack\./);
+  assert.deepEqual(f.transport.posted[0]!.text, ARCHIVED_LEFT, 'the app was uninstalled, so only its definition is left');
+  assert.deepEqual(f.retirements, ['uninstalled_left_definition']);
   assert.equal(await readAppSecrets(f.secrets, APP.appId), undefined);
   assert.equal(archived.slackPresence?.userGroupId, 'S1');
 });
@@ -229,7 +236,7 @@ test('an app without a bot token skips the uninstall; a create still settling re
   assert.deepEqual(settling.slack.deletes, []);
 });
 
-test('an archive with no record for the app, or one that cannot be opened, calls Slack for nothing, finishes, and tells the Owner the app may remain', async (t) => {
+test('an archive with no record for a live app, or one that cannot be opened, calls Slack for nothing, finishes, and tells the Owner the app is still installed', async (t) => {
   for (const record of ['missing', 'unreadable'] as const) {
     const f = await fixture(t);
     const stored = await readAppSecrets(f.secrets, APP.appId);
@@ -242,32 +249,38 @@ test('an archive with no record for the app, or one that cannot be opened, calls
     assert.equal(archived.lifecycle, 'archived', record);
     assert.deepEqual([f.slack.uninstalls, f.slack.deletes], [[], []], `${record}: no uninstall and no delete`);
     assert.equal(f.slack.rotations, 1, `${record}: the configuration token is not even refreshed`);
-    assert.deepEqual(f.transport.posted, [{ channelId: 'D_UOWNER', text: ARCHIVED_LEFT }], record);
+    assert.deepEqual(f.transport.posted, [{ channelId: 'D_UOWNER', text: ARCHIVED_INSTALLED }], record);
+    assert.deepEqual(f.retirements, ['left_for_owner'], `${record}: tenant end never reports the bot's access as removed`);
     assert.equal(archived.slackPresence?.userGroupId, 'S1');
   }
 });
 
-test("an archive whose app record names another Agent uninstalls and deletes nothing, keeps the Agent unarchived, and tells the Owner", async (t) => {
-  const lines = recordRefusals(t);
-  for (const [botToken, use] of [[true, 'uninstall'], [false, 'delete']] as const) {
-    const f = await fixture(t, { botToken, recordAgentId: 'agent_default' });
-    await assert.rejects(() => f.reconciler.archive('agent_support'), (error: unknown) =>
-      error instanceof AgentPresenceError && error.message === ARCHIVE_REFUSED);
-    assert.deepEqual([f.slack.uninstalls, f.slack.deletes], [[], []], `${use}: nothing reaches Slack`);
-    const agent = await f.config.getAgent('agent_support');
-    assert.equal(agent.lifecycle, 'active');
-    const presence = agent.slackPresence;
-    assert.deepEqual(presence?.kind === 'agent_app' && presence.app.state === 'needs_attention' && [presence.app.reason, presence.app.resume],
-      ['uninstall_failed', 'uninstalling']);
-    assert.equal((await readAppSecrets(f.secrets, APP.appId))?.agentId, 'agent_default', "the other Agent's record stays");
-    assert.deepEqual(f.transport.posted, [{ channelId: 'D_UOWNER', text: ARCHIVE_REFUSED }]);
-    assert.deepEqual(lines.splice(0), [{
-      event: 'chickpea.agent_app.record_refused', use, agentId: 'agent_support', appId: APP.appId, recordAgentId: 'agent_default',
-    }]);
+test('an archive with no record for an app that was never allowed tells the Owner only its definition is left', async (t) => {
+  const f = await fixture(t, { botToken: false, app: { state: 'awaiting_consent', at: NOW, startedBy: 'UOWNER', app: APP, icon: 'agent_avatar', allowDm: { channelId: 'D1', ts: '1.0' } } });
+  await deleteAppSecrets(f.secrets, APP.appId, (await readAppSecrets(f.secrets, APP.appId))!.revision);
+  const archived = await f.reconciler.archive('agent_support');
+  assert.equal(archived.lifecycle, 'archived');
+  assert.deepEqual([f.slack.uninstalls, f.slack.deletes], [[], []]);
+  assert.deepEqual(f.transport.posted, [{ channelId: 'D_UOWNER', text: ARCHIVED_LEFT }], 'an app never installed is not in the workspace');
+  assert.deepEqual(f.retirements, ['uninstalled_left_definition']);
+});
 
-    await assert.rejects(() => f.reconciler.archive('agent_support'), AgentPresenceError, `${use}: Try again refuses the same way`);
-    assert.deepEqual([f.slack.uninstalls, f.slack.deletes], [[], []]);
-    lines.splice(0);
+test("an archive whose app record names another Agent calls Slack for nothing, leaves that record, finishes, and tells the Owner", async (t) => {
+  const lines = recordRefusals(t);
+  for (const [botToken, uses] of [[true, ['uninstall', 'delete']], [false, ['delete']]] as const) {
+    const f = await fixture(t, { botToken, recordAgentId: 'agent_default' });
+    const stored = await readAppSecrets(f.secrets, APP.appId);
+    const archived = await f.reconciler.archive('agent_support');
+    assert.equal(archived.lifecycle, 'archived', `${uses[0]}: the archive finishes`);
+    assert.deepEqual([f.slack.uninstalls, f.slack.deletes], [[], []], `${uses[0]}: nothing reaches Slack`);
+    assert.equal(f.slack.rotations, 1, `${uses[0]}: the configuration token is not even refreshed`);
+    assert.deepEqual(await readAppSecrets(f.secrets, APP.appId), stored, "the other Agent's record is untouched");
+    assert.deepEqual(f.transport.posted, [{ channelId: 'D_UOWNER', text: ARCHIVED_INSTALLED }]);
+    assert.deepEqual(f.retirements, ['left_for_owner']);
+    assert.equal(archived.slackPresence?.userGroupId, 'S1');
+    assert.deepEqual(lines.splice(0), uses.map((use) => ({
+      event: 'chickpea.agent_app.record_refused', use, agentId: 'agent_support', appId: APP.appId, recordAgentId: 'agent_default',
+    })));
   }
 });
 
@@ -296,5 +309,5 @@ test('an archive that stopped after the delete removed the record, before it was
   assert.equal(f.slack.deletes.length, 1, 'the app is deleted once');
   assert.equal(f.slack.uninstalls.length, 1);
   assert.equal(archived.slackPresence?.userGroupId, 'S1');
-  assert.deepEqual(f.transport.posted, [{ channelId: 'D_UOWNER', text: ARCHIVED_LEFT }], 'with no record left, Chickpea cannot tell the app is gone');
+  assert.deepEqual(f.transport.posted, [{ channelId: 'D_UOWNER', text: ARCHIVED_INSTALLED }], 'with no record left, Chickpea cannot tell the app is gone');
 });

@@ -49,7 +49,7 @@ export type AgentAppEvent =
   /** Slack never answered the uninstall of a live app, so it is still installed. */
   | { type: 'uninstall_unanswered'; at: number; restore: ActiveAgentApp }
   | { type: 'deleted'; at: number }
-  /** The app's record is missing, unreadable, or another Agent's, so Chickpea will not touch it. */
+  /** The app's record is unreadable or another Agent's, so Chickpea will not update the app or set its icon. */
   | { type: 'record_refused'; at: number }
   | { type: 'try_again'; at: number; startedBy: string; manifestFingerprint: string };
 
@@ -221,12 +221,6 @@ export function transition(app: AgentAppLifecycle, event: AgentAppEvent): AgentA
     case 'record_refused':
       if (app.state === 'created' || app.state === 'urls_set') {
         return attention(app.startedBy, at, 'urls_refused', 'created', { app: app.app });
-      }
-      if (app.state === 'uninstalling') {
-        return attention(app.startedBy, at, 'uninstall_failed', 'uninstalling', {
-          app: app.app,
-          ...(app.botUserId ? { botUserId: app.botUserId } : {}),
-        });
       }
       return WRONG_STATE;
     case 'try_again': {
