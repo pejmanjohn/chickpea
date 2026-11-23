@@ -10,6 +10,7 @@ import type { Context } from 'hono';
 import {
   type AgentAppBotCredentials,
   type AgentSlackAppHandoff,
+  admissionSpeaker,
   agentAppBotCredentials,
   agentAppHomeRows,
   agentAppPlacementFacts,
@@ -4339,6 +4340,22 @@ async function processSlackEvent(
     platformEnv,
     routedReads?.publicUrl,
   );
+  // The bot that answers this run, from where it was heard; routing read the Agent's current presence.
+  const liveAgent = routedBaseAssignment?.agent.id === assignment.agent.id ? routedBaseAssignment.agent : assignment.agent;
+  turn.speaker = await admissionSpeaker({
+    turn,
+    agentId: assignment.agent.id,
+    // Without the port no Agent app's bot answers.
+    presence: agentSlackAppsHost() ? liveAgent.slackPresence : undefined,
+    hearing: {
+      botUserId: resolvedBotUserId,
+      agentApp: Boolean(execution?.agentApp),
+      ...(execution?.installationBot && installation.botUserId
+        ? { installationBot: { botUserId: installation.botUserId, transport: execution.installationBot } }
+        : {}),
+    },
+    env: platformEnv,
+  });
 
   // Canonical Work admission stores a concrete configured model. A missing
   // model is an operator configuration error, but it must still follow the
@@ -4393,6 +4410,7 @@ async function processSlackEvent(
       installationHealth: installation.health,
       agentId: assignment.agent.id,
       agentName: assignment.agent.name,
+      speaker: turn.speaker,
       conversationKind: slackConversationKind(turn),
       ...(assignmentAvatarUrl ? { avatarUrl: assignmentAvatarUrl } : {}),
       ...(assignment.agent.slackPresence
@@ -5058,6 +5076,8 @@ async function settleIdleAgentSession(input: {
       installationHealth: input.installationHealth,
       agentId: agent.id,
       agentName: agent.name,
+      // Its client is Chickpea's bot, which posts as the Agent.
+      speaker: { kind: 'chickpea_as_agent' },
       conversationKind: slackConversationKind(input.turn),
       ...(avatarUrl ? { avatarUrl } : {}),
       ...(agent.slackPresence ? { slackPresence: agent.slackPresence } : {}),

@@ -117,7 +117,7 @@ async function resolvesAsInstallation(env: PlatformEnv | undefined, stores: AppS
   );
   realmReads.length = 0;
   const base = { workspaceId: 'T1', transportMode: 'direct', sharedAppReads: false, botToken: 'xoxb-installation' } as SlackInstallationExecutionContext;
-  assert.equal(await withAgentAppExecution(async () => base, env)('T1', support.id), base);
+  assert.equal(await withAgentAppExecution(async () => base, env)('T1', { agentId: support.id }), base);
   assert.deepEqual(realmReads, [], 'the executor never reads an Agent app secret');
 }
 

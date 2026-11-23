@@ -31,8 +31,10 @@ import {
 import {
   effectiveTurnSlackInstallationId,
   normalizeSlackInstallationExecutionError,
+  turnJobRunSpeaker,
   verifySlackInstallationTurnAccess,
   type SlackInstallationExecutionContext,
+  type SlackInstallationExecutionResolver,
 } from './installation-execution.ts';
 import { recordSlackInstallationUnavailable } from './installation-observability.ts';
 import {
@@ -162,7 +164,7 @@ export interface TurnExecutionPorts {
   statusRegistry?: SlackStatusRegistry;
   telemetry: ProductTelemetryCapture;
   /** Current credentials for one Slack installation, as the bot the Agent answers as. */
-  resolveInstallation(workspaceId: string, agentId?: string): Promise<SlackInstallationExecutionContext>;
+  resolveInstallation: SlackInstallationExecutionResolver;
   /**
    * A coding Sandbox Durable Object (a thread's, or a guest's own), once per
    * identity it may run under; none when this deployment has no Sandbox binding.
@@ -255,7 +257,10 @@ export async function executeTurnJob(
     : ports.startJudgment?.(job.turn, job.assignment, ports.env);
   let installationContext: SlackInstallationExecutionContext;
   try {
-    installationContext = await ports.resolveInstallation(effectiveTurnSlackInstallationId(job.turn), job.assignment.agentId);
+    installationContext = await ports.resolveInstallation(
+      effectiveTurnSlackInstallationId(job.turn),
+      turnJobRunSpeaker(job),
+    );
     await verifySlackInstallationTurnAccess(installationContext, job.turn);
   } catch (error) {
     const unavailable = normalizeSlackInstallationExecutionError(

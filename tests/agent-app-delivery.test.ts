@@ -24,7 +24,8 @@ import {
   retireAgentSlackApps,
   withAgentSlackAppHandoff,
 } from '../src/slack/agent-apps/host.ts';
-import { agentAppPresenceHooks, createAgentSlackAppRoutes } from '../src/slack/agent-apps/index.ts';
+import { agentAppPresenceHooks, createAgentSlackAppRoutes, withAgentAppExecution } from '../src/slack/agent-apps/index.ts';
+import { clearAdmissionMemberships } from '../src/slack/agent-apps/place.ts';
 import { readAppSecrets, saveConfigurationToken, writeAppSecrets } from '../src/slack/agent-apps/secrets.ts';
 import { createAgentAppSlackApi } from '../src/slack/agent-apps/slack-api.ts';
 import { generateCredentialKeyring, loadCredentialKeyring } from '../src/slack/credential-keyring.ts';
@@ -39,14 +40,24 @@ import {
   SlackCredentialRecoveryOnlyError,
   writeHostedSlackBotCredentials,
 } from '../src/slack/installation-credentials.ts';
+import {
+  resolveSlackInstallationExecutionContext,
+  SlackInstallationUnavailableError,
+  turnJobRunSpeaker,
+  verifySlackInstallationTurnAccess,
+} from '../src/slack/installation-execution.ts';
 import { stopNodeTurnRelay } from '../src/slack/node-turn-relay.ts';
+import { deliverAgentFailureFinal } from '../src/slack/run-turn.ts';
+import { redrawCardSetAsAgent } from '../src/slack/ui/agent-card-redraw.ts';
+import { validatePresentCards } from '../src/slack/ui/presentation-tools.ts';
+import { renderCards } from '../src/slack/ui/render-display.ts';
 import { recordDeliveredSlackAgentMessage } from '../src/slack/public-context.ts';
 import { SLACK_READ_MESSAGES, SlackReadError } from '../src/slack/reading/errors.ts';
 import { slackReadingService } from '../src/slack/reading/tools.ts';
 import { createDirectSlackTransport } from '../src/slack/transport/direct.ts';
 import type { PendingTurnJob } from '../src/slack/turn-jobs.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
-import { uiActionId, uiBlockId, uiSurfaceId, uiValue } from '../src/slack/ui/surface.ts';
+import { displaySurfaceId, uiActionId, uiBlockId, uiSurfaceId, uiValue, type UiSurfaceRecord } from '../src/slack/ui/surface.ts';
 import { escapeMrkdwn } from '../src/slack/ui/text.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
@@ -60,6 +71,9 @@ const AGENT_SECRET = 'agent-app-signing-secret';
 const AGENT_BOT = 'xoxb-agent-bot';
 const AGENT_BOT_USER = 'UAGENTBOT';
 const BOTS = [[MAIN_BOT, 'UBOT'], [AGENT_BOT, AGENT_BOT_USER]] as const;
+/** The Owner's DM with Chickpea's app. `D1` is their DM with Support's own app. */
+const CHICKPEA_DM = 'DCHICKPEA';
+const DM_BOTS: Partial<Record<string, string>> = { D1: AGENT_BOT, [CHICKPEA_DM]: MAIN_BOT };
 const HOST: AgentSlackAppsHost = {
   requestUrls: () => ({ events: 'https://cloud.test/e', interactions: 'https://cloud.test/i' }),
   redirectUri: 'https://cloud.test/slack/agent-apps/callback',
@@ -131,6 +145,7 @@ async function withHarness(
   invalidateSlackInstallationCredentialCache();
   invalidateStoredSlackPublicUrl();
   configureAgentSlackApps(HOST);
+  clearAdmissionMemberships();
   t.after(() => {
     globalThis.fetch = previousFetch;
     configureAgentSlackApps(undefined);
@@ -197,6 +212,12 @@ async function withHarness(
     }
     if (method === 'conversations.info' && options.privateChannels?.includes(channel) && outside.get(token ?? '')?.has(channel)) {
       return Response.json({ ok: false, error: 'channel_not_found' });
+    }
+    // As in Slack, a bot posts or edits only where it is: a Channel it is in, and its own app's DM.
+    if (['chat.postMessage', 'chat.update', 'chat.startStream', 'chat.appendStream', 'chat.stopStream'].includes(method)) {
+      if (channel.startsWith('C') && outside.get(token ?? '')?.has(channel)) return Response.json({ ok: false, error: 'not_in_channel' });
+      const dmBot = DM_BOTS[channel];
+      if (dmBot && token !== dmBot) return Response.json({ ok: false, error: 'channel_not_found' });
     }
     if (method === 'conversations.join') outside.get(token ?? '')?.delete(channel);
     if (method === 'conversations.invite') {
@@ -1427,4 +1448,200 @@ test("the Owner's App Home reads the permission bar's fact: without the user-gro
   const held = await home();
   assert.ok(held.includes(escapeMrkdwn('Give @finance its own Slack app')), 'with the token held the Owner can start');
   assert.equal(held.includes('one more Slack permission'), false);
+}));
+
+/** A person's reply in a thread of their DM with Chickpea's own app, as Chickpea's app hears it. */
+function chickpeaDmReply(root: string, ts: string) {
+  const now = Math.floor(Date.now() / 1_000);
+  return {
+    type: 'event_callback', event_id: `EvDm${ts}`, event_time: now, team_id: TEAM, api_app_id: MAIN_APP.appId,
+    authorizations: [{ team_id: TEAM, user_id: 'UBOT', is_bot: true, is_enterprise_install: false }],
+    event: { type: 'message', channel: CHICKPEA_DM, channel_type: 'im', user: 'U1', text: 'and the refunds?', ts, event_ts: ts, thread_ts: root },
+  };
+}
+
+/** A reply with no mention in a #C1 thread Support owns, as Chickpea's app hears it. */
+function channelThreadReply(root: string, ts: string) {
+  const heard = channelMessage(ts, 'and the refunds?').chickpea;
+  return { ...heard, event: { ...heard.event, thread_ts: root } };
+}
+
+/** Admits one turn of Support in the thread `root` owns, heard by Chickpea's app, and returns it. */
+async function admitSupportTurn(h: Harness, channelId: string, root: string, ts: string): Promise<PendingTurnJob> {
+  await h.stores.config.putAgentThreadRoute({ workspaceId: TEAM, channelId, threadTs: root, agentId: 'agent_support', agentGeneration: 1 });
+  const event = channelId === CHICKPEA_DM ? chickpeaDmReply(root, ts) : channelThreadReply(root, ts);
+  assert.equal((await h.deliverToChickpea(event)).status, 200);
+  const job = await pendingTurn(h.stores, (pending) => pending.turn.messageTs === ts);
+  assert.ok(job, 'the reply is a turn of Support');
+  assert.equal(job.assignment.agentId, 'agent_support');
+  return job;
+}
+
+/** Who a post or edit comes from: the bot token, and the name and picture it carries. */
+function sender(call: SlackCall | undefined) {
+  return call && { token: call.token, username: call.body.get('username'), picture: Boolean(call.body.get('icon_url')) };
+}
+
+const AS_SUPPORT = { token: MAIN_BOT, username: 'Support', picture: true };
+const OWN_BOT = { token: AGENT_BOT, username: null, picture: false };
+
+/** The run's own reply, as its executor posts one: the bot its resolver picks, checked for the place, under the owner its admission froze. */
+async function postAsRun(h: Harness, job: PendingTurnJob): Promise<SlackCall | undefined> {
+  const env = withHostedSlackApp(h.base, MAIN_APP);
+  const resolve = withAgentAppExecution((workspaceId) => resolveSlackInstallationExecutionContext(workspaceId, env), env);
+  const context = await resolve(TEAM, turnJobRunSpeaker(job));
+  await verifySlackInstallationTurnAccess(context, job.turn);
+  const before = h.calls.length;
+  await deliverAgentFailureFinal(job.turn, job.assignment, context.client, env, undefined, {
+    state: { getRunPresentation: async (runId) => h.stores.slackState.getRunPresentation!(runId) },
+    runId: job.runId!,
+    settingsStore: h.stores.settings,
+  });
+  return h.calls.slice(before).find((call) => call.method === 'chat.postMessage' || call.method === 'chat.startStream');
+}
+
+/** The bot tokens one read of #C2 by the run's reading tools used, other than Chickpea's identity check. */
+async function readingTokens(h: Harness, job: PendingTurnJob): Promise<Array<string | undefined>> {
+  await h.stores.config.putChannel({ workspaceId: TEAM, channelId: 'C2', label: 'refunds', lifecycle: 'active' }, 0).catch(() => undefined);
+  if (!(await h.stores.config.listAgentChannelGrants(TEAM, 'C2')).some((grant) => grant.agentId === 'agent_support')) {
+    await h.stores.config.putAgentChannelGrant({
+      workspaceId: TEAM, channelId: 'C2', agentId: 'agent_support', status: 'active',
+      createdByMembershipId: h.ownerMembershipId, channelLabel: 'refunds', channelIsPrivate: false,
+    }, 0);
+  }
+  const service = await slackReadingService({ agentId: 'agent_support', actorMembershipId: h.ownerMembershipId }, {
+    agentId: 'agent_support', workspaceId: TEAM, channelId: job.turn.channelId, threadTs: job.turn.threadTs,
+    conversationKind: job.turn.channelType === 'im' ? 'im' : 'channel', slackUserId: 'U1', eventId: job.turn.eventId,
+    messageTs: job.turn.messageTs, turnJobId: job.id,
+  }, withHostedSlackApp(h.base, MAIN_APP));
+  const before = h.calls.length;
+  await service.readChannel({ target: { channelId: 'C2' } }).catch(() => undefined);
+  return [...new Set(h.calls.slice(before).filter((call) => call.method !== 'auth.test').map((call) => call.token))];
+}
+
+function personaOnAppToken(h: Harness): SlackCall[] {
+  return h.calls.filter((call) => call.token === AGENT_BOT && call.method.startsWith('chat.') &&
+    (call.body.has('username') || call.body.has('icon_url')));
+}
+
+test("a live app Agent's reply in a thread in Chickpea's DM posts with Chickpea's token under the Agent's name and picture", async (t) => withHarness(t, async (h) => {
+  const job = await admitSupportTurn(h, CHICKPEA_DM, '1900003000.000100', '1900003000.000200');
+  assert.deepEqual(job.turn.speaker, { kind: 'chickpea_as_agent' }, "Chickpea's bot heard it in its own DM, where the app's bot cannot post");
+  assert.equal(job.turn.dmBotUserId, undefined, "no marker: Chickpea's DM");
+  assert.deepEqual(sender(await postAsRun(h, job)), AS_SUPPORT);
+  assert.deepEqual(await readingTokens(h, job), [MAIN_BOT], 'it reads the thread it answers in as the bot that answers');
+}));
+
+test("a live app Agent's turn in its own DM is marked with its bot, and posts and reads as that bot with no persona", async (t) => withHarness(t, async (h) => {
+  assert.equal((await h.deliver('events', dmEvent())).status, 200);
+  const job = await pendingTurn(h.stores, () => true);
+  assert.ok(job);
+  assert.equal(job.turn.dmBotUserId, AGENT_BOT_USER);
+  assert.deepEqual(job.turn.speaker, { kind: 'own_bot', botUserId: AGENT_BOT_USER });
+  assert.deepEqual(sender(await postAsRun(h, job)), OWN_BOT);
+  assert.deepEqual(await readingTokens(h, job), [AGENT_BOT]);
+  assert.deepEqual(personaOnAppToken(h), []);
+}));
+
+test("a live app Agent's reply in a Channel its bot is not in, where Chickpea's bot is, posts through Chickpea as the Agent instead of failing not_in_channel", async (t) => withHarness(t, async (h) => {
+  const job = await admitSupportTurn(h, 'C1', '1900003100.000100', '1900003100.000200');
+  assert.deepEqual(job.turn.speaker, { kind: 'chickpea_as_agent' });
+  assert.deepEqual(
+    h.calls.filter((call) => call.token === AGENT_BOT).map((call) => `${call.method} ${call.body.get('channel')}`),
+    ['conversations.info C1'],
+    "the app's bot is asked once, at admission, whether it is in the Channel",
+  );
+  assert.deepEqual(sender(await postAsRun(h, job)), AS_SUPPORT);
+  assert.deepEqual(await readingTokens(h, job), [MAIN_BOT]);
+}, { notMemberOf: { [AGENT_BOT]: ['C1'] } }));
+
+test("a live app Agent's reply in a Channel its bot is in answers as its own bot, even when Chickpea's bot heard it", async (t) => withHarness(t, async (h) => {
+  const job = await admitSupportTurn(h, 'C1', '1900003200.000100', '1900003200.000200');
+  assert.deepEqual(job.turn.speaker, { kind: 'own_bot', botUserId: AGENT_BOT_USER });
+  const before = h.calls.length;
+  assert.deepEqual(sender(await postAsRun(h, job)), OWN_BOT);
+  assert.deepEqual(h.calls.slice(before).filter((call) => call.method === 'conversations.info').map((call) => call.token), [],
+    "the run reuses admission's membership check instead of asking Slack again");
+  assert.deepEqual(await readingTokens(h, job), [AGENT_BOT]);
+  assert.deepEqual(personaOnAppToken(h), []);
+}));
+
+test('an Agent whose app is not live replies under its own name through Chickpea, not as plain Chickpea', async (t) => withHarness(t, async (h) => {
+  const app = { appId: AGENT_APP, clientId: '1.client' };
+  const states: Array<[string, () => Promise<void>]> = [
+    ['waiting for Allow', () => setSupportApp(h, {
+      state: 'awaiting_consent', at: Date.now(), startedBy: 'U1', app, icon: 'agent_avatar', allowDm: { channelId: 'DOWNER', ts: '1.1' },
+    })],
+    ['removed', () => setSupportApp(h, { state: 'needs_attention', at: Date.now(), startedBy: 'U1', reason: 'app_removed', resume: 'icon_set', app })],
+    ['live with a token that cannot be opened', async () => {
+      await setSupportApp(h, { state: 'active', at: h.installedAt, app, icon: 'agent_avatar', botUserId: AGENT_BOT_USER, installedAt: h.installedAt, installedBy: 'U1' });
+      const stored = await readAppSecrets(h.secrets(), AGENT_APP);
+      assert.ok(stored);
+      await writeAppSecrets({ ...h.secrets(), keyring: generateCredentialKeyring('key_lost') }, AGENT_APP, 'agent_support', stored.secrets, stored.revision);
+    }],
+  ];
+  let second = 0;
+  for (const [name, put] of states) {
+    await put();
+    for (const channelId of [CHICKPEA_DM, 'C1']) {
+      second += 1;
+      const root = `19000033${String(second).padStart(2, '0')}.000100`;
+      const job = await admitSupportTurn(h, channelId, root, root.replace(/100$/, '200'));
+      assert.deepEqual(job.turn.speaker, { kind: 'chickpea_as_agent' }, `${name}, ${channelId}`);
+      assert.deepEqual(sender(await postAsRun(h, job)), AS_SUPPORT, `${name}, ${channelId}`);
+      assert.deepEqual(await readingTokens(h, job), [MAIN_BOT], `${name}, ${channelId}`);
+    }
+  }
+  assert.deepEqual(personaOnAppToken(h), []);
+}));
+
+test('the speaker is decided once: the app bot joining after admission does not move the run off Chickpea, and an app token never carries a persona', async (t) => withHarness(t, async (h) => {
+  const job = await admitSupportTurn(h, 'C1', '1900003400.000100', '1900003400.000200');
+  assert.deepEqual(job.turn.speaker, { kind: 'chickpea_as_agent' });
+  // Support's bot joins #C1 while the turn waits.
+  await fetch('https://slack.com/api/conversations.join', {
+    method: 'POST', headers: { authorization: `Bearer ${AGENT_BOT}` }, body: new URLSearchParams({ channel: 'C1' }),
+  });
+  clearAdmissionMemberships();
+  assert.deepEqual(sender(await postAsRun(h, job)), AS_SUPPORT, 'the run posts with the bot its admission chose');
+
+  const later = await admitSupportTurn(h, 'C1', '1900003400.000100', '1900003400.000300');
+  assert.deepEqual(later.turn.speaker, { kind: 'own_bot', botUserId: AGENT_BOT_USER }, 'the next turn is admitted for the bot now there');
+  assert.deepEqual(sender(await postAsRun(h, later)), OWN_BOT);
+  assert.deepEqual(personaOnAppToken(h), []);
+}, { notMemberOf: { [AGENT_BOT]: ['C1'] } }));
+
+test('a card is redrawn by the bot that posted it', async (t) => withHarness(t, async (h) => {
+  const env = withHostedSlackApp(h.base, MAIN_APP);
+  const spec = validatePresentCards({ caption: 'Refunds', cards: [{ title: 'Order 1', actions: [{ label: 'Refund' }, { label: 'Skip' }] }] });
+  const redraw = async (job: PendingTurnJob) => {
+    const now = Date.now();
+    const surface: UiSurfaceRecord = {
+      id: displaySurfaceId(job.id, 0), namespace: 'ui', workspaceId: TEAM, channelId: job.turn.channelId, threadTs: job.turn.threadTs,
+      conversationThreadTs: job.turn.threadTs, conversationKind: job.turn.channelType === 'im' ? 'im' : 'channel', agentId: 'agent_support',
+      turnJobId: job.id, requesterUserId: 'U1', spec: { kind: 'cards', cards: spec }, status: 'open', messageTs: '1900003500.000900',
+      createdAt: now, updatedAt: now, expiresAt: now + 60_000,
+    };
+    const answerMessage = { ts: '1900003500.000900', text: 'Refunds', blocks: renderCards(spec, surface.id).blocks };
+    const before = h.calls.length;
+    assert.equal(await redrawCardSetAsAgent(env, 'agent_support', { ...surface, answerMessage }, job.id), true);
+    return sender(h.calls.slice(before).find((call) => call.method === 'chat.update'));
+  };
+  const throughChickpea = await admitSupportTurn(h, CHICKPEA_DM, '1900003500.000100', '1900003500.000200');
+  assert.deepEqual(await redraw(throughChickpea), { token: MAIN_BOT, username: null, picture: false },
+    "a card Chickpea's bot posted is edited by Chickpea's bot");
+  assert.equal((await h.deliver('events', dmEvent())).status, 200);
+  const own = await pendingTurn(h.stores, (pending) => pending.turn.channelId === 'D1');
+  assert.ok(own);
+  assert.deepEqual(await redraw(own), OWN_BOT, "a card the app's bot posted is edited by the app's bot");
+}));
+
+test("a run whose own bot can no longer post ends unavailable: nothing posts, not as plain Chickpea and not with a persona on the app's token", async (t) => withHarness(t, async (h) => {
+  const job = await admitSupportTurn(h, 'C1', '1900003600.000100', '1900003600.000200');
+  assert.deepEqual(job.turn.speaker, { kind: 'own_bot', botUserId: AGENT_BOT_USER });
+  await setSupportApp(h, { state: 'needs_attention', at: Date.now(), startedBy: 'U1', reason: 'app_removed', resume: 'icon_set', app: { appId: AGENT_APP, clientId: '1.client' } });
+  const before = h.calls.length;
+  await assert.rejects(() => postAsRun(h, job), (error: unknown) =>
+    error instanceof SlackInstallationUnavailableError && error.reasonCode === 'agent_app_unavailable' && error.retryable === false);
+  assert.deepEqual(h.calls.slice(before).filter((call) => call.method.startsWith('chat.')), []);
 }));

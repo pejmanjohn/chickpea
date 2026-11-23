@@ -120,43 +120,81 @@ async function withHarness(t: TestContext, run: (h: Harness) => Promise<void>): 
   });
 }
 
-test("a turn of an Agent with a live app runs as that Agent's own bot, cached per Agent", async (t) => withHarness(t, async (h) => {
+const OWN_BOT = { agentId: 'agent_support', speaker: { kind: 'own_bot', botUserId: AGENT_BOT_USER } } as const;
+const AS_AGENT = { agentId: 'agent_support', speaker: { kind: 'chickpea_as_agent' } } as const;
+
+test("a run whose speaker is the Agent's own bot runs as that bot, cached per Agent", async (t) => withHarness(t, async (h) => {
   await h.storeApp(LIVE);
-  const context = await h.resolve(TEAM, 'agent_support');
+  const context = await h.resolve(TEAM, OWN_BOT);
   assert.equal(context.botToken, AGENT_BOT);
   assert.equal(context.botUserId, AGENT_BOT_USER);
   assert.equal(context.displayName, 'Support');
   assert.equal(context.transportMode, 'direct');
   assert.ok(context.client, "the Agent's own client");
   assert.deepEqual(h.baseCalls, [TEAM], "the installation's own resolution runs first, and its refusals would stand");
-  assert.equal(await h.resolve(TEAM, 'agent_support'), context, 'resolved once per Agent');
+  assert.equal(await h.resolve(TEAM, OWN_BOT), context, 'resolved once per Agent');
 
-  assert.equal(await h.resolve(TEAM, 'agent_finance'), h.base, 'a user-group Agent answers as the installation bot');
-  assert.equal(await h.resolve(TEAM, CHICKPEA_AGENT_ID), h.base);
+  assert.equal(await h.resolve(TEAM, { agentId: 'agent_finance' }), h.base, 'a user-group Agent answers as the installation bot');
+  assert.equal(await h.resolve(TEAM, { agentId: CHICKPEA_AGENT_ID }), h.base);
   assert.equal(await h.resolve(TEAM), h.base, 'a resolution without an Agent is the base');
   assert.deepEqual(h.baseCalls, [TEAM, TEAM, TEAM, TEAM]);
 }));
 
-test('a broken app never answers as Chickpea: the turn is unavailable', async (t) => withHarness(t, async (h) => {
-  await h.storeApp(REMOVED, { botToken: undefined });
-  await assert.rejects(() => h.resolve(TEAM, 'agent_support'), (error: unknown) =>
-    error instanceof SlackInstallationUnavailableError && error.reasonCode === 'agent_app_unavailable' && error.retryable === false);
-  assert.deepEqual(h.baseCalls, []);
+test("a live app Agent's run whose speaker is Chickpea's bot runs as Chickpea's bot", async (t) => withHarness(t, async (h) => {
+  await h.storeApp(LIVE);
+  assert.equal(await h.resolve(TEAM, AS_AGENT), h.base);
+  assert.equal(
+    await h.resolve(TEAM, { agentId: 'agent_support', speaker: { kind: 'unavailable', reason: 'no_bot_can_post' } }),
+    h.base,
+    "where no bot can post, Chickpea's bot is resolved and the turn's access check refuses it",
+  );
+  assert.deepEqual(h.baseCalls, [TEAM, TEAM]);
+}));
 
-  await h.storeApp(LIVE, { botToken: undefined });
-  await assert.rejects(() => h.resolve(TEAM, 'agent_support'), (error: unknown) =>
+test('a run stored before its speaker keeps the earlier rule: the live app bot, else the installation bot for a user-group Agent', async (t) => withHarness(t, async (h) => {
+  await h.storeApp(REMOVED, { botToken: undefined });
+  await assert.rejects(() => h.resolve(TEAM, { agentId: 'agent_support' }), (error: unknown) =>
     error instanceof SlackInstallationUnavailableError && error.reasonCode === 'agent_app_unavailable');
-  assert.deepEqual(h.baseCalls, [], 'a live record without a token still never falls back to the installation bot');
+  await h.storeApp(LIVE);
+  assert.equal((await h.resolve(TEAM, { agentId: 'agent_support' })).botToken, AGENT_BOT);
+  assert.equal(await h.resolve(TEAM, { agentId: 'agent_finance' }), h.base);
+}));
+
+test("an app that is no longer live answers through Chickpea's bot where it can, and its own DM's run ends unavailable", async (t) => withHarness(t, async (h) => {
+  await h.storeApp(REMOVED, { botToken: undefined });
+  assert.equal(await h.resolve(TEAM, AS_AGENT), h.base, "Chickpea's bot posts as the Agent; the app's health does not matter");
+  await assert.rejects(
+    () => h.resolve(TEAM, { agentId: 'agent_support', speaker: { kind: 'unavailable', reason: 'app_removed' } }),
+    (error: unknown) => error instanceof SlackInstallationUnavailableError &&
+      error.reasonCode === 'agent_app_unavailable' && error.retryable === false,
+  );
+  assert.deepEqual(h.baseCalls, [TEAM], 'the app DM run resolves no bot');
+}));
+
+test("a run whose own bot can no longer post ends unavailable: no persona on an app token, and never Chickpea's bot under the app's owner", async (t) => withHarness(t, async (h) => {
+  await h.storeApp(REMOVED, { botToken: undefined });
+  await assert.rejects(() => h.resolve(TEAM, OWN_BOT), (error: unknown) =>
+    error instanceof SlackInstallationUnavailableError && error.reasonCode === 'agent_app_unavailable' && error.retryable === false);
+  await h.storeApp(LIVE, { botToken: undefined });
+  await assert.rejects(() => h.resolve(TEAM, OWN_BOT), (error: unknown) =>
+    error instanceof SlackInstallationUnavailableError && error.reasonCode === 'agent_app_unavailable');
+  await h.storeApp(LIVE);
+  await assert.rejects(
+    () => h.resolve(TEAM, { agentId: 'agent_support', speaker: { kind: 'own_bot', botUserId: 'UOTHERBOT' } }),
+    (error: unknown) => error instanceof SlackInstallationUnavailableError && error.reasonCode === 'agent_app_unavailable',
+    'a run admitted for another bot of this Agent does not post as the current one',
+  );
+  assert.deepEqual(h.baseCalls, [], "the installation's bot is never handed to a run that speaks as the app");
 }));
 
 test('a store that cannot be read fails the turn rather than answering as the installation bot', async (t) => withHarness(t, async (h) => {
   await h.storeApp(LIVE);
   const getAgent = h.stores.config.getAgent.bind(h.stores.config);
   h.stores.config.getAgent = async () => { throw new Error('store unreachable'); };
-  await assert.rejects(() => h.resolve(TEAM, 'agent_support'), /store unreachable/);
+  await assert.rejects(() => h.resolve(TEAM, OWN_BOT), /store unreachable/);
   assert.deepEqual(h.baseCalls, []);
   h.stores.config.getAgent = getAgent;
-  assert.equal((await h.resolve(TEAM, 'agent_support')).botToken, AGENT_BOT, 'a failed lookup is not cached');
+  assert.equal((await h.resolve(TEAM, OWN_BOT)).botToken, AGENT_BOT, 'a failed lookup is not cached');
 }));
 
 test("the installation's own refusal wins over a live app: a revoked or gated installation runs no Agent bot", async (t) => withHarness(t, async (h) => {
@@ -165,10 +203,10 @@ test("the installation's own refusal wins over a live app: a revoked or gated in
     h.baseCalls.push(workspaceId);
     throw new SlackInstallationUnavailableError(workspaceId, 'installation_revoked');
   }, h.env);
-  await assert.rejects(() => refused(TEAM, 'agent_support'), (error: unknown) =>
+  await assert.rejects(() => refused(TEAM, OWN_BOT), (error: unknown) =>
     error instanceof SlackInstallationUnavailableError && error.reasonCode === 'installation_revoked');
   assert.deepEqual(h.baseCalls, [TEAM], 'the installation is checked before the Agent bot is considered');
-  await assert.rejects(() => refused(TEAM, 'agent_support'), (error: unknown) =>
+  await assert.rejects(() => refused(TEAM, OWN_BOT), (error: unknown) =>
     error instanceof SlackInstallationUnavailableError && error.reasonCode === 'installation_revoked', 'a refusal is not cached as a context');
 }));
 
@@ -202,7 +240,10 @@ test("one realm read timeout during an app Agent's DM turn retries the turn inst
   const options: TurnExecutionOptions = { latency: { lane: 'cloudflare', executor: 'alarm' }, onRetry: (afterMs) => { retries.push(afterMs); } };
   const job = {
     id: 'turn_dm', evtKey: 'evt:dm', msgKey: 'msg:dm',
-    turn: { workspaceId: TEAM, channelId: 'D1', channelType: 'im', threadTs: '1.1', messageTs: '1.1', userId: 'U1', text: 'hello', source: 'dm_message', eventId: 'Ev1' },
+    turn: {
+      workspaceId: TEAM, channelId: 'D1', channelType: 'im', threadTs: '1.1', messageTs: '1.1', userId: 'U1', text: 'hello', source: 'dm_message', eventId: 'Ev1',
+      dmBotUserId: AGENT_BOT_USER, speaker: OWN_BOT.speaker,
+    },
     assignment: { agentId: 'agent_support' }, executionAuthority: 'legacy', attempts: 0, progress: {},
   } as unknown as PendingTurnJob;
 
@@ -253,7 +294,7 @@ test("Slack not answering an archive's uninstall leaves the Agent answering as i
   assert.deepEqual(kept?.kind === 'agent_app' && kept.app, LIVE, 'the app is live as it was');
   assert.equal(kept?.desiredState, 'active');
   assert.equal(kept?.health, 'healthy');
-  assert.equal((await h.resolve(TEAM, 'agent_support')).botToken, AGENT_BOT, "the Agent still answers as its own bot");
+  assert.equal((await h.resolve(TEAM, OWN_BOT)).botToken, AGENT_BOT, "the Agent still answers as its own bot");
   assert.deepEqual(posted, [], 'a Slack that did not answer is not news for the Owner');
   assert.deepEqual(deletes, []);
 
@@ -267,26 +308,43 @@ test("Slack not answering an archive's uninstall leaves the Agent answering as i
 test('without the port the resolver is the base resolver, even for an Agent whose record names an app', async (t) => withHarness(t, async (h) => {
   await h.storeApp(LIVE);
   configureAgentSlackApps(undefined);
-  assert.equal(await h.resolve(TEAM, 'agent_support'), h.base);
+  assert.equal(await h.resolve(TEAM, OWN_BOT), h.base);
   assert.deepEqual(h.baseCalls, [TEAM]);
 }));
 
-test('a live Agent app owns its presentation by name only, and replies carry no persona override', () => {
-  const owner = selectSlackPresentationOwner({
+test("the run's owner follows its speaker: the app's own bot by name only, Chickpea's bot always under the Agent's persona", () => {
+  const input = {
     installationHealth: 'healthy', agentId: 'agent_support', agentName: 'Support', conversationKind: 'channel',
-    avatarUrl: 'https://core.test/avatar.png', slackPresence: appPresence(LIVE),
-  });
+    avatarUrl: 'https://core.test/avatar.png',
+  } as const;
+  const owner = selectSlackPresentationOwner({ ...input, speaker: OWN_BOT.speaker, slackPresence: appPresence(LIVE) });
   assert.deepEqual(owner, { kind: 'agent_app', agentName: 'Support' });
-  const broken = selectSlackPresentationOwner({
-    installationHealth: 'healthy', agentId: 'agent_support', agentName: 'Support', conversationKind: 'channel',
-    avatarUrl: 'https://core.test/avatar.png', slackPresence: { ...appPresence(REMOVED), health: 'needs_attention' },
-  });
-  assert.deepEqual(broken, { kind: 'chickpea' });
+  const persona = { kind: 'selected_agent', persona: { name: 'Support', avatarUrl: 'https://core.test/avatar.png', avatarRevision: 1 } };
+  assert.deepEqual(
+    selectSlackPresentationOwner({ ...input, speaker: AS_AGENT.speaker, slackPresence: appPresence(LIVE) }),
+    persona,
+    "a live app Agent speaking through Chickpea's bot keeps its own name and picture",
+  );
+  for (const presence of [{ ...appPresence(REMOVED), health: 'needs_attention' as const }, { ...appPresence(LIVE), desiredState: 'disabled' as const, health: 'pending' as const }]) {
+    assert.deepEqual(
+      selectSlackPresentationOwner({ ...input, speaker: AS_AGENT.speaker, slackPresence: presence }),
+      persona,
+      'an app that is not live still answers under its own name, never as plain Chickpea',
+    );
+  }
   const grouped = selectSlackPresentationOwner({
-    installationHealth: 'healthy', agentId: 'agent_finance', agentName: 'Finance', conversationKind: 'channel',
+    ...input, agentId: 'agent_finance', agentName: 'Finance', speaker: AS_AGENT.speaker,
     avatarUrl: 'https://core.test/finance.png', slackPresence: groupPresence,
   });
   assert.equal(grouped.kind, 'selected_agent');
+  assert.deepEqual(
+    selectSlackPresentationOwner({
+      ...input, agentId: 'agent_finance', agentName: 'Finance', speaker: AS_AGENT.speaker,
+      slackPresence: { ...groupPresence, health: 'needs_attention' },
+    }),
+    { kind: 'chickpea' },
+    'a user-group Agent whose group is not healthy posts as Chickpea, as before',
+  );
 
   const assignment = { agentId: 'agent_support', agent: agent('agent_support', 'Support', appPresence(LIVE)) } as unknown as ResolvedAssignment;
   assert.deepEqual(turnReplySender(assignment, owner, 'https://core.test/avatar.png'), { agentName: 'Support' });

@@ -25,6 +25,7 @@ import { resolveChickpeaGatewayUrl } from './gateway/runtime.ts';
 import { createGatewaySlackWebClient } from './gateway/web-client.ts';
 import { sha256HexNode } from '../security/digest.ts';
 import type { NormalizedSlackTurn } from './types.ts';
+import type { SlackSpeaker } from './speaker.ts';
 import { slackTurnSurface } from './thread-key.ts';
 
 type MaybePromise<T> = T | Promise<T>;
@@ -46,11 +47,22 @@ export interface SlackInstallationExecutionContext {
   client: WebClient;
 }
 
+/** The Agent a run answers as, and the speaker its admission stored (absent on older rows). */
+export interface SlackRunSpeaker {
+  agentId: string;
+  speaker?: SlackSpeaker;
+}
+
 export type SlackInstallationExecutionResolver = (
   workspaceId: string,
-  /** The Agent the turn runs as; one with its own Slack app answers as that bot. */
-  agentId?: string,
+  /** The run's Agent and speaker; a run whose speaker is its Agent's own bot answers as that bot. */
+  run?: SlackRunSpeaker,
 ) => Promise<SlackInstallationExecutionContext>;
+
+/** A turn job's run, as its resolver takes it. */
+export function turnJobRunSpeaker(job: { turn: NormalizedSlackTurn; assignment: { agentId: string } }): SlackRunSpeaker {
+  return { agentId: job.assignment.agentId, ...(job.turn.speaker ? { speaker: job.turn.speaker } : {}) };
+}
 
 export type SlackInstallationAccessVerifier = (
   context: SlackInstallationExecutionContext,
@@ -182,7 +194,7 @@ export async function resolveSlackInstallationExecutionContext(
   };
 }
 
-const ADMISSION_MEMBERSHIP_TTL_MS = 60_000;
+export const ADMISSION_MEMBERSHIP_TTL_MS = 60_000;
 
 export async function verifySlackInstallationTurnAccess(
   context: SlackInstallationExecutionContext,

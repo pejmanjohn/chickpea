@@ -151,7 +151,7 @@ async function withHarness(t: TestContext, run: (h: Harness) => Promise<void>): 
     botUserId: WORKSPACE_BOT_USER, client: {} as SlackInstallationExecutionContext['client'],
   };
   const resolve = withAgentAppExecution(async () => base, env);
-  await run({ env, stores, agent, calls, history, context: () => resolve(TEAM, agent.id) });
+  await run({ env, stores, agent, calls, history, context: () => resolve(TEAM, { agentId: agent.id }) });
 }
 
 function assignmentFor(agent: CustomAgentConfig, channelId: string): ResolvedAssignment {

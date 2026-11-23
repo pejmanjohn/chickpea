@@ -74,14 +74,18 @@ export async function agentAppBotCredentials(
 }
 
 /**
- * A turn resolver that answers as the Agent's own bot whenever the Agent has
- * a live app, and as the installation's bot otherwise. The installation's
- * own resolution runs first either way, so every refusal it enforces (a
- * revoked, erased or gated installation) stands for the Agent app too.
- * Without the port it is the base resolver and never reads the realm. A
- * broken app throws, so a reply is never posted as Chickpea on its behalf.
- * A caller whose base context refuses rate-limited calls passes
- * `rejectRateLimitedCalls` so the app's client refuses them too.
+ * A turn resolver that answers as the bot its run's admission chose: the
+ * Agent's own app's bot for an `own_bot` speaker, the installation's bot for
+ * every other. The installation's own resolution runs first either way, so
+ * every refusal it enforces (a revoked, erased or gated installation) stands
+ * for the Agent app too. Without the port it is the base resolver and never
+ * reads the realm. An `own_bot` run whose app is no longer live, or whose
+ * token cannot be read, throws: its owner names the app's bot, so Chickpea's
+ * bot never posts for it without the Agent's persona. A run stored before its
+ * speaker was keeps the earlier rule: the live app's bot, else the
+ * installation's for a user-group Agent, else unavailable. A caller whose
+ * base context refuses rate-limited calls passes `rejectRateLimitedCalls` so
+ * the app's client refuses them too.
  */
 export function withAgentAppExecution(
   base: SlackInstallationExecutionResolver,
@@ -89,14 +93,20 @@ export function withAgentAppExecution(
   options: { rejectRateLimitedCalls?: boolean } = {},
 ): SlackInstallationExecutionResolver {
   const contexts = new Map<string, Promise<SlackInstallationExecutionContext>>();
-  return (workspaceId, agentId) => {
-    if (!agentId || !agentSlackAppsHost()) return base(workspaceId);
-    const key = `${workspaceId}\u0000${agentId}`;
+  return (workspaceId, run) => {
+    if (!run || !agentSlackAppsHost()) return base(workspaceId);
+    const { agentId, speaker } = run;
+    if (speaker?.kind === 'unavailable' && speaker.reason === 'app_removed') {
+      return Promise.reject(new SlackInstallationUnavailableError(workspaceId, 'agent_app_unavailable', { retryable: false }));
+    }
+    // Chickpea's bot answers; where it cannot post, the turn's access check says so.
+    if (speaker && speaker.kind !== 'own_bot') return base(workspaceId);
+    const key = `${workspaceId}\u0000${agentId}\u0000${speaker ? speaker.botUserId : ''}`;
     let context = contexts.get(key);
     if (!context) {
       context = agentAppExecutionBot(env, agentId).then(async (lookup): Promise<SlackInstallationExecutionContext> => {
-        if (lookup.kind === 'not_app') return base(workspaceId);
-        if (lookup.kind === 'unavailable') {
+        if (!speaker && lookup.kind === 'not_app') return base(workspaceId);
+        if (lookup.kind !== 'live' || (speaker && speaker.botUserId !== lookup.bot.botUserId)) {
           throw new SlackInstallationUnavailableError(workspaceId, 'agent_app_unavailable', { retryable: false });
         }
         await base(workspaceId);

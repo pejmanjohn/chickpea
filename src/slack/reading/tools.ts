@@ -14,7 +14,7 @@ import {
 } from '../../config/state-backend.ts';
 import { parseSlackManagementSignal, type SlackManagementSignal } from '../../management/slack-tools.ts';
 import { type AgentAppBot, listAgentAppBots } from '../agent-app-bots.ts';
-import { withAgentAppExecution } from '../agent-apps/index.ts';
+import { storedRunSpeaker, withAgentAppExecution } from '../agent-apps/index.ts';
 import {
   resolveSlackInstallationExecutionContext,
   type SlackInstallationExecutionContext,
@@ -137,7 +137,10 @@ export async function slackReadingService(
       credentialDependencies: getSlackCredentialResolutionDependencies(env),
       rejectRateLimitedCalls: true,
     });
-    [reader, appBots] = await Promise.all([readingBot(workspace, env, plan.agentId), listAgentAppBots(config)]);
+    [reader, appBots] = await Promise.all([
+      readingBot(workspace, env, plan.agentId, signal.turnJobId),
+      listAgentAppBots(config),
+    ]);
   } catch {
     throw new SlackReadError('unavailable', SLACK_READ_MESSAGES.unavailable);
   }
@@ -191,16 +194,23 @@ export function turnSlackReadAuthority(
 }
 
 /**
- * The bot an Agent reads as: its own app's while that app is live, so it
- * reads the Channels its bot is in, and Chickpea's otherwise.
+ * The bot an Agent reads as: the one its run speaks as, so an Agent answering
+ * through Chickpea's bot reads the thread it answers in, and one answering as
+ * its own app's bot reads the Channels that bot is in. A run stored before
+ * its speaker reads as the live app's bot, and Chickpea's otherwise.
  */
 async function readingBot(
   workspace: SlackInstallationExecutionContext,
   env: PlatformEnv | undefined,
   agentId: string,
+  turnJobId: string,
 ): Promise<SlackInstallationExecutionContext> {
+  const speaker = await storedRunSpeaker(env, turnJobId);
   try {
-    return await withAgentAppExecution(async () => workspace, env, { rejectRateLimitedCalls: true })(workspace.workspaceId, agentId);
+    return await withAgentAppExecution(async () => workspace, env, { rejectRateLimitedCalls: true })(
+      workspace.workspaceId,
+      { agentId, ...(speaker ? { speaker } : {}) },
+    );
   } catch (error) {
     if (error instanceof SlackInstallationUnavailableError && error.reasonCode === 'agent_app_unavailable') return workspace;
     throw error;

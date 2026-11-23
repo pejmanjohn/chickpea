@@ -40,6 +40,7 @@ import { createPlatformProductTelemetry } from '../telemetry/platform.ts';
 import {
   cacheSlackInstallationExecutionContexts,
   effectiveTurnSlackInstallationId,
+  turnJobRunSpeaker,
   resolveSlackInstallationExecutionContext,
   seedGatewayIdentity,
   verifySlackInstallationTurnAccess,
@@ -599,7 +600,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
       repairInteraction: async (job) => {
         const progress = job.progress.slackInteraction;
         if (!progress) return;
-        const installation = await resolveInstallation(effectiveTurnSlackInstallationId(job.turn));
+        const installation = await resolveInstallation(effectiveTurnSlackInstallationId(job.turn), turnJobRunSpeaker(job));
         await verifySlackInstallationTurnAccess(installation, job.turn);
         await repairSlackInteractionProgress(
           job.turn,

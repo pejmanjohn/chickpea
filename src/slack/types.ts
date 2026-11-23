@@ -1,4 +1,5 @@
 import type { SlackInteractionIntent } from './interaction-intent.ts';
+import type { SlackSpeaker } from './speaker.ts';
 
 export interface SlackAppMentionEvent {
   type: 'app_mention';
@@ -214,7 +215,21 @@ export interface NormalizedSlackTurn {
    * or about to be. Absent when admission read no facts, as for a DM.
    */
   sharedChannel?: boolean;
+  /**
+   * A bot's membership of the Channel, verified at admission: the bot that
+   * heard the turn, or the bot that answers it when that is the other one.
+   */
   channelMembership?: { botUserId: string; verifiedAt: number };
+  /**
+   * Set at admission when an Agent's own app heard this DM: that app's bot.
+   * Absent for Chickpea's DM, as on every row stored before it existed.
+   */
+  dmBotUserId?: string;
+  /**
+   * The bot that answers this turn, decided once at admission from where it
+   * was heard (speakerFor). Absent on rows admitted before it was stored.
+   */
+  speaker?: SlackSpeaker;
   contextMode: SlackContextMode;
   reaction?: string;
   reactionTargetTs?: string;

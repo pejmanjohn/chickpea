@@ -12759,6 +12759,7 @@
         "channelType?": "string",
         "coAddressed?": "#SlackCoAddressed",
         "contextMode": "#SlackContextMode",
+        "dmBotUserId?": "string",
         "edit?": "#SlackTurnEdit",
         "eventId": "string",
         "frontDesk?": "#SlackFrontDeskTurn",
@@ -12862,6 +12863,32 @@
         "setupWake?": "#SlackSetupWake",
         "sharedChannel?": "boolean",
         "source": "#SlackTurnSource",
+        "speaker?": {
+          "union": [
+            {
+              "object": {
+                "botUserId": "string",
+                "kind": "\"own_bot\""
+              }
+            },
+            {
+              "object": {
+                "kind": "\"chickpea_as_agent\""
+              }
+            },
+            {
+              "object": {
+                "kind": "\"unavailable\"",
+                "reason": {
+                  "union": [
+                    "\"app_removed\"",
+                    "\"no_bot_can_post\""
+                  ]
+                }
+              }
+            }
+          ]
+        },
         "text": "string",
         "threadTs": "string",
         "uiResponse?": "#SlackUiResponse",
