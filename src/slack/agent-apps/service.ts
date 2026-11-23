@@ -297,8 +297,7 @@ export class AgentSlackApps {
     const app = appRecordOf(presence);
     if (!app) return agent;
     if (presence?.kind === 'agent_app' && presence.released?.enableRefused) {
-      const { enableRefused: _refused, ...released } = presence.released;
-      agent = await config.updateAgent(agentId, { slackPresence: { ...presence, released } }, agent.revision);
+      agent = await config.updateAgent(agentId, { slackPresence: { ...presence, released: unrefused(presence.released) } }, agent.revision);
     }
     if (app.state === 'active' || restorePending(agent.slackPresence)) {
       await this.armSwitch(agent);
@@ -544,7 +543,7 @@ export class AgentSlackApps {
     for (let guard = 0; guard < MAX_STEPS_PER_RUN; guard += 1) {
       const presence = agent.slackPresence;
       if (restorePending(presence)) {
-        agent = await this.restoreGroup(agent, presence as RemovedAgentApp, options.finalAttempt ?? false);
+        agent = await this.restoreGroup(agent, presence, options.finalAttempt ?? false);
         continue;
       }
       if (!agentAppIsLive(presence)) return 'not_live';
@@ -687,16 +686,18 @@ export class AgentSlackApps {
    * trusted to have left the group as the record says: the enable is always
    * sent, and `already_enabled` is success. A refused enable leaves the Agent
    * answering through Chickpea, the Owner told, and nothing retries it until
-   * an Owner asks. The message goes before the record, under a key a rerun
-   * of the same removal and outcome repeats, so the Owner is told once.
+   * an Owner asks; a group Slack never confirmed it turned off still answers
+   * then, and the record and the message go on saying so. The message goes
+   * before the record, under a key a rerun of the same removal and outcome
+   * repeats, so the Owner is told once.
    */
   private async restoreGroup(agent: CustomAgentConfig, presence: RemovedAgentApp, finalAttempt: boolean): Promise<CustomAgentConfig> {
-    const userGroupId = presence.released?.userGroupId;
+    const { released } = presence;
     const appId = presence.app.app?.appId;
-    let outcome: 'on' | 'none' | 'refused' | 'permission' = userGroupId ? 'on' : 'none';
-    if (userGroupId) {
+    let outcome: 'on' | 'none' | 'refused' | 'permission' = released ? 'on' : 'none';
+    if (released) {
       try {
-        await this.deps.transport.enableUserGroup(userGroupId);
+        await this.deps.transport.enableUserGroup(released.userGroupId);
       } catch (error) {
         if (!(error instanceof SlackTransportError)) throw error;
         if (error.code !== 'already_enabled') {
@@ -706,7 +707,10 @@ export class AgentSlackApps {
         }
       }
     }
-    const kind: AgentAppMessageKind = outcome === 'on' ? 'app_removed' : outcome === 'permission' ? 'app_removed_permission' : 'app_removed_unreachable';
+    const enableRefused = outcome === 'refused' || outcome === 'permission';
+    // A refusal changes nothing in Slack, so a group Slack never confirmed it turned off still answers.
+    const mentionable = outcome === 'on' || (enableRefused && released?.answers === true);
+    const kind: AgentAppMessageKind = mentionable ? 'app_removed' : outcome === 'permission' ? 'app_removed_permission' : 'app_removed_unreachable';
     try {
       await this.message(kind, agent, presence.app.startedBy, `agent-app-removed:${agent.id}:${appId ?? ''}:${presence.app.at}:${kind}`);
     } catch (error) {
@@ -717,9 +721,9 @@ export class AgentSlackApps {
         error: error instanceof SlackTransportError ? error.code : error instanceof Error ? error.name : 'unknown',
       });
     }
-    const slackPresence = outcome === 'on' || outcome === 'none'
-      ? restoredPresence(presence)
-      : normalizeAgentAppPresence({ ...presence, released: { ...presence.released!, answers: false, enableRefused: true } });
+    const slackPresence = enableRefused && released
+      ? normalizeAgentAppPresence({ ...presence, released: { ...released, enableRefused: true } })
+      : restoredPresence(presence);
     try {
       return await this.deps.stores.config.updateAgent(agent.id, { slackPresence }, agent.revision);
     } catch (error) {
@@ -1093,7 +1097,15 @@ function homeRowFor(
 function appPresenceAfter(presence: AgentAppPresence, next: Exclude<AgentAppTransition, AgentAppRefusal>): AgentSlackPresence {
   if (next.state === 'deleted') return releasedPresence(presence);
   if (next.state === 'withdrawn') return withdrawnPresence(presence);
-  return normalizeAgentAppPresence({ ...presence, app: next });
+  // A refused restore belongs to the removal it followed: once the record moves, a later removal is restored afresh.
+  const released = presence.released && unrefused(presence.released);
+  return normalizeAgentAppPresence({ ...presence, app: next, ...(released ? { released } : {}) });
+}
+
+/** A released group without the mark of a restore Slack refused. */
+function unrefused(released: NonNullable<AgentAppPresence['released']>): NonNullable<AgentAppPresence['released']> {
+  const { enableRefused: _refused, ...rest } = released;
+  return rest;
 }
 
 /**

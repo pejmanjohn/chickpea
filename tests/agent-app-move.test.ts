@@ -776,6 +776,57 @@ test('a re-enable Slack refuses leaves the Agent answering through Chickpea, tel
   assert.equal(ownerMessages(f).at(-1), REMOVED_BACK);
 });
 
+// Defect caught: the mark of a refused restore kept on the app an Owner then allowed again, so that app's next removal
+// armed no job, turned no group on and told no one.
+test('a restore Slack refused does not stop the next one: Allow adds the app back, and its next removal is restored and told', async (t) => {
+  const f = await fixture(t);
+  await switched(f);
+  await f.service.end('A0APP1', UNINSTALLED);
+  f.main.ownerPermission = false;
+  f.permission.missing = true;
+  t.mock.method(console, 'warn', () => undefined);
+  await f.service.continueSwitch('agent_support');
+  assert.equal(releasedOf(await presenceOf(f))?.enableRefused, true);
+
+  assert.equal((await allow(f)).status, 303);
+  assert.equal(await f.service.continueSwitch('agent_support'), 'done');
+  assert.equal(releasedOf(await presenceOf(f))?.enableRefused, undefined, 'the refusal went with the removal it followed');
+
+  f.main.ownerPermission = true;
+  f.permission.missing = false;
+  f.clock.now += 60_000;
+  f.armed.length = 0;
+  assert.equal(await f.service.end('A0APP1', UNINSTALLED), 'ended');
+  assert.equal(f.armed.length, 1, 'the second removal arms its restore');
+  await f.service.continueSwitch('agent_support');
+  assert.equal(f.main.groups.get('S1')?.disabled, false);
+  assert.equal(answeringUserGroupId(await presenceOf(f)), 'S1');
+  assert.equal(ownerMessages(f).at(-1), REMOVED_BACK);
+});
+
+// Defect caught: a refused re-enable recorded as a group that no longer answers when Slack never turned it off (its
+// disable was refused the same way), so mentions of a group people still see stop routing and the Owner is told
+// they can't mention it.
+test('a refused re-enable of a group Slack never turned off leaves it answering, and the Owner is told people can still mention it', async (t) => {
+  const f = await fixture(t);
+  await f.service.start('agent_support', OWNER);
+  await allow(f);
+  f.main.ownerPermission = false;
+  f.permission.missing = true;
+  t.mock.method(console, 'warn', () => undefined);
+  assert.equal(await f.service.continueSwitch('agent_support'), 'done');
+  assert.equal(answeringUserGroupId(await presenceOf(f)), 'S1', 'the refused disable left the group answering');
+
+  await f.service.end('A0APP1', UNINSTALLED);
+  assert.equal(await f.service.continueSwitch('agent_support'), 'not_live');
+  assert.equal(f.main.groups.get('S1')?.disabled, false, 'Slack still has the group on');
+  const presence = await presenceOf(f);
+  assert.equal(presence?.kind, 'agent_app', 'Slack confirmed nothing, so the handle is not handed back');
+  assert.equal(answeringUserGroupId(presence), 'S1', 'and a mention of @support still routes to Support');
+  assert.equal(ownerMessages(f).at(-1), REMOVED_BACK);
+  assert.equal(agentAppMoveJob('agent_support', presence, TEAM), undefined, 'the sweep arms nothing for it');
+});
+
 test('the Owner message for a refused re-enable carries Allow, Open Chickpea and Try again', async (t) => {
   const f = await fixture(t);
   await switched(f);
