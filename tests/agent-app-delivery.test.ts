@@ -1178,10 +1178,13 @@ test("a tenant's end retires an Agent app with its own credentials when the host
   assert.equal(await readAppSecrets(h.secrets(), AGENT_APP), undefined);
 }, { lostHostedBot: true }));
 
-test("a tenant's end that cannot tell the Owner about a left app still uninstalls it and names it for the Owner", async (t) => withHarness(t, async (h) => {
+// Defect caught: with Chickpea's bot gone, an uninstalled app whose definition was left reported as still installed,
+// because the Owner's message failed after the outcome was committed.
+test("a tenant's end that cannot tell the Owner about a left app still uninstalls it and reports what happened to it", async (t) => withHarness(t, async (h) => {
   await hostedBotIsLost(h);
+  t.mock.method(console, 'warn', () => undefined);
 
-  assert.deepEqual(await retireAgentSlackApps(h.base), [{ agentId: 'agent_support', outcome: 'left_for_owner' }]);
+  assert.deepEqual(await retireAgentSlackApps(h.base), [{ agentId: 'agent_support', outcome: 'uninstalled_left_definition' }]);
   assert.deepEqual(h.calls.map(({ method, token }) => [method, token]), [['apps.uninstall', AGENT_BOT]],
     'the app is uninstalled with its own bot; without a configuration token its definition stays, and the Owner cannot be messaged');
 }, { lostHostedBot: true }));

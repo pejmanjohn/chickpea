@@ -5,7 +5,7 @@ import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
-import type { AgentAppLifecycle, AttachedAgentApp, CustomAgentConfig } from '../src/config/types.ts';
+import { type AgentAppLifecycle, type AttachedAgentApp, type CustomAgentConfig, appRecordOf } from '../src/config/types.ts';
 import { asUserGroup } from './helpers/user-group-presence.ts';
 import type { AgentSlackAppsHost } from '../src/slack/agent-apps/host.ts';
 import { AgentSlackApps, type AgentAppTransport } from '../src/slack/agent-apps/service.ts';
@@ -230,6 +230,24 @@ test('without a configuration token the definition is left for the Owner, who is
   assert.deepEqual(f.retirements, ['uninstalled_left_definition']);
   assert.equal(await readAppSecrets(f.secrets, APP.appId), undefined);
   assert.equal(archived.slackPresence?.userGroupId, 'S1');
+});
+
+// Defect caught: at tenant end, with Chickpea's own bot already gone, an app whose definition was left reported as
+// still installed, because the Owner's message failed after the outcome was committed.
+test("with Chickpea's bot gone, a retirement reports what happened to the app, and the Owner's message is given up", async (t) => {
+  for (const [options, outcome] of [[{ token: false }, 'uninstalled_left_definition'], [{}, 'removed']] as const) {
+    const f = await fixture(t, options);
+    f.transport.openDirectConversation = async () => { throw new SlackTransportError('conversations.open', 'account_inactive'); };
+    const lines: unknown[] = [];
+    t.mock.method(console, 'warn', (line: unknown) => { lines.push(line); });
+    const retired = await f.service.retire(await f.config.getAgent('agent_support'));
+    assert.equal(retired.outcome, outcome);
+    assert.equal(appRecordOf(retired.agent.slackPresence), undefined, 'the app is gone from the record');
+    assert.deepEqual(lines, outcome === 'removed' ? [] : [
+      { event: 'chickpea.agent_app.archive_owner_not_told', agentId: 'agent_support', appId: APP.appId, error: 'account_inactive' },
+    ]);
+    t.mock.restoreAll();
+  }
 });
 
 test('an app without a bot token skips the uninstall; a create still settling refuses the archive', async (t) => {

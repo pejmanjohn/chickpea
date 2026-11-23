@@ -38,6 +38,7 @@ export type AgentAppMessageKind =
   | 'permission_needed'
   | 'app_removed_unreachable'
   | 'app_removed_permission'
+  | 'recreated'
   | AgentAppAttention;
 
 type Button =
@@ -83,6 +84,12 @@ const DM_COPY = {
     text: ({ name }) =>
       `Slack may have created an app for ${name}, but Chickpea didn't hear back. Open Your Apps in Slack and delete any ${name} app you don't recognize, then choose Try again.`,
     buttons: (links) => [yourApps, tryAgain(links)],
+  },
+  /** Chickpea created again because it kept no record of an app it made: two apps share the name, and one is unused. */
+  recreated: {
+    text: ({ name }) =>
+      `Chickpea made a second ${name} app in Slack because it lost track of the first. Keep the one you allow from Chickpea's next message; after you allow it, Your Apps in Slack shows it as installed. Delete the other ${name} app there.`,
+    buttons: () => [yourApps],
   },
   create_refused: {
     text: ({ name }) => `Slack didn't finish ${name}'s app. Choose Try again. If it keeps happening, check that your workspace allows new apps.`,

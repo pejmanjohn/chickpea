@@ -858,3 +858,4 @@ test("a result message that keeps failing is retried by the job, and given up on
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+

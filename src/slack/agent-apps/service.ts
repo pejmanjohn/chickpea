@@ -827,7 +827,7 @@ export class AgentSlackApps {
         return {
           event: { type: 'recreate', at: run.now, manifestFingerprint },
           after: async () => {
-            await this.message('ambiguous_create', run.agent, startedBy, `agent-app-unrecorded:${run.agent.id}:${app.appId}`);
+            await this.message('recreated', run.agent, startedBy, `agent-app-unrecorded:${run.agent.id}:${app.appId}`);
           },
         };
       }
@@ -915,12 +915,19 @@ export class AgentSlackApps {
       }
       if (left) this.leftForOwner.set(run.agent.id, stillInstalled ? 'left_for_owner' : 'uninstalled_left_definition');
       const message = stillInstalled ? 'archived_installed' : 'archived_left';
-      return {
-        event: { type: 'deleted', at: run.now },
-        ...(left
-          ? { after: async () => { await this.message(message, run.agent, startedBy, `agent-app-left:${run.agent.id}:${app.appId}`); } }
-          : {}),
+      // What happened to the app is already committed: a message Chickpea's bot cannot send (at tenant end it is often
+      // gone) changes nothing about it.
+      const tell = async () => {
+        try {
+          await this.message(message, run.agent, startedBy, `agent-app-left:${run.agent.id}:${app.appId}`);
+        } catch (error) {
+          console.warn({
+            event: 'chickpea.agent_app.archive_owner_not_told', agentId: run.agent.id, appId: app.appId,
+            error: error instanceof SlackTransportError ? error.code : error instanceof Error ? error.name : 'unknown',
+          });
+        }
       };
+      return { event: { type: 'deleted', at: run.now }, ...(left ? { after: tell } : {}) };
     },
   };
 
