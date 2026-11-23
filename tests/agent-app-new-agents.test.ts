@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 
 import { runtimeIdentityInstruction } from '../src/config/effective-config.ts';
+import { deliverManagementReceiptToSlack, formatManagementSetupReceipt } from '../src/management/receipts.ts';
+import type { ManagementActorContext, ManagementOperation, ManagementReceiptOutboxRecord } from '../src/management/types.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { AWAITING_OWN_APP, type AgentSlackPresence, type CustomAgentConfig } from '../src/config/types.ts';
@@ -13,6 +15,8 @@ import { AgentPresenceError } from '../src/slack/agent-presence/errors.ts';
 import { AgentPresenceReconciler } from '../src/slack/agent-presence/reconciler.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { SlackTransportError, type SlackChannel, type SlackTransport, type SlackUserGroup } from '../src/slack/transport/types.ts';
+import { createManagementAdapterFixture, ownerMcpContext, type ManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
+import { asUserGroup } from './helpers/user-group-presence.ts';
 
 const NOW = 1_800_000_000_000;
 const TEAM = 'TACME';
@@ -243,4 +247,95 @@ test('a workspace where no Agent has an app record reads no app bots on a Slack 
   const older: { agentApps?: boolean } = {};
   await listAgentAppBots(counted, older);
   assert.equal(reads, 2, 'a record from a store on older code, which leaves the fact out, still reads');
+});
+
+/** Management with a creation that leaves its Agent waiting for its own app, as the reconciler does with the setting on. */
+async function waitingCreation(suffix: string) {
+  const f: ManagementAdapterFixture = await createManagementAdapterFixture(suffix, {
+    publishAgentPresence: async ({ agentId }) => {
+      const current = await f.config.getAgent(agentId);
+      return {
+        agent: await f.config.updateAgent(agentId, {
+          lifecycle: 'active',
+          slackPresence: { ...asUserGroup(current.slackPresence), desiredState: 'active', health: 'unpublished', errorCode: AWAITING_OWN_APP },
+        }, current.revision),
+      };
+    },
+  });
+  return f;
+}
+
+function creation(agentId: string): ManagementOperation {
+  return {
+    itemId: 'create', kind: 'create_agent',
+    agent: {
+      id: agentId, name: 'Support', description: 'Answers support questions.', requestedHandle: 'support',
+      editPolicy: 'creator_and_admins', instructions: 'Answer support questions.', enabled: true,
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    },
+  } as ManagementOperation;
+}
+
+const welcomeOf = (record: ManagementReceiptOutboxRecord | undefined) => {
+  assert.ok(record && 'kind' in record.receipt && record.receipt.kind === 'agent_created_welcome');
+  return record.receipt;
+};
+
+test('an Owner who creates an Agent not in Slack yet is welcomed by it, with no handle and the button to add it', async (t) => {
+  const f = await waitingCreation('own-app-owner');
+  t.after(() => f.close());
+  const applied = await f.service.applyWorkspaceChanges({ context: ownerMcpContext(f), idempotencyKey: 'own-app-owner', operations: [creation('agent_support')] });
+  if (!('operationId' in applied)) assert.fail('expected an applied creation');
+
+  const welcome = welcomeOf(await f.management.getOutboxForOperation(applied.operationId));
+  assert.equal(welcome.notInSlackYet, 'creator_adds');
+  assert.equal(welcome.agentHandle, undefined, 'no handle is offered that reaches no one');
+  assert.deepEqual(welcome.publication, { status: 'complete', incomplete: [] }, 'waiting is not a failure');
+  const text = formatManagementSetupReceipt(welcome);
+  assert.match(text, /^Hi — I’m \*Support\*\. Answers support questions\./);
+  assert.match(text, /I’m not in Slack yet, so people can’t mention me\. Choose Add to Slack to give me my own Slack app\./);
+  const queued = await f.management.claimDueOutbox(NOW * 2, 25, NOW * 2 + 1);
+  assert.deepEqual(queued.map(({ receipt }) => 'kind' in receipt && receipt.kind), ['agent_created_welcome'], 'no Owner is asked: the creator is one');
+});
+
+test('a creator who is not an Owner is told an Owner adds it, and each Owner gets the button with the creator named', async (t) => {
+  const f = await waitingCreation('own-app-admin');
+  t.after(() => f.close());
+  const admin: ManagementActorContext = {
+    userId: f.admin.user.id, membershipId: f.admin.membership.id, organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'adapter-test' },
+  };
+  const applied = await f.service.applyWorkspaceChanges({ context: admin, idempotencyKey: 'own-app-admin', operations: [creation('agent_support')] });
+  if (!('operationId' in applied)) assert.fail('expected an applied creation');
+
+  const welcome = welcomeOf(await f.management.getOutboxForOperation(applied.operationId));
+  assert.equal(welcome.notInSlackYet, 'owners_asked');
+  assert.match(formatManagementSetupReceipt(welcome),
+    /I’m not in Slack yet\. A workspace Owner needs to add me to Slack before people can mention me\. I’ve asked them\./);
+  const fallback = { ...welcome, publication: { status: 'partial' as const, incomplete: ['slack_presence' as const] } };
+  assert.match(formatManagementSetupReceipt(fallback), /^I created \*Support\*\. A workspace Owner needs to add it to Slack before people can mention it\. I’ve asked them\./,
+    'where Slack will not take the Agent\'s name, Chickpea says it in its own words');
+
+  const owner = f.owner.binding.slackUserId;
+  const asked = await f.management.getOutboxForOperation(`agent_app_add:agent_support:${owner}`);
+  assert.deepEqual(asked?.destination, { kind: 'slack_dm', workspaceId: f.owner.binding.slackTeamId, slackUserId: owner });
+  assert.deepEqual(asked?.receipt, { kind: 'agent_app_add_request', agentId: 'agent_support', agentName: 'Support', creatorSlackUserId: 'U87654321' });
+  assert.equal(formatManagementSetupReceipt(asked!.receipt),
+    '<@U87654321> created *Support*, and it isn’t in Slack yet, so people can’t mention it. Choose Add to Slack to give it its own Slack app.');
+  const owners = (await f.management.claimDueOutbox(NOW * 2, 25, NOW * 2 + 1)).filter(({ receipt }) => 'kind' in receipt && receipt.kind === 'agent_app_add_request');
+  assert.equal(owners.length, 1, 'only the Owner is asked, not the Admin who created it');
+
+  const posted: Array<Record<string, unknown>> = [];
+  const client = {
+    conversations: { open: async () => ({ ok: true, channel: { id: 'D_OWNER' } }) },
+    chat: { postMessage: async (message: Record<string, unknown>) => { posted.push(message); return { ok: true, ts: '1.0' }; } },
+  };
+  await deliverManagementReceiptToSlack(asked!, {
+    identity: f.identity,
+    resolveInstallation: async (workspaceId) => ({ workspaceId, transportMode: 'direct', sharedAppReads: false, botUserId: 'UBOT', client: client as never }),
+  });
+  assert.deepEqual(posted[0]?.blocks, [
+    { type: 'section', text: { type: 'mrkdwn', text: formatManagementSetupReceipt(asked!.receipt) } },
+    { type: 'actions', elements: [{ type: 'button', style: 'primary', action_id: 'agent_app_start', value: 'agent_support', text: { type: 'plain_text', text: 'Add to Slack' } }] },
+  ]);
 });

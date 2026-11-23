@@ -1,5 +1,6 @@
 import type { z } from 'zod';
 
+import { AWAITING_OWN_APP } from '../../config/types.ts';
 import { defaultAgentAvatarFileNamed } from '../../slack/agent-presence/default-avatar-pool.ts';
 import { AGENT_AUTHORING_GUIDE_VERSION } from '../agent-authoring/index.ts';
 import {
@@ -146,7 +147,8 @@ export async function createAgent(
     ? created.outcomes[0]?.changed?.find(({ kind }) => kind === 'agent')?.id
     : undefined;
   if (!agentId) return changeResult(deps, context, created);
-  if (!input.channels?.length) return afterCreation(await changeResult(deps, context, created, { agentId }));
+  const waiting = await notInSlackYet(deps, context, agentId);
+  if (!input.channels?.length) return afterCreation(waiting(await changeResult(deps, context, created, { agentId })));
 
   // The Agent exists now, so a grant that fails is a warning, never the result.
   const granted = await applyChange(deps, context, {
@@ -174,11 +176,29 @@ export async function createAgent(
     ? [`It could not be added to its Channels: ${granted.message}`]
     : outcomes.filter(({ disposition }) => disposition !== 'applied')
       .map((outcome) => `It could not be added to one of its Channels: ${outcome.instruction ?? 'the grant did not apply.'}`);
-  return afterCreation({
+  return afterCreation(waiting({
     ...result,
     ...(version ? { version } : {}),
     summary: `${result.summary} It joins ${added} Channel${added === 1 ? '' : 's'}.`,
     ...(notAdded.length ? { warnings: [...result.warnings ?? [], ...notAdded] } : {}),
+  }));
+}
+
+/**
+ * Where each new Agent is its own Slack app, a new Agent is not in Slack
+ * until an Owner adds it in Admin; the result says so. Nothing here starts an
+ * app or touches the configuration token.
+ */
+async function notInSlackYet(
+  deps: FiveZeroDeps,
+  context: ManagementActorContext,
+  agentId: string,
+): Promise<(result: ChangeResult) => ChangeResult> {
+  const { agent } = await deps.service.agentReader(context, agentId).catch(() => ({ agent: undefined }));
+  if (agent?.slackPresence?.errorCode !== AWAITING_OWN_APP) return (result) => result;
+  return (result) => ({
+    ...result,
+    summary: `${result.summary} ${agent.name} isn't in Slack yet: a workspace Owner adds it to Slack in Chickpea Admin.`,
   });
 }
 

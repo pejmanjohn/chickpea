@@ -15,6 +15,7 @@ import {
   type ManagementAdapterFixture,
 } from './helpers/management-adapter-fixture.ts';
 import { serviceResult } from './helpers/management-service-result.ts';
+import { asUserGroup } from './helpers/user-group-presence.ts';
 import { withPersonApproval } from './helpers/slack-person-approval.ts';
 
 const NOW = 1_800_000_000_000;
@@ -764,4 +765,31 @@ test('create_agent returns the version its Channel grants leave, and a confirm a
   assert.match(String(stale.nextStep), /fresh preview and confirmToken/);
   assert.equal(stale.retryable, true);
   assert.equal((await f.config.getAgent(created.agent.agentId)).enabled, true);
+});
+
+test('create_agent where each new Agent is its own Slack app says the Agent is not in Slack yet and an Owner adds it in Admin', async (t) => {
+  const { f, call } = await harness(t, 'create-own-app', {
+    overrides: {
+      // As the reconciler leaves a new Agent with the workspace's Slack apps setting on.
+      publishAgentPresence: async ({ agentId }) => {
+        const current = await f.config.getAgent(agentId);
+        return {
+          agent: await f.config.updateAgent(agentId, {
+            lifecycle: 'active',
+            slackPresence: { ...asUserGroup(current.slackPresence), desiredState: 'active', health: 'unpublished', errorCode: 'awaiting_own_app' },
+          }, current.revision),
+        };
+      },
+    },
+  });
+  const proposed = structured(await call('propose_agent', {
+    name: 'Support Desk', handle: 'support-desk', job: 'Answers support questions from the help center.',
+    instructions: 'Answer from the help center and link the article.', sampleAsk: 'How do I reset my password?',
+    promisedAnswer: 'Open Settings, then Security.',
+  }));
+  const created = structured(await call('create_agent', proposed.create.arguments));
+  assert.equal(created.status, 'done');
+  assert.equal(created.summary,
+    "Created Support Desk. Support Desk isn't in Slack yet: a workspace Owner adds it to Slack in Chickpea Admin.");
+  assert.doesNotMatch(JSON.stringify(created), /xoxe|authorize|oauth/i, 'no token and no app link');
 });

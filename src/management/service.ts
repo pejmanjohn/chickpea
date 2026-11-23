@@ -74,6 +74,7 @@ import {
   type ConnectionAccountMcpPolicy,
   type ConnectionAccountOwnerKind,
   type ConnectionAccountPolicy,
+  AWAITING_OWN_APP,
   agentAppIsLive,
   type CustomAgentConfig,
   MODEL_ROLES,
@@ -107,6 +108,7 @@ import type { GatewayAttachmentClient } from '../slack/gateway/client.ts';
 import { isTransientSlackApiError } from '../slack/credentials.ts';
 import { slackPlatformErrorCode } from '../slack/errors.ts';
 import { SlackInstallationUnavailableError } from '../slack/installation-execution.ts';
+import { activeOwnerSlackUserIds } from '../slack/credits-ask.ts';
 import { SlackTransportError } from '../slack/transport/types.ts';
 import { getGithubConnection, isValidRepositoryFullName, type GithubConnection } from '../config/github-app.ts';
 import { newAgentCredentialIncarnation } from '../config/connection-credential-binding.ts';
@@ -2007,6 +2009,7 @@ export class WorkspaceManagementService {
       setups,
       outbox,
     });
+    if (receipt.notInSlackYet === 'owners_asked') await this.askOwnersToAdd(actor, agent);
     emitManagementMetric('agent_creation.welcome_claim', {
       surface: 'slack',
       outcome: claimed.created ? 'created' : 'replayed',
@@ -2028,13 +2031,15 @@ export class WorkspaceManagementService {
     firstAsk?: string | undefined;
   }): ManagementAgentCreatedWelcome {
     const { agent, creation, baseUrl } = input;
+    // Waiting for its own Slack app is where this Agent should be, not a handle Slack failed to make.
+    const waiting = agent.slackPresence?.errorCode === AWAITING_OWN_APP;
     const incomplete: Array<'slack_presence' | 'source_channel'> = [];
-    if (creation.warning || agent.slackPresence?.health !== 'healthy' ||
-        !agent.slackPresence.userGroupId) {
+    if (!waiting && (creation.warning || agent.slackPresence?.health !== 'healthy' ||
+        !agent.slackPresence.userGroupId)) {
       incomplete.push('slack_presence');
     }
     if (input.sourceChannelMissing) incomplete.push('source_channel');
-    const handle = agent.slackPresence?.normalizedHandle ?? agent.slackPresence?.requestedHandle;
+    const handle = waiting ? undefined : agent.slackPresence?.normalizedHandle ?? agent.slackPresence?.requestedHandle;
     const avatarUrl = baseUrl
       ? agentAvatarUrlForPresentation(agent, baseUrl, this.stores.avatarInstallationId)
       : undefined;
@@ -2061,7 +2066,51 @@ export class WorkspaceManagementService {
       },
       ...(viewAgentUrl ? { viewAgentUrl } : {}),
       ...(input.firstAsk ? { firstAsk: input.firstAsk } : {}),
+      ...(waiting ? { notInSlackYet: input.actor.role === 'owner' ? 'creator_adds' as const : 'owners_asked' as const } : {}),
     };
+  }
+
+  /**
+   * A new Agent waiting for an Owner to add it to Slack, made by someone who
+   * is not one: each active Owner gets a DM naming the creator, with the Add
+   * button. One per Owner per Agent, however often the creation replays.
+   */
+  private async askOwnersToAdd(actor: LiveManagementActor, agent: CustomAgentConfig): Promise<void> {
+    try {
+      const workspaceId = actor.origin.kind === 'slack'
+        ? actor.origin.workspaceId
+        : (await this.stores.identity.getUser(actor.userId))?.slackTeamId;
+      if (!workspaceId) return;
+      const [owners, bindings] = await Promise.all([
+        activeOwnerSlackUserIds(this.stores.identity, workspaceId),
+        this.stores.identity.listExternalIdentities(),
+      ]);
+      const creator = bindings.find((binding) => binding.membershipId === actor.membershipId && binding.slackTeamId === workspaceId);
+      const at = this.now();
+      for (const owner of owners) {
+        const outboxId = `agent_app_add:${agent.id}:${owner}`;
+        await this.stores.management.putOutbox({
+          outboxId,
+          operationId: outboxId,
+          destination: { kind: 'slack_dm', workspaceId, slackUserId: owner },
+          receipt: {
+            kind: 'agent_app_add_request', agentId: agent.id, agentName: agent.name,
+            ...(creator ? { creatorSlackUserId: creator.slackUserId } : {}),
+          },
+          status: 'pending',
+          attempts: 0,
+          nextAttemptAt: at,
+          createdAt: at,
+          updatedAt: at,
+        });
+      }
+    } catch (error) {
+      // The Agent and its creator's welcome stand; the Owners still see it in Admin.
+      console.warn('[chickpea:management] Owners were not asked to add a new Agent to Slack', JSON.stringify({
+        agentId: agent.id,
+        error: error instanceof Error ? error.name : 'unknown',
+      }));
+    }
   }
 
   /**
@@ -2094,10 +2143,11 @@ export class WorkspaceManagementService {
           continue;
         }
         const operation = request.operations.find(({ itemId }) => itemId === outcome.itemId);
+        const agent = await this.stores.config.getAgent(agentId);
         const receipt = this.agentCreatedWelcome({
           actor,
           operationId: request.operationId,
-          agent: await this.stores.config.getAgent(agentId),
+          agent,
           creation: outcome,
           baseUrl,
           surface: 'direct',
@@ -2123,6 +2173,7 @@ export class WorkspaceManagementService {
             updatedAt: at,
           },
         });
+        if (receipt.notInSlackYet === 'owners_asked') await this.askOwnersToAdd(actor, agent);
         emitManagementMetric('agent_creation.welcome_claim', {
           surface: 'mcp',
           outcome: claimed.created ? 'created' : 'replayed',
