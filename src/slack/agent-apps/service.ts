@@ -585,18 +585,17 @@ export class AgentSlackApps {
   ): Promise<ReadonlyMap<string, readonly object[]>> {
     const rows = new Map<string, readonly object[]>();
     if (viewer.role !== 'owner') return rows;
-    const withApps = agents.filter((agent) => agent.kind === 'user' && appRecordOf(agent.slackPresence));
-    const untold = withApps.some((agent) => {
-      const app = appRecordOf(agent.slackPresence);
-      return app?.state === 'active' && app.ownerNotTold;
+    const withApps = agents.flatMap((agent) => {
+      const app = agent.kind === 'user' ? appRecordOf(agent.slackPresence) : undefined;
+      return app ? [{ agent, app }] : [];
     });
+    const untold = withApps.some(({ app }) => app.state === 'active' && app.ownerNotTold);
     const privateGrants = untold
       ? (await this.deps.stores.config.listAgentChannelGrants()).filter((grant) => grant.status === 'active' && grant.channelIsPrivate)
       : [];
     const now = this.now();
-    for (const agent of withApps) {
-      const row = homeRowFor(agent, now, privateGrants);
-      if (row) rows.set(agent.id, agentAppHomeBlocks(row, this.names(agent), agent.id));
+    for (const { agent, app } of withApps) {
+      rows.set(agent.id, agentAppHomeBlocks(homeRowFor(agent, app, now, privateGrants), this.names(agent), agent.id));
     }
     return rows;
   }
@@ -1155,15 +1154,14 @@ function adminUrl(origin: string): string {
   return `${origin.replace(/\/+$/, '')}${ADMIN_PATH}`;
 }
 
-/** What the Owner's App Home says about an Agent's app; nothing for an Agent with none. */
+/** What the Owner's App Home says about an Agent's app. */
 function homeRowFor(
   agent: CustomAgentConfig,
+  app: AgentAppLifecycle,
   now: number,
   privateGrants: readonly { agentId: string; channelId: string }[],
-): AgentAppHomeRow | undefined {
+): AgentAppHomeRow {
   const presence = agent.slackPresence;
-  const app = appRecordOf(presence);
-  if (!app) return undefined;
   const settling = (): AgentAppHomeRow => now - app.at >= STALLED_AFTER_MS ? { kind: 'stalled' } : { kind: 'setting_up' };
   switch (app.state) {
     case 'active':
