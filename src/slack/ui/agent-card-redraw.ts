@@ -14,12 +14,13 @@ import { readCardSetMessage, redrawCardSet } from './card-set-message.ts';
 import type { UiSurfaceRecord } from './surface.ts';
 
 /**
- * update_card's redraw, from inside the Agent's run (`turnJobId`). It edits
- * as the bot that posted the answer: the speaker of the run that posted the
- * card while that run is pending, else this run's, which answers the same
- * Agent in the same thread and so was chosen by the same place. It redraws
- * from the set's copy of the answer, or reads it back within the shared read
- * budget when it has none.
+ * update_card's redraw, from inside the Agent's run (`turnJobId`). While the
+ * run that posted the card is pending it edits with that run's speaker, the
+ * bot that posted it. Once that run has finished its speaker is no longer
+ * read, so it edits with this run's; when a bot joined or left the Channel
+ * between the two runs that is the other bot, and Slack refuses the edit. It
+ * redraws from the set's copy of the answer, or reads it back within the
+ * shared read budget when it has none.
  */
 export async function redrawCardSetAsAgent(
   env: PlatformEnv | undefined,

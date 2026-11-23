@@ -305,11 +305,49 @@ test("Slack not answering an archive's uninstall leaves the Agent answering as i
   assert.equal(retired.agent.slackPresence?.kind, undefined, 'the handle is back with its user group');
 }));
 
-test('without the port the resolver is the base resolver, even for an Agent whose record names an app', async (t) => withHarness(t, async (h) => {
+test("without the port a run admitted for the app's own bot ends unavailable, and every other run gets the base resolver", async (t) => withHarness(t, async (h) => {
   await h.storeApp(LIVE);
   configureAgentSlackApps(undefined);
-  assert.equal(await h.resolve(TEAM, OWN_BOT), h.base);
-  assert.deepEqual(h.baseCalls, [TEAM]);
+  await assert.rejects(() => h.resolve(TEAM, OWN_BOT), (error: unknown) =>
+    error instanceof SlackInstallationUnavailableError && error.reasonCode === 'agent_app_unavailable' && error.retryable === false,
+  "never Chickpea's bot under an owner that carries no persona");
+  assert.deepEqual(h.baseCalls, []);
+  assert.equal(await h.resolve(TEAM, AS_AGENT), h.base);
+  assert.equal(await h.resolve(TEAM, { agentId: 'agent_support' }), h.base, 'a run stored before its speaker, as before');
+  assert.deepEqual(h.baseCalls, [TEAM, TEAM]);
+}));
+
+test("a group DM turn no bot can post in is refused before its run starts: no model call and no retry", async (t) => withHarness(t, async (h) => {
+  await h.storeApp(LIVE);
+  const calls: string[] = [];
+  const retries: Array<number | undefined> = [];
+  let ran = 0;
+  const record = (name: string) => async () => { calls.push(name); };
+  const ports = {
+    env: h.env,
+    turnJobs: {
+      recordAttempt: record('recordAttempt'), markRecoveryRequired: record('markRecoveryRequired'),
+      markDelivered: record('markDelivered'), markError: record('markError'), recordInteractionIntent: record('recordInteractionIntent'),
+    },
+    slack: { setActiveWork: record('setActiveWork'), release: record('release') },
+    config: {}, presentationState: { getRunPresentation: async () => undefined }, settingsStore: { getSetting: async () => undefined },
+    usageStore: {}, workStore: {}, appStores: {}, managementApproval: () => ({}), telemetry: { capture: () => undefined },
+    resolveInstallation: h.resolve, sandboxBinding: () => undefined,
+    runTurn: async () => { ran += 1; },
+  } as unknown as TurnExecutionPorts;
+  const job = {
+    id: 'turn_mpim', evtKey: 'evt:mpim', msgKey: 'msg:mpim',
+    turn: {
+      workspaceId: TEAM, channelId: 'G1', channelType: 'mpim', threadTs: '1.1', messageTs: '1.1', userId: 'U1', text: 'hello',
+      source: 'app_mention', eventId: 'Ev1', speaker: { kind: 'unavailable', reason: 'no_bot_can_post' },
+    },
+    assignment: { agentId: 'agent_support' }, executionAuthority: 'legacy', attempts: 0, progress: {},
+  } as unknown as PendingTurnJob;
+
+  assert.equal(await executeTurnJob(job, ports, { latency: { lane: 'cloudflare', executor: 'alarm' }, onRetry: (afterMs) => { retries.push(afterMs); } }), false);
+  assert.equal(ran, 0, 'the run never starts, so no model call is spent');
+  assert.deepEqual(retries, [], 'Slack is not asked again');
+  assert.deepEqual(calls, ['markRecoveryRequired']);
 }));
 
 test("the run's owner follows its speaker: the app's own bot by name only, Chickpea's bot always under the Agent's persona", () => {

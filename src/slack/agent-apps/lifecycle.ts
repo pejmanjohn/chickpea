@@ -32,7 +32,7 @@ export type AgentAppEvent =
   | { type: 'created'; at: number; app: AgentAppRecord }
   | { type: 'create_refused'; at: number; reason: 'create_refused' | 'slack_busy' }
   | { type: 'create_ambiguous'; at: number }
-  /** The recorded app had no secrets and was deleted; create again. */
+  /** The recorded app has no record, so it is left for the Owner; create again. */
   | { type: 'recreate'; at: number; manifestFingerprint: string }
   | { type: 'urls_set'; at: number }
   | { type: 'urls_refused'; at: number }
@@ -49,6 +49,8 @@ export type AgentAppEvent =
   /** Slack never answered the uninstall of a live app, so it is still installed. */
   | { type: 'uninstall_unanswered'; at: number; restore: ActiveAgentApp }
   | { type: 'deleted'; at: number }
+  /** The app's record is unreadable or another Agent's, so Chickpea will not update the app or set its icon. */
+  | { type: 'record_refused'; at: number }
   | { type: 'try_again'; at: number; startedBy: string; manifestFingerprint: string };
 
 export interface AgentAppRefusal {
@@ -216,6 +218,11 @@ export function transition(app: AgentAppLifecycle, event: AgentAppEvent): AgentA
         : WRONG_STATE;
     case 'deleted':
       return app.state === 'uninstalling' && app.next === 'delete' ? { state: 'deleted' } : WRONG_STATE;
+    case 'record_refused':
+      if (app.state === 'created' || app.state === 'urls_set') {
+        return attention(app.startedBy, at, 'urls_refused', 'created', { app: app.app });
+      }
+      return WRONG_STATE;
     case 'try_again': {
       if (app.state !== 'needs_attention') return WRONG_STATE;
       const startedBy = event.startedBy;

@@ -44,26 +44,34 @@ thread does not see it.
 
 An Owner can give one Agent its own Slack app in the customer's workspace.
 The Agent then answers as that app's bot wherever the bot can be: the app's own
-DM with a person, and Channels the bot is a member of, including clicks on its
-own messages there. Anywhere else, a thread in Chickpea's DM or a Channel the
-bot is not in, Chickpea's bot posts under the Agent's name and picture, as it
-does for every other Agent. The same holds while the app is not live (being
+DM with a person, and Channels and group DMs the bot is a member of, including
+clicks on its own messages there. Anywhere else, a thread in Chickpea's DM or a
+Channel or group DM the bot is not in, Chickpea's bot posts under the Agent's
+name and picture, as it does for every other Agent. The same holds while the app is not live (being
 created, waiting for Allow, removed, or with a token Chickpea cannot open). In
 the app's own DM nothing else can post, so there a turn of an app that is not
-live ends unavailable.
+live ends unavailable. A DM or group DM neither bot can post in is refused
+before the run starts.
 
 Admission decides the bot once per run, from where the message was heard
 (`speakerFor` in `src/slack/speaker.ts`), and stores it with the turn; the run's
-visible owner follows from it. A DM the app heard is marked with the app's bot.
-In a Channel the bot that heard the message is a member, and the other bot is
-asked once with `conversations.info`, cached for the admission membership TTL.
+visible owner follows from it. A DM the app heard is marked with the app's bot,
+and a DM marked with another Agent's bot is never this Agent's own. A turn
+Chickpea builds itself in a DM or group DM (an ask, a setup's wake) asks the
+app's bot once with `conversations.info` whether it is there. In a Channel the
+bot that heard the message counts as a member unless Slack said it is not, and
+the other bot is asked once with `conversations.info`. Each of these reads is
+kept in the isolate for the admission membership TTL, so a bot that joined or
+left is seen at the next read, not at once.
 Every post, stream, status and card redraw of the run uses the stored bot, so
 a bot added to or removed from the Channel mid-run does not move it. Posts from
 the app's bot use its token under the app's name and icon, with no `username`
 or `icon_url`: the app does not ask for `chat:write.customize`. An app token is
-never used with a persona, and Chickpea's bot never posts for the Agent without
-one. When the run's stored bot can no longer post, as when the app was removed
-after admission, the turn ends unavailable. Files it uploads belong to the bot
+never used with a persona. Where Chickpea's bot posts for the Agent but no
+persona can be built (the installation is not healthy, or no avatar resolves),
+it posts as Chickpea, as it does for a user-group Agent. When the run's stored
+bot can no longer post, as when the app was removed after admission or the
+Agent apps port is gone, the turn ends unavailable. Files it uploads belong to the bot
 that posts. While the app is live, the memory lease accepts its bot as the
 Agent's delivering bot. While Chickpea's record names the app's bot,
 uninstalling included, that bot counts as the installation's own: its posts

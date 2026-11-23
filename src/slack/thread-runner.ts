@@ -40,9 +40,9 @@ import { createPlatformProductTelemetry } from '../telemetry/platform.ts';
 import {
   cacheSlackInstallationExecutionContexts,
   effectiveTurnSlackInstallationId,
-  turnJobRunSpeaker,
   resolveSlackInstallationExecutionContext,
   seedGatewayIdentity,
+  turnJobRunSpeaker,
   verifySlackInstallationTurnAccess,
 } from './installation-execution.ts';
 import { resolveSlackPublicUrl } from './credentials.ts';
