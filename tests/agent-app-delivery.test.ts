@@ -43,7 +43,7 @@ import { clearAdmissionMembershipsForTests } from '../src/slack/agent-apps/place
 import { readAppSecrets, saveConfigurationToken, writeAppSecrets } from '../src/slack/agent-apps/secrets.ts';
 import { createAgentAppSlackApi } from '../src/slack/agent-apps/slack-api.ts';
 import { generateCredentialKeyring, loadCredentialKeyring } from '../src/slack/credential-keyring.ts';
-import { AGENT_ASK_PAUSE_TEXT, AGENT_ASK_TURN_LIMIT } from '../src/slack/agent-asks.ts';
+import { AGENT_ASK_PAUSE_TEXT, AGENT_ASK_TURN_LIMIT, createAgentAskCollector } from '../src/slack/agent-asks.ts';
 import { OPEN_AGENT_DM_ACTION_ID, START_AGENT_ACTION_ID } from '../src/slack/app-home.ts';
 import { CANVASES_NOT_IN_AGENT_DM, createSlackCanvasTools, slackCanvasService } from '../src/slack/canvases/tools.ts';
 import { createSlackChannel } from '../src/slack/channel-creation/runtime.ts';
@@ -1839,8 +1839,10 @@ test("a teammate with its own app, asked inside another Agent's own DM, never ge
     { runtimeContract: 'chickpea-v1', agentId: 'agent_finance' },
     { messageTs: '1900003900.000100', text: 'Q2 revenue was 1.1M.' },
   );
+  // As a runner from before the host refused asks in an app's DM hands one over: without the DM's bot.
+  const { dmBotUserId: _heardBy, ...handedOver } = asking.turn;
   await processSlackAgentAsks({
-    turn: asking.turn, fromAgentId: 'agent_support', fromThreadOwner: true,
+    turn: handedOver, fromAgentId: 'agent_support', fromThreadOwner: true,
     deliveries: [{ messageTs: '1900003900.000200', text: `Let me check. <@${FINANCE_BOT_USER}> what was Q3 revenue?` }],
   }, env, { stores: h.stores });
   const asked = await pendingTurn(h.stores, (job) => job.assignment.agentId === 'agent_finance');
@@ -2080,6 +2082,41 @@ test("a connected notice whose DM Slack does not place is not posted on a guesse
   await assert.rejects(deliverConnectedNotice(h, 'agent_support', CHICKPEA_DM, '1900004560.000100'), /ratelimited/);
   assert.deepEqual(h.calls.filter((call) => call.method.startsWith('chat.')), [], 'nothing posts on either bot');
 }, { rateLimited: [`conversations.open ${AGENT_BOT}`] }));
+
+const FINANCE_NOT_IN_DM = "Finance can't reply in this direct message. Mention Finance in a channel instead.";
+
+/** Hands the host one reply of `asking` that asks Finance, as its run's collector does when Finance is its teammate there. */
+async function askFinanceFrom(h: Harness, asking: PendingTurnJob, ts: string): Promise<void> {
+  const collector = createAgentAskCollector({
+    turn: asking.turn,
+    assignment: { ...asking.assignment, teammates: [{ name: 'Finance', handle: 'finance', userGroupId: 'SFINANCE' }] },
+    dispatch: (request) => processSlackAgentAsks(request, withHostedSlackApp(h.base, MAIN_APP), { stores: h.stores }),
+  });
+  collector.note({ messageTs: ts, text: 'Let me ask @finance about Q3.' });
+  await collector.flush('succeeded');
+}
+
+test("a teammate asked inside an app Agent's own DM is not run, and the Agent's bot says once in the thread where to ask instead", async (t) => withHarness(t, async (h) => {
+  assert.equal((await h.deliver('events', dmEvent())).status, 200);
+  const asking = await pendingTurn(h.stores, (job) => job.turn.channelId === 'D1');
+  assert.ok(asking);
+  assert.deepEqual(asking.turn.speaker, { kind: 'own_bot', botUserId: AGENT_BOT_USER });
+  await askFinanceFrom(h, asking, '1900004650.000100');
+  await askFinanceFrom(h, asking, '1900004650.000200');
+  const lines = h.calls.filter((call) => call.method === 'chat.postMessage' && call.body.get('text') === FINANCE_NOT_IN_DM);
+  assert.deepEqual(lines.map((call) => [sender(call), call.body.get('channel'), call.body.get('thread_ts')]),
+    [[OWN_BOT, 'D1', asking.turn.threadTs]], "one line, from Support's own bot, in the thread it asked from");
+  assert.equal(await pendingTurn(h.stores, (job) => job.assignment.agentId === 'agent_finance'), undefined, 'no teammate turn is admitted');
+  assert.ok((await h.stores.config.listSlackPublicContext(TEAM, 'D1', asking.turn.threadTs))
+    .some((row) => row.role === 'agent' && row.text === FINANCE_NOT_IN_DM), 'Support reads the line on its next turn');
+}));
+
+test("the same ask from a Channel admits the teammate and posts no such line", async (t) => withHarness(t, async (h) => {
+  const asking = await admitSupportTurn(h, 'C1', '1900004660.000100', '1900004660.000200');
+  await askFinanceFrom(h, asking, '1900004660.000300');
+  assert.ok(await pendingTurn(h.stores, (job) => job.assignment.agentId === 'agent_finance'), 'Finance is asked');
+  assert.deepEqual(h.calls.filter((call) => call.body.get('text') === FINANCE_NOT_IN_DM), []);
+}));
 
 /** Asks Finance from `asking` until the exchange reaches its limit, then once more; returns the pause line's post. */
 async function pauseLineAfterLimit(h: Harness, asking: PendingTurnJob): Promise<SlackCall | undefined> {

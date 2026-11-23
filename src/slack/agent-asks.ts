@@ -37,13 +37,18 @@ export function isAgentAskSilentReply(text: string): boolean {
 export const AGENT_ASK_PAUSE_TEXT =
   "I'll pause here so this exchange doesn't keep going without you. Reply in this thread to continue.";
 
+/** Posted as the asking Agent in its own app's DM, once for each teammate it asked there, where no teammate can reply. */
+export function agentAskNotInAgentDmText(teammateName: string): string {
+  return `${teammateName} can't reply in this direct message. Mention ${teammateName} in a channel instead.`;
+}
+
 /** What the host admits asks from: one delivered Agent reply's messages. */
 export interface SlackAgentAskRequest {
   /** The asking turn: its thread, its person, and its own ask, if any. */
   turn: Pick<
     NormalizedSlackTurn,
     'workspaceId' | 'channelId' | 'threadTs' | 'messageTs' | 'userId' | 'channelType' |
-    'requesterTimezone' | 'agentAsk' | 'speaker'
+    'requesterTimezone' | 'agentAsk' | 'speaker' | 'dmBotUserId'
   >;
   fromAgentId: string;
   /** The replying Agent is the thread's own, not a guest. */
@@ -175,9 +180,9 @@ export function createAgentAskCollector(input: {
   flush(outcome?: 'succeeded' | 'no_op' | 'failed' | 'stopped'): Promise<void>;
 } {
   const deliveries: Array<{ messageTs: string; text: string }> = [];
-  // Neither a teammate's bot nor Chickpea's can post in an Agent app's own DM, so nobody is asked there.
+  // An Agent app's own DM goes with the asks, where the host refuses them: no other bot can post there.
   const inOwnAppDm = slackConversationKind(input.turn) === 'im' && input.turn.dmBotUserId !== undefined;
-  const eligible = Boolean(input.dispatch) && turnMayAskAgents(input.assignment) && !inOwnAppDm;
+  const eligible = Boolean(input.dispatch) && turnMayAskAgents(input.assignment);
   // A guest in a chain the thread's own Agent started: its answer goes back.
   const answersOwner = eligible && input.assignment.threadGuest === true &&
     Boolean(input.turn.agentAsk?.threadOwnerAgentId);
@@ -208,6 +213,7 @@ export function createAgentAskCollector(input: {
             ...(turn.requesterTimezone ? { requesterTimezone: turn.requesterTimezone } : {}),
             ...(turn.agentAsk ? { agentAsk: turn.agentAsk } : {}),
             ...(turn.speaker ? { speaker: turn.speaker } : {}),
+            ...(inOwnAppDm ? { dmBotUserId: turn.dmBotUserId } : {}),
           },
           fromAgentId: input.assignment.agentId,
           ...(input.assignment.threadGuest === true ? {} : { fromThreadOwner: true as const }),
