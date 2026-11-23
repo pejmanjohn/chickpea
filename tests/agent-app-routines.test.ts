@@ -171,7 +171,7 @@ function botClient(input: {
   posts: Post[];
   appToken: boolean;
   infoUnanswered?: () => boolean;
-  history?: readonly unknown[];
+  history?: readonly unknown[] | undefined;
 }): WebClient {
   const record = (method: string) => input.calls.push(`${input.botUserId}:${method}`);
   return {
