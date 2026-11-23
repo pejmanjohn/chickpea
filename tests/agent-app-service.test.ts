@@ -441,6 +441,24 @@ test("an app whose record names another Agent gets no URL update and no icon: th
   }
 });
 
+test("an app whose record cannot be opened gets no URL update and no icon, and nothing is created or deleted", async (t) => {
+  for (const state of ['created', 'urls_set'] as const) {
+    const f = await fixture(t);
+    const rekeyed = { credentials: f.settings, keyring: generateCredentialKeyring('k2'), slack: f.slack };
+    await writeAppSecrets(rekeyed, 'A0APP1', 'agent_support', { clientSecret: 'client-secret-1', signingSecret: 'signing-secret-1' }, null);
+    await setApp(f, { state, at: NOW - 60_000, startedBy: OWNER, app: { appId: 'A0APP1', clientId: '1.client' } });
+    const warn = t.mock.method(console, 'warn', () => undefined);
+    await f.service.advance('agent_support');
+    warn.mock.restore();
+
+    assert.deepEqual(f.calls.log, ['openDirectConversation', 'postMessage'], `${state}: nothing reaches Slack but the Owner's message`);
+    assert.deepEqual([f.slack.created, f.slack.updates, f.slack.icons, f.slack.deleted], [[], [], [], []]);
+    const app = await appOf(f);
+    assert.deepEqual(app?.state === 'needs_attention' && [app.reason, app.resume, app.app?.appId], ['urls_refused', 'created', 'A0APP1']);
+    assert.ok(await f.settings.getEncryptedCredentialRevision('agent-slack-app.a0app1'), 'the record stays');
+  }
+});
+
 test('two concurrent starts make one app', async (t) => {
   const f = await fixture(t);
   const outcomes = await Promise.all([f.service.start('agent_support', OWNER), f.service.start('agent_support', 'UOWNER2')]);
