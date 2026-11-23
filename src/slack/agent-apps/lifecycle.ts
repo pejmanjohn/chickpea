@@ -37,6 +37,8 @@ export type AgentAppEvent =
   | { type: 'created'; at: number; app: AgentAppRecord }
   | { type: 'create_refused'; at: number; reason: 'create_refused' | 'slack_busy' }
   | { type: 'create_ambiguous'; at: number }
+  /** Slack refused the create because the workspace has all the apps its plan allows: nothing was made. */
+  | { type: 'app_limit_reached'; at: number }
   /** The recorded app has no record, so it is left for the Owner; create again. */
   | { type: 'recreate'; at: number; manifestFingerprint: string }
   | { type: 'urls_set'; at: number }
@@ -203,6 +205,8 @@ export function transition(app: AgentAppLifecycle, event: AgentAppEvent): AgentA
       return app.state === 'creating' ? attention(app.startedBy, at, event.reason, 'creating') : WRONG_STATE;
     case 'create_ambiguous':
       return app.state === 'creating' ? attention(app.startedBy, at, 'ambiguous_create', 'creating') : WRONG_STATE;
+    case 'app_limit_reached':
+      return app.state === 'creating' ? WITHDRAWN : WRONG_STATE;
     case 'recreate':
       return app.state === 'created'
         ? { state: 'creating', at, startedBy: app.startedBy, manifestFingerprint: event.manifestFingerprint }

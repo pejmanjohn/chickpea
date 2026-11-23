@@ -45,6 +45,8 @@ export function isAgentSlackAppTokenApiPath(path: string): boolean {
 export interface AgentSlackAppAdminDeps {
   actor(c: Context): Promise<{ principal: AuthPrincipal; slackUserId: string; slackTeamId: string }>;
   getAgent(c: Context, agentId: string): Promise<CustomAgentConfig | undefined>;
+  /** Reconcile these Agents' Slack presence, as Retry does; each one's failure is kept on it. */
+  reconcileAgents(c: Context, agentIds: readonly string[]): Promise<void>;
   /** Test seam: the service for an env; live stores and the main bot otherwise. */
   service?: (env: PlatformEnv | undefined, host: AgentSlackAppsHost) => Promise<AgentSlackApps>;
 }
@@ -54,6 +56,7 @@ type TokenPageError =
   | 'rejected'
   | 'other_workspace'
   | 'slack_down'
+  | 'app_limit'
   | 'already_started';
 
 const ERRORS: Record<Exclude<TokenPageError, 'already_started'>, string> = {
@@ -61,6 +64,7 @@ const ERRORS: Record<Exclude<TokenPageError, 'already_started'>, string> = {
   rejected: "Slack didn't accept that token. Generate a new one and paste its Refresh Token.",
   other_workspace: 'That token is for a different Slack workspace. Generate one for this workspace.',
   slack_down: "Slack didn't answer. Try again in a minute.",
+  app_limit: "Slack's free plan allows 10 apps, and this workspace has reached that. Remove an app or upgrade Slack, then try again.",
 };
 
 function errorText(error: TokenPageError, name: string): string {
@@ -108,7 +112,7 @@ const settingJson = (setting: AgentSlackAppsSetting) => ({
  *   'other_workspace' }`; 503 `{ error: 'slack_down' }`.
  * - `DELETE /admin/api/slack-apps/token` → `{ token: { stored: false }, slackMayStillAccept }`.
  * - `POST /admin/api/slack-apps/agents/:agentId/start` → 200 `{ next: 'authorize', authorizeUrl, agent }`; 202
- *   `{ next: 'creating', agent }`; 409 `{ error: 'token_needed' | 'permission_needed' }` or
+ *   `{ next: 'creating', agent }`; 409 `{ error: 'token_needed' | 'permission_needed' | 'app_limit' }` or
  *   `{ error: 'needs_attention' | 'already_own_app', agent }`; 404.
  * - `POST /admin/api/slack-apps/agents/:agentId/cancel` → `{ agent }`; 409 `{ error: 'not_waiting' }`; 503
  *   `{ error: 'slack_unavailable' }`; 404.
@@ -148,7 +152,13 @@ export function createAgentSlackAppAdminRoutes(deps: AgentSlackAppAdminDeps): Ho
     if (!gated.ok) return gated.response;
     const parsed = v.safeParse(modeSchema, await readJson(c, MAX_BODY_BYTES));
     if (!parsed.success) return invalidRequest(c);
-    return c.json({ setting: settingJson(await gated.apps.setMode(parsed.output.mode, gated.slackUserId)) });
+    const setting = await gated.apps.setMode(parsed.output.mode, gated.slackUserId);
+    // Back to shared: each Agent still waiting for its own app gets a user group. Agents with an app keep it.
+    if (setting.mode === 'shared') {
+      const waiting = (await gated.apps.userAgents()).filter((agent) => agentSlackState(agent.slackPresence!).state === 'not_in_slack');
+      if (waiting.length > 0) await deps.reconcileAgents(c, waiting.map((agent) => agent.id));
+    }
+    return c.json({ setting: settingJson(setting) });
   });
 
   app.put(`${API}/token`, async (c) => {
@@ -189,6 +199,7 @@ export function createAgentSlackAppAdminRoutes(deps: AgentSlackAppAdminDeps): Ho
         return c.json({ error: pressed.kind, agent: await rowOf(c, apps, pressed.agent) }, 409);
       case 'token_needed':
       case 'permission_needed':
+      case 'app_limit':
         return c.json({ error: pressed.kind }, 409);
       default:
         return c.json({ error: 'not_found' }, 404);
@@ -258,6 +269,7 @@ export function createAgentSlackAppAdminRoutes(deps: AgentSlackAppAdminDeps): Ho
     if (started.kind === 'token_needed') return c.html(tokenPage(agent, false), 400);
     if (started.kind === 'permission_needed') return c.html(permissionPage(agent), 409);
     if (started.kind === 'already_started') return c.html(tokenPage(agent, true, 'already_started'), 409);
+    if (started.kind === 'app_limit') return c.html(tokenPage(agent, true, 'app_limit'), 409);
     if (started.kind === 'not_eligible') return c.notFound();
     return c.html(creatingPage(agent));
   });

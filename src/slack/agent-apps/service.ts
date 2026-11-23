@@ -158,6 +158,8 @@ export type AgentAppStartOutcome =
   | { kind: 'already_started'; agent: CustomAgentConfig }
   | { kind: 'token_needed' }
   | { kind: 'permission_needed' }
+  /** Slack's plan allows no more apps in this workspace; the Agent is as it was. */
+  | { kind: 'app_limit' }
   | { kind: 'not_eligible' };
 
 /**
@@ -173,6 +175,7 @@ export type AgentAppPressOutcome =
   | { kind: 'already_own_app'; agent: CustomAgentConfig }
   | { kind: 'token_needed' }
   | { kind: 'permission_needed' }
+  | { kind: 'app_limit' }
   | { kind: 'not_eligible' };
 
 export type AgentAppCancelOutcome =
@@ -219,6 +222,13 @@ const GROUP_ALREADY_RELEASED = new Set(['already_disabled', 'no_such_subteam']);
  * is reported as left out there.
  */
 const OLDER_APPS_LACK = 'channels:join';
+/**
+ * How Slack refuses a create once the workspace has every app its plan
+ * allows (ten on the free plan). Not yet seen live: `managed_app_limit_reached`
+ * is the code apps.manifest.create documents, `service_limits_exceeded` the
+ * one Slack's CLI reports for the free plan's limit.
+ */
+const APP_LIMIT_REFUSALS = new Set(['managed_app_limit_reached', 'service_limits_exceeded']);
 /** How Slack refuses a user-group change for want of a permission. */
 const PERMISSION_REFUSALS = new Set(['permission_denied', 'missing_scope', 'not_allowed']);
 
@@ -235,6 +245,8 @@ export class AgentSlackApps {
   private readonly leftForOwner = new Map<string, 'uninstalled_left_definition' | 'left_for_owner'>();
   /** Agents whose app an Owner's Cancel is deleting: an app left behind is the cancel's, not an archive's. */
   private readonly cancelling = new Set<string>();
+  /** Agents whose create Slack just refused for the workspace's app limit, for the press that started it. */
+  private readonly atAppLimit = new Set<string>();
 
   constructor(private readonly deps: AgentSlackAppsDeps) {
     this.now = deps.now ?? Date.now;
@@ -282,7 +294,24 @@ export class AgentSlackApps {
       if (appRecordOf(latest.slackPresence)) return { kind: 'already_started', agent: latest };
       return this.start(agentId, ownerSlackUserId);
     }
-    return { kind: 'started', agent: await this.advance(agentId, { wroteCreating: true }) };
+    this.atAppLimit.delete(agentId);
+    const advanced = await this.advance(agentId, { wroteCreating: true });
+    if (this.atAppLimit.delete(agentId)) return { kind: 'app_limit' };
+    return { kind: 'started', agent: advanced };
+  }
+
+  /**
+   * An Owner's signed press of Add to Slack in a Slack message: start the app,
+   * whose Allow message follows when it is ready. With no token stored, the
+   * Owner is asked for one; the setting stays as it is.
+   */
+  async startFromSlack(agentId: string, ownerSlackUserId: string): Promise<AgentAppStartOutcome> {
+    const started = await this.start(agentId, ownerSlackUserId);
+    if (started.kind === 'token_needed') {
+      const agent = await this.deps.stores.config.getAgent(agentId);
+      await this.message('config_token_needed', agent, ownerSlackUserId, `agent-app-token-needed:${agent.id}:${this.now()}`);
+    }
+    return started;
   }
 
   /** Perform the next step, commit by compare-and-set, repeat until the record waits. */
@@ -401,7 +430,7 @@ export class AgentSlackApps {
     const record = appRecordOf(agent.slackPresence);
     if (!record) {
       const started = await this.start(agentId, ownerSlackUserId);
-      if (started.kind === 'token_needed' || started.kind === 'permission_needed' || started.kind === 'not_eligible') return started;
+      if (started.kind !== 'started' && started.kind !== 'already_started') return started;
       agent = started.agent;
     } else if (record.state === 'needs_attention' && agent.slackPresence.kind !== 'agent_app') {
       if (record.reason === 'config_token_needed' && !(await this.hasConfigurationToken())) return { kind: 'token_needed' };
@@ -923,7 +952,8 @@ export class AgentSlackApps {
     },
 
     create: async (run) => {
-      if (!run.wroteCreating) return 'wait';
+      if (!run.wroteCreating || run.app.state !== 'creating') return 'wait';
+      const { startedBy } = run.app;
       const { teamId } = await this.installation();
       const manifest = this.createManifest(run.agent);
       let created;
@@ -932,6 +962,16 @@ export class AgentSlackApps {
       } catch (error) {
         if (error instanceof ConfigTokenNeeded) return { event: { type: 'config_token_needed', at: run.now } };
         if (error instanceof AmbiguousEffect) return { event: { type: 'create_ambiguous', at: run.now } };
+        if (error instanceof SlackRefused && APP_LIMIT_REFUSALS.has(error.code)) {
+          logSlackRefusal('create', { agentId: run.agent.id }, error);
+          return {
+            event: { type: 'app_limit_reached', at: run.now },
+            after: async () => {
+              this.atAppLimit.add(run.agent.id);
+              await this.message('app_limit', run.agent, startedBy, `agent-app-limit:${run.agent.id}:${run.now}`);
+            },
+          };
+        }
         if (error instanceof SlackRefused) {
           logSlackRefusal('create', { agentId: run.agent.id }, error);
           return { event: { type: 'create_refused', at: run.now, reason: error.code === 'ratelimited' ? 'slack_busy' : 'create_refused' } };

@@ -232,7 +232,11 @@ export async function endAgentSlackAppLive(
 }
 
 /** The reconciler's hooks for an Agent's own app: present only with the port. */
-export function agentAppPresenceHooks(env: PlatformEnv | undefined): AgentAppPresenceHooks | undefined {
+export function agentAppPresenceHooks(
+  env: PlatformEnv | undefined,
+  /** The caller's own settings store, where it has one; the env's otherwise. */
+  settings?: Pick<SettingsStore, 'getSetting'>,
+): AgentAppPresenceHooks | undefined {
   const host = agentSlackAppsHost();
   if (!host) return undefined;
   return {
@@ -240,7 +244,7 @@ export function agentAppPresenceHooks(env: PlatformEnv | undefined): AgentAppPre
       return (await (await liveAgentSlackApps(env, host)).retire(agent)).agent;
     },
     async ownAppMode() {
-      return (await readAgentSlackAppsSetting(getSettingsStore(env))).mode === 'own_app';
+      return (await readAgentSlackAppsSetting(settings ?? getSettingsStore(env))).mode === 'own_app';
     },
     async bringBotIn(agent, channel) {
       const presence = agent.slackPresence;
@@ -351,7 +355,7 @@ export async function handleAgentAppHomeAction(input: {
   const viewer = await input.viewer();
   if (viewer?.role !== 'owner') return true;
   const service = await liveAgentSlackApps(input.env, host);
-  if (action.action_id === START_APP_ACTION) await service.start(action.value, slackUserId);
+  if (action.action_id === START_APP_ACTION) await service.startFromSlack(action.value, slackUserId);
   else await service.retry(action.value, slackUserId);
   await viewer.republish();
   return true;

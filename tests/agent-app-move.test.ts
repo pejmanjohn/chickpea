@@ -5,6 +5,7 @@ import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import {
+  AWAITING_OWN_APP,
   type AgentSlackPresence,
   type CustomAgentConfig,
   agentAppIsLive,
@@ -15,7 +16,7 @@ import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { AgentSlackAppsHost } from '../src/slack/agent-apps/host.ts';
 import { AgentSlackApps, type AgentAppTransport } from '../src/slack/agent-apps/service.ts';
 import { agentAppMoveJob } from '../src/slack/agent-apps/lifecycle.ts';
-import { readAppSecrets, saveConfigurationToken, writeAppSecrets } from '../src/slack/agent-apps/secrets.ts';
+import { discardConfigurationToken, readAppSecrets, saveConfigurationToken, writeAppSecrets } from '../src/slack/agent-apps/secrets.ts';
 import type { AgentAppBotTransport, AgentAppSwitchJob } from '../src/slack/agent-apps/service.ts';
 import { type AgentAppSlackApi, SlackRefused } from '../src/slack/agent-apps/slack-api.ts';
 import { AgentPresenceReconciler } from '../src/slack/agent-presence/reconciler.ts';
@@ -64,8 +65,11 @@ class FakeSlack implements AgentAppSlackApi {
   async rotate() {
     return { accessToken: 'xoxe.xoxp-1-access', refreshToken: 'xoxe-1-refresh', teamId: TEAM, expiresAt: NOW + 365 * 86_400_000 };
   }
+  /** Slack's answer to the next create, as an `ok: false` code. */
+  createRefusal: string | undefined;
   create() {
     return this.calls.through('create', async () => {
+      if (this.createRefusal) throw new SlackRefused('apps.manifest.create', this.createRefusal);
       const n = this.created.length + 1;
       this.created.push(`A0APP${n}`);
       return { appId: `A0APP${n}`, clientId: `${n}.client`, clientSecret: `client-secret-${n}`, signingSecret: `signing-secret-${n}` };
@@ -910,3 +914,65 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+
+// Defects caught: the Channel a creator asked for staying pending after Allow, so the new app never answers there;
+// a pending add someone else made becoming active without its own checks.
+test('an Agent born as its own app gets the Channel its creator asked for once Allow switches it, and nothing else pending', async (t) => {
+  const f = await fixture(t, { userGroupId: undefined, grants: [] });
+  const created = await f.config.getAgent('agent_support');
+  await f.config.updateAgent(created.id, {
+    creatorMembershipId: 'm_creator',
+    slackPresence: { ...created.slackPresence!, desiredState: 'active', errorCode: AWAITING_OWN_APP },
+  }, created.revision);
+  for (const [channelId, by] of [['CSALES', 'm_creator'], ['CDEALS', 'm_other']] as const) {
+    await f.config.putChannel({ workspaceId: TEAM, channelId, lifecycle: 'active' }, 0);
+    await f.config.putAgentChannelGrant({
+      workspaceId: TEAM, channelId, agentId: 'agent_support', status: 'pending', createdByMembershipId: by, channelIsPrivate: false,
+    }, 0);
+  }
+
+  assert.equal((await f.service.start('agent_support', OWNER)).kind, 'started');
+  assert.equal((await presenceOf(f))?.errorCode, AWAITING_OWN_APP, 'not in Slack until Allow');
+  await allow(f);
+  await f.service.continueSwitch('agent_support');
+
+  const grants = Object.fromEntries((await f.config.listAgentChannelGrants()).map((grant) => [grant.channelId, grant.status]));
+  assert.deepEqual(grants, { CDEALS: 'pending', CSALES: 'active' });
+  assert.deepEqual(f.bot.joined, ['CSALES'], 'the bot joins the creator\'s Channel');
+  assert.match(ownerMessages(f).join('\n'), /It joined <#CSALES>\./);
+  assert.equal((await presenceOf(f))?.errorCode, undefined, 'in Slack now');
+  await f.service.continueSwitch('agent_support');
+  assert.deepEqual(f.bot.joined, ['CSALES'], 'a rerun repeats nothing');
+});
+
+// Defects caught: an app-limit refusal shown as a broken app that needs attention, or the Agent left with a record.
+test("Slack's app limit leaves the Agent as it was, with the message that says why", async (t) => {
+  for (const code of ['managed_app_limit_reached', 'service_limits_exceeded']) {
+    const f = await fixture(t, { userGroupId: undefined, grants: [] });
+    f.slack.createRefusal = code;
+
+    assert.deepEqual(await f.service.start('agent_support', OWNER), { kind: 'app_limit' });
+
+    assert.equal(appRecordOf(await presenceOf(f)), undefined, 'no app record is left');
+    assert.deepEqual(f.slack.created, []);
+    assert.deepEqual(f.main.posted.map((message) => [message.channelId, message.text]), [[`D_${OWNER}`, escapeMrkdwn(
+      "Slack's free plan allows 10 apps, and this workspace has reached that. Remove an app or upgrade Slack, then add Support.",
+    )]]);
+    f.slack.createRefusal = undefined;
+    assert.equal((await f.service.start('agent_support', OWNER)).kind, 'started', 'a later press starts afresh');
+  }
+});
+
+// Defects caught: a Slack press with no token doing nothing, so the Owner never learns what to do.
+test('an Owner\'s press in Slack with no token asks that Owner for one and starts nothing', async (t) => {
+  const f = await fixture(t, { userGroupId: undefined, grants: [] });
+  await discardConfigurationToken(f.secrets, TEAM);
+  const before = f.main.posted.length;
+
+  assert.deepEqual(await f.service.startFromSlack('agent_support', OWNER), { kind: 'token_needed' });
+
+  assert.equal(appRecordOf(await presenceOf(f)), undefined);
+  assert.deepEqual(f.main.posted.slice(before).map((message) => [message.channelId, message.text]), [[`D_${OWNER}`, escapeMrkdwn(
+    "Chickpea needs a new Slack refresh token to finish Support's app.",
+  )]]);
+});

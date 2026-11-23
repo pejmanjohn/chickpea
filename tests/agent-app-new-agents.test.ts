@@ -215,7 +215,8 @@ test('an Agent not in Slack yet is told its name and no handle', () => {
 
   assert.match(instruction(waiting), /your name is Support\./);
   assert.doesNotMatch(instruction(waiting), /handle is/);
-  assert.match(instruction({ ...waiting, errorCode: undefined, userGroupId: 'S1' }), /Your Slack handle is @support/);
+  const { errorCode: _waiting, ...inSlack } = waiting;
+  assert.match(instruction({ ...inSlack, userGroupId: 'S1' }), /Your Slack handle is @support/);
 });
 
 test('a workspace where no Agent has an app record reads no app bots on a Slack event or turn', async (t) => {
@@ -239,6 +240,7 @@ test('a workspace where no Agent has an app record reads no app bots on a Slack 
   assert.equal(on?.agentApps, true, 'an app record of any state turns the read back on');
   await listAgentAppBots(counted, on);
   assert.equal(reads, 1);
-  await listAgentAppBots(counted, { ...on!, agentApps: undefined });
+  const older: { agentApps?: boolean } = {};
+  await listAgentAppBots(counted, older);
   assert.equal(reads, 2, 'a record from a store on older code, which leaves the fact out, still reads');
 });

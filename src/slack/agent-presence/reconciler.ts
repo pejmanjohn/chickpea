@@ -358,7 +358,8 @@ export class AgentPresenceReconciler {
     // Surface the actionable invite step before attempting that impossible
     // membership probe.
     if (!channel.member && channel.private) {
-      await ensurePendingGrant();
+      // A waiting Agent's pending grant becomes active at the switch, so it is written only after the membership check.
+      if (!waitingForApp) await ensurePendingGrant();
       const error = new AgentPresenceError(
         'private_channel_invite_required',
         'Invite Chickpea to the private Slack Channel before retrying.',

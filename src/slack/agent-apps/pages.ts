@@ -40,6 +40,7 @@ export type AgentAppMessageKind =
   | 'app_removed_unreachable'
   | 'app_removed_permission'
   | 'recreated'
+  | 'app_limit'
   | AgentAppAttention;
 
 type Button =
@@ -91,6 +92,11 @@ const DM_COPY = {
     text: ({ name }) =>
       `Chickpea made a second ${name} app in Slack because it lost track of the first. Keep the one you allow from Chickpea's next message; after you allow it, Your Apps in Slack shows it as installed. Delete the other ${name} app there.`,
     buttons: () => [yourApps],
+  },
+  /** Nothing was created, and the Agent is as it was before the press. */
+  app_limit: {
+    text: ({ name }) => `Slack's free plan allows 10 apps, and this workspace has reached that. Remove an app or upgrade Slack, then add ${name}.`,
+    buttons: () => [],
   },
   create_refused: {
     text: ({ name }) => `Slack didn't finish ${name}'s app. Choose Try again. If it keeps happening, check that your workspace allows new apps.`,

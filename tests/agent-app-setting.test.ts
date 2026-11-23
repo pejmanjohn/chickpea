@@ -22,6 +22,7 @@ import { type AgentAppSlackApi, SlackRefused, SlackUnavailable } from '../src/sl
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 import { refuseLikeSlack } from './helpers/slack-manifest-rules.ts';
+import { SlackTransportError, type SlackTransport, type SlackUserGroup } from '../src/slack/transport/types.ts';
 
 const TOKEN = 'admin-token';
 const TEAM = 'T_TEST';
@@ -78,7 +79,9 @@ interface SlackScript {
   created: number;
 }
 
-async function adminApp(t: TestContext, options: { role?: AuthPrincipal['role']; machine?: boolean; port?: boolean; permissionMissing?: boolean } = {}) {
+async function adminApp(t: TestContext, options: {
+  role?: AuthPrincipal['role']; machine?: boolean; port?: boolean; permissionMissing?: boolean; slackTransport?: SlackTransport;
+} = {}) {
   const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => { config.close(); settings.close(); configureAgentSlackApps(undefined); });
@@ -119,6 +122,7 @@ async function adminApp(t: TestContext, options: { role?: AuthPrincipal['role'];
   const app = createAdminRoutes({
     store: config, settings,
     agentSlackApps: async () => service,
+    ...(options.slackTransport ? { slackTransport: options.slackTransport } : {}),
     ...testAdminAuthority(TOKEN, undefined, people, principal(options.role ?? 'owner', options.machine)),
   });
   const request = (path: string, init: RequestInit = {}, headers: Record<string, string> = {}) =>
@@ -423,4 +427,48 @@ test("Cancel deletes an app waiting for Allow and leaves the Agent's user group 
   assert.deepEqual(owner.script.deleted, ['A0APP1']);
   assert.deepEqual((await owner.config.getAgent('agent_support')).slackPresence, before);
   assert.equal(owner.calls.some((call) => call.startsWith('disable:') || call.startsWith('enable:')), false);
+});
+
+/** Chickpea's bot for user groups, refusing a handle Slack already has, as Slack does. */
+function userGroupBot() {
+  const groups: SlackUserGroup[] = [];
+  const created: string[] = [];
+  const transport = {
+    mode: 'direct',
+    listUserGroups: async () => groups.map((group) => ({ ...group })),
+    lookupUserGroup: async (id: string) => groups.find((group) => group.id === id),
+    createUserGroup: async (input: { name: string; handle: string }) => {
+      if (groups.some((group) => group.handle === input.handle)) throw new SlackTransportError('usergroups.create', 'name_already_exists');
+      const group = { id: `S${groups.length + 1}`, name: input.name, handle: input.handle, disabled: false };
+      groups.push(group);
+      created.push(input.handle);
+      return { ...group };
+    },
+    openDirectConversation: async (user: string) => ({ id: `D_${user}`, private: true, member: true, archived: false }),
+    postMessage: async (input: { channelId: string }) => ({ channelId: input.channelId, ts: '1.0' }),
+  } as unknown as SlackTransport;
+  return { transport, created };
+}
+
+test('turning the mode back to shared gives each Agent not in Slack yet a user group, and keeps apps and the token', async (t) => {
+  const slack = userGroupBot();
+  const owner = await adminApp(t, { slackTransport: slack.transport });
+  const { config } = owner;
+  await config.createAgent(agent('agent_new', 'Newbie', notInSlack('newbie')));
+  const live = ownApp('own', { state: 'active', at: NOW, app: APP, icon: 'agent_avatar', botUserId: 'UBOT9', installedAt: NOW, installedBy: OWNER });
+  const own = (await config.createAgent(agent('agent_own', 'Own', live))).slackPresence;
+  assert.equal((await owner.request(`${API}/token`, owner.json('PUT', { refreshToken: PASTED }))).status, 200);
+  await owner.request(`${API}/mode`, owner.json('PUT', { mode: 'own_app' }));
+  assert.deepEqual(slack.created, [], 'turning it on changes no Agent');
+
+  const off = await owner.request(`${API}/mode`, owner.json('PUT', { mode: 'shared' }));
+
+  assert.equal(off.status, 200);
+  assert.deepEqual(slack.created, ['newbie']);
+  const newbie = (await config.getAgent('agent_new')).slackPresence;
+  assert.equal(newbie?.userGroupId, 'S1');
+  assert.equal(newbie?.errorCode, undefined);
+  assert.deepEqual((await config.getAgent('agent_own')).slackPresence, own, 'an Agent with a live app keeps it');
+  const body = await (await owner.request(API)).json() as { token: { stored: boolean } };
+  assert.equal(body.token.stored, true, 'the token stays until an Owner removes it');
 });

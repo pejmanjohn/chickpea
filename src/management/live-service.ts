@@ -142,7 +142,7 @@ export function createLiveWorkspaceManagementService(
   })).providers;
   const presenceReconciler = async (workspaceId: string) => {
     const transport = await slackTransport(workspaceId);
-    const agentApps = agentAppPresenceHooks(env);
+    const agentApps = agentAppPresenceHooks(env, settings);
     return new AgentPresenceReconciler({
       config: config as ConfigStore,
       transport,

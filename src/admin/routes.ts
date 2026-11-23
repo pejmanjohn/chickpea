@@ -2514,7 +2514,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     transport: SlackTransport,
     announce: AgentPresenceAnnouncements | null,
   ): AgentPresenceReconciler => {
-    const agentApps = agentAppPresenceHooks(c.env as PlatformEnv | undefined);
+    const agentApps = agentAppPresenceHooks(c.env as PlatformEnv | undefined, settings(c));
     return new AgentPresenceReconciler({ config: store(c), transport, announce, ...(agentApps ? { agentApps } : {}) });
   };
   const reconcileAgentSlackPresence = async (
@@ -10530,7 +10530,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       }
       const workspaceId = parsed.output.workspaceId ?? actor.slackTeamId;
       if (workspaceId !== actor.slackTeamId) throw new AuthorizationError();
-      const agentApps = agentAppPresenceHooks(c.env as PlatformEnv | undefined);
+      const agentApps = agentAppPresenceHooks(c.env as PlatformEnv | undefined, settings(c));
       let updated = current.slackPresence?.userGroupId
         ? await new AgentPresenceReconciler({
             config: store(c),
@@ -11888,6 +11888,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         if (error instanceof UnknownAgentError) return undefined;
         throw error;
       }
+    },
+    reconcileAgents: async (c, agentIds) => {
+      const actor = await agentActor(c);
+      const transport = await agentSlackTransport(c, actor.slackTeamId);
+      const reconciler = presenceReconciler(c, transport, presenceAnnouncements(c, transport));
+      // Each Agent's own failure is recorded on it, for its Retry; the rest go on.
+      for (const agentId of agentIds) await reconciler.retry(agentId).catch(() => undefined);
     },
     ...(options.agentSlackApps ? { service: options.agentSlackApps } : {}),
   }));
