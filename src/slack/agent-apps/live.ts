@@ -1,3 +1,5 @@
+import type { WebClient } from '@slack/web-api';
+
 import { UnknownAgentError } from '../../config/errors.ts';
 import type { EncryptedCredentialStore, SettingsStore } from '../../config/settings-store.ts';
 import { type AppStores, getSettingsStore, type PlatformEnv, resolveStores } from '../../config/state-backend.ts';
@@ -18,6 +20,7 @@ import { SlackTransportError, type SlackTransport } from '../transport/types.ts'
 import { ownerUserGroupToken } from '../user-group-authority.ts';
 import { createSlackWebClient } from '../web-client.ts';
 import { appRecordOf, type CustomAgentConfig } from '../../config/types.ts';
+import type { SlackSpeaker } from '../speaker.ts';
 import { agentSlackAppsHost, type AgentAppRetirement, type AgentSlackAppIngress, type AgentSlackAppsHost } from './host.ts';
 import { FINISH_APP_ACTION, START_APP_ACTION, TRY_AGAIN_ACTION } from './pages.ts';
 import { type AgentAppSwitchJob, agentAppIsLive, agentAppMoveJob, agentAppRecord } from './lifecycle.ts';
@@ -129,6 +132,27 @@ export function withAgentAppExecution(
     }
     return context;
   };
+}
+
+/**
+ * The client of a post Chickpea makes for an Agent outside its runs, such as
+ * a notice or a pause line: the Agent app's own bot, never with a persona, for
+ * an `own_bot` speaker; undefined for any other, where Chickpea's bot posts
+ * under the Agent's name. An `own_bot` speaker whose app can no longer post
+ * throws, so nothing posts for it as Chickpea instead.
+ */
+export async function ownBotClient(
+  env: PlatformEnv | undefined,
+  workspaceId: string,
+  agentId: string,
+  speaker: SlackSpeaker | undefined,
+): Promise<WebClient | undefined> {
+  if (speaker?.kind !== 'own_bot') return undefined;
+  const lookup = agentSlackAppsHost() ? await agentAppExecutionBot(env, agentId) : undefined;
+  if (lookup?.kind !== 'live' || lookup.bot.botUserId !== speaker.botUserId) {
+    throw new SlackInstallationUnavailableError(workspaceId, 'agent_app_unavailable', { retryable: false });
+  }
+  return createSlackWebClient(lookup.bot.botToken);
 }
 
 /**

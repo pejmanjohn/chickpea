@@ -2,11 +2,12 @@ import type { PlatformEnv } from '../config/state-backend.ts';
 import type { WebClient } from '@slack/web-api';
 import { getConfigStore, getIdentityStore, getRoutineStore } from '../config/state-backend.ts';
 import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
-import { answeringUserGroupId, type ResolvedAssignment } from '../config/types.ts';
+import type { ResolvedAssignment } from '../config/types.ts';
 import type { ConfigStore } from '../config/store.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import { resolveEffectiveConnectionAccounts } from '../connections/runtime.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
+import { agentSlackAddress } from '../slack/agent-app-bots.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import {
   stripResolvedSlackCommandAddress,
@@ -170,7 +171,7 @@ export async function handleRoutineSlackRequest(
 ): Promise<string | undefined> {
   const command = parseRoutineCommand(turn.text, {
     botUserId: dependencies.installationContext?.botUserId,
-    agentUserGroupId: answeringUserGroupId(dependencies.assignment?.agent.slackPresence),
+    ...agentSlackAddress(dependencies.assignment?.agent),
   });
   if (!command) return undefined;
   if (!isRoutineSlackTurn(turn)) return undefined;

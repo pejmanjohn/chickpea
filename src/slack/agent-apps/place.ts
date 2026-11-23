@@ -1,11 +1,17 @@
 import { getSlackStateStore, type PlatformEnv } from '../../config/state-backend.ts';
-import { type ActiveAgentApp, agentAppIsLive, type AgentSlackPresence } from '../../config/types.ts';
+import {
+  type ActiveAgentApp,
+  agentAppIsLive,
+  type AgentSlackPresence,
+  type CustomAgentConfig,
+} from '../../config/types.ts';
 import { isTransientSlackApiError, slackConversationsInfo, slackConversationsOpen } from '../credentials.ts';
 import { ADMISSION_MEMBERSHIP_TTL_MS } from '../installation-execution.ts';
 import { type SlackSpeaker, speakerFor } from '../speaker.ts';
 import { slackConversationKind } from '../thread-key.ts';
 import { type SlackTransport, SlackTransportError } from '../transport/types.ts';
 import type { NormalizedSlackTurn } from '../types.ts';
+import { agentSlackAppsHost } from './host.ts';
 import { agentAppBotCredentials } from './live.ts';
 
 /** The bot that heard a turn at admission. */
@@ -84,6 +90,26 @@ export async function isAgentAppDm(
 }
 
 /**
+ * Whether an Agent's own app can answer in a Channel or group DM: the host
+ * serves it, it is live, its token can be read, and its bot is a member. This
+ * is the same cached fact admission reads for the speaker, so the two never
+ * disagree within its TTL. A read that fails counts as "cannot answer here",
+ * as admission counts it, so Chickpea routes the mention and the message's
+ * claim keeps one answer if the app's own delivery routes it too.
+ */
+export async function agentAppAnswersIn(
+  env: PlatformEnv | undefined,
+  agent: Pick<CustomAgentConfig, 'id' | 'slackPresence'>,
+  channelId: string,
+): Promise<boolean> {
+  const presence = agent.slackPresence;
+  if (!agentSlackAppsHost() || !agentAppIsLive(presence)) return false;
+  const { app } = presence;
+  return (await botMembership(app.botUserId, channelId, () =>
+    agentBotIsIn(env, agent.id, app.app.appId, channelId)).catch(notVerified)).member;
+}
+
+/**
  * Where an admitted turn was heard, and so the bot that answers its run
  * (speakerFor). A DM an Agent's own app heard is marked with that app's bot;
  * a DM turn Chickpea built is the app's own when the app's DM with the
@@ -153,6 +179,37 @@ export async function admissionSpeaker(input: {
     turn.channelMembership = { botUserId: answering.botUserId, verifiedAt: answering.fact.verifiedAt };
   }
   return speaker;
+}
+
+/**
+ * The speaker of a post Chickpea makes for an Agent outside its runs, such as
+ * a notice in one of its threads. A DM is the Agent app's own only when Slack
+ * names it as the app's DM with the person `userId` (isAgentAppDm); with no
+ * person to ask about, it is placed as Chickpea's DM. In a Channel or group
+ * DM the app's bot answers when it is a member, and Chickpea's bot is taken
+ * to be one, as for a turn Chickpea builds there. The caller asks only with
+ * the port on.
+ */
+export async function hostPostSpeaker(input: {
+  env: PlatformEnv | undefined;
+  agentId: string;
+  presence: AgentSlackPresence | undefined;
+  channelId: string;
+  userId?: string;
+}): Promise<SlackSpeaker> {
+  const { presence } = input;
+  const app = agentAppIsLive(presence) ? presence.app : undefined;
+  if (input.channelId.startsWith('D')) {
+    const own = app && input.userId
+      ? await isAgentAppDm(input.env, { agentId: input.agentId, appId: app.app.appId, userId: input.userId, channelId: input.channelId })
+      : false;
+    return speakerFor(presence, { kind: own ? 'agent_dm' : 'chickpea_dm' });
+  }
+  const appBotIsMember = app
+    ? (await botMembership(app.botUserId, input.channelId, () =>
+      agentBotIsIn(input.env, input.agentId, app.app.appId, input.channelId)).catch(notVerified)).member
+    : false;
+  return speakerFor(presence, { kind: 'channel', appBotIsMember, chickpeaBotIsMember: true });
 }
 
 /**

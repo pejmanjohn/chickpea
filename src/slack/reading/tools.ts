@@ -199,7 +199,7 @@ export function turnSlackReadAuthority(
  * its own app's bot reads the Channels that bot is in. A run stored before
  * its speaker reads as the live app's bot, and Chickpea's otherwise.
  */
-async function readingBot(
+export async function readingBot(
   workspace: SlackInstallationExecutionContext,
   env: PlatformEnv | undefined,
   agentId: string,

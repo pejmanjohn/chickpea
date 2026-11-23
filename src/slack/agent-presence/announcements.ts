@@ -7,7 +7,7 @@ import { agentSlackHandle } from '../agent-asks.ts';
 import { resolveSlackBehaviorSettings } from '../behavior-settings.ts';
 import { resolveSlackPublicUrl } from '../credentials.ts';
 import { renderAgentChannelWelcome } from '../message-format.ts';
-import type { SlackTransport } from '../transport/types.ts';
+import { SlackTransportError, type SlackTransport } from '../transport/types.ts';
 import { agentAvatarInstallation, agentAvatarUrlForPresentation } from './avatar-assets.ts';
 
 /** A Channel welcome Slack accepted. */
@@ -34,6 +34,11 @@ export function agentPresenceAnnouncements(deps: {
   transport: Pick<SlackTransport, 'postMessage'>;
   /** Chickpea's own bot, when it can be read. */
   installationBot: Pick<SlackTransport, 'lookupChannel'> | undefined;
+  /**
+   * Chickpea's own bot, to join a public Channel a person added an Agent's
+   * own bot to with Slack's Add, so that Agent hears its threads' replies.
+   */
+  joiningInstallationBot?: Pick<SlackTransport, 'joinPublicChannel'>;
   welcomeOnJoin(): Promise<boolean>;
   avatarUrl(agent: CustomAgentConfig): string | undefined;
   management: Pick<ManagementStore, 'queueOwedAgentWelcome'>;
@@ -46,13 +51,19 @@ export function agentPresenceAnnouncements(deps: {
       if (input.channelIsPrivate || !live) return;
       // An Agent with its own app greets as that app's bot, under the app's name, and only once that bot is in the Channel.
       const ownBot = 'botUserId' in live;
+      // An app has no Channel message events: its thread's unmentioned replies reach it only through Chickpea's
+      // bot, which joins on a person's Slack Add whether or not a welcome follows.
+      const joining = ownBot && deps.joiningInstallationBot
+        ? await joinUnlessIn(deps.installationBot, deps.joiningInstallationBot, input.channelId)
+        : undefined;
       const sender = ownBot ? input.appBot : deps.transport;
       if (!sender || !(await deps.welcomeOnJoin())) return;
-      // An app has no Channel message events: its thread's unmentioned replies reach it only through Chickpea's bot.
-      const hearsThreadReplies = !ownBot || await botIsIn(deps.installationBot, input.channelId);
+      const threadReplies = !ownBot
+        ? 'heard'
+        : joining ?? (await botIsIn(deps.installationBot, input.channelId) ? 'heard' : 'need_mention');
       const avatarUrl = ownBot ? undefined : deps.avatarUrl(input.agent);
       const text = renderAgentChannelWelcome({
-        name: input.agent.name, description: input.agent.description, hearsThreadReplies, ...live,
+        name: input.agent.name, description: input.agent.description, threadReplies, ...live,
       });
       const posted = await sender.postMessage({
         channelId: input.channelId,
@@ -84,12 +95,14 @@ export async function livePresenceAnnouncements(input: {
   management: Pick<ManagementStore, 'queueOwedAgentWelcome'>;
   transport: Pick<SlackTransport, 'postMessage'>;
   installationBot: Pick<SlackTransport, 'lookupChannel'> | undefined;
+  joiningInstallationBot?: Pick<SlackTransport, 'joinPublicChannel'>;
 }): Promise<AgentPresenceAnnouncements> {
   const publicOrigin = await resolveSlackPublicUrl(input.env, input.settings, input.identity);
   const installationId = agentAvatarInstallation(input.env);
   return agentPresenceAnnouncements({
     transport: input.transport,
     installationBot: input.installationBot,
+    ...(input.joiningInstallationBot ? { joiningInstallationBot: input.joiningInstallationBot } : {}),
     welcomeOnJoin: async () =>
       (await resolveSlackBehaviorSettings(input.env, input.settings)).welcomeOnJoin.value,
     avatarUrl: (agent) => agentAvatarUrlForPresentation(agent, publicOrigin, installationId),
@@ -101,4 +114,20 @@ export async function livePresenceAnnouncements(input: {
 async function botIsIn(bot: Pick<SlackTransport, 'lookupChannel'> | undefined, channelId: string): Promise<boolean> {
   const channel = await bot?.lookupChannel(channelId).catch(() => undefined);
   return channel?.member === true;
+}
+
+/** Chickpea's bot in a public Channel, joining it if it is not; a join Slack refuses leaves it out. */
+async function joinUnlessIn(
+  installationBot: Pick<SlackTransport, 'lookupChannel'> | undefined,
+  joining: Pick<SlackTransport, 'joinPublicChannel'>,
+  channelId: string,
+): Promise<'heard' | 'heard_since_chickpea_joined' | 'need_mention'> {
+  if (await botIsIn(installationBot, channelId)) return 'heard';
+  try {
+    return (await joining.joinPublicChannel(channelId)).member ? 'heard_since_chickpea_joined' : 'need_mention';
+  } catch (error) {
+    console.warn('[chickpea] Chickpea could not join a Channel beside an Agent app:',
+      error instanceof SlackTransportError ? error.code : 'failed');
+    return 'need_mention';
+  }
 }

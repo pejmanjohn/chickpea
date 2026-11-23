@@ -2817,6 +2817,8 @@ async function finishSetup(
     deliver: (record) => (options.deliverReceipt ?? deliverManagementReceiptToSlack)(record, {
       identity: dependencies.identity,
       ...(dependencies.platformEnv ? { env: dependencies.platformEnv } : {}),
+      agentPresence: async (agentId) =>
+        (await dependencies.config.listAgents()).find(({ id }) => id === agentId)?.slackPresence,
       onDelivered: (deliveredRecord, delivery) => completeAgentWelcomeDelivery(
         deliveredRecord,
         delivery,

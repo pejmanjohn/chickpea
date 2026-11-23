@@ -217,3 +217,26 @@ test('the collector hands over a reply that mentions only a bot user, and bot me
   await collector.flush('succeeded');
   assert.equal(handed.length, 1);
 });
+
+test("an Agent's reply in its own app's DM goes to the host marked with that DM's bot, which refuses the ask; elsewhere unmarked", async () => {
+  const asks = async (turn: Record<string, unknown>) => {
+    const handed: SlackAgentAskRequest[] = [];
+    const collector = createAgentAskCollector({
+      turn: { workspaceId: 'T1', eventId: 'Ev', text: 'x', userId: 'U1', messageTs: '1.0', threadTs: '1.0', contextMode: 'thread', ...turn },
+      assignment: { agentId: 'agent_support', runtimeContract: 'chickpea-v1', agent: { id: 'agent_support', kind: 'user' }, teammates: [{ name: 'Finance', handle: 'finance', botUserId: FINANCE_BOT }] } as unknown as ResolvedAssignment,
+      dispatch: async (request: SlackAgentAskRequest) => { handed.push(request); },
+    } as unknown as Parameters<typeof createAgentAskCollector>[0]);
+    collector.note({ messageTs: '1.1', text: `<@${FINANCE_BOT}> can you check?` });
+    await collector.flush('succeeded');
+    return handed;
+  };
+  const ownBot = { kind: 'own_bot', botUserId: 'USUPPORTBOT' } as const;
+  const ownDm = await asks({ channelId: 'D1', source: 'dm_message', dmBotUserId: 'USUPPORTBOT', speaker: ownBot });
+  assert.deepEqual(ownDm.map(({ turn }) => turn.dmBotUserId), ['USUPPORTBOT'], "its own app's DM, where the host refuses the ask and says so");
+  const chickpeaDm = await asks({ channelId: 'DCHICKPEA', source: 'dm_message', channelType: 'im', speaker: { kind: 'chickpea_as_agent' } });
+  assert.deepEqual(chickpeaDm.map(({ turn }) => turn.dmBotUserId), [undefined], "Chickpea's DM, where Chickpea's bot answers for the teammate");
+  const fromChannel = await asks({ channelId: 'C1', source: 'agent_mention', channelType: 'channel', speaker: ownBot, dmBotUserId: 'USUPPORTBOT' });
+  assert.equal(fromChannel.length, 1, 'a Channel');
+  assert.equal(fromChannel[0]!.turn.dmBotUserId, undefined, 'only a DM carries its bot');
+  assert.deepEqual(fromChannel[0]!.turn.speaker, ownBot, "the asking run's speaker goes with the ask, for its pause line");
+});

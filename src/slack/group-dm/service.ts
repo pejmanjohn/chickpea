@@ -19,7 +19,6 @@ export type GroupDmRefusalCode =
   | GroupDmAdmissionRefusal
   | 'person_not_eligible'
   | 'shared_conversation'
-  | 'agent_app'
   | 'not_in_group_dms'
   | 'requester_unavailable'
   | 'agent_unavailable'
@@ -36,7 +35,6 @@ const REFUSALS: Record<Exclude<GroupDmRefusalCode, 'missing_scope'>, string> = {
   too_many: `A group DM holds at most ${MAX_GROUP_DM_PEOPLE} people, the requester included. ${NOTHING_OPENED}`,
   person_not_eligible: `Only active people in this workspace can be added. Apps, bots, deactivated accounts and people from other organizations cannot. ${NOTHING_OPENED}`,
   shared_conversation: `Group DMs are not started from a conversation shared with another organization, so nothing from here is carried elsewhere. ${NOTHING_OPENED}`,
-  agent_app: `This Agent answers as its own Slack app, which cannot start group DMs. ${NOTHING_OPENED}`,
   not_in_group_dms: `Only Agents everyone in this workspace can use work in group DMs, so this Agent cannot start one. ${NOTHING_OPENED}`,
   requester_unavailable: `The person asking no longer has active Chickpea access. ${NOTHING_OPENED}`,
   agent_unavailable: `This Agent is no longer available. ${NOTHING_OPENED}`,

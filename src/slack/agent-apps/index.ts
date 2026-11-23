@@ -10,8 +10,9 @@ export {
   armUnfinishedAgentAppMoves,
   continueAgentAppSwitch,
   handleAgentAppHomeAction,
+  ownBotClient,
   withAgentAppExecution,
 } from './live.ts';
-export { admissionSpeaker, isAgentAppDm, storedRunSpeaker } from './place.ts';
-export { agentAppPostingBot, agentAppRouteSelection } from './routing.ts';
+export { admissionSpeaker, agentAppAnswersIn, hostPostSpeaker, isAgentAppDm, storedRunSpeaker } from './place.ts';
+export { agentAppPostingBot, agentAppRouteSelection, agentsByAppBot } from './routing.ts';
 export { createAgentSlackAppRoutes } from './routes.ts';

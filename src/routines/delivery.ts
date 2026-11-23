@@ -48,6 +48,8 @@ const DEFINITIVE_DIRECT_THREAD_ERRORS = new Set([
   'restricted_action_thread_locked',
 ]);
 const UNAVAILABLE_DESTINATION_ERRORS = new Set(['channel_not_found', 'is_archived', 'not_in_channel']);
+/** Slack's answer to a bot no longer in the conversation: a definite refusal, so nothing was posted. */
+const BOT_NOT_THERE_ERRORS = new Set(['channel_not_found', 'not_in_channel']);
 
 export const DIRECT_ROUTINE_RECOVERY_NOTICE =
   'Chickpea paused private scheduled work because its original thread could not receive a reply. Ask Chickpea here to list private schedules.';
@@ -146,6 +148,7 @@ export async function deliverRoutineResult(
     artifacts?: readonly SlackArtifactReceipt[];
     workLifecycle?: ShadowWorkLifecycle;
     threadRecord?: RoutineThreadRecord;
+    respeak?: () => Promise<RoutineRuntimeAccess>;
     now?: () => number;
     sleep?: (delayMs: number) => Promise<void>;
     fileTransport?: SlackFileTransport;
@@ -246,6 +249,8 @@ export interface ClaimedRoutineMessageInput {
   recordedPost?: Omit<SlackPublicDelivery, 'messageTs'>;
   unfurlArtifacts?: boolean;
   workLifecycle?: ShadowWorkLifecycle;
+  /** Fresh access, for one more post when the Agent's own bot is no longer there. */
+  respeak?: () => Promise<RoutineRuntimeAccess>;
   now?: () => number;
   sleep?: (delayMs: number) => Promise<void>;
 }
@@ -292,24 +297,23 @@ async function postClaimedRoutineMessage(
   claimedAt: number,
 ): Promise<RoutineDeliveryReceipt> {
   const now = input.now ?? Date.now;
-  const agentAvatarUrl = agentAvatarUrlForPresentation(
-    input.access.config.agent,
-    input.access.publicUrl,
-    input.access.avatarInstallationId,
-  );
-  const payload = {
-    channel: input.routine.channelId,
-    ...(input.routine.destination.threadTs
-      ? { thread_ts: input.routine.destination.threadTs }
-      : {}),
-    ...(typeof message === 'string' ? { text: message } : message),
-    username: input.access.config.agent.name,
-    ...(agentAvatarUrl
-      ? { icon_url: agentAvatarUrl }
-      : {}),
-    unfurl_links: input.unfurlArtifacts === true,
-    unfurl_media: input.unfurlArtifacts === true,
+  const payloadFor = (access: RoutineRuntimeAccess) => {
+    // The Agent's own app's bot already carries its name and picture; its token never takes a persona.
+    const persona = access.speaker?.kind !== 'own_bot';
+    const agentAvatarUrl = persona
+      ? agentAvatarUrlForPresentation(access.config.agent, access.publicUrl, access.avatarInstallationId)
+      : undefined;
+    return {
+      channel: input.routine.channelId,
+      ...(input.routine.destination.threadTs ? { thread_ts: input.routine.destination.threadTs } : {}),
+      ...(typeof message === 'string' ? { text: message } : message),
+      ...(persona ? { username: access.config.agent.name } : {}),
+      ...(agentAvatarUrl ? { icon_url: agentAvatarUrl } : {}),
+      unfurl_links: input.unfurlArtifacts === true,
+      unfurl_media: input.unfurlArtifacts === true,
+    };
   };
+  let payload = payloadFor(input.access);
   const workAttemptId = await input.workLifecycle?.beforeDelivery({
     method: 'slack_chat_post_message',
     approvedOutput: input.approvedOutput,
@@ -330,11 +334,22 @@ async function postClaimedRoutineMessage(
 
   let response: ChatPostMessageResponse;
   let rateLimitRetries = 0;
+  let poster = client;
+  let respeak = input.access.speaker?.kind === 'own_bot' ? input.respeak : undefined;
   while (true) {
     try {
-      response = await client.chat.postMessage(payload);
+      response = await poster.chat.postMessage(payload);
       break;
     } catch (error) {
+      if (respeak && BOT_NOT_THERE_ERRORS.has(slackPlatformErrorCode(error) ?? '')) {
+        const fresh = await respeak().catch(() => undefined);
+        respeak = undefined;
+        if (fresh) {
+          payload = payloadFor(fresh);
+          poster = routineSlackClient(fresh);
+          continue;
+        }
+      }
       const retryAfterMs = slackRateLimitRetryAfterMs(error);
       if (retryAfterMs !== undefined &&
           rateLimitRetries < ROUTINE_LIMITS.deliveryRateLimitMaxRetries &&
@@ -498,7 +513,7 @@ export async function deliverRoutineRecoveryNotice(
     response = await client.chat.postMessage({
       channel: channelId,
       text: routinePauseNotice(recovery.failureClass, destination.kind),
-      username: 'Chickpea',
+      ...(input.access.speaker?.kind === 'own_bot' ? {} : { username: 'Chickpea' }),
       unfurl_links: false,
       unfurl_media: false,
     });
