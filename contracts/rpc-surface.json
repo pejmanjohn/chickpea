@@ -23832,26 +23832,6 @@
               "object": {
                 "app": "#AgentAppRecord",
                 "at": "number",
-                "botUserId": "string",
-                "icon": "#AgentAppIcon",
-                "installedAt": "number",
-                "installedBy": "string",
-                "state": "\"active\"",
-                "switchProgress?": {
-                  "union": [
-                    "\"bring_in_pending\"",
-                    "\"done\"",
-                    "\"group_pending\"",
-                    "\"live\"",
-                    "\"owner_told\""
-                  ]
-                }
-              }
-            },
-            {
-              "object": {
-                "app": "#AgentAppRecord",
-                "at": "number",
                 "botUserId?": "string",
                 "next": {
                   "union": [
