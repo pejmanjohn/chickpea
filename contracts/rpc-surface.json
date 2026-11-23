@@ -4551,6 +4551,12 @@
         "botUserId": "string"
       }
     },
+    "AgentAppConsent": {
+      "object": {
+        "expiresAt": "number",
+        "nonceDigest": "string"
+      }
+    },
     "AgentAppIcon": {
       "union": [
         "\"agent_avatar\"",
@@ -4570,12 +4576,9 @@
             },
             "app": "#AgentAppRecord",
             "at": "number",
-            "consent?": {
-              "object": {
-                "expiresAt": "number",
-                "nonceDigest": "string",
-                "owner": "string"
-              }
+            "consents?": {
+              "object": {},
+              "index": "#AgentAppConsent"
             },
             "icon": "#AgentAppIcon",
             "startedBy": "string",
@@ -4590,7 +4593,16 @@
             "icon": "#AgentAppIcon",
             "installedAt": "number",
             "installedBy": "string",
-            "state": "\"active\""
+            "state": "\"active\"",
+            "switchProgress?": {
+              "union": [
+                "\"bring_in_pending\"",
+                "\"done\"",
+                "\"group_pending\"",
+                "\"live\"",
+                "\"owner_told\""
+              ]
+            }
           }
         },
         {
@@ -4685,6 +4697,7 @@
         "pendingCreate?": "undefined",
         "released?": {
           "object": {
+            "answers?": "boolean",
             "desiredState?": {
               "union": [
                 "\"active\"",
@@ -23794,6 +23807,122 @@
     },
     "UserGroupPresence": {
       "object": {
+        "app?": {
+          "union": [
+            {
+              "object": {
+                "allowDm": {
+                  "object": {
+                    "channelId": "string",
+                    "ts": "string"
+                  }
+                },
+                "app": "#AgentAppRecord",
+                "at": "number",
+                "consents?": {
+                  "object": {},
+                  "index": "#AgentAppConsent"
+                },
+                "icon": "#AgentAppIcon",
+                "startedBy": "string",
+                "state": "\"awaiting_consent\""
+              }
+            },
+            {
+              "object": {
+                "app": "#AgentAppRecord",
+                "at": "number",
+                "botUserId": "string",
+                "icon": "#AgentAppIcon",
+                "installedAt": "number",
+                "installedBy": "string",
+                "state": "\"active\"",
+                "switchProgress?": {
+                  "union": [
+                    "\"bring_in_pending\"",
+                    "\"done\"",
+                    "\"group_pending\"",
+                    "\"live\"",
+                    "\"owner_told\""
+                  ]
+                }
+              }
+            },
+            {
+              "object": {
+                "app": "#AgentAppRecord",
+                "at": "number",
+                "botUserId?": "string",
+                "next": {
+                  "union": [
+                    "\"delete\"",
+                    "\"uninstall\""
+                  ]
+                },
+                "startedBy": "string",
+                "state": "\"uninstalling\""
+              }
+            },
+            {
+              "object": {
+                "app": "#AgentAppRecord",
+                "at": "number",
+                "icon": "#AgentAppIcon",
+                "startedBy": "string",
+                "state": "\"icon_set\""
+              }
+            },
+            {
+              "object": {
+                "app": "#AgentAppRecord",
+                "at": "number",
+                "startedBy": "string",
+                "state": "\"created\""
+              }
+            },
+            {
+              "object": {
+                "app": "#AgentAppRecord",
+                "at": "number",
+                "startedBy": "string",
+                "state": "\"urls_set\""
+              }
+            },
+            {
+              "object": {
+                "app?": "#AgentAppRecord",
+                "at": "number",
+                "botUserId?": "string",
+                "icon?": {
+                  "union": [
+                    "\"agent_avatar\"",
+                    "\"default_avatar\"",
+                    "\"not_set\""
+                  ]
+                },
+                "reason": "#AgentAppAttention",
+                "resume": "#AgentAppResume",
+                "startedBy": "string",
+                "state": "\"needs_attention\""
+              }
+            },
+            {
+              "object": {
+                "at": "number",
+                "manifestFingerprint": "string",
+                "startedBy": "string",
+                "state": "\"creating\""
+              }
+            },
+            {
+              "object": {
+                "at": "number",
+                "startedBy": "string",
+                "state": "\"releasing_handle\""
+              }
+            }
+          ]
+        },
         "avatar": "#AgentAvatarRevision",
         "desiredState": "#AgentPresenceDesiredState",
         "errorCode?": "string",
