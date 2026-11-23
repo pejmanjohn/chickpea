@@ -84,6 +84,27 @@ const AGENTS: ReadonlyArray<readonly [AgentCreateInput, string, firstAsk?: strin
     editPolicy: 'creator_and_admins',
     model: 'anthropic/claude-sonnet-4-5',
     modelEffort: 'high',
+    slackPresence: {
+      requestedHandle: 'scenario-researcher',
+      normalizedHandle: 'scenario-researcher',
+      desiredState: 'active',
+      health: 'pending',
+      avatar: { kind: 'generated', revision: 1, seed: 'chickpea-avatar-v1:01:agent_scenario_researcher' },
+      errorCode: 'awaiting_own_app',
+      observedAt: SCENARIO_NOW - HOUR,
+      app: {
+        state: 'awaiting_consent',
+        at: SCENARIO_NOW - HOUR,
+        startedBy: OWNER,
+        app: { appId: 'A0SCENARIORES', clientId: '1000000000.5000000000' },
+        icon: 'agent_avatar',
+        allowDm: { channelId: 'D0SCENARIOOWN', ts: '1800000000.000100' },
+        consents: {
+          U0SCENARIOOWN: { nonceDigest: 'scenario-consent-digest-owner', expiresAt: SCENARIO_NOW + 15 * 60_000 },
+          U0SCENARIOADM: { nonceDigest: 'scenario-consent-digest-admin', expiresAt: SCENARIO_NOW + 10 * 60_000 },
+        },
+      },
+    },
     skills: [
       {
         name: 'weekly-digest',
@@ -262,8 +283,9 @@ const AGENTS: ReadonlyArray<readonly [AgentCreateInput, string, firstAsk?: strin
         botUserId: 'U0SCENARIOCON',
         installedAt: SCENARIO_NOW - HOUR,
         installedBy: OWNER,
+        switchProgress: 'group_pending',
       },
-      released: { userGroupId: 'S0SCENARIOCON', desiredState: 'active', health: 'healthy' },
+      released: { userGroupId: 'S0SCENARIOCON', desiredState: 'active', health: 'healthy', answers: true },
     },
     ...NO_CONNECTIONS,
   }, incarnation(2), 'Where do I pick up a visitor badge?'],
