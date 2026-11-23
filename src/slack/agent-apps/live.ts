@@ -327,8 +327,12 @@ export async function handleAgentAppHomeAction(input: {
 
 const AGENT_APP_ACTIONS = new Set([START_APP_ACTION, FINISH_APP_ACTION, TRY_AGAIN_ACTION]);
 
-/** The stores the service writes; a caller inside the state store passes its own, so nothing calls back into it. */
-type AgentAppStores = Pick<AppStores, 'config' | 'management'> & { settings: SettingsStore & EncryptedCredentialStore };
+/**
+ * The stores the service reads and writes; a caller inside the state store
+ * passes its own, so nothing calls back into it, the main bot's credentials
+ * included.
+ */
+type AgentAppStores = Pick<AppStores, 'config' | 'management' | 'identity'> & { settings: SettingsStore & EncryptedCredentialStore };
 
 /**
  * The service over an installation's live stores, main bot and public URL.
@@ -342,7 +346,7 @@ export async function liveAgentSlackApps(
   const resolved = resolveStores(env);
   const settings = local?.settings ?? getSettingsStore(env);
   const management = local?.management ?? resolved.management;
-  const credentials = installationCredentials(env);
+  const credentials = installationCredentials(env, local?.identity);
   const { AgentSlackApps } = await import('./service.ts');
   return new AgentSlackApps({
     env,
@@ -410,13 +414,19 @@ export async function continueAgentAppSwitch(
  * The installation's own credentials, read only when a step needs them (an
  * Owner's DM, the handle's user group, the permission it needs). Uninstalling
  * and deleting an app use that app's credentials and the configuration token,
- * so they go on when these cannot be read.
+ * so they go on when these cannot be read. `identity` is the state store's
+ * own, when the caller runs inside it.
  */
-function installationCredentials(env: PlatformEnv | undefined): () => Promise<ResolvedSlackInstallationCredentials> {
+function installationCredentials(
+  env: PlatformEnv | undefined,
+  identity?: AppStores['identity'],
+): () => Promise<ResolvedSlackInstallationCredentials> {
   let resolved: Promise<ResolvedSlackInstallationCredentials> | undefined;
   return () => {
     if (!resolved) {
-      resolved = resolveSlackInstallationCredentials(slackInstallationCredentialId(env), env);
+      resolved = resolveSlackInstallationCredentials(
+        slackInstallationCredentialId(env), env, identity ? { state: identity, env } : undefined,
+      );
       resolved.catch(() => { resolved = undefined; });
     }
     return resolved;

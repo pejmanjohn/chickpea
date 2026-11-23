@@ -3808,7 +3808,9 @@ async function drainCloudflareManagementReceipts(
   };
   const work = stores.work as unknown as WorkStore;
   const appStores = localGatewayAppStores(stores);
-  const agentAppStores = { config: appStores.config, management: appStores.management, settings: localSettingsStore(stores) };
+  const agentAppStores = {
+    config: appStores.config, management: appStores.management, identity: appStores.identity, settings: localSettingsStore(stores),
+  };
   await drainManagementReceiptOutbox({
     management: stores.management as unknown as ManagementStore,
     onDeliveredSettled: (record) => completeSettledAgentWelcomeHandoff(
