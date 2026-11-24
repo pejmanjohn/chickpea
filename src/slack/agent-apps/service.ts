@@ -323,35 +323,40 @@ export class AgentSlackApps {
    * acts, and only on an Agent that is in Slack nowhere: it starts the app,
    * whose Allow message follows when it is ready. With no token, the Owner is
    * asked for one and the setting stays as it is. Every other press is
-   * answered with the sentence the presser should see.
+   * answered with the sentence the presser should see. `started` is the
+   * Start's outcome, for the audit record, when a Start ran.
    */
-  async addFromSlack(agentId: string, slackUserId: string, isOwner: boolean): Promise<string | undefined> {
+  async addFromSlack(
+    agentId: string,
+    slackUserId: string,
+    isOwner: boolean,
+  ): Promise<{ reply?: string; started?: AgentAppStartOutcome['kind'] }> {
     let agent;
     try {
       agent = await this.deps.stores.config.getAgent(agentId);
     } catch (error) {
       if (!(error instanceof UnknownAgentError)) throw error;
-      return addPressReply('gone');
+      return { reply: addPressReply('gone') };
     }
     const names = this.names(agent);
-    if (!isOwner) return addPressReply('owner_needed', names);
-    if (agent.kind !== 'user' || agent.lifecycle === 'archived') return addPressReply('archived', names);
+    if (!isOwner) return { reply: addPressReply('owner_needed', names) };
+    if (agent.kind !== 'user' || agent.lifecycle === 'archived') return { reply: addPressReply('archived', names) };
     const presence = agent.slackPresence;
-    if (presence?.kind === 'agent_app' || (presence?.userGroupId && !presence.app)) return addPressReply('in_slack', names);
+    if (presence?.kind === 'agent_app' || (presence?.userGroupId && !presence.app)) return { reply: addPressReply('in_slack', names) };
     const started = await this.start(agentId, slackUserId);
     switch (started.kind) {
       case 'already_started':
-        return addPressReply('already_started', names);
+        return { reply: addPressReply('already_started', names), started: started.kind };
       case 'not_eligible':
-        return addPressReply('archived', names);
+        return { reply: addPressReply('archived', names) };
       case 'token_needed': {
         const kind = await this.hasConfigurationToken() ? 'config_token_needed' : 'config_token_missing';
         await this.message(kind, agent, slackUserId, `agent-app-token-needed:${agent.id}:${this.now()}`);
-        return undefined;
+        return { started: started.kind };
       }
       default:
         // Started, or the Owner was messaged about the permission or the app limit.
-        return undefined;
+        return { started: started.kind };
     }
   }
 

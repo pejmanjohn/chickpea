@@ -127,7 +127,7 @@ test('a click on an Agent app control is an Owner-only control, and other clicks
   const viewer = async () => {
     await gate;
     viewers += 1;
-    return { role: 'member', republish: async () => {}, tell: async (text: string) => { told.push(text); } };
+    return { role: 'member', republish: async () => {}, tell: async (text: string) => { told.push(text); }, audit: async () => {} };
   };
   const detached: Promise<void>[] = [];
   const press = (payload: Parameters<typeof handleAgentAppHomeAction>[0]['payload']) =>

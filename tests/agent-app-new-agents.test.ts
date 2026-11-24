@@ -256,6 +256,22 @@ test('a Retry that fails leaves an Agent not in Slack yet exactly that', async (
   assert.equal((await f.reconciler.retry('agent_support')).slackPresence?.userGroupId, 'S1', 'back to shared still finds it');
 });
 
+// Defects caught: the read saying an Agent answers through its user group when it has none, because a failed create
+// left another code where the marker would be.
+test('an Agent with no user group, no app and no app record reads as not in Slack, whatever code it carries', () => {
+  for (const errorCode of [AWAITING_OWN_APP, 'rate_limited', 'user_group_create_ambiguous', undefined]) {
+    const presence: AgentSlackPresence = {
+      requestedHandle: 'support', normalizedHandle: 'support', desiredState: 'active', health: 'needs_attention', avatar: AVATAR,
+      ...(errorCode ? { errorCode } : {}),
+    };
+    assert.deepEqual(agentSlackState(presence), { state: 'not_in_slack' }, String(errorCode));
+  }
+  const grouped: AgentSlackPresence = {
+    requestedHandle: 'support', normalizedHandle: 'support', desiredState: 'active', health: 'healthy', avatar: AVATAR, userGroupId: 'S1',
+  };
+  assert.deepEqual(agentSlackState(grouped), { state: 'user_group' });
+});
+
 test('an Agent not in Slack yet is told its name and no handle', () => {
   const waiting: AgentSlackPresence = {
     requestedHandle: 'support', normalizedHandle: 'support', desiredState: 'active', health: 'unpublished', avatar: AVATAR, errorCode: AWAITING_OWN_APP,

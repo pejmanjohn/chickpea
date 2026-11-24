@@ -991,7 +991,7 @@ test('an Owner\'s press in Slack with no token asks that Owner for one and start
   await discardConfigurationToken(f.secrets, TEAM);
   const before = f.main.posted.length;
 
-  assert.equal(await f.service.addFromSlack('agent_support', OWNER, true), undefined, 'the answer is the message');
+  assert.deepEqual(await f.service.addFromSlack('agent_support', OWNER, true), { started: 'token_needed' }, 'the answer is the message');
 
   assert.equal(appRecordOf(await presenceOf(f)), undefined);
   assert.deepEqual(f.main.posted.slice(before).map((message) => [message.channelId, message.text]), [[`D_${OWNER}`, escapeMrkdwn(

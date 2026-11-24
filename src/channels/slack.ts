@@ -791,6 +791,17 @@ async function serveAgentAppHomeAction(
       return {
         role: actor.principal?.role,
         republish: () => publishAgentAppHome({ workspaceId, userId, stores, transport, botUserId, actor, platformEnv }),
+        audit: async (action, reasonCode) => {
+          const principal = actor.principal;
+          if (!principal) return;
+          await stores.identity.recordAuthAudit({
+            event: 'authorization', outcome: 'success', action, reasonCode,
+            correlationId: principal.correlationId, authenticatorKind: principal.authenticatorKind,
+            userId: principal.userId, membershipId: principal.membershipId,
+          }).catch(() => {
+            console.warn(JSON.stringify({ component: 'agent_apps', event: 'audit_unavailable', action }));
+          });
+        },
         // Where the button was, only the presser sees it; a Home tab press is answered in their DM with Chickpea.
         tell: async (text) => {
           if (channelId) {

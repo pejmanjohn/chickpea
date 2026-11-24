@@ -1265,6 +1265,12 @@ test("Add to Slack in a message: only an Owner's press adds a waiting Agent, and
     requestedHandle: 'gone', normalizedHandle: 'gone', desiredState: 'disabled', health: 'unpublished', avatar: support.slackPresence!.avatar,
   } });
   const creates = () => h.calls.filter((call) => call.method === 'apps.manifest.create').length;
+  const audits: Array<[string, string | null | undefined, string | null | undefined]> = [];
+  const record = h.stores.identity.recordAuthAudit.bind(h.stores.identity);
+  t.mock.method(h.stores.identity, 'recordAuthAudit', async (input: Parameters<typeof record>[0]) => {
+    audits.push([input.action, input.reasonCode, input.membershipId]);
+    return record(input);
+  });
   const replies = () => slackPosts(h, 'chat.postEphemeral').map((body) => [body.get('channel'), body.get('user'), body.get('thread_ts'), body.get('text')]);
   const dms = () => slackPosts(h, 'chat.postMessage').map((body) => body.get('text'));
 
@@ -1292,6 +1298,11 @@ test("Add to Slack in a message: only an Owner's press adds a waiting Agent, and
     ['C1', 'U1', thread, 'Finance is already in Slack.'],
     ['C1', 'U1', thread, "Gone is archived, so it can't be added to Slack."],
   ]);
+  assert.deepEqual(audits.filter(([action]) => action.startsWith('agent_apps.')), [
+    ['agent_apps.started', 'token_needed', h.ownerMembershipId],
+    ['agent_apps.started', 'started', h.ownerMembershipId],
+    ['agent_apps.started', 'already_started', h.ownerMembershipId],
+  ], "each Owner's Start is recorded as Admin's is; a press that starts nothing is not");
 }));
 
 const SUPPORT_READY = '@support is ready in this channel. Mention @support to start a conversation.';
