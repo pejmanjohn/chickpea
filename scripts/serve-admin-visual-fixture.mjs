@@ -758,7 +758,13 @@ function closeServer(server) {
  * is installed and the service is an in-memory stand-in. A paste of a token
  * containing `access`, `other`, `bad` or `down` gets Slack's refusal of that
  * kind; `/__admin_visual_fixture/agent-apps/:agentId/:state` sets one Agent's
- * Slack state (`allow` finishes a move as Slack's Allow would).
+ * Slack state (`allow` finishes a move as Slack's Allow would). A state of
+ * `next:<outcome>` instead sets how that Agent's next press or Cancel answers
+ * (`creating`, `left_for_owner`, `unfinished`), and
+ * `next:unconfirmed` or `next:none` how the next token removal answers.
+ * Start returns a slack.com address with a made-up client ID, because the
+ * page follows only slack.com: pressing it in a browser opens Slack's real
+ * sign-in page, so stop the navigation rather than sign in.
  */
 async function visualAgentSlackApps(store) {
   const { configureAgentSlackApps } = await loadTsModule('src/slack/agent-apps/host.ts');
@@ -771,12 +777,14 @@ async function visualAgentSlackApps(store) {
   let setting = { mode: 'shared' };
   let token = { stored: false };
   const states = new Map([['agent_customer', 'not_in_slack']]);
+  const nextOutcome = new Map();
   const presenceFor = (presence, slackState, reason) => {
     const app = { app: { appId: 'A0VISUAL', clientId: '1.c' }, icon: 'agent_avatar', at: 1, startedBy: 'UVISUALOWNER' };
     switch (slackState) {
       case 'not_in_slack': return { ...presence, desiredState: 'active', health: 'pending', errorCode: 'awaiting_own_app' };
       case 'creating': return { ...presence, app: { ...app, state: 'creating' } };
       case 'waiting_for_allow': return { ...presence, app: { ...app, state: 'awaiting_consent' } };
+      case 'cancelling': return { ...presence, app: { ...app, state: 'uninstalling' } };
       case 'needs_attention': return { ...presence, app: { ...app, state: 'needs_attention', reason: reason ?? 'create_refused', resume: 'create' } };
       case 'switching':
       case 'own_app':
@@ -803,7 +811,11 @@ async function visualAgentSlackApps(store) {
   };
   const service = {
     setting: async () => setting,
-    setMode: async (mode, changedBy) => { setting = { mode, changedBy, changedAt: Date.now() }; return setting; },
+    setMode: async (mode, changedBy) => {
+      if (setting.mode === mode) return { setting, changed: false };
+      setting = { mode, changedBy, changedAt: Date.now() };
+      return { setting, changed: true };
+    },
     configurationToken: async () => token,
     pasteConfigurationToken: async (refreshToken, pastedBy) => {
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 1200));
@@ -814,7 +826,13 @@ async function visualAgentSlackApps(store) {
       token = { stored: true, pastedBy, pastedAt: Date.now() };
       return 'saved';
     },
-    removeConfigurationToken: async () => { token = { stored: false }; return 'discarded'; },
+    removeConfigurationToken: async () => {
+      const held = token.stored;
+      const removed = nextOutcome.get('token') ?? 'discarded';
+      nextOutcome.delete('token');
+      token = { stored: false };
+      return held ? removed : 'none';
+    },
     userAgents: agents,
     agentChannelGrants: async () => store.listAgentChannelGrants(),
     press: async (agentId) => {
@@ -822,20 +840,40 @@ async function visualAgentSlackApps(store) {
       if (!token.stored) return { kind: 'token_needed' };
       const now = states.get(agentId) ?? 'user_group';
       if (now === 'own_app') return { kind: 'already_own_app', agent: current };
+      if (now === 'cancelling') {
+        states.delete(agentId);
+        return { kind: 'cancelling', agent: await agent(agentId) };
+      }
+      const next = nextOutcome.get(agentId);
+      nextOutcome.delete(agentId);
+      if (next === 'creating') {
+        states.set(agentId, 'creating');
+        return { kind: 'creating', agent: await agent(agentId) };
+      }
       states.set(agentId, 'waiting_for_allow');
       return { kind: 'authorize', url: `https://slack.com/oauth/v2/authorize?client_id=visual&state=${agentId}`, agent: await agent(agentId) };
     },
     cancel: async (agentId) => {
       await agent(agentId);
-      if (states.get(agentId) !== 'waiting_for_allow') return { kind: 'not_waiting' };
+      const now = states.get(agentId);
+      if (now !== 'waiting_for_allow' && now !== 'cancelling') return { kind: 'not_waiting' };
+      const next = nextOutcome.get(agentId);
+      nextOutcome.delete(agentId);
+      if (next === 'unfinished') {
+        states.set(agentId, 'cancelling');
+        return { kind: 'unfinished' };
+      }
       states.delete(agentId);
-      return { kind: 'cancelled', agent: await agent(agentId) };
+      return { kind: 'cancelled', agent: await agent(agentId), app: next === 'left_for_owner' ? 'left_for_owner' : 'deleted' };
     },
   };
   return {
     service,
     set(agentId, slackState) {
-      if (slackState === 'allow') states.set(agentId, 'own_app');
+      if (slackState.startsWith('next:')) {
+        const outcome = slackState.slice('next:'.length);
+        nextOutcome.set(outcome === 'unconfirmed' || outcome === 'none' ? 'token' : agentId, outcome);
+      } else if (slackState === 'allow') states.set(agentId, 'own_app');
       else states.set(agentId, slackState);
     },
   };
