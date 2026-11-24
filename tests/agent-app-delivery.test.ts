@@ -3930,7 +3930,7 @@ function unreadNotices(h: Harness): Array<[string | undefined, string | null, st
     .map((call) => [call.token, call.body.get('channel'), call.body.get('thread_ts'), call.body.get('text')]);
 }
 
-test("a read Slack keeps refusing past ten seconds of pauses admits nothing, and the Agent's bot asks the person in the message's thread to send it again", async (t) => withHarness(t, async (h) => {
+test("a read Slack keeps refusing until the check's twelve seconds are up admits nothing, and the Agent's bot asks the person in the message's thread to send it again", async (t) => withHarness(t, async (h) => {
   const warn = t.mock.method(console, 'warn', () => undefined);
   t.mock.method(console, 'error', () => undefined);
   const { UNREAD_MESSAGE_NOTICE } = await import('../src/slack/agent-apps/sender.ts');
@@ -3941,7 +3941,7 @@ test("a read Slack keeps refusing past ten seconds of pauses admits nothing, and
   for (const [index, message] of [appDm(ts, { text: 'what did we refund?' }), appDm(reply, { text: 'and last week?', thread_ts: ts })].entries()) {
     const { value: response, waitedMs } = await onSuiteClock(t, () => h.deliver('events', { ...message, event_id: `EvLimited${index}` }, { settle: true }));
     assert.equal(response.ok, false, 'the delivery ends as a failure');
-    // Slack asks for a second each time; the pauses double from a quarter second, and the next would not fit.
+    // Slack asks for a second each time; the pauses double from a quarter second, and the next would end past twelve.
     assert.ok(waitedMs >= 9_000 && waitedMs < 9_200, `answered after ${waitedMs} ms of pauses`);
   }
   assert.deepEqual([confirmations(h, ts).length, confirmations(h, reply).length], [6, 6]);
@@ -4161,12 +4161,14 @@ test("a read Slack limits is made again after its Retry-After, or a quarter seco
   assert.deepEqual(unreadNotices(h), []);
 }, { rateLimits: shortLimits }));
 
-test("a Retry-After longer than the pauses left is not waited out: the person is asked at once", async (t) => withHarness(t, async (h) => {
+let limitRead: ((method: string, body: URLSearchParams) => void | Promise<unknown>) | undefined;
+
+test("a Retry-After that would not end before the check's deadline with room for a read is not waited out: the person is asked at once", async (t) => withHarness(t, async (h) => {
   const warn = t.mock.method(console, 'warn', () => undefined);
   t.mock.method(console, 'error', () => undefined);
-  t.after(() => { shortLimits.length = 0; });
+  t.after(() => { shortLimits.length = 0; limitRead = undefined; });
   const ts = '1900011100.000300';
-  shortLimits.push({ call: `conversations.history ${AGENT_BOT}`, retryAfter: 11 });
+  shortLimits.push({ call: `conversations.history ${AGENT_BOT}`, retryAfter: 12 });
   const { value: response, waitedMs } = await onSuiteClock(t, () => h.deliver('events', appDm(ts, { text: 'and last week?' }), { settle: true }));
   assert.equal(response.ok, false);
   assert.ok(waitedMs < 250, `no pause, ${waitedMs} ms`);
@@ -4174,7 +4176,84 @@ test("a Retry-After longer than the pauses left is not waited out: the person is
   assert.equal(await pendingTurn(h.stores, (job) => job.turn.messageTs === ts), undefined);
   assert.equal(unreadNotices(h).length, 1);
   assert.deepEqual(notConfirmed(warn).map((line) => (line as { reason: string }).reason), ['ratelimited']);
-}, { rateLimits: shortLimits }));
+
+  // A read that timed out leaves less: six seconds from then would end with under a second left to read in.
+  const later = '1900011100.000400';
+  limitRead = (method, body) => {
+    if (method !== 'conversations.history' || body.get('latest') !== later || confirmations(h, later).length > 1) return undefined;
+    shortLimits.push({ call: `conversations.history ${AGENT_BOT}`, retryAfter: 6 });
+    return new Promise(() => undefined);
+  };
+  const { value: limited, waitedMs: waitedLater } = await onSuiteClock(t, () => h.deliver('events', appDm(later, { text: 'and the week before?' }), { settle: true }));
+  assert.equal(limited.ok, false);
+  // Five seconds for the read that timed out, a quarter second's pause, then the limit, which is not waited out.
+  assert.ok(waitedLater >= 5_250 && waitedLater < 5_450, `given up on after ${waitedLater} ms`);
+  assert.equal(confirmations(h, later).length, 2);
+  assert.equal(unreadNotices(h).length, 2);
+  assert.deepEqual(notConfirmed(warn).map((line) => (line as { reason: string }).reason), ['ratelimited', 'ratelimited']);
+}, { rateLimits: shortLimits, beforeCall: (method, body) => limitRead?.(method, body) }));
+
+let slowRead: ((method: string, body: URLSearchParams) => void | Promise<unknown>) | undefined;
+/** Slack answers none of these reads of `ts` after the first `answered`. */
+const unansweredAfter = (h: Harness, ts: string, answered: number) => (method: string, body: URLSearchParams) =>
+  ['conversations.history', 'conversations.replies'].includes(method) && body.get('latest') === ts && confirmations(h, ts).length > answered
+    ? new Promise(() => undefined)
+    : undefined;
+
+test("reads Slack never answers end the check within twelve seconds of the first, and the line is written before the notice is asked for", async (t) => withHarness(t, async (h) => {
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  t.mock.method(console, 'error', () => undefined);
+  t.after(() => { slowRead = undefined; });
+  const ts = '1900011150.000100';
+  const linesAtNotice: number[] = [];
+  const unanswered = unansweredAfter(h, ts, 0);
+  slowRead = (method, body) => {
+    if (method === 'chat.postMessage') linesAtNotice.push(notConfirmed(warn).length);
+    return unanswered(method, body);
+  };
+  const { value: response, waitedMs } = await onSuiteClock(t, () => h.deliver('events', appDm(ts, { text: 'what did we refund?' }), { settle: true }));
+  assert.equal(response.ok, false, 'the delivery ends as a failure');
+  // Five seconds, a quarter second, five seconds, half a second, and the second and a quarter left.
+  assert.ok(waitedMs >= 12_000 && waitedMs < 12_200, `given up on after ${waitedMs} ms`);
+  assert.equal(confirmations(h, ts).length, 3);
+  assert.deepEqual(notConfirmed(warn).map((line) => (line as { reason: string }).reason), ['slack_request_timeout']);
+  assert.equal(unreadNotices(h).length, 1);
+  assert.deepEqual(linesAtNotice, [1], 'the line was written when the notice was asked for');
+  assert.deepEqual(await h.stores.slackState.listPendingTurns!(), [], 'nothing is admitted');
+}, { beforeCall: (method, body) => slowRead?.(method, body) }));
+
+test("a read Slack answers after two timed out is admitted once, and nobody is asked again", async (t) => withHarness(t, async (h) => {
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  t.after(() => { slowRead = undefined; });
+  const ts = '1900011160.000100';
+  let read = 0;
+  slowRead = (method, body) => method === 'conversations.history' && body.get('latest') === ts && ++read <= 2 ? new Promise(() => undefined) : undefined;
+  const { value: response, waitedMs } = await onSuiteClock(t, () => h.deliver('events', appDm(ts, { text: 'what did we refund?' }), { settle: true }));
+  assert.equal(response.status, 200);
+  assert.ok(waitedMs >= 10_750 && waitedMs < 10_950, `admitted after ${waitedMs} ms`);
+  assert.equal(confirmations(h, ts).length, 3);
+  assert.deepEqual((await turnsOn(h, ts)).map((job) => job.turn.text), ['what did we refund?'], 'one turn');
+  assert.deepEqual(unreadNotices(h), []);
+  assert.deepEqual(notConfirmed(warn), []);
+}, { beforeCall: (method, body) => slowRead?.(method, body) }));
+
+test("a message Slack shows as not there yet and then stops answering for, just sent or dated ahead, is given up on within twelve seconds", async (t) => withHarness(t, async (h) => {
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  t.mock.method(console, 'error', () => undefined);
+  t.after(() => { slowRead = undefined; });
+  const now = Math.floor(Date.now() / 1_000);
+  for (const [index, ts] of [`${now}.000100`, `${now + 5}.000100`].entries()) {
+    slowRead = unansweredAfter(h, ts, 1);
+    const { value: response, waitedMs } = await onSuiteClock(t, () => h.deliver('events', appDm(ts, { text: 'refund order 19' }), { settle: true, forged: true }));
+    assert.equal(response.ok, false);
+    // The half-second re-read, five seconds, a quarter second, five seconds; the next half second would leave too little.
+    assert.ok(waitedMs >= 10_750 && waitedMs < 10_950, `given up on after ${waitedMs} ms`);
+    assert.equal(confirmations(h, ts).length, 3);
+    assert.equal(unreadNotices(h).length, index + 1);
+  }
+  assert.deepEqual(notConfirmed(warn).map((line) => (line as { reason: string }).reason), ['slack_request_timeout', 'slack_request_timeout']);
+  assert.deepEqual(await h.stores.slackState.listPendingTurns!(), []);
+}, { beforeCall: (method, body) => slowRead?.(method, body) }));
 
 let beforeRead: ((method: string, body: URLSearchParams) => void) | undefined;
 
@@ -4321,11 +4400,11 @@ test("a press or modal submission through an Agent's app on a card its bot did n
 }));
 
 /**
- * What `work` settles to, and how long it waited on timers first, on the suite's clock: the test owns the timers, and
- * the clock moves one millisecond whenever nothing else can run.
+ * What `work` settles to, and how long it waited on timers first, on the suite's clock: the test owns the timers and
+ * `Date`, and the clock moves one millisecond whenever nothing else can run.
  */
 async function onSuiteClock<T>(t: TestContext, work: () => Promise<T>): Promise<{ value: T; waitedMs: number }> {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
   try {
     let settled = false;
     const running = work().finally(() => { settled = true; });
@@ -4346,7 +4425,7 @@ async function onSuiteClock<T>(t: TestContext, work: () => Promise<T>): Promise<
 const budgetLimits: Array<{ call: string; retryAfter: number }> = [];
 let budgetRead: ((method: string, body: URLSearchParams) => void | Promise<unknown>) | undefined;
 
-test("a message's pauses, for rate limits and for a re-read, share ten seconds, counted in time waited and not in reads", async (t) => withHarness(t, async (h) => {
+test("a message's reads and pauses, for rate limits and for a re-read, end within twelve seconds of its first read", async (t) => withHarness(t, async (h) => {
   const warn = t.mock.method(console, 'warn', () => undefined);
   t.mock.method(console, 'error', () => undefined);
   t.after(() => { budgetLimits.length = 0; budgetRead = undefined; });
@@ -4358,7 +4437,7 @@ test("a message's pauses, for rate limits and for a re-read, share ten seconds, 
     if (method === 'conversations.history' && body.get('latest') === ts) budgetLimits.push(limit, limit, limit);
   };
   const { value: response, waitedMs } = await onSuiteClock(t, () => h.deliver('events', appDm(ts, { text: 'refund order 17' }), { forged: true }));
-  // 3 s, the half-second re-read, 3 s, 3 s: the next three seconds would pass ten.
+  // 3 s, the half-second re-read, 3 s, 3 s: the next three seconds would leave no second to read in.
   assert.ok(waitedMs >= 9_500 && waitedMs < 9_700, `the delivery is answered after ${waitedMs} ms of pauses`);
   assert.equal(response.ok, false);
   assert.equal(confirmations(h, ts).length, 5);

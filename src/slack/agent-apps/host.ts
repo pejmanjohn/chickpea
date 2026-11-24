@@ -76,7 +76,9 @@ export function endAgentSlackApp(
 /**
  * A host acknowledges an Agent app's event delivery to Slack before Core
  * serves it, so Slack never sends that event again: Core never counts on a
- * redelivery, and a delivery Core fails is not served again.
+ * redelivery, and a delivery Core fails is not served again. The host serves
+ * it in the time its platform leaves after that response (30 seconds on
+ * Cloudflare), so Core bounds what it waits on Slack for there.
  */
 export type AgentSlackAppHandoff =
   | { readonly kind: 'delivery'; readonly agentId: string; readonly appId: string; readonly signingSecret: string }
