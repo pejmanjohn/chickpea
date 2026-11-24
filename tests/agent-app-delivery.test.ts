@@ -59,6 +59,8 @@ import { startSlackGroupDm } from '../src/slack/group-dm/runtime.ts';
 import { AGENT_CHANNEL_ADD_ACTION } from '../src/slack/agent-channel-offer.ts';
 import { invalidateStoredSlackPublicUrl } from '../src/slack/credentials.ts';
 import { canonicalSlackMarkdownText } from '../src/slack/message-format.ts';
+import { createSlackAttachmentAnalysis, formatSlackAttachmentSignal } from '../src/slack/attachment-context.ts';
+import { runAttachmentClient } from '../src/slack/agent-apps/files.ts';
 import { configureHostedSlackPermissionsUpdate } from '../src/slack/hosted-permissions.ts';
 import { syncHostedWorkspaceInstallation } from '../src/slack/hosted-installation.ts';
 import { slackInstallationCredentialId, withHostedSlackApp } from '../src/slack/hosted-slack-app.ts';
@@ -295,10 +297,27 @@ async function withHarness(
     if (!parent) return { ok: false, error: 'thread_not_found' };
     return { ok: true, messages: [parent, ...at.filter((message) => message.thread_ts === root && message.ts !== root)] };
   };
+  // A file a person shared, for a bot that reads where it was shared: as in Slack, a DM's only by that DM's bot, and a
+  // Channel's by a bot in it. Its `preview` stands for its bytes.
+  const sharedFile = (fileId: string, token: string | undefined) => {
+    for (const [channel, messages] of held) {
+      for (const message of messages.values()) {
+        const file = (message.files as Array<Record<string, unknown>> | undefined)?.find((candidate) => candidate.id === fileId);
+        if (file) return (DM_BOTS[channel] && DM_BOTS[channel] !== token) || outside.get(token ?? '')?.has(channel) ? undefined : file;
+      }
+    }
+    return undefined;
+  };
   let posted = 0;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = input instanceof Request ? input : new Request(String(input), init);
     const url = new URL(request.url);
+    if (url.hostname === 'files.slack.com') {
+      const token = request.headers.get('authorization')?.replace(/^Bearer /, '');
+      calls.push({ method: 'files.download', token, body: new URLSearchParams() });
+      const file = sharedFile(/-(F[A-Z0-9]+)\//.exec(url.pathname)?.[1] ?? '', token);
+      return file ? new Response(String(file.preview), { headers: { 'content-type': String(file.mimetype) } }) : new Response(null, { status: 404 });
+    }
     assert.equal(url.hostname, 'slack.com', `no call leaves for ${url.hostname}`);
     const method = url.pathname.split('/').at(-1)!;
     const body = new URLSearchParams(await request.clone().text().catch(() => ''));
@@ -375,6 +394,12 @@ async function withHarness(
       if (outside.get(token ?? '')?.has(channel)) return Response.json({ ok: false, error: 'not_in_channel' });
       const invited = BOTS.find(([, botUser]) => botUser === body.get('users'))?.[0];
       if (!outside.get(invited ?? '')?.delete(channel)) return Response.json({ ok: false, error: 'already_in_channel' });
+    }
+    if (method === 'files.info') {
+      const file = sharedFile(body.get('file') ?? '', token);
+      return Response.json(file
+        ? { ok: true, file: { ...file, url_private: `https://files.slack.com/files-pri/${TEAM}-${file.id}/${file.name}` } }
+        : { ok: false, error: 'file_not_found' });
     }
     const answer = method === 'auth.test'
       ? token === MAIN_BOT
@@ -4607,3 +4632,75 @@ test("a modal submission whose card read Slack rate limits keeps the modal open 
   assert.deepEqual(await h.stores.slackState.listPendingTurns!(), [], 'nothing is applied');
 }, { rateLimits: cardLimits }));
 
+const BOXES = 'Order 12\nBoxes: 7\n';
+/** A small text file a person shares with a message; Slack's preview stands for its bytes. */
+function boxesFile(id: string) {
+  return { id, name: 'order-12.txt', mimetype: 'text/plain', filetype: 'text', size: BOXES.length, mode: 'hosted', preview: BOXES };
+}
+
+/**
+ * What a turn's run is given for the files on its message: each file read the way the run reads it, then the one
+ * analysis signal the Agent answers from, with whatever the analysis model saw of each file.
+ */
+async function filesGiven(h: Harness, job: PendingTurnJob): Promise<{ status: string | undefined; seen: string[]; readers: unknown[] }> {
+  const env = withHostedSlackApp(h.base, MAIN_APP);
+  const before = h.calls.length;
+  const fileIds = (job.turn.attachments ?? []).map(({ fileId }) => fileId);
+  const seen: string[] = [];
+  const result = await createSlackAttachmentAnalysis({
+    intake: { kind: 'ready', request: job.turn.text, count: fileIds.length, fileIds },
+    gateway: runAttachmentClient(env, { agentId: job.assignment.agentId, conversation: { workspaceId: TEAM } as RuntimePlanV2['conversation'] }, job.id),
+    normalize: async (input) => {
+      const normalized = await (await import('../src/slack/attachment-normalization.ts')).normalizeSlackAttachments(input);
+      seen.push(...normalized.attachments.map((attachment) => JSON.stringify(attachment).includes('Boxes: 7') ? attachment.filename : 'unread'));
+      return normalized;
+    },
+    prompt: async () => ({ text: 'The order holds 7 boxes.' }),
+  });
+  const signal = formatSlackAttachmentSignal(result, { attributes: {} });
+  const readers = h.calls.slice(before).filter(({ method }) => method.startsWith('files.')).map(({ method, token }) => [method, token]);
+  return { status: signal.attributes.attachmentStatus, seen, readers };
+}
+
+// Mutation proof: reading every run's files with the installation's bot, as before, fails the Agent app's DM and mention.
+test("a file a person shares with an Agent in its own app's DM reaches its run as one in Chickpea's DM does, read by the bot each run speaks as", async (t) => withHarness(t, async (h) => {
+  const now = Math.floor(Date.now() / 1_000);
+  const own = `${now}.000910`;
+  h.hold('D1', { user: 'U1', text: 'how many boxes?', ts: own, files: [boxesFile('F0OWNBOXES')] });
+  assert.equal((await h.deliver('events', appDm(own, { subtype: 'file_share', text: 'how many boxes?', files: [boxesFile('F0OWNBOXES')] }), { settle: true, forged: true })).status, 200);
+  const shared = `${now}.000920`;
+  h.hold(CHICKPEA_DM, { user: 'U1', text: 'how many boxes?', ts: shared, files: [boxesFile('F0SHAREDBOXES')] });
+  const heard = chickpeaDmMessage(shared, shared, 'how many boxes?');
+  assert.equal((await h.deliverToChickpea({ ...heard, event: { ...heard.event, subtype: 'file_share', files: [boxesFile('F0SHAREDBOXES')] } })).status, 200);
+
+  const [ownJob] = await turnsOn(h, own);
+  const [sharedJob] = await turnsOn(h, shared);
+  assert.ok(ownJob && sharedJob);
+  assert.deepEqual(ownJob.turn.speaker, SUPPORT_BOT);
+  assert.deepEqual(await filesGiven(h, sharedJob), { status: 'complete', seen: ['order-12.txt'], readers: [['files.info', MAIN_BOT], ['files.download', MAIN_BOT]] });
+  assert.deepEqual(await filesGiven(h, ownJob), { status: 'complete', seen: ['order-12.txt'], readers: [['files.info', AGENT_BOT], ['files.download', AGENT_BOT]] },
+    "the Agent app's DM is its own bot's alone");
+}));
+
+test("a file on a mention of an Agent app's bot in a private Channel Chickpea's bot is not in is read by the Agent's bot", async (t) => withHarness(t, async (h) => {
+  const ts = `${Math.floor(Date.now() / 1_000)}.000930`;
+  const text = `<@${AGENT_BOT_USER}> how many boxes?`;
+  h.hold('C1', { user: 'U1', text, ts, files: [boxesFile('F0CHANNELBOXES')] });
+  const { app } = channelMessage(ts, text);
+  assert.equal((await h.deliver('events', { ...app, event: { ...app.event, files: [boxesFile('F0CHANNELBOXES')] } }, { settle: true, forged: true })).status, 200);
+  const [job] = await turnsOn(h, ts);
+  assert.ok(job);
+  assert.deepEqual(job.turn.speaker, SUPPORT_BOT);
+  assert.deepEqual(await filesGiven(h, job), { status: 'complete', seen: ['order-12.txt'], readers: [['files.info', AGENT_BOT], ['files.download', AGENT_BOT]] });
+}, { notMemberOf: { [MAIN_BOT]: ['C1'] }, privateChannels: ['C1'] }));
+
+test("a file on a mention of an Agent app's bot that Chickpea's bot answers, where the app's bot is not, is read by Chickpea's bot", async (t) => withHarness(t, async (h) => {
+  const ts = `${Math.floor(Date.now() / 1_000)}.000940`;
+  const message = messageIn('C1', ts, `<@${AGENT_BOT_USER}> how many boxes?`);
+  h.hold('C1', { user: 'U1', text: message.chickpea.event.text, ts, files: [boxesFile('F0ROUTEDBOXES')] });
+  assert.equal((await h.deliverToChickpea({ ...message.chickpea, event: { ...message.chickpea.event, files: [boxesFile('F0ROUTEDBOXES')] } })).status, 200);
+  const [job] = await turnsOn(h, ts);
+  assert.ok(job);
+  assert.deepEqual([job.assignment.agentId, job.turn.speaker], SUPPORT_THROUGH_CHICKPEA);
+  assert.deepEqual(await filesGiven(h, job), { status: 'complete', seen: ['order-12.txt'], readers: [['files.info', MAIN_BOT], ['files.download', MAIN_BOT]] });
+}, { notMemberOf: { [AGENT_BOT]: ['C1'] } }));

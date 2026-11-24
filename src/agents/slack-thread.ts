@@ -292,7 +292,7 @@ import { FILE_COMPLETION_INSTRUCTION, useFileDeliveryCompletion, type FileDelive
 import { useSlackFollowUpFold, type SlackFollowUps } from '../slack/follow-up-fold.ts';
 import { answerReleaseSetting } from '../slack/answer-release-setting.ts';
 import { useSlackMidRunReplyTool } from '../slack/midrun-reply.ts';
-import { createSlackAttachmentClient } from '../slack/attachment-client.ts';
+import type { GatewayAttachmentClient } from '../slack/gateway/client.ts';
 import {
   conversationThreadImageInventory,
   createThreadImageReader,
@@ -897,6 +897,7 @@ export function ChickpeaSlack({ id }: AgentProps) {
     plan,
     resolveAgentPlatformEnv,
     async (env) => plan.runtimeModel ?? (await prepareRuntimePlanModel(plan, env, turn)).model,
+    (env) => runFiles(plan, turn?.turnJobId, env),
   );
   const memoryInstruction = useThreadMemoryInstruction(id, memoryBlock, delivery.body);
   if (memoryInstruction) useInstruction(memoryInstruction);
@@ -905,6 +906,12 @@ export function ChickpeaSlack({ id }: AgentProps) {
     managementMounted: managementEnabled,
     memberToolsMounted: managementEnabled && plan.actorMembershipId !== undefined,
   });
+}
+
+/** A turn's Slack files, read by the bot its run speaks as (runAttachmentClient). */
+function runFiles(plan: RuntimePlanV2, turnJobId: string | undefined, env?: PlatformEnv): GatewayAttachmentClient {
+  return { readAttachment: async (...read) =>
+    (await import('../slack/agent-apps/files.ts')).runAttachmentClient(env, plan, turnJobId).readAttachment(...read) };
 }
 
 /** Persistent state naming the Slack turn this instance is answering. */
@@ -1040,7 +1047,7 @@ export function useChickpeaSlackRuntimeCapabilities(
     currentMessageFileIds: signal?.attachmentFileIds,
     threadFileIds: signal?.threadFileIds,
     imageHandle: (fileId) => threadImageHandle(imageInventory, fileId),
-    client: async () => createSlackAttachmentClient(await resolveAgentPlatformEnv()),
+    client: async () => runFiles(plan, signal?.turnJobId, await resolveAgentPlatformEnv()),
   });
   // Last, so it is the shared prefix's final segment.
   if (plan.frontDesk) {
@@ -2166,7 +2173,7 @@ export function createRuntimePlanArtifactTools(
     },
     createImageReader: async (limits: { perFileLimitBytes: number; totalLimitBytes: number; signal?: AbortSignal }) => {
       const env = await resolveAgentPlatformEnv();
-      return createThreadImageReader({ client: createSlackAttachmentClient(env), ...limits });
+      return createThreadImageReader({ client: runFiles(plan, options.turn?.turnJobId, env), ...limits });
     },
     stageArtifact: binding.stageArtifact,
     reuseImage: async (input: { record: ThreadImageRecord; filename: string; byteLength: number }) =>
@@ -2228,7 +2235,7 @@ export function createRuntimePlanArtifactTools(
             options.browserSession?.provider ?? createRuntimePlanBrowserProvider(), sessionId),
           inventory: imageInventory,
           createImageReader: async () =>
-            createThreadImageReader({ client: createSlackAttachmentClient(await resolveAgentPlatformEnv()) }),
+            createThreadImageReader({ client: runFiles(plan, options.turn?.turnJobId, await resolveAgentPlatformEnv()) }),
         }),
         streamMode: isCloudflareTarget() ? 'stream' : 'file',
       })
