@@ -4589,6 +4589,27 @@
         "nonceDigest": "string"
       }
     },
+    "AgentAppFollowRefusal": {
+      "union": [
+        "\"config_token_needed\"",
+        "\"record_refused\"",
+        "\"update_refused\""
+      ]
+    },
+    "AgentAppFollows": {
+      "object": {
+        "avatarRevision?": "number",
+        "manifestFingerprint?": "string",
+        "refused?": {
+          "object": {
+            "at": "number",
+            "avatarRevision": "number",
+            "manifestFingerprint": "string",
+            "reason": "#AgentAppFollowRefusal"
+          }
+        }
+      }
+    },
     "AgentAppIcon": {
       "union": [
         "\"agent_avatar\"",
@@ -4612,6 +4633,7 @@
               "object": {},
               "index": "#AgentAppConsent"
             },
+            "follows?": "#AgentAppFollows",
             "icon": "#AgentAppIcon",
             "startedBy": "string",
             "state": "\"awaiting_consent\""
@@ -4622,6 +4644,7 @@
             "app": "#AgentAppRecord",
             "at": "number",
             "botUserId": "string",
+            "follows?": "#AgentAppFollows",
             "icon": "#AgentAppIcon",
             "installedAt": "number",
             "installedBy": "string",
@@ -4657,6 +4680,7 @@
           "object": {
             "app": "#AgentAppRecord",
             "at": "number",
+            "follows?": "#AgentAppFollows",
             "icon": "#AgentAppIcon",
             "startedBy": "string",
             "state": "\"icon_set\""
@@ -4666,8 +4690,9 @@
           "object": {
             "app": "#AgentAppRecord",
             "at": "number",
+            "follows?": "#AgentAppFollows",
             "startedBy": "string",
-            "state": "\"created\""
+            "state": "\"urls_set\""
           }
         },
         {
@@ -4675,7 +4700,7 @@
             "app": "#AgentAppRecord",
             "at": "number",
             "startedBy": "string",
-            "state": "\"urls_set\""
+            "state": "\"created\""
           }
         },
         {
@@ -23927,6 +23952,7 @@
                   "object": {},
                   "index": "#AgentAppConsent"
                 },
+                "follows?": "#AgentAppFollows",
                 "icon": "#AgentAppIcon",
                 "startedBy": "string",
                 "state": "\"awaiting_consent\""
@@ -23951,6 +23977,7 @@
               "object": {
                 "app": "#AgentAppRecord",
                 "at": "number",
+                "follows?": "#AgentAppFollows",
                 "icon": "#AgentAppIcon",
                 "startedBy": "string",
                 "state": "\"icon_set\""
@@ -23960,8 +23987,9 @@
               "object": {
                 "app": "#AgentAppRecord",
                 "at": "number",
+                "follows?": "#AgentAppFollows",
                 "startedBy": "string",
-                "state": "\"created\""
+                "state": "\"urls_set\""
               }
             },
             {
@@ -23969,7 +23997,7 @@
                 "app": "#AgentAppRecord",
                 "at": "number",
                 "startedBy": "string",
-                "state": "\"urls_set\""
+                "state": "\"created\""
               }
             },
             {
