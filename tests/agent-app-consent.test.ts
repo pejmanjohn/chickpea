@@ -63,6 +63,7 @@ const transport = (posted: Posted[]): AgentAppTransport => ({
   async enableUserGroup(): Promise<never> { throw new Error('not in this unit'); },
   async lookupChannel(): Promise<never> { throw new Error('not in this unit'); },
   async joinPublicChannel(): Promise<never> { throw new Error('not in this unit'); },
+  async channelHasMember(): Promise<never> { throw new Error('not in this unit'); },
   async openDirectConversation(userId: string) { return { id: `D_${userId}`, private: true, member: true, archived: false }; },
   async postMessage(input: { channelId: string; text: string; idempotencyKey?: string }) {
     posted.push({ channelId: input.channelId, text: input.text, idempotencyKey: input.idempotencyKey });
@@ -100,7 +101,7 @@ async function fixture(t: TestContext, app: AgentAppLifecycle = waiting()) {
   const armed: AgentAppSwitchJob[] = [];
   const service = new AgentSlackApps({
     env: ENV, stores: { config, settings }, host: HOST, transport: transport(posted), slack, keyring, now: () => clock.now,
-    armSwitch: async (job) => { armed.push(job); },
+    armSwitch: async (job) => { armed.push(job); }, memberInSlack: async (id) => ({ membershipId: id, slackUserId: id, role: 'owner' }),
   });
   return { config, settings, secrets, slack, posted, clock, service, armed };
 }
@@ -289,7 +290,7 @@ test("app secrets that can't be opened answer the callback with the expired page
   const state = await open(f);
   const rekeyed = new AgentSlackApps({
     env: ENV, stores: { config: f.config, settings: f.settings }, host: HOST, transport: transport(f.posted), slack: f.slack,
-    keyring: generateCredentialKeyring('k2'), now: () => f.clock.now, armSwitch: async () => undefined,
+    keyring: generateCredentialKeyring('k2'), now: () => f.clock.now, armSwitch: async () => undefined, memberInSlack: async (id) => ({ membershipId: id, slackUserId: id, role: 'owner' }),
   });
   const warn = t.mock.method(console, 'warn', () => undefined);
   const response = await rekeyed.completeConsent(new URLSearchParams({ code: 'c', state }), OWNER);
@@ -324,6 +325,13 @@ test('Allow from a removed app resumes the sequence first, and an active app say
   assert.match(pageText(await response.text()), /Support is already in Slack/);
   const notStarted = await fixture(t, { state: 'created', at: NOW, startedBy: OWNER, app: APP });
   assert.equal((await notStarted.service.allow('agent_support', OWNER)).status, 410);
+
+  // The link sends the Owner to Slack's Allow screen, so no message asks them to choose Allow.
+  const removed = await fixture(t, { state: 'needs_attention', at: NOW, startedBy: OWNER, reason: 'app_removed', resume: 'icon_set', app: APP, icon: 'agent_avatar' });
+  const reopened = await removed.service.allow('agent_support', OWNER);
+  assert.equal(reopened.status, 303);
+  assert.equal((await appOf(removed.config))?.state, 'awaiting_consent');
+  assert.doesNotMatch(JSON.stringify(removed.posted), /Choose Allow/);
 });
 
 // Defects caught: a second Owner's Allow overwriting the first Owner's open link, one Owner's cancel spending

@@ -6,7 +6,9 @@
  * when the state still allows it; it never repeats the effect.
  */
 import { AgentRevisionConflictError, UnknownAgentError } from '../../config/errors.ts';
+import { canEditAgent } from '../../auth/permissions.ts';
 import { AgentPresenceError } from '../agent-presence/errors.ts';
+import type { MemberInSlack } from '../agent-presence/place-in-slack.ts';
 import { installationScopeOf } from '../../config/installation-scope.ts';
 import type { EncryptedCredentialStore, SettingsStore } from '../../config/settings-store.ts';
 import type { PlatformEnv } from '../../config/state-backend.ts';
@@ -71,7 +73,7 @@ import {
   nextStep,
   normalizeAgentAppPresence,
   pendingSwitchStep,
-  placedNowhere,
+  waitsForOwnApp,
   restorePending,
   stoppedBeforeAnyApp,
   transition,
@@ -136,7 +138,7 @@ import {
 
 export type AgentAppTransport = Pick<
   SlackTransport,
-  'disableUserGroup' | 'enableUserGroup' | 'openDirectConversation' | 'postMessage' | 'lookupChannel' | 'joinPublicChannel'
+  'disableUserGroup' | 'enableUserGroup' | 'openDirectConversation' | 'postMessage' | 'lookupChannel' | 'joinPublicChannel' | 'channelHasMember'
 >;
 
 /** What an Agent app's own bot does at the switch: see a Channel and join a public one. */
@@ -180,6 +182,8 @@ export interface AgentSlackAppsDeps {
    * after the workspace went back to `shared`.
    */
   placeInSlack?: (agentId: string) => Promise<void>;
+  /** An active member in Slack, for the check that whoever added a waiting Channel may still add it. */
+  memberInSlack: (membershipId: string) => Promise<MemberInSlack | undefined>;
   now?: () => number;
 }
 
@@ -249,6 +253,8 @@ interface Run {
   wroteCreating: boolean;
   /** An archive's own run; any other removal of an app attached to a user group is a Cancel's. */
   archiving: boolean;
+  /** The press that runs it sends the Owner's browser to Slack's Allow screen next. */
+  handOff: boolean;
 }
 
 type Outcome = { event: AgentAppEvent; after?: () => Promise<void> } | 'wait';
@@ -371,7 +377,7 @@ export class AgentSlackApps {
    * permission the switch will need to turn the group off is checked first,
    * so a move never reaches a switch it cannot finish.
    */
-  async start(agentId: string, ownerSlackUserId: string): Promise<AgentAppStartOutcome> {
+  async start(agentId: string, ownerSlackUserId: string, options: { handOff?: boolean } = {}): Promise<AgentAppStartOutcome> {
     const { config } = this.deps.stores;
     const agent = await config.getAgent(agentId);
     const presence = agent.slackPresence;
@@ -397,9 +403,9 @@ export class AgentSlackApps {
       if (!(error instanceof AgentRevisionConflictError)) throw error;
       const latest = await config.getAgent(agentId);
       if (appRecordOf(latest.slackPresence)) return { kind: 'already_started', agent: latest };
-      return this.start(agentId, ownerSlackUserId);
+      return this.start(agentId, ownerSlackUserId, options);
     }
-    const advanced = await this.advance(agentId, { wroteCreating: true });
+    const advanced = await this.advance(agentId, { wroteCreating: true, handOff: options.handOff ?? false });
     if (advanced.withdrawn === 'app_limit') return { kind: 'app_limit' };
     if (advanced.withdrawn === 'handle_taken') return { kind: 'handle_taken', agent: advanced.agent };
     return { kind: 'started', agent: advanced.agent };
@@ -427,11 +433,12 @@ export class AgentSlackApps {
    * waits. `appLimit` says the run withdrew the record because Slack would not
    * create another app in this workspace.
    */
-  async advance(agentId: string, options: { wroteCreating?: boolean; archiving?: boolean } = {}): Promise<Advanced> {
+  async advance(agentId: string, options: { wroteCreating?: boolean; archiving?: boolean; handOff?: boolean } = {}): Promise<Advanced> {
     const { config } = this.deps.stores;
     let agent = await config.getAgent(agentId);
     let wroteCreating = options.wroteCreating ?? false;
     const archiving = options.archiving ?? false;
+    const handOff = options.handOff ?? false;
     for (let guard = 0; guard < MAX_STEPS_PER_RUN; guard += 1) {
       const presence = agent.slackPresence;
       const app = appRecordOf(presence);
@@ -444,7 +451,7 @@ export class AgentSlackApps {
       }
       const step = nextStep(app, now);
       if (!step) return { agent };
-      const outcome = await this.performers[step]({ agent, presence, app, now, wroteCreating, archiving });
+      const outcome = await this.performers[step]({ agent, presence, app, now, wroteCreating, archiving, handOff });
       if (outcome === 'wait') return { agent };
       const committed = await this.commit(agent, outcome.event);
       agent = committed.agent;
@@ -489,6 +496,7 @@ export class AgentSlackApps {
     agent: CustomAgentConfig,
     app: Extract<AgentAppLifecycle, { state: 'needs_attention' }>,
     ownerSlackUserId: string,
+    handOff = false,
   ): Promise<Advanced> {
     const agentId = agent.id;
     const manifestFingerprint = slackManifestFingerprint(this.createManifest(agent));
@@ -496,7 +504,7 @@ export class AgentSlackApps {
       type: 'try_again', at: this.now(), startedBy: ownerSlackUserId, manifestFingerprint,
     });
     if (resumed.outcome === 'refused') return { agent: resumed.agent };
-    return this.advance(agentId, { wroteCreating: app.resume === 'creating' });
+    return this.advance(agentId, { wroteCreating: app.resume === 'creating', handOff });
   }
 
   /** "Allow <Agent> in Slack": a fresh consent nonce, then Slack's authorize page. Creates nothing. */
@@ -506,7 +514,7 @@ export class AgentSlackApps {
     const app = appRecordOf(agent.slackPresence);
     if (!app) return this.consentPage('expired', agent);
     if (app.state === 'active') return this.consentPage('already_active', agent);
-    if (app.state === 'needs_attention' && app.reason === 'app_removed') agent = (await this.tryAgain(agent, app, ownerSlackUserId)).agent;
+    if (app.state === 'needs_attention' && app.reason === 'app_removed') agent = (await this.tryAgain(agent, app, ownerSlackUserId, true)).agent;
     const url = await this.authorizeUrl(agent, ownerSlackUserId, 'slack');
     return url ? Response.redirect(url, 303) : this.consentPage('expired', agent);
   }
@@ -611,13 +619,14 @@ export class AgentSlackApps {
     }
     const record = appRecordOf(agent.slackPresence);
     const attached = agent.slackPresence.kind !== 'agent_app';
+    // Every press sends the Owner's browser on to Slack's Allow screen, so none posts the message asking them to choose Allow.
     if (!record) {
-      const started = await this.start(agentId, ownerSlackUserId);
+      const started = await this.start(agentId, ownerSlackUserId, { handOff: true });
       if (started.kind !== 'started' && started.kind !== 'already_started') return started;
       agent = started.agent;
     } else if (record.state === 'needs_attention' && record.reason === 'app_removed') {
       // A removed app, whichever kind holds the handle now: its Allow is offered again, as the Allow link does.
-      agent = (await this.tryAgain(agent, record, ownerSlackUserId)).agent;
+      agent = (await this.tryAgain(agent, record, ownerSlackUserId, true)).agent;
     } else if (attached && cancelPending(record)) {
       const finished = record.state === 'needs_attention'
         ? await this.tryAgain(agent, record, ownerSlackUserId)
@@ -628,8 +637,8 @@ export class AgentSlackApps {
         return { kind: 'token_needed' };
       }
       const resumed = record.state === 'needs_attention'
-        ? await this.tryAgain(agent, record, ownerSlackUserId)
-        : await this.advance(agentId);
+        ? await this.tryAgain(agent, record, ownerSlackUserId, true)
+        : await this.advance(agentId, { handOff: true });
       if (resumed.withdrawn === 'app_limit') return { kind: 'app_limit' };
       if (resumed.withdrawn === 'handle_taken') return { kind: 'handle_taken', agent: resumed.agent };
       agent = resumed.agent;
@@ -965,7 +974,7 @@ export class AgentSlackApps {
     },
 
     bring_in_pending: async (agent, presence) => {
-      if (!presence.released) await this.grantCreatorChannels(agent);
+      if (!presence.released) await this.grantWaitingChannels(agent);
       const bot = await this.switchBot(agent, presence);
       if (bot) {
         for (const channelId of await this.grantedChannels(agent.id)) {
@@ -996,7 +1005,7 @@ export class AgentSlackApps {
           (channel?.member ? joined : throughChickpea).push(channelId);
         }
         const message = agentAppSwitchedMessage(this.names(agent), {
-          joined, throughChickpea, groupStillOn: answeringUserGroupId(presence) !== undefined,
+          joined, throughChickpea, groupStillOn: answeringUserGroupId(presence) !== undefined, added: !presence.released,
         });
         const dm = await this.deps.transport.openDirectConversation(installedBy);
         await this.deps.transport.postMessage({
@@ -1248,17 +1257,18 @@ export class AgentSlackApps {
   }
 
   /**
-   * An Agent that was not in Slack yet, so released no group: the Channels its
-   * creator asked for when creating it waited as pending grants, and end as
-   * an add to them would. Chickpea's bot joins a public one it is not in, so
-   * replies in the Agent's threads there need no mention; a private one is
-   * granted where Chickpea's bot already is; an archived one's grant is
-   * dropped. Any other pending add is left as it is.
+   * An Agent that was not in Slack yet, so released no group: each Channel it
+   * was added to meanwhile waited as a pending grant, and ends as an add to it
+   * would, checked again now: whoever added it is still an active member who
+   * may edit the Agent and is still in the Channel, or it stays waiting. Chickpea's bot joins a public
+   * one it is not in, so replies in the Agent's threads there need no
+   * mention; a private one is granted where Chickpea's bot already is; an
+   * archived one's grant is dropped.
    */
-  private async grantCreatorChannels(agent: CustomAgentConfig): Promise<void> {
+  private async grantWaitingChannels(agent: CustomAgentConfig): Promise<void> {
     const { config } = this.deps.stores;
     for (const grant of await config.listAgentChannelGrants()) {
-      if (grant.agentId !== agent.id || grant.status !== 'pending' || grant.createdByMembershipId !== agent.creatorMembershipId) continue;
+      if (grant.agentId !== agent.id || grant.status !== 'pending') continue;
       const channel = await seenBy(this.deps.transport, grant.channelId);
       // Slack no longer shows Chickpea's bot the Channel (a private one it has left, or one deleted): the wait stays.
       if (!channel) continue;
@@ -1266,6 +1276,8 @@ export class AgentSlackApps {
         await config.deleteAgentChannelGrant(grant.workspaceId, grant.channelId, agent.id);
         continue;
       }
+      const writer = await this.deps.memberInSlack(grant.createdByMembershipId);
+      if (!writer || !canEditAgent(writer, agent) || !await inChannel(this.deps.transport, grant.channelId, writer.slackUserId)) continue;
       if (!channel.private && !channel.member) {
         try {
           await this.deps.transport.joinPublicChannel(grant.channelId);
@@ -1292,7 +1304,7 @@ export class AgentSlackApps {
    * next `shared` press repairs it.
    */
   private async placeIfShared(agent: CustomAgentConfig): Promise<void> {
-    if (!this.deps.placeInSlack || agent.lifecycle === 'archived' || !placedNowhere(agent.slackPresence)) return;
+    if (!this.deps.placeInSlack || !waitsForOwnApp(agent)) return;
     if ((await this.setting()).mode !== 'shared') return;
     try {
       await this.deps.placeInSlack(agent.id);
@@ -1603,6 +1615,8 @@ export class AgentSlackApps {
 
     post_allow_dm: async (run) => {
       if (run.app.state !== 'icon_set') return 'wait';
+      // The Owner is on their way to Slack's Allow screen; the Add link they pressed, and Admin's row, bring them back.
+      if (run.handOff) return { event: { type: 'handed_to_slack', at: run.now } };
       const posted = await this.message('allow', run.agent, run.app.startedBy, `agent-app-allow:${run.agent.id}:${run.app.at}`);
       return { event: { type: 'allow_dm_posted', at: run.now, channelId: posted.channelId, ts: posted.ts } };
     },
@@ -1817,6 +1831,7 @@ function homeRowFor(
               joined: [],
               throughChickpea: privateGrants.filter((grant) => grant.agentId === agent.id).map((grant) => grant.channelId),
               groupStillOn: answeringUserGroupId(presence) !== undefined,
+              added: presence?.kind === 'agent_app' && !presence.released,
             },
           }
         : { kind: 'active' };
@@ -1987,6 +2002,16 @@ async function seenBy(bot: AgentAppBotTransport, channelId: string): Promise<Sla
   } catch (error) {
     if (!(error instanceof SlackTransportError) || error.retryable) throw error;
     return undefined;
+  }
+}
+
+/** Whether Slack says the person is in the Channel. A refusal to say is a no: the Channel keeps waiting and the switch goes on. */
+async function inChannel(bot: Pick<AgentAppTransport, 'channelHasMember'>, channelId: string, userId: string): Promise<boolean> {
+  try {
+    return await bot.channelHasMember(channelId, userId);
+  } catch (error) {
+    if (!(error instanceof SlackTransportError) || error.retryable) throw error;
+    return false;
   }
 }
 

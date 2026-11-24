@@ -63,11 +63,12 @@ function fakeService(config: SqliteConfigStore, settings: SqliteSettingsStore, s
     transport: {
       disableUserGroup: async (id) => { calls.push(`disable:${id}`); return { id, name: 'Support', handle: 'support', disabled: true }; },
       enableUserGroup: refuse('enableUserGroup'),
-      lookupChannel: refuse('lookupChannel'), joinPublicChannel: refuse('joinPublicChannel'),
+      lookupChannel: refuse('lookupChannel'), joinPublicChannel: refuse('joinPublicChannel'), channelHasMember: refuse('channelHasMember'),
       openDirectConversation: async (user) => { calls.push(`dm:${user}`); return { id: `D_${user}`, private: true, member: true, archived: false }; },
       postMessage: async (input) => { calls.push(`post:${input.channelId}`); return { channelId: input.channelId, ts: '1.0' }; },
     },
     userGroupPermissionMissing: async () => permissionMissing,
+    memberInSlack: async (id) => ({ membershipId: id, slackUserId: id, role: 'owner' }),
   });
   return { service, calls };
 }

@@ -6,7 +6,7 @@ import { isAgentId } from '../config/agent-id.ts';
 import { AWAITING_OWN_APP, type CustomAgentConfig } from '../config/types.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import { agentSlackHandle } from './agent-asks.ts';
-import { agentOffMessage, notInSlackYetMessage } from './agent-presence/errors.ts';
+import { agentOffMessage, joinsOnceInSlackMessage } from './agent-presence/errors.ts';
 import { activeOwnerSlackUserIds } from './credits-ask.ts';
 import type { AgentRoutingActor } from './agent-routing.ts';
 import type { SlackTransport } from './transport/types.ts';
@@ -122,8 +122,11 @@ export interface AgentChannelAddDependencies {
   resolveActor(): Promise<AddingActor>;
   getAgent(agentId: string): Promise<CustomAgentConfig | undefined>;
   identity: OfferIdentity;
-  /** Adds the Agent to the Channel exactly as Admin's Add to channels does; `bot_left_out` when its own app's bot is not there. */
-  publish(agent: CustomAgentConfig, principal: AuthPrincipal): Promise<'added' | 'bot_left_out'>;
+  /**
+   * Adds the Agent to the Channel exactly as Admin's Add to channels does; `bot_left_out` when its own app's bot is not
+   * there, `waiting` when the Agent is not in Slack yet and the Channel waits for it.
+   */
+  publish(agent: CustomAgentConfig, principal: AuthPrincipal): Promise<'added' | 'bot_left_out' | 'waiting'>;
   adminUrl(): Promise<string | undefined>;
   client: EphemeralClient;
 }
@@ -137,23 +140,27 @@ export async function addAgentToChannel(
   if (!await deps.claim(key.join(':'))) return;
   const [actor, agent] = await Promise.all([deps.resolveActor(), deps.getAgent(request.agentId)]);
   const handle = addableAgentHandle(agent);
+  // Not in Slack yet: it has no handle, and the Channel waits for it.
+  const waiting = agent?.kind === 'user' && agent.slackPresence?.errorCode === AWAITING_OWN_APP;
+  const named = handle ? `@${handle}` : agent?.name;
   let text: string;
-  if (agent?.kind === 'user' && agent.slackPresence?.errorCode === AWAITING_OWN_APP && actor.routing.fullMember) {
-    text = notInSlackYetMessage(agent);
-  } else if (!agent || !handle || !actor.routing.fullMember || !actor.routing.channelMember) {
+  if (!agent || !named || (!handle && !waiting) || !actor.routing.fullMember || !actor.routing.channelMember) {
     text = 'That Agent is not available here.';
   } else if (!actor.principal || !canEditAgent(actor.principal, agent)) {
-    text = `${askOwnersToAdd(await namedOwners(deps.identity, request.workspaceId))} to add @${handle} to this channel.`;
+    text = `${askOwnersToAdd(await namedOwners(deps.identity, request.workspaceId))} to add ${named} to this channel.`;
   } else if (!agent.enabled) {
     text = agentOffMessage(agent);
   } else {
     try {
-      text = await deps.publish(agent, actor.principal) === 'bot_left_out'
-        ? `To let @${handle} answer here, add it from the channel's Add people or agents.`
-        : `@${handle} is ready in this channel. Mention @${handle} to start a conversation.`;
+      const placed = await deps.publish(agent, actor.principal);
+      text = placed === 'waiting'
+        ? joinsOnceInSlackMessage(agent, 'this channel')
+        : placed === 'bot_left_out'
+          ? `To let ${named} answer here, add it from the channel's Add people or agents.`
+          : `${named} is ready in this channel. Mention ${named} to start a conversation.`;
     } catch {
       const url = await deps.adminUrl().catch(() => undefined);
-      text = `I couldn’t add @${handle} to this channel. Open Chickpea to add it there.` +
+      text = `I couldn’t add ${named} to this channel. Open Chickpea to add it there.` +
         (url && !/[<>|]/.test(url) ? ` <${url}|Open Chickpea>` : '');
     }
   }

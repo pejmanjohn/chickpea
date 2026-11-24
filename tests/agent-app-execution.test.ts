@@ -285,7 +285,7 @@ test("Slack not answering an archive's uninstall leaves the Agent answering as i
   } as unknown as AgentAppTransport;
   const service = new AgentSlackApps({
     env: h.env, stores: { config: h.stores.config, settings: h.stores.settings as AppStores['settings'] & EncryptedCredentialStore },
-    host: HOST, transport, slack, keyring, armSwitch: async () => undefined,
+    host: HOST, transport, slack, keyring, armSwitch: async () => undefined, memberInSlack: async (id) => ({ membershipId: id, slackUserId: id, role: 'owner' }),
   });
 
   const live = await h.stores.config.getAgent('agent_support');

@@ -560,6 +560,8 @@ function runAdminPageHarness(
     putAssignmentError?: { status: number; error: string; message?: string };
     /** The Agent's own Slack app's bot could not be brought into the Channel it was added to. */
     appBotLeftOut?: boolean;
+    /** The Agent is not in Slack yet, so a Channel added to it waits as a pending grant. */
+    channelAddWaits?: boolean;
     cloudflare?: boolean;
     installationOwner?: boolean;
     /** False renders a deployment serving many installations, whose host runs the browser. */
@@ -1171,6 +1173,7 @@ function runAdminPageHarness(
   const putIsMember = options.putIsMember;
   const putAssignmentError = options.putAssignmentError;
   const appBotLeftOut = options.appBotLeftOut;
+  const channelAddWaits = options.channelAddWaits;
   let slackChannelFailures = options.slackChannelFailures ?? 0;
   // Captured out here because the fetch parameter below is also named `options`
   // (the request init) and would otherwise shadow these harness fixtures.
@@ -2216,7 +2219,7 @@ function runAdminPageHarness(
             agentId: assignment.agentId,
             agentName: projectedAgent?.name ?? assignment.agentId,
             agentEnabled: projectedAgent?.enabled !== false,
-            status: 'active',
+            status: (projectedAgent as { slackPresence?: { errorCode?: string } } | undefined)?.slackPresence?.errorCode === 'awaiting_own_app' ? 'pending' : 'active',
           }],
           readiness: { ready: projectedAgent?.enabled !== false, code: projectedAgent?.enabled === false ? 'agent_unavailable' : 'ready', reasons: [] },
         };
@@ -2590,7 +2593,7 @@ function runAdminPageHarness(
         workspaceId: body.workspaceId,
         channelId: body.channelId,
         channelName: channel?.name ?? body.channelId,
-        status: 'active',
+        status: channelAddWaits ? 'pending' : 'active',
       };
       assignments = assignments.filter((assignment) => !(
         assignment.agentId === agentId
@@ -2626,6 +2629,8 @@ function runAdminPageHarness(
           channels: current.concat(grant),
         };
       }
+      // The Agent was waiting before the add and still is on every later read.
+      if (channelAddWaits && existing) existing.slackPresence = { ...existing.slackPresence, errorCode: 'awaiting_own_app' };
       return Promise.resolve(jsonResponse({ grant, agent: existing, ...(appBotLeftOut ? { appBot: 'left_out' } : {}) }));
     }
     if (agentPatchMatch && method === 'PATCH') {
@@ -5381,6 +5386,47 @@ test("Add channel says how to bring in an Agent's own Slack app when Chickpea co
 
   assert.match(harness.app.innerHTML,
     /To let @release-profile answer in #new-channel, add it from the channel&#39;s Add people or agents in Slack\./);
+});
+
+// Defects caught: a Channel kept for an Agent not in Slack yet reported as a missing invite of Chickpea's app, or with
+// nothing said.
+test('Add channel says an Agent not in Slack yet joins the Channel once a workspace Owner adds it to Slack', async () => {
+  const harness = runAdminPageHarness({
+    slackConnection: connectedSlackFixture(),
+    slackChannels: channelsFixture([{ id: 'C_NEW', name: 'new-channel' }], true),
+    channelAddWaits: true,
+  });
+  const click = await openReleaseAttachPicker(harness);
+  click({ target: actionTarget({ 'data-action': 'attach-new-channel', 'data-agent': 'agent_release' }) });
+  harness.listeners.submit!({
+    target: submitTarget({ 'data-action': 'add-channel-form' }, { channelSelect: 'C_NEW' }),
+    preventDefault() {},
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Release Profile joins #new-channel once a workspace Owner adds it to Slack\./);
+  assert.doesNotMatch(harness.app.innerHTML, /Invite the connected Slack app/);
+  // The Channel's own page, where the add lands: no handle reaches the Agent there yet.
+  assert.match(harness.app.innerHTML, /Release Profile joins this Channel once a workspace Owner adds it to Slack\./);
+  assert.match(harness.app.innerHTML, /Not in Slack yet · managed on the Agent/);
+  assert.doesNotMatch(harness.app.innerHTML, /Mention @release-profile to start a thread/);
+});
+
+// Defects caught: the Agent's own page reporting a Channel kept for an Agent not in Slack yet as added.
+test("Add to channels on an Agent's page says an Agent not in Slack yet joins the Channel once a workspace Owner adds it", async () => {
+  const harness = runAdminPageHarness({
+    slackConnection: connectedSlackFixture(),
+    slackChannels: channelsFixture([{ id: 'C_NEW', name: 'new-channel' }], true),
+    attachSelectionValue: 'C_NEW',
+    channelAddWaits: true,
+  });
+  const click = await openReleaseAttachPicker(harness);
+  click({ target: actionTarget({ 'data-action': 'attach-channel-confirm' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.agentChannelPosts, [{ agentId: 'agent_release', body: { workspaceId: 'T_DESIGN', channelId: 'C_NEW' } }]);
+  assert.match(harness.app.innerHTML, /Release Profile joins #new-channel once a workspace Owner adds it to Slack\./);
+  assert.doesNotMatch(harness.app.innerHTML, /Agent added to #new-channel/);
 });
 
 test('profile capability tabs switch the visible panel on click', async () => {

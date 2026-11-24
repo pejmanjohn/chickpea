@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import type { AgentAppLifecycle } from '../src/config/types.ts';
+import type { AgentAppLifecycle, CustomAgentConfig } from '../src/config/types.ts';
 import {
   type AgentAppEvent,
   type AgentAppTransition,
@@ -10,6 +10,7 @@ import {
   isRefusal,
   nextStep,
   transition,
+  waitsForOwnApp,
 } from '../src/slack/agent-apps/lifecycle.ts';
 
 const T0 = 1_800_000_000_000;
@@ -60,6 +61,7 @@ const events = {
   config_token_needed: { type: 'config_token_needed', at: AT },
   icon_set: { type: 'icon_set', at: AT, icon: 'default_avatar' },
   allow_dm_posted: { type: 'allow_dm_posted', at: AT, channelId: 'D1', ts: '1.1' },
+  handed_to_slack: { type: 'handed_to_slack', at: AT },
   consent_opened: { type: 'consent_opened', at: AT, ...CONSENT },
   consent_granted: { type: 'consent_granted', at: AT, botUserId: 'UBOT', installedBy: 'UOWNER2' },
   consent_undone: { type: 'consent_undone', at: AT, owner: 'UOWNER' },
@@ -112,6 +114,8 @@ const allowed: Record<string, AgentAppTransition> = {
   'urls_set -> archive_with_token': { state: 'uninstalling', at: AT, startedBy: 'UOWNER', app: APP, next: 'uninstall' },
   'urls_set -> archive_without_token': { state: 'uninstalling', at: AT, startedBy: 'UOWNER', app: APP, next: 'delete' },
   'icon_set -> allow_dm_posted': { ...states.awaiting_consent, at: AT },
+  // A press sending the Owner's browser to Slack: no Allow message, so none is recorded.
+  'icon_set -> handed_to_slack': { state: 'awaiting_consent', at: AT, startedBy: 'UOWNER', app: APP, icon: 'agent_avatar' },
   'icon_set -> archive_with_token': { state: 'uninstalling', at: AT, startedBy: 'UOWNER', app: APP, next: 'uninstall' },
   'icon_set -> archive_without_token': { state: 'uninstalling', at: AT, startedBy: 'UOWNER', app: APP, next: 'delete' },
   'awaiting_consent -> consent_opened': { ...states.awaiting_consent_opened, at: AT },
@@ -215,4 +219,18 @@ test('the next step names the one external effect due, and nothing while the rec
 test('a resume that needs an app the record lacks is refused rather than invented', () => {
   const noApp: AgentAppLifecycle = { state: 'needs_attention', at: T0, startedBy: 'UOWNER', reason: 'urls_refused', resume: 'created' };
   assert.deepEqual(transition(noApp, events.try_again), { refused: 'wrong_state' });
+});
+
+// Defects caught: back to shared, or a record that ended after it, giving a user group to an Agent that was never
+// meant to be in Slack: a draft (one whose publish failed asks to be in Slack too), one never published, one turned
+// off, or one archived.
+test('only an Agent that is on, published and in Slack nowhere waits for its own app', () => {
+  const presence = { requestedHandle: 'support', normalizedHandle: 'support', desiredState: 'active', health: 'unpublished', avatar: { kind: 'generated', revision: 1, seed: 's' }, errorCode: 'awaiting_own_app' } as const;
+  const agent = (extra: Partial<CustomAgentConfig>) => ({ enabled: true, lifecycle: 'active', slackPresence: presence, ...extra }) as Pick<CustomAgentConfig, 'enabled' | 'lifecycle' | 'slackPresence'>;
+  assert.equal(waitsForOwnApp(agent({})), true);
+  assert.equal(waitsForOwnApp(agent({ lifecycle: 'draft' })), false, 'a draft');
+  assert.equal(waitsForOwnApp(agent({ slackPresence: { requestedHandle: 'support', normalizedHandle: 'support', desiredState: 'unpublished', health: 'unpublished', avatar: presence.avatar } })), false, 'never published');
+  assert.equal(waitsForOwnApp(agent({ enabled: false })), false, 'turned off');
+  assert.equal(waitsForOwnApp(agent({ lifecycle: 'archived' })), false, 'archived');
+  assert.equal(waitsForOwnApp(agent({ slackPresence: { ...presence, userGroupId: 'S1' } })), false, 'in Slack through its group');
 });

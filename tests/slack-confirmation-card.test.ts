@@ -508,7 +508,8 @@ test('after approval, a held operation whose dependency failed earlier in the ca
     const pressed = await click(CHICKPEA_AGENT_ID, card!, requester, 0);
     assert.deepEqual(await approve(CHICKPEA_AGENT_ID, pressed.clicked, proposalId), {
       kind: 'message',
-      text: 'Applied some approved changes, but 1 item needs attention.\n\nIssue: dependency_not_applied',
+      // A code is never shown; one with no sentence leaves the reply's own sentence to speak for it.
+      text: 'Applied some approved changes, but 1 item needs attention.',
     });
     assert.equal((await f.config.getAgent(beta.id)).instructions, 'Help with Beta, carefully.');
     assert.equal((await f.config.getAgent(gamma.id)).revision, gamma.revision);

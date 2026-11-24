@@ -332,7 +332,11 @@ export type AgentAppLifecycle =
       app: AgentAppRecord;
       icon: AgentAppIcon;
       follows?: AgentAppFollows;
-      allowDm: { channelId: string; ts: string };
+      /**
+       * The "ready, choose Allow" message, posted only when no press sent the Owner's browser to Slack's Allow screen
+       * (a Try again pressed in Slack). Nothing reads it.
+       */
+      allowDm?: { channelId: string; ts: string };
       /** One unexpired nonce per Owner, keyed by that Owner's Slack user ID. */
       consents?: Readonly<Record<string, AgentAppConsent>>;
     }

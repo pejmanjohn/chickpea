@@ -168,7 +168,7 @@ import {
 } from '../routines/content-access.ts';
 import type { WorkStore } from '../work/types.ts';
 import { alternativeAgentHandles, handlesOtherAgentsStore, normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
-import { AgentPresenceError, agentOffError, restoreHandleRefusal } from '../slack/agent-presence/errors.ts';
+import { AgentPresenceError, agentOffError, joinsOnceInSlackMessage, restoreHandleRefusal } from '../slack/agent-presence/errors.ts';
 import {
   listPrivatelyUsableAgents,
   logUnavailableFacts,
@@ -592,8 +592,6 @@ export interface WorkspaceManagementServiceInput {
     workspaceId: string;
     channelId: string;
     agentId: string;
-    /** The Agent was created in the same call: a Channel it cannot join until it is in Slack waits as pending. */
-    createdInCall?: true;
   }) => Promise<{ agent: CustomAgentConfig; grant: AgentChannelGrant }>;
   publishGeneratedAgentAvatar?: (input: {
     workspaceId: string;
@@ -7285,16 +7283,17 @@ export class WorkspaceManagementService {
             workspaceId: operation.workspaceId,
             channelId: operation.channelId,
             agentId: operation.agentId!,
-            ...(operation.agentClientRef ? { createdInCall: true as const } : {}),
           });
           const mutation = mutationForGrant(
             published.grant,
             grantInverseAtRevision(prepared.inverse, published.grant.revision),
           );
+          const waiting = published.grant.status !== 'active' && published.agent.slackPresence?.errorCode === AWAITING_OWN_APP;
           // Publishing reconciles the Agent's Slack presence and can advance its
           // revision; report it so the next change targets the current revision.
           return {
             ...mutation,
+            ...(waiting ? { warning: joinsOnceInSlackMessage(published.agent, published.grant.channelLabel ? `#${published.grant.channelLabel}` : 'the Channel') } : {}),
             changed: [
               ...mutation.changed,
               { kind: 'agent', id: published.agent.id, revision: published.agent.revision },

@@ -14,6 +14,7 @@ import {
   type AgentPresenceDesiredState,
   type AgentPresenceHealth,
   type AttachedAgentApp,
+  type CustomAgentConfig,
   appRecordOf,
 } from '../../config/types.ts';
 
@@ -52,6 +53,8 @@ export type AgentAppEvent =
   /** `avatarRevision` is the avatar whose picture Slack took; absent when Slack took none. */
   | { type: 'icon_set'; at: number; icon: AgentAppIcon; avatarRevision?: number }
   | { type: 'allow_dm_posted'; at: number; channelId: string; ts: string }
+  /** The press is sending the Owner's browser to Slack's Allow screen, so no message asks them to choose Allow. */
+  | { type: 'handed_to_slack'; at: number }
   | { type: 'consent_opened'; at: number; nonceDigest: string; owner: string; expiresAt: number }
   | { type: 'consent_granted'; at: number; botUserId: string; installedBy: string }
   /** That Owner's open Allow link is spent or undone; any other Owner's stays open. */
@@ -230,8 +233,20 @@ export function agentSlackState(presence: AgentSlackPresence): AgentSlackState {
  * app of its own, and no app record on its way. Told from what the presence
  * holds, never from a marker a failure could have overwritten.
  */
-export function placedNowhere(presence: AgentSlackPresence | undefined): boolean {
+function placedNowhere(presence: AgentSlackPresence | undefined): boolean {
   return presence !== undefined && presence.kind !== 'agent_app' && !presence.userGroupId && !presence.app;
+}
+
+/**
+ * An Agent waiting for its own Slack app: on, neither a draft nor archived,
+ * its presence asks to be in Slack, and it is in Slack nowhere. Only these
+ * are placed when the workspace goes back to one user group per Agent; a
+ * draft, an Agent never published, one turned off, or one archived is never
+ * touched by the setting.
+ */
+export function waitsForOwnApp(agent: Pick<CustomAgentConfig, 'enabled' | 'lifecycle' | 'slackPresence'>): boolean {
+  return agent.enabled && agent.lifecycle !== 'draft' && agent.lifecycle !== 'archived' &&
+    agent.slackPresence?.desiredState === 'active' && placedNowhere(agent.slackPresence);
 }
 
 /** A `creating` record Slack never answered within the settle window; nothing creates again until Try again. */
@@ -325,6 +340,10 @@ export function transition(app: AgentAppLifecycle, event: AgentAppEvent): AgentA
             ...(app.follows ? { follows: app.follows } : {}),
             allowDm: { channelId: event.channelId, ts: event.ts },
           }
+        : WRONG_STATE;
+    case 'handed_to_slack':
+      return app.state === 'icon_set'
+        ? { state: 'awaiting_consent', at, startedBy: app.startedBy, app: app.app, icon: app.icon, ...(app.follows ? { follows: app.follows } : {}) }
         : WRONG_STATE;
     case 'consent_opened': {
       if (app.state !== 'awaiting_consent') return WRONG_STATE;

@@ -1,10 +1,11 @@
 import { canEditAgent, requireAgentChannelPublication } from '../auth/permissions.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
 import type { ConfigStore } from '../config/store.ts';
-import type {
-  AgentChannelGrant,
-  CustomAgentConfig,
-  WorkspaceInstallation,
+import {
+  AWAITING_OWN_APP,
+  type AgentChannelGrant,
+  type CustomAgentConfig,
+  type WorkspaceInstallation,
 } from '../config/types.ts';
 import type { ManagementStore } from '../management/store.ts';
 import {
@@ -13,7 +14,7 @@ import {
   type PrivateChannelSetupInstallationSnapshot,
   type PrivateChannelSetupIntent,
 } from '../management/types.ts';
-import { agentOffMessage } from './agent-presence/errors.ts';
+import { agentOffMessage, joinsOnceInSlackMessage } from './agent-presence/errors.ts';
 import type { SlackChannel } from './transport/types.ts';
 
 const SETUP_TTL_MS = 30 * 60_000;
@@ -45,13 +46,13 @@ export interface AddPrivateChannelAgentInput extends BeginPrivateChannelSetupInp
   agentId: string;
 }
 
+type SetupPublication =
+  | { kind: 'completed'; agentId: string; handle: string }
+  /** An Agent not in Slack yet: the Channel waits for it, and it joins once an Owner adds it to Slack. */
+  | { kind: 'waiting'; agentId: string; handle: string; message: string };
+
 export type AddPrivateChannelAgentResult =
-  | {
-      kind: 'completed';
-      agentId: string;
-      handle: string;
-      replayed: boolean;
-    }
+  | (SetupPublication & { replayed: boolean })
   | { kind: 'in_progress' }
   | { kind: 'no_longer_added' }
   | {
@@ -218,13 +219,11 @@ export class PrivateChannelSetupService {
     const claimed = claim.intent;
     if (claimed.status === 'completed' && claimed.result) {
       const current = await this.readCurrentPublication(claimed, false);
-      return current
-        ? { kind: 'completed', ...current, replayed: true }
-        : { kind: 'no_longer_added' };
+      return current ? { ...current, replayed: true } : { kind: 'no_longer_added' };
     }
     if (!claim.claimedByThisCall) {
       const recovered = await this.readCurrentPublication(claimed, true);
-      if (recovered) return { kind: 'completed', ...recovered, replayed: true };
+      if (recovered) return { ...recovered, replayed: true };
       if (claimed.status === 'claimed' &&
           at - (claimed.claimedAt ?? at) < this.claimObservationMs) {
         return { kind: 'in_progress' };
@@ -244,12 +243,15 @@ export class PrivateChannelSetupService {
         channelId: input.channelId,
         agentId: input.agentId,
       });
-      const result = publicationResult(published.agent);
+      // A pending grant is returned only for an Agent not in Slack yet: the Channel waits for it.
+      const result = published.grant.status === 'pending'
+        ? waitingResult(published.agent)
+        : { kind: 'completed' as const, ...publicationResult(published.agent) };
       await this.complete(claimed, principal, result);
-      return { kind: 'completed', ...result, replayed: false };
+      return { ...result, replayed: false };
     } catch {
       const recovered = await this.readCurrentPublication(claimed, true);
-      if (recovered) return { kind: 'completed', ...recovered, replayed: false };
+      if (recovered) return { ...recovered, replayed: false };
       await this.markRecovery(claimed, principal, 'publication_failed');
       return recoveryResult();
     }
@@ -285,7 +287,7 @@ export class PrivateChannelSetupService {
   private async readCurrentPublication(
     intent: PrivateChannelSetupIntent,
     settle: boolean,
-  ): Promise<{ agentId: string; handle: string } | undefined> {
+  ): Promise<SetupPublication | undefined> {
     const selectedAgentId = intent.selectedAgentId;
     if (!selectedAgentId) return undefined;
     try {
@@ -310,8 +312,14 @@ export class PrivateChannelSetupService {
       assertActorBinding(intent, principal);
       requirePublicationAuthority(principal, actor, agent);
       const grant = grants.find((candidate) => candidate.agentId === selectedAgentId);
-      if (grant?.status !== 'active' || !publishedPresenceActive(agent)) return undefined;
-      const result = publicationResult(agent);
+      let result: SetupPublication;
+      if (grant?.status === 'active' && publishedPresenceActive(agent)) {
+        result = { kind: 'completed', ...publicationResult(agent) };
+      } else if (grant?.status === 'pending' && agent.slackPresence?.errorCode === AWAITING_OWN_APP) {
+        result = waitingResult(agent);
+      } else {
+        return undefined;
+      }
       if (settle) await this.complete(intent, principal, result);
       return result;
     } catch (error) {
@@ -329,7 +337,7 @@ export class PrivateChannelSetupService {
   private complete(
     intent: PrivateChannelSetupIntent,
     principal: AuthPrincipal,
-    result: { agentId: string; handle: string },
+    { agentId, handle }: SetupPublication,
   ) {
     return this.dependencies.management.completePrivateChannelSetupIntent({
       setupId: intent.setupId,
@@ -337,8 +345,8 @@ export class PrivateChannelSetupService {
       actorUserId: principal.userId,
       actorMembershipId: principal.membershipId,
       inviterSlackUserId: intent.inviterSlackUserId,
-      agentId: result.agentId,
-      result,
+      agentId,
+      result: { agentId, handle },
       at: this.now(),
     });
   }
@@ -492,6 +500,13 @@ function publishedPresenceActive(agent: CustomAgentConfig): boolean {
 function publicationResult(agent: CustomAgentConfig): { agentId: string; handle: string } {
   if (!publishedPresenceActive(agent)) throw new Error('Agent publication did not become active.');
   return { agentId: agent.id, handle: agent.slackPresence!.normalizedHandle };
+}
+
+function waitingResult(agent: CustomAgentConfig): SetupPublication {
+  return {
+    kind: 'waiting', agentId: agent.id, handle: agentSnapshot(agent, undefined).handle,
+    message: joinsOnceInSlackMessage(agent, 'this channel'),
+  };
 }
 
 function recoveryResult(): Extract<AddPrivateChannelAgentResult, { kind: 'recovery_required' }> {
