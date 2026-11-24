@@ -153,7 +153,7 @@ test('instruction-update tool example survives both runtime schema validators', 
   assert.match(description, /including a final sentence that refers to the text itself/);
 });
 
-test('Agent creation shows the model a call both validators accept, and says how to read a refusal', () => {
+test('a new Agent\'s empty tool list is dropped at the door, a named tool is refused, and an update stays strict', () => {
   const description = workspaceManagementToolDescription('apply_workspace_changes');
   const parameters = toJsonSchema(slackApplyWorkspaceChangesValibotSchema, { errorMode: 'ignore' });
   const precheck = (args: JsonObject) => validateToolArguments({ name: 'apply_workspace_changes', description, parameters }, {
@@ -163,28 +163,33 @@ test('Agent creation shows the model a call both validators accept, and says how
     id: 'demo_alpha', name: 'Demo Alpha', description: 'Looks up train times.', requestedHandle: 'demo-alpha',
     instructions: 'Give the next departure.', enabled: true, skills: [], mcpServers: [], apiConnections: [], repositories: [],
   };
-  // The first-ask shape Pi refused on hosted staging: a tool allowlist on the Agent itself.
-  assert.throws(
-    () => precheck({ idempotencyKey: 'k', operations: [{ itemId: 'create', kind: 'create_agent', agent: { ...agent, allowedTools: [] } }] }),
-    /operations\.0\.agent\.allowedTools: schema is false\n {2}- operations\.0\.agent: must not have additional properties/,
-  );
+  const create = (allowedTools: string[]) => ({
+    idempotencyKey: 'k', operations: [{ itemId: 'create', kind: 'create_agent', agent: { ...agent, allowedTools } }],
+  });
 
-  const example = description.split('Agent-creation example: ')[1]?.split('. The agent object')[0];
-  assert.ok(example, 'apply_workspace_changes shows one create_agent call');
-  const args = JSON.parse(example);
-  assert.deepEqual(v.parse(slackApplyWorkspaceChangesValibotSchema, args), args);
-  assert.deepEqual(precheck(args), args);
-  assert.deepEqual(Object.keys(args.operations[0].agent).sort(), Object.keys(agent).sort());
-  const operations = (parameters as any).properties.operations.items;
-  const createAgent = (operations.anyOf ?? operations.oneOf)
-    .find((operation: any) => operation.properties.kind.const === 'create_agent');
-  assert.match(description, /The agent object takes only these fields and the optional model, modelEffort and editPolicy;/);
-  assert.deepEqual(
-    Object.keys(createAgent.properties.agent.properties).sort(),
-    [...Object.keys(args.operations[0].agent), 'model', 'modelEffort', 'editPolicy'].sort(),
-    'the description lists every field the create schema takes on an Agent',
-  );
-  assert.match(description, /tool access belongs to each mcpServers entry's allowedTools, never to the agent/);
+  // Models often send an empty tool list on a new Agent. Both validators accept it, and the Agent the tool receives has none.
+  assert.deepEqual(precheck(create([])), create([]));
+  const parsed = v.parse(slackApplyWorkspaceChangesValibotSchema, create([]));
+  assert.deepEqual(parsed.operations[0], { itemId: 'create', kind: 'create_agent', agent });
+
+  // A list that names a tool passes Pi's precheck and is refused by the tool's own parse, in one sentence.
+  assert.deepEqual(precheck(create(['search_trains'])), create(['search_trains']));
+  const refused = v.safeParse(slackApplyWorkspaceChangesValibotSchema, create(['search_trains']));
+  assert.equal(refused.success, false);
+  assert.deepEqual(refused.issues?.map((issue) => [issue.message, v.getDotPath(issue)]), [[
+    'Leave out. An Agent has no tool list of its own: tool access goes in each mcpServers entry\'s allowedTools.',
+    'operations.0.agent.allowedTools',
+  ]]);
+
+  // On an update a tool list would mean a change of tools, so the patch still refuses it.
+  for (const allowedTools of [[], ['search_trains']]) {
+    assert.throws(
+      () => precheck({ idempotencyKey: 'k', operations: [{
+        itemId: 'update', kind: 'update_agent', agentId: 'demo_alpha', expectedRevision: 1, patch: { allowedTools },
+      }] }),
+      /operations\.0\.patch\.allowedTools: schema is false/,
+    );
+  }
 
   // Pi answers a refused operation with what other kinds require. Here no line names the Channel that is missing.
   assert.throws(
