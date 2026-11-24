@@ -34,8 +34,11 @@ function appAgentsByBot(agents: readonly CustomAgentConfig[]): Map<string, Custo
 
 /**
  * An Agent app's own delivery selects its Agent only for a mention of its own
- * bot, in a Channel or a group DM, or a message in its own DM; anything else it
- * hears routes as it would on Chickpea's delivery. On Chickpea's delivery a
+ * bot, in a Channel or a group DM, a message in its own DM, or a Stop press on
+ * a run speaking as its own bot (decided by the run's stored speaker, outside
+ * routing); a Channel message, a reaction, or a press about anyone else's run
+ * selects nobody, and any other message it hears routes as it would on
+ * Chickpea's delivery. On Chickpea's delivery a
  * Channel or group DM message that names an Agent app's bot is ignored while
  * that app can answer there, so one bot answers whichever delivery arrives
  * first; it is routed here when the app cannot (`appAnswersHere`): its bot is

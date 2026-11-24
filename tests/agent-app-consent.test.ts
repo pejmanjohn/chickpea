@@ -233,6 +233,21 @@ test('a grant missing only channels:join, as from an app made before Chickpea as
   assert.equal(less.slack.uninstalls, 1);
 });
 
+test("an app made before Agent apps heard the Stop button is granted the scopes it asked for then, and its consent passes", async (t) => {
+  // The scopes an Agent app asked for before it subscribed to agent_session_stopped: the event added none.
+  const before = [
+    'app_mentions:read', 'assistant:write', 'channels:history', 'channels:join', 'channels:read', 'chat:write',
+    'files:read', 'files:write', 'groups:history', 'groups:read', 'im:history', 'im:write', 'mpim:read',
+    'reactions:read', 'reactions:write', 'users:read', 'lists:read', 'lists:write',
+  ];
+  const older = await fixture(t);
+  older.slack.grant = { scopes: before };
+  const response = await older.service.completeConsent(new URLSearchParams({ code: 'c', state: await open(older) }), OWNER);
+  assert.equal(response.status, 303);
+  assert.equal(older.slack.uninstalls, 0, 'the grant stands');
+  assert.equal((await appOf(older.config))?.state, 'active');
+});
+
 test('an undo Slack refuses is logged, and the Owner still gets the page', async (t) => {
   const refusals = captureSlackRefusals(t);
   const f = await fixture(t);
