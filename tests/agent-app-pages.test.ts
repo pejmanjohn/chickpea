@@ -52,8 +52,8 @@ test('a button never carries more text than Slack takes, however long the name o
 // Owner's switch message whole.
 test("the switch message names at most twenty Channels per list and counts the rest", () => {
   const ids = Array.from({ length: 25 }, (_, index) => `C${String(index).padStart(9, '0')}`);
-  const { text } = agentAppSwitchedMessage(HOSTILE, { joined: ids, throughChickpea: [], groupStillOn: false });
+  const { text } = agentAppSwitchedMessage(HOSTILE, { joined: ids, throughChickpea: [], groupStillOn: false, added: false });
   assert.equal((text.match(/<#C/g) ?? []).length, 20);
   assert.ok(text.includes(`<#${ids[19]}> and 5 more.`), text);
-  assert.ok(agentAppSwitchedMessage(HOSTILE, { joined: ids.concat(ids).concat(ids), throughChickpea: ids.concat(ids), groupStillOn: true }).text.length < 3_000);
+  assert.ok(agentAppSwitchedMessage(HOSTILE, { joined: ids.concat(ids).concat(ids), throughChickpea: ids.concat(ids), groupStillOn: true, added: false }).text.length < 3_000);
 });

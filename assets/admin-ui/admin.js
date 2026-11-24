@@ -103,6 +103,7 @@
     channelFormDraft: { workspaceId: "", channelId: "", channelLabel: "" },
     addChannelError: "",
     addChannelInvite: "",
+    addChannelWaits: false,
     addChannelManual: false,
     addChannelSelected: "",
     // Optional profile carried into the add-channel flow (profile page's
@@ -7185,6 +7186,7 @@
 
   function inviteReminderHtml() {
     if (!state.addChannelInvite) return "";
+    if (state.addChannelWaits) return '<div class="empty"><p class="hint">' + esc(state.addChannelInvite) + '</p></div>';
     return '<div class="empty" style="border-left:2px solid var(--ember);"><p class="field-label">Invite the connected Slack app to finish</p>' +
       '<p class="hint">' + esc(state.addChannelInvite) + '</p></div>';
   }
@@ -11352,8 +11354,7 @@
       (steps ? '<ol style="margin:12px 0 0; padding-left:20px;">' + steps + '</ol>' : '') +
       (handles ? '<p class="hint" style="margin-top:12px;">Suggested handles</p><div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:6px;">' + handles + '</div>' : '') +
       (recovery.note ? '<p class="hint" style="margin-top:10px;">' + esc(recovery.note) + '</p>' : '') +
-      '<div style="display:flex; gap:8px; margin-top:12px;">' +
-      (recovery.actionKind === "none" ? '' : '<button type="button" class="btn btn-soft btn-sm" data-action="' + (recovery.actionKind === "reconnect" ? "slack-gateway-refresh" : "agent-presence-retry") + '"' + disabled + '>' + esc(recovery.actionLabel || "Retry") + '</button>') +
+      '<div style="display:flex; gap:8px; margin-top:12px;"><button type="button" class="btn btn-soft btn-sm" data-action="' + (recovery.actionKind === "reconnect" ? "slack-gateway-refresh" : "agent-presence-retry") + '"' + disabled + '>' + esc(recovery.actionLabel || "Retry") + '</button>' +
       (recovery.adminUrl ? '<a class="btn btn-ghost btn-sm" href="' + esc(recovery.adminUrl) + '" target="_blank" rel="noopener noreferrer">Open Slack admin</a>' : '') +
       '</div></div></div>';
   }
@@ -19909,9 +19910,14 @@
       state.active = { workspaceId: workspaceId, channelId: channelId };
       state.channelScreen = "detail";
       var channelName = normalizeChannelLabel((result && result.grant && result.grant.channelLabel) || label || channelId);
-      state.addChannelInvite = result && result.grant && result.grant.status !== "active"
-        ? channelInviteWarning(channelName)
-        : result && result.appBot === "left_out" ? appBotLeftOutText(agent, channelName) : "";
+      // An Agent not in Slack yet keeps the Channel waiting: it joins once an Owner adds it to Slack.
+      state.addChannelWaits = !!(result && result.grant && result.grant.status !== "active" && result.agent &&
+        result.agent.slackPresence && result.agent.slackPresence.errorCode === "awaiting_own_app");
+      state.addChannelInvite = state.addChannelWaits
+        ? agent.name + " joins #" + channelName + " once a workspace Owner adds it to Slack."
+        : result && result.grant && result.grant.status !== "active"
+          ? channelInviteWarning(channelName)
+          : result && result.appBot === "left_out" ? appBotLeftOutText(agent, channelName) : "";
       return refreshData();
     }).catch(function (error) { fail(addChannelErrorText(error)); });
   }

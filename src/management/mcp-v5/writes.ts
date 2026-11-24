@@ -147,7 +147,10 @@ export async function createAgent(
     ? created.outcomes[0]?.changed?.find(({ kind }) => kind === 'agent')?.id
     : undefined;
   if (!agentId) return changeResult(deps, context, created);
-  const waiting = await notInSlackYet(deps, context, agentId);
+  const waitingName = await notInSlackYet(deps, context, agentId);
+  const waiting = (result: ChangeResult): ChangeResult => waitingName
+    ? { ...result, summary: `${result.summary} ${waitingName} isn't in Slack yet: a workspace Owner adds it to Slack in Chickpea Admin.` }
+    : result;
   if (!input.channels?.length) return afterCreation(waiting(await changeResult(deps, context, created, { agentId })));
 
   // The Agent exists now, so a grant that fails is a warning, never the result.
@@ -179,31 +182,24 @@ export async function createAgent(
   return afterCreation(waiting({
     ...result,
     ...(version ? { version } : {}),
-    summary: `${result.summary} It joins ${added} Channel${added === 1 ? '' : 's'}.`,
+    // A Channel kept for an Agent not in Slack yet is joined at the switch after an Owner's Allow.
+    summary: `${result.summary} It joins ${added} Channel${added === 1 ? '' : 's'}${waitingName ? ' once it is in Slack' : ''}.`,
     ...(notAdded.length ? { warnings: [...result.warnings ?? [], ...notAdded] } : {}),
-  }, added < input.channels.length));
+  }));
 }
 
 /**
  * Where each new Agent is its own Slack app, a new Agent is not in Slack
- * until an Owner adds it in Admin; the result says so. Nothing here starts an
- * app or touches the configuration token.
+ * until an Owner adds it in Admin: its name when so, for the result to say.
+ * Nothing here starts an app or touches the configuration token.
  */
 async function notInSlackYet(
   deps: FiveZeroDeps,
   context: ManagementActorContext,
   agentId: string,
-): Promise<(result: ChangeResult, channelsLeft?: boolean) => ChangeResult> {
+): Promise<string | undefined> {
   const { agent } = await deps.service.agentReader(context, agentId).catch(() => ({ agent: undefined }));
-  if (agent?.slackPresence?.errorCode !== AWAITING_OWN_APP) return (result) => result;
-  return (result, channelsLeft = false) => ({
-    ...result,
-    summary: `${result.summary} ${agent.name} isn't in Slack yet: a workspace Owner adds it to Slack in Chickpea Admin.`,
-    // From Slack the same request keeps the Channels waiting for the Owner; here they are not kept, so say so.
-    ...(channelsLeft
-      ? { warnings: [...result.warnings ?? [], `Ask to add ${agent.name} to its Channels again once a workspace Owner has added it to Slack.`] }
-      : {}),
-  });
+  return agent?.slackPresence?.errorCode === AWAITING_OWN_APP ? agent.name : undefined;
 }
 
 /** A new Agent's next part of the job, unless it is off: an Agent that is off answers no one, so its own next step stays. */

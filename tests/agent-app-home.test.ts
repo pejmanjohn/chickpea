@@ -38,7 +38,7 @@ const slack = {
 const transport: AgentAppTransport = {
   disableUserGroup: refuse('disableUserGroup'), enableUserGroup: refuse('enableUserGroup'),
   openDirectConversation: refuse('openDirectConversation'), postMessage: refuse('postMessage'),
-  lookupChannel: refuse('lookupChannel'), joinPublicChannel: refuse('joinPublicChannel'),
+  lookupChannel: refuse('lookupChannel'), joinPublicChannel: refuse('joinPublicChannel'), channelHasMember: refuse('channelHasMember'),
 };
 
 function presence(app?: AgentAppLifecycle): AgentSlackPresence {
@@ -74,6 +74,7 @@ async function service(
     env: ENV, stores: { config, settings: watched }, host: HOST, transport, slack, keyring, armSwitch: async () => undefined,
     now: () => options.now ?? NOW, publicOrigin: async () => { read('origin'); return 'https://core.test/'; },
     userGroupPermissionMissing: async () => { read('permission'); return options.permissionMissing ?? false; },
+    memberSlackUserId: async (id) => id,
   });
 }
 

@@ -203,12 +203,15 @@ export interface AgentAppSwitchReport {
   throughChickpea: readonly string[];
   /** Slack refused to turn the user group off, so it still answers too. */
   groupStillOn: boolean;
+  /** The Agent was not in Slack before its app: an add, not a move of a handle people already use. */
+  added: boolean;
 }
 
 const CHANNEL_ID = /^[CG][A-Z0-9]{2,}$/;
 
 /**
- * The Owner's one message once an Agent's handle has moved to its own app.
+ * The Owner's one message once an Agent is its own app: one added to Slack,
+ * or one whose handle moved there.
  * Channels are named with Slack's `<#C…>` reference, which Slack shows as the
  * Channel's name to anyone who can see it; everything else is escaped.
  */
@@ -218,7 +221,9 @@ export function agentAppSwitchedMessage(names: AgentAppNames, report: AgentAppSw
   const joined = channels(report.joined);
   const elsewhere = channels(report.throughChickpea);
   const text = [
-    escapeMrkdwn(`${name} is now its own Slack app. People keep using @${handle}.`),
+    escapeMrkdwn(report.added
+      ? `${name} is now in Slack as its own app. People can message it and mention @${handle}.`
+      : `${name} is now its own Slack app. People keep using @${handle}.`),
     ...(joined ? [`${escapeMrkdwn('It joined')} ${joined}.`] : []),
     ...(elsewhere ? [`In ${elsewhere} ${escapeMrkdwn('it keeps answering through Chickpea until someone there adds it.')}`] : []),
     ...(report.groupStillOn

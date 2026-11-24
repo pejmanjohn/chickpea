@@ -22,7 +22,6 @@ import {
   AgentPresenceError,
   agentOffError,
   classifyAgentPresenceError,
-  notInSlackYetError,
   restoreHandleRefusal,
 } from './errors.ts';
 import {
@@ -63,12 +62,6 @@ interface PublishAgentInput {
   channelId: string;
   actorMembershipId: string;
   actorSlackUserId: string;
-  /**
-   * For an Agent not in Slack yet: keep the Channel as a pending grant, which
-   * the switch after an Owner's Allow completes, instead of refusing the add.
-   * Only for a Channel asked for when the Agent was created.
-   */
-  keepPendingUntilInSlack?: true;
 }
 
 interface AgentPublicationResult {
@@ -307,15 +300,14 @@ async function repairMentionedAgentUserGroupOnce(
   }
 }
 
-/** The Agent's creator as a person in Slack, for the publish of a Channel they asked for; undefined when unknown. */
-export async function agentCreatorInSlack(
+/** An active member as a person in Slack, for the publish of a Channel they added; undefined when unknown. */
+export async function memberInSlack(
   identity: Pick<IdentityStore, 'getMembership' | 'getUser'>,
-  agent: Pick<CustomAgentConfig, 'creatorMembershipId'>,
+  membershipId: string,
 ): Promise<{ membershipId: string; slackUserId: string } | undefined> {
-  if (!agent.creatorMembershipId) return undefined;
-  const membership = await identity.getMembership(agent.creatorMembershipId);
+  const membership = await identity.getMembership(membershipId);
   const user = membership?.status === 'active' ? await identity.getUser(membership.userId) : undefined;
-  return user ? { membershipId: agent.creatorMembershipId, slackUserId: user.slackUserId } : undefined;
+  return user ? { membershipId, slackUserId: user.slackUserId } : undefined;
 }
 
 export class AgentPresenceReconciler {
@@ -332,12 +324,8 @@ export class AgentPresenceReconciler {
       throw new AgentPresenceError('slack_operation_failed', 'Archived Agents cannot be published.');
     }
     if (!agent.enabled) throw agentOffError(agent);
+    // Not in Slack yet: the Channel waits as a pending grant, which the switch after an Owner's Allow completes.
     const waitingForApp = await this.notInSlackYet(agent);
-    // Refused before anything is written: no handle exists that people in the Channel could use.
-    if (waitingForApp && !input.keepPendingUntilInSlack) {
-      if (agent.slackPresence?.errorCode !== AWAITING_OWN_APP) await this.retry(agent.id).catch(() => undefined);
-      throw notInSlackYetError(agent);
-    }
     if (waitingForApp) {
       // Nothing new is granted: the Channel already waits for this Agent's own app, under whoever first asked for it,
       // so a later edit or Retry by anyone leaves it as it is.
@@ -651,30 +639,32 @@ export class AgentPresenceReconciler {
 
   /**
    * A workspace back to one user group per Agent: give an Agent that waited
-   * for its own app its group, then finish each Channel its creator asked
-   * for at creation with the creator's own publish, as creation would have
-   * ended. A Channel whose publish fails stays pending with its own failure;
-   * the group stands.
+   * for its own app its group, then finish each Channel it was added to
+   * meanwhile with the publish of whoever added it, as the add would have
+   * ended in that mode. A Channel whose publish fails, or whose writer is no
+   * longer an active member, stays pending; the group stands.
    */
   async placeInSlack(
     agentId: string,
-    creator: { membershipId: string; slackUserId: string } | undefined,
+    writerInSlack: (membershipId: string) => Promise<{ membershipId: string; slackUserId: string } | undefined>,
   ): Promise<CustomAgentConfig> {
     let agent = await this.retry(agentId);
-    if (!creator || !agent.slackPresence?.userGroupId) return agent;
-    const asked = (await this.dependencies.config.listAgentChannelGrants()).filter((grant) =>
-      grant.agentId === agentId && grant.status === 'pending' && grant.createdByMembershipId === creator.membershipId);
-    for (const grant of asked) {
+    if (!agent.slackPresence?.userGroupId) return agent;
+    const waited = (await this.dependencies.config.listAgentChannelGrants()).filter((grant) =>
+      grant.agentId === agentId && grant.status === 'pending');
+    for (const grant of waited) {
       try {
+        const writer = await writerInSlack(grant.createdByMembershipId);
+        if (!writer) continue;
         agent = (await this.publish({
           workspaceId: grant.workspaceId,
           agentId,
           channelId: grant.channelId,
-          actorMembershipId: creator.membershipId,
-          actorSlackUserId: creator.slackUserId,
+          actorMembershipId: writer.membershipId,
+          actorSlackUserId: writer.slackUserId,
         })).agent;
       } catch {
-        // Recorded on the Agent and kept pending, as a failed add at creation is.
+        // Recorded on the Agent and kept pending, as a failed add is.
       }
     }
     return agent;

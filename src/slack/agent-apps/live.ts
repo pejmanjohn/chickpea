@@ -414,14 +414,18 @@ export async function liveAgentSlackApps(
     placeInSlack: async (agentId) => {
       const resolved = await credentials();
       const hooks = agentAppPresenceHooks(env, settings);
-      const { AgentPresenceReconciler, agentCreatorInSlack } = await import('../agent-presence/reconciler.ts');
+      const { AgentPresenceReconciler, memberInSlack } = await import('../agent-presence/reconciler.ts');
       const reconciler = new AgentPresenceReconciler({
         config,
         transport: createDirectSlackTransport(resolved.botToken ?? '', ownerUserGroupToken(resolved, settings)),
         announce: null,
         ...(hooks ? { agentApps: hooks } : {}),
       });
-      await reconciler.placeInSlack(agentId, await agentCreatorInSlack(identity, await config.getAgent(agentId)));
+      await reconciler.placeInSlack(agentId, (membershipId) => memberInSlack(identity, membershipId));
+    },
+    memberSlackUserId: async (membershipId) => {
+      const { memberInSlack } = await import('../agent-presence/reconciler.ts');
+      return (await memberInSlack(identity, membershipId))?.slackUserId;
     },
   });
 }
@@ -540,5 +544,6 @@ function mainBotTransport(
     postMessage: async (input) => (await bot()).postMessage(input),
     lookupChannel: async (channelId) => (await bot()).lookupChannel(channelId),
     joinPublicChannel: async (channelId) => (await bot()).joinPublicChannel(channelId),
+    channelHasMember: async (channelId, userId) => (await bot()).channelHasMember(channelId, userId),
   };
 }

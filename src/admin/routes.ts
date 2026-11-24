@@ -683,7 +683,7 @@ import {
   agentPresenceAnnouncements,
   type AgentPresenceAnnouncements,
 } from '../slack/agent-presence/announcements.ts';
-import { AgentPresenceReconciler, agentCreatorInSlack } from '../slack/agent-presence/reconciler.ts';
+import { AgentPresenceReconciler, memberInSlack } from '../slack/agent-presence/reconciler.ts';
 import {
   resolvePrivateAgentAudience,
   type PrivateAgentAudience,
@@ -2544,8 +2544,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         channelId: pendingGrant.channelId,
         actorMembershipId: actor.principal.membershipId,
         actorSlackUserId: actor.slackUserId,
-        // An add already pending stays so for an Agent not in Slack yet, until its own app is allowed.
-        keepPendingUntilInSlack: true,
       })).agent;
     }
     return updated;
@@ -11958,8 +11956,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const reconciler = presenceReconciler(c, transport, presenceAnnouncements(c, transport));
       // The mode is already `shared`, so each Agent's failure is recorded on it, for its Retry; the rest go on.
       for (const agentId of agentIds) {
-        const creator = await agentCreatorInSlack(identity(c), await store(c).getAgent(agentId)).catch(() => undefined);
-        await reconciler.placeInSlack(agentId, creator).catch(() => undefined);
+        await reconciler.placeInSlack(agentId, (membershipId) => memberInSlack(identity(c), membershipId)).catch(() => undefined);
       }
     },
     ...(options.agentSlackApps ? { service: options.agentSlackApps } : {}),

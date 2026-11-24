@@ -115,12 +115,14 @@ async function fixture(t: TestContext, options: { token?: boolean; placed?: stri
   const service = new AgentSlackApps({
     env: ENV, stores: { config, settings }, host: HOST, slack, keyring, now: () => NOW,
     publicOrigin: async () => options.adminUnknown ? undefined : ORIGIN, armSwitch: async () => undefined,
+    memberSlackUserId: async (id) => id,
     ...(options.placed ? { placeInSlack: async (agentId: string) => { options.placed!.push(agentId); } } : {}),
     transport: {
       disableUserGroup: async (id) => ({ id, name: 'x', handle: 'x', disabled: true }),
       enableUserGroup: async (id) => ({ id, name: 'x', handle: 'x', disabled: false }),
       lookupChannel: async () => { throw new Error('no Channels here'); },
       joinPublicChannel: async () => { throw new Error('no Channels here'); },
+      channelHasMember: async () => { throw new Error('no Channels here'); },
       openDirectConversation: async (user) => ({ id: `D_${user}`, private: true, member: true, archived: false }),
       postMessage: async (input) => {
         if (refusePosts.count > 0) { refusePosts.count -= 1; throw new SlackTransportError('chat.postMessage', 'ratelimited'); }
