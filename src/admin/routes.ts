@@ -693,7 +693,7 @@ import { ownerUserGroupToken, ownerUserGroupTokenWorks } from '../slack/user-gro
 import { createGatewaySlackTransport } from '../slack/transport/gateway.ts';
 import { GATEWAY_HTTP_SETTING, parseHttpDeliveryState } from '../slack/gateway/http-delivery.ts';
 import { createGatewayDeploymentClient, resolveChickpeaGatewayUrl } from '../slack/gateway/runtime.ts';
-import { cloudflareWorkerVersionId, stateStoreRunsThisVersion } from '../config/cloudflare-version.ts';
+import { cloudflareWorkerVersionId } from '../config/cloudflare-version.ts';
 import {
   GATEWAY_BINDING_SETTING,
   GATEWAY_CLAIM_SETTING,
@@ -11970,7 +11970,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         await placeInSlack({ reconciler, config: store(c), identity: identity(c) }, agentId).catch(() => undefined);
       }
     },
-    stateStoreCurrent: (c) => stateStoreRunsThisVersion(c.env),
     ...(options.agentSlackApps ? { service: options.agentSlackApps } : {}),
   }));
 

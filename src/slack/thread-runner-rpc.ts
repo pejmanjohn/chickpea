@@ -58,6 +58,12 @@ export interface ThreadRunnerTurnOps {
    * code update replaced its own version (see thread-runner-loop.ts).
    */
   servingVersion: [object, string | null];
+  /**
+   * Whether this store runs code that applies the workspace's Agent-apps mode
+   * (always true). A store on code from before the mode refuses the kind as
+   * unknown, so Admin holds turning the mode on until the store restarts.
+   */
+  knowsAgentAppsMode: [object, true];
   recordAttempt: [{ id: string; attempts: number }, null];
   recordPullRequest: [{ id: string; pullRequest: TurnPullRequestProgress }, TurnProgress | null];
   freezeRuntimePlan: [{ id: string; candidate: RuntimePlanV2 }, FrozenRuntimePlanDecision];

@@ -13,6 +13,7 @@ import { isOwnerSession } from '../../auth/permissions.ts';
 import type { AuthPrincipal } from '../../auth/types.ts';
 import { UnknownAgentError } from '../../config/errors.ts';
 import type { PlatformEnv } from '../../config/state-backend.ts';
+import { tagStateStub } from '../../config/state-rpc.ts';
 import type { AgentChannelGrant, CustomAgentConfig } from '../../config/types.ts';
 import type { IdentityStore } from '../../identity/types.ts';
 import { requestOrigin } from '../../http/request-origin.ts';
@@ -24,6 +25,22 @@ import { TOKEN_PAGE_PATH } from './pages.ts';
 import type { AgentSlackApps } from './service.ts';
 import { AGENT_SLACK_APPS_MODES, type AgentSlackAppsSetting } from './setting.ts';
 import { SlackUnavailable } from './slack-api.ts';
+
+/**
+ * Whether the installation's state store, which applies every change made
+ * through Chickpea in Slack, runs code that knows the mode. A deploy leaves it
+ * on the code before for minutes, and code from before the mode refuses the
+ * question; a store that cannot be asked counts as not yet. Node has no state
+ * store binding and one process.
+ */
+async function stateStoreKnowsMode(env: PlatformEnv | undefined): Promise<boolean> {
+  if (!env?.TAG_STATE) return true;
+  try {
+    return (await tagStateStub(env).threadRunnerTurn({ kind: 'knowsAgentAppsMode' })).ok;
+  } catch {
+    return false;
+  }
+}
 
 /** The workspace API's root; see `createAgentSlackAppAdminRoutes` for each route and its JSON. */
 const API = '/admin/api/slack-apps';
@@ -44,12 +61,6 @@ export interface AgentSlackAppAdminDeps {
    * recovery that names the cause, and the rest go on.
    */
   placeInSlack(c: Context, agentIds: readonly string[]): Promise<void>;
-  /**
-   * Whether the state store runs this request's code. It makes every Agent
-   * asked for in Slack, and a deploy leaves it on the code before for
-   * minutes, which may not know the mode at all.
-   */
-  stateStoreCurrent(c: Context): Promise<boolean>;
   /** Where each change is recorded as an audit event. */
   identity(c: Context): IdentityStore;
   /** Test seam: the service for an env; live stores and the main bot otherwise. */
@@ -103,7 +114,7 @@ type SlackAppsAuditAction =
  * - `PUT /admin/api/slack-apps/mode` `{ mode: 'shared' | 'own_app' }` → `{ setting }`; with `shared`, every such PUT
  *   also gives each Agent in Slack nowhere a user group and answers `{ setting, waiting: SlackAppsAgentRow[] }`, the
  *   Agents still not in Slack after it, so pressing again repairs a reconcile that stopped partway. Turning
- *   `own_app` on answers 503 `{ error: 'updating' }` while the state store still runs the code before a deploy.
+ *   `own_app` on answers 503 `{ error: 'updating' }` while the state store runs code from before the mode.
  * - `PUT /admin/api/slack-apps/token` `{ refreshToken }` → `{ token }`; 400 `{ error: 'not_refresh_token' | 'rejected' |
  *   'other_workspace' }`; 503 `{ error: 'slack_down' }`.
  * - `DELETE /admin/api/slack-apps/token` → `{ token: { stored: false }, removed: 'discarded' | 'unconfirmed' | 'none' }`.
@@ -171,8 +182,9 @@ export function createAgentSlackAppAdminRoutes(deps: AgentSlackAppAdminDeps): Ho
     if (!gated.ok) return gated.response;
     const parsed = v.safeParse(modeSchema, await readJson(c, MAX_BODY_BYTES));
     if (!parsed.success) return invalidRequest(c);
-    // Turned on while the store runs older code, the setting would promise what the next Agent made in Slack never gets.
-    if (parsed.output.mode === 'own_app' && (await gated.apps.setting()).mode !== 'own_app' && !await deps.stateStoreCurrent(c)) {
+    // Turned on while the store runs code without the mode, the setting would promise what the next Agent made in Slack never gets.
+    if (parsed.output.mode === 'own_app' && (await gated.apps.setting()).mode !== 'own_app'
+      && !await stateStoreKnowsMode(c.env as PlatformEnv | undefined)) {
       c.header('Retry-After', '60');
       return c.json({ error: 'updating' }, 503);
     }

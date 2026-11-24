@@ -384,11 +384,12 @@ test('an Owner turns the mode on and off; a bad mode, or the mode already stored
 });
 
 /**
- * A Cloudflare deployment serving Worker version `v2`, whose installation's
- * state store answers with the version it runs: `v1` until a deploy reaches
- * it, or nothing at all when its call fails.
+ * A Cloudflare deployment serving Worker version `v2`, and its installation's
+ * state store as old and new code answer: code that knows the mode says so,
+ * code from before it refuses the question as an unknown operation, as its
+ * `threadRunnerTurn` does, and a store that cannot be reached throws.
  */
-function deployedOn(store: { serving: string | Error }) {
+function deployedOn(store: { version: string; knowsMode: boolean | Error }) {
   const asked: string[] = [];
   const env = scopeInstallationEnv({
     CHICKPEA_TENANCY: 'installation',
@@ -397,8 +398,10 @@ function deployedOn(store: { serving: string | Error }) {
       getByName: (name: string) => ({
         threadRunnerTurn: async (op: { kind: string }) => {
           asked.push(`${name} ${op.kind}`);
-          if (store.serving instanceof Error) throw store.serving;
-          return { ok: true, value: store.serving };
+          if (store.knowsMode instanceof Error) throw store.knowsMode;
+          if (op.kind === 'servingVersion') return { ok: true, value: store.version };
+          if (op.kind === 'knowsAgentAppsMode' && store.knowsMode) return { ok: true, value: true };
+          return { ok: false, error: { code: 'internal', message: 'Unknown thread runner operation.' } };
         },
       }),
     },
@@ -406,8 +409,8 @@ function deployedOn(store: { serving: string | Error }) {
   return { env, asked };
 }
 
-test('each new Agent is not made its own Slack app while the state store that makes Agents in Slack runs the code before a deploy', async (t) => {
-  const store: { serving: string | Error } = { serving: 'v1' };
+test('each new Agent is not made its own Slack app while the state store that makes Agents in Slack runs code from before the setting', async (t) => {
+  const store: { version: string; knowsMode: boolean | Error } = { version: 'v1', knowsMode: false };
   const deployed = deployedOn(store);
   const owner = await adminApp(t, { env: deployed.env });
 
@@ -418,23 +421,35 @@ test('each new Agent is not made its own Slack app while the state store that ma
   assert.deepEqual(await early.json(), { error: 'updating' });
   assert.deepEqual(await readAgentSlackAppsSetting(owner.settings), { mode: 'shared' });
   assert.deepEqual(owner.audits(), []);
-  assert.ok(deployed.asked.length > 0 && deployed.asked.every((line) => line.includes('inst_a') && line.endsWith(' servingVersion')),
-    `the installation's own store is asked: ${deployed.asked.join(', ')}`);
+  assert.ok(deployed.asked.length === 1 && deployed.asked[0]!.includes('inst_a') && deployed.asked[0]!.endsWith(' knowsAgentAppsMode'),
+    `the installation's own store is asked whether it knows the setting: ${deployed.asked.join(', ')}`);
 
-  store.serving = new Error('TagStateStore does not implement threadRunnerTurn');
-  assert.equal((await owner.request(`${API}/mode`, owner.json('PUT', { mode: 'own_app' }))).status, 503, 'a store that cannot say is not taken as current');
+  store.knowsMode = new Error('Durable Object request timed out');
+  const unreachable = await owner.request(`${API}/mode`, owner.json('PUT', { mode: 'own_app' }));
+  assert.equal(unreachable.status, 503, 'a store that cannot be asked is not taken as knowing');
+  assert.deepEqual(await unreachable.json(), { error: 'updating' });
+  assert.deepEqual(await readAgentSlackAppsSetting(owner.settings), { mode: 'shared' });
 
-  store.serving = 'v2';
+  store.knowsMode = true;
   const on = await owner.request(`${API}/mode`, owner.json('PUT', { mode: 'own_app' }));
   assert.equal(on.status, 200);
   assert.deepEqual(await readAgentSlackAppsSetting(owner.settings), { mode: 'own_app', changedBy: OWNER, changedAt: NOW });
 
-  // The next deploy: a setting already on stays on, and turning it off is never held back.
-  store.serving = 'v1';
+  // Whatever the store runs, a setting already on stays on, and turning it off is never held back.
+  store.knowsMode = false;
   assert.equal((await owner.request(`${API}/mode`, owner.json('PUT', { mode: 'own_app' }))).status, 200);
   const off = await owner.request(`${API}/mode`, owner.json('PUT', { mode: 'shared' }));
   assert.equal(off.status, 200);
   assert.equal((await readAgentSlackAppsSetting(owner.settings)).mode, 'shared');
+});
+
+test('after a deploy that changed only the version, a state store that knows the setting lets an Owner turn it on at once', async (t) => {
+  const deployed = deployedOn({ version: 'v1', knowsMode: true });
+  const owner = await adminApp(t, { env: deployed.env });
+  const on = await owner.request(`${API}/mode`, owner.json('PUT', { mode: 'own_app' }));
+  assert.equal(on.status, 200);
+  assert.deepEqual(await readAgentSlackAppsSetting(owner.settings), { mode: 'own_app', changedBy: OWNER, changedAt: NOW });
+  assert.equal(owner.audits().length, 1);
 });
 
 test('setting the default mode on a workspace that never chose one stores nothing', async (t) => {
