@@ -25,6 +25,7 @@ import { REQUESTED_SLACK_BOT_SCOPES } from '../src/slack/scopes.ts';
 import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
 import { withEnv } from './helpers/env.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
+import { asUserGroup } from './helpers/user-group-presence.ts';
 
 /**
  * Slack keeps user-group handles unique, but not the bot names of Agents with
@@ -121,7 +122,7 @@ async function handleFixture(t: TestContext) {
   });
   await f.config.updateAgent(desk.id, {
     slackPresence: {
-      ...desk.slackPresence!, kind: 'user_group', requestedHandle: 'desk', normalizedHandle: 'desk',
+      ...asUserGroup(desk.slackPresence), requestedHandle: 'desk', normalizedHandle: 'desk',
       desiredState: 'active', health: 'healthy', userGroupId: 'S0DESK',
     },
   }, desk.revision);
@@ -288,7 +289,7 @@ test("an Agent in Slack that shared its handle with an app Agent before Chickpea
     });
     await f.config.updateAgent(created.id, {
       slackPresence: {
-        ...created.slackPresence!, kind: 'user_group', requestedHandle: 'support', normalizedHandle: 'support',
+        ...asUserGroup(created.slackPresence), requestedHandle: 'support', normalizedHandle: 'support',
         desiredState: 'active', health: 'healthy', userGroupId: 'S0SUPPORT',
       },
     }, created.revision);
