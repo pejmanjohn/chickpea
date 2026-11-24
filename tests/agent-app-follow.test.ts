@@ -355,15 +355,19 @@ test('an update Slack refuses needs attention with its own reason, is told once,
 });
 
 // Defect caught: Slack not answering recorded as done or as a refusal, so the app never catches up.
-test('Slack not answering throws for the job to retry, records nothing and tells no one', async (t) => {
+test('Slack not answering, or asking to wait, throws for the job to retry, records nothing and tells no one', async (t) => {
   const f = await fixture(t);
   const before = await followsOf(f);
   await save(f, { name: 'Helpdesk' });
   f.slack.unanswered = true;
   await assert.rejects(run(f), SlackUnavailable);
   assert.deepEqual(await followsOf(f), before);
-  assert.deepEqual(f.main.posted, []);
   f.slack.unanswered = false;
+  f.slack.refuseUpdate = new SlackRefused('apps.manifest.update', 'ratelimited');
+  await assert.rejects(run(f), SlackRefused, 'Slack asking to wait is retried too');
+  assert.deepEqual(await followsOf(f), before);
+  assert.deepEqual(f.main.posted, []);
+  f.slack.refuseUpdate = undefined;
   await run(f);
   assert.equal(f.slack.definitions.get(APP)?.display_information.name, 'Helpdesk');
 });
