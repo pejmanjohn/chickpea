@@ -737,6 +737,18 @@ test('after Allow, a private creator Channel is granted and named as answering t
   assert.equal(f.owner.texts.at(-1)!.includes('COLD'), false);
 });
 
+// Defects caught: a wait made active in a private Channel Chickpea's bot has since been removed from, where nothing
+// answers, with the Owner told the Agent answers through Chickpea there.
+test("after Allow, a creator's private Channel Chickpea's bot is no longer in stays waiting and is not named", async (t) => {
+  const f = await ownAppWorkspace(t);
+  await newbieAskingForSales(f, { private: true, members: [CREATOR_SLACK, 'UBOT'] });
+  f.slack.channel('CSALES', { private: true, members: [CREATOR_SLACK] });
+
+  await addToSlack(f.owner, 'agent_new');
+  assert.equal((await grantOf(f.owner, 'CSALES'))?.status, 'pending');
+  assert.equal(f.owner.texts.at(-1)!.includes('CSALES'), false);
+});
+
 // Defects caught: back to shared choosing Agents by a marker; the creator's Channel left pending for good; a reconcile
 // that stopped partway never repaired; the setting route answering nothing about who still waits.
 test('back to shared, each Agent in Slack nowhere gets a group and its creator’s Channel; apps and the token stay', async (t) => {

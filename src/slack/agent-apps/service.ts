@@ -879,11 +879,13 @@ export class AgentSlackApps {
     for (const grant of await config.listAgentChannelGrants()) {
       if (grant.agentId !== agent.id || grant.status !== 'pending' || grant.createdByMembershipId !== agent.creatorMembershipId) continue;
       const channel = await seenBy(this.deps.transport, grant.channelId);
-      if (channel?.archived) {
+      // Slack no longer shows Chickpea's bot the Channel (a private one it has left, or one deleted): the wait stays.
+      if (!channel) continue;
+      if (channel.archived) {
         await config.deleteAgentChannelGrant(grant.workspaceId, grant.channelId, agent.id);
         continue;
       }
-      if (channel && !channel.private && !channel.member) {
+      if (!channel.private && !channel.member) {
         try {
           await this.deps.transport.joinPublicChannel(grant.channelId);
         } catch (error) {
