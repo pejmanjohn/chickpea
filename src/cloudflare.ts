@@ -3840,6 +3840,7 @@ async function drainCloudflareManagementReceipts(
         resolveInstallation,
         agentPresence: async (agentId) => stores.config.listAgents().find(({ id }) => id === agentId)?.slackPresence,
         scheduleAction: (actionId) => appStores.routines.getScheduleAction(actionId),
+        agentAppBots: async () => stores.config.listAgentAppBots(),
         onDelivered: async (deliveredRecord, delivery) => {
           try {
             await completeAgentWelcomeDelivery(

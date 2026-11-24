@@ -2821,6 +2821,7 @@ async function finishSetup(
       agentPresence: async (agentId) =>
         (await dependencies.config.listAgents()).find(({ id }) => id === agentId)?.slackPresence,
       scheduleAction: (actionId) => getRoutineStore(dependencies.platformEnv).getScheduleAction(actionId),
+      agentAppBots: () => dependencies.config.listAgentAppBots(),
       onDelivered: (deliveredRecord, delivery) => completeAgentWelcomeDelivery(
         deliveredRecord,
         delivery,

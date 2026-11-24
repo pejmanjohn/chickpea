@@ -32,6 +32,9 @@ const MAX_CANVAS_MARKDOWN_CHARS = 100_000;
 export const CANVASES_NOT_IN_THIS_CONVERSATION =
   'Canvases are not available in this conversation. Nothing was read or changed. If the requester needs a canvas, suggest asking for it in a channel.';
 
+export const CANVASES_NOT_IN_THIS_CHANNEL =
+  'Canvases are not available in this conversation. Nothing was read or changed. If the requester needs a canvas, suggest adding Chickpea to this channel.';
+
 const text = (max: number) => v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(max));
 const markdown = v.pipe(v.string(), v.maxLength(MAX_CANVAS_MARKDOWN_CHARS), v.check((value) => value.trim().length > 0, 'Markdown is required.'));
 const canvasUrl = v.optional(text(2_048));
@@ -111,7 +114,9 @@ export async function slackCanvasService(
   const dm = signal.conversationKind === 'im';
   const ownBotRun = (dm || (agentSlackAppsHost() && agent.slackPresence?.kind === 'agent_app')) &&
     (await storedRunSpeaker(env, signal.turnJobId))?.kind === 'own_bot';
-  const notHere = () => new SlackCanvasError('not_in_this_conversation', CANVASES_NOT_IN_THIS_CONVERSATION);
+  const notHere = () => new SlackCanvasError('not_in_this_conversation', signal.conversationKind === 'channel'
+    ? CANVASES_NOT_IN_THIS_CHANNEL
+    : CANVASES_NOT_IN_THIS_CONVERSATION);
   if (ownBotRun && dm) throw notHere();
   const settings = getSettingsStore(env);
   const [installation, { SlackCanvasService, createSlackCanvasesCall }] = await Promise.all([

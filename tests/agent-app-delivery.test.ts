@@ -45,7 +45,7 @@ import { createAgentAppSlackApi } from '../src/slack/agent-apps/slack-api.ts';
 import { generateCredentialKeyring, loadCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { AGENT_ASK_PAUSE_TEXT, AGENT_ASK_TURN_LIMIT, createAgentAskCollector } from '../src/slack/agent-asks.ts';
 import { OPEN_AGENT_DM_ACTION_ID, START_AGENT_ACTION_ID } from '../src/slack/app-home.ts';
-import { CANVASES_NOT_IN_THIS_CONVERSATION, createSlackCanvasTools, slackCanvasService } from '../src/slack/canvases/tools.ts';
+import { CANVASES_NOT_IN_THIS_CHANNEL, CANVASES_NOT_IN_THIS_CONVERSATION, createSlackCanvasTools, slackCanvasService } from '../src/slack/canvases/tools.ts';
 import { createSlackChannel } from '../src/slack/channel-creation/runtime.ts';
 import { startSlackGroupDm } from '../src/slack/group-dm/runtime.ts';
 import { AGENT_CHANNEL_ADD_ACTION } from '../src/slack/agent-channel-offer.ts';
@@ -2623,24 +2623,52 @@ test("a schedule created, changed and run in an app Agent's own DM gets its reac
   assert.deepEqual((await h.stores.management.claimDueOutbox(Date.now() + 60_000, 10, Date.now() + 90_000)), [], 'every receipt was delivered');
 }));
 
-test("schedule receipts in a Channel or a DM Chickpea's bot is in come from Chickpea's bot as before; only a Channel or group DM it is not in gets the app's bot", async (t) => withHarness(t, async (h) => {
+test("schedule receipts come from the app's bot wherever it is, so the Agent's reply and its receipt have one sender; elsewhere from Chickpea's bot as before", async (t) => withHarness(t, async (h) => {
   const relay = await nodeRelay(h);
+  const places = [
+    ['C1', 'a Channel both bots are in', OWN_BOT],
+    ['CPRIV', "a private Channel only the app's bot is in", OWN_BOT],
+    ['C2', "a Channel only Chickpea's bot is in", AS_CHICKPEA],
+    ['G1', "a group DM only the app's bot is in", OWN_BOT],
+    ['G2', 'a group DM both bots are in', OWN_BOT],
+    ['G3', "a group DM only Chickpea's bot is in", AS_CHICKPEA],
+  ] as const;
+  for (const [index, [channelId]] of places.entries()) {
+    await scheduleAction(h, `ran_${channelId}`, channelId, `1900004710.00${index + 1}000`, RUN_FAILED);
+  }
   await scheduleAction(h, 'channel_changed', 'C1', '1900004710.000100', CHANGED, { pendingFirst: true });
   await scheduleAction(h, 'chickpea_dm_created', CHICKPEA_DM, '1900004710.000200', SAVED);
   await scheduleAction(h, 'finance_channel_ran', 'C1', '1900004710.000300', RUN_FAILED, { agentId: 'agent_finance' });
-  await scheduleAction(h, 'group_dm_ran', 'G1', '1900004710.000400', RUN_FAILED);
-  await scheduleAction(h, 'private_channel_ran', 'CPRIV', '1900004710.000500', RUN_FAILED);
   await relay.drain();
-  assert.deepEqual(scheduleReceipts(h, '1900004710.000100'), [['chat.postMessage', 'C1', AS_CHICKPEA], ['chat.postMessage', 'C1', AS_CHICKPEA]],
-    "a Channel both bots are in keeps Chickpea's bot");
+  for (const [index, [channelId, place, bot]] of places.entries()) {
+    assert.deepEqual(scheduleReceipts(h, `1900004710.00${index + 1}000`), [['chat.postMessage', channelId, bot]], place);
+  }
+  assert.deepEqual(scheduleReceipts(h, '1900004710.000100'), [['chat.postMessage', 'C1', OWN_BOT], ['chat.postMessage', 'C1', OWN_BOT]],
+    'a pending receipt and its outcome in a Channel both bots are in');
   assert.deepEqual(scheduleReceipts(h, '1900004710.000200'), [['reactions.add', CHICKPEA_DM, AS_CHICKPEA]], "Chickpea's own DM");
   assert.deepEqual(scheduleReceipts(h, '1900004710.000300'), [['chat.postMessage', 'C1', AS_CHICKPEA]], 'a user-group Agent');
-  assert.deepEqual(scheduleReceipts(h, '1900004710.000400'), [['chat.postMessage', 'G1', OWN_BOT]], 'a group DM only the app\'s bot is in');
-  assert.deepEqual(scheduleReceipts(h, '1900004710.000500'), [['chat.postMessage', 'CPRIV', OWN_BOT]], 'a private Channel only the app\'s bot is in');
   assert.deepEqual(personaOnAppToken(h), []);
-}, { privateChannels: ['CPRIV'], notMemberOf: { [MAIN_BOT]: ['G1', 'CPRIV'] } }));
+}, { privateChannels: ['CPRIV'], notMemberOf: { [MAIN_BOT]: ['G1', 'CPRIV'], [AGENT_BOT]: ['C2', 'G3'] } }));
 
-test("a user-group Agent's schedule receipt asks Slack nothing more, and without the port nothing is read for it", async (t) => withHarness(t, async (h) => {
+test("a schedule receipt in Chickpea's own DM is posted by Chickpea's bot when Slack refuses the Agent app's token for good", async (t) => withHarness(t, async (h) => {
+  const relay = await nodeRelay(h);
+  const actionId = await scheduleAction(h, 'revoked_dm_created', CHICKPEA_DM, '1900004715.000100', SAVED);
+  await relay.drain();
+  assert.deepEqual(scheduleReceipts(h, '1900004715.000100'), [['reactions.add', CHICKPEA_DM, AS_CHICKPEA]]);
+  assert.equal((await h.stores.management.getOutboxForOperation(actionId))?.status, 'delivered');
+}, { refuse: { [`conversations.open ${AGENT_BOT}`]: 'token_revoked' } }));
+
+test("a schedule receipt in a DM Slack does not place for a rate limit is retried and posts nothing meanwhile", async (t) => withHarness(t, async (h) => {
+  const relay = await nodeRelay(h);
+  const actionId = await scheduleAction(h, 'limited_dm_created', CHICKPEA_DM, '1900004716.000100', SAVED);
+  await relay.drain();
+  assert.deepEqual(scheduleReceipts(h, '1900004716.000100'), [], 'neither bot is tried');
+  const record = await h.stores.management.getOutboxForOperation(actionId);
+  assert.equal(record?.status, 'pending', 'it waits for its next attempt');
+  assert.equal(record?.attempts, 1);
+}, { rateLimited: [`conversations.open ${AGENT_BOT}`] }));
+
+test("a schedule receipt in a workspace with no Agent app reads only its app bots and asks Slack nothing more; without the port nothing is read", async (t) => withHarness(t, async (h) => {
   const env = withHostedSlackApp(h.base, MAIN_APP);
   const deliver = async (actionId: string, read: string[]) => {
     const record = await h.stores.management.getOutboxForOperation(actionId);
@@ -2650,19 +2678,22 @@ test("a user-group Agent's schedule receipt asks Slack nothing more, and without
       identity: h.stores.identity, env,
       agentPresence: async (id) => { read.push(`presence ${id}`); return (await h.stores.config.getAgent(id)).slackPresence; },
       scheduleAction: async (id) => { read.push(`action ${id}`); return h.stores.routines.getScheduleAction(id); },
+      agentAppBots: async () => { read.push('app bots'); return h.stores.config.listAgentAppBots(); },
     });
     return h.calls.slice(before).filter((call) => call.method !== 'auth.test').map((call) => `${call.method} ${call.token}`);
   };
+  const support = await h.stores.config.getAgent('agent_support');
+  await h.stores.config.updateAgent(support.id, { slackPresence: userAgent('agent_support', 'Support', 'support').slackPresence! }, support.revision);
   const read: string[] = [];
-  const finance = await scheduleAction(h, 'finance_dm_created', CHICKPEA_DM, '1900004720.000100', SAVED, { agentId: 'agent_finance' });
-  assert.deepEqual(await deliver(finance, read), [`reactions.add ${MAIN_BOT}`], 'the reaction alone');
-  const inChannel = await scheduleAction(h, 'finance_channel_failed', 'C1', '1900004720.000300', RUN_FAILED, { agentId: 'agent_finance' });
+  const inDm = await scheduleAction(h, 'support_dm_created', CHICKPEA_DM, '1900004720.000100', SAVED);
+  assert.deepEqual(await deliver(inDm, read), [`reactions.add ${MAIN_BOT}`], 'the reaction alone');
+  const inChannel = await scheduleAction(h, 'support_channel_failed', 'C1', '1900004720.000300', RUN_FAILED);
   assert.deepEqual(await deliver(inChannel, read), [`chat.postMessage ${MAIN_BOT}`], 'the post alone');
+  assert.deepEqual(read, ['app bots', 'app bots'], 'one small read for each receipt, and neither the action nor the Agent');
   configureAgentSlackApps(undefined);
   const unserved = await scheduleAction(h, 'support_dm_unserved', CHICKPEA_DM, '1900004720.000200', SAVED);
-  const before = read.length;
   assert.deepEqual(await deliver(unserved, read), [`reactions.add ${MAIN_BOT}`]);
-  assert.deepEqual(read.slice(before), [], 'neither the action nor the Agent is read');
+  assert.deepEqual(read.length, 2, 'without the port nothing is read');
 }));
 
 const FINANCE_NOT_IN_DM = "Finance can't reply in this direct message. Mention Finance in a channel instead.";
@@ -2780,11 +2811,13 @@ test("canvases say plainly they are not available in a private Channel or a grou
     const job = await appHeardTurn(h, channelId, ts);
     const signal = { ...signalOf(job), conversationKind: channelId.startsWith('G') ? 'mpim' as const : 'channel' as const };
     const before = h.calls.length;
+    // A Channel says to add Chickpea to it; a group DM keeps the sentence its DM has.
+    const message = channelId.startsWith('G') ? CANVASES_NOT_IN_THIS_CONVERSATION : CANVASES_NOT_IN_THIS_CHANNEL;
     const [read, create] = createSlackCanvasTools(() => slackCanvasService(plan, signal, env)) as unknown as Tool[];
     assert.deepEqual(JSON.parse(await read!.run({ data: {} })),
-      { status: 'not_read', code: 'not_in_this_conversation', message: CANVASES_NOT_IN_THIS_CONVERSATION }, channelId);
+      { status: 'not_read', code: 'not_in_this_conversation', message }, channelId);
     assert.deepEqual(JSON.parse(await create!.run({ data: { title: 'Refunds', markdown: '# Plan' }, toolCallId: `call_${channelId}` })),
-      { status: 'not_written', code: 'not_in_this_conversation', message: CANVASES_NOT_IN_THIS_CONVERSATION }, channelId);
+      { status: 'not_written', code: 'not_in_this_conversation', message }, channelId);
     const asked = h.calls.slice(before).filter((call) => !['auth.test', 'users.info'].includes(call.method));
     assert.ok(asked.every((call) => call.method === 'conversations.info' && call.token === MAIN_BOT),
       `${channelId}: only whether Chickpea's bot is there is asked, and nothing of the app's token`);

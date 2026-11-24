@@ -7,10 +7,10 @@ import { managedConnectorReadCopy } from '../connections/managed-copy.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import {
   resolveSlackInstallationExecutionContext,
-  type SlackInstallationExecutionContext,
   type SlackInstallationExecutionResolver,
 } from '../slack/installation-execution.ts';
-import { agentSlackAppsHost, hostPostSpeaker, installationBotIsIn, ownBotClient } from '../slack/agent-apps/index.ts';
+import { agentSlackAppsHost, hostPostSpeaker, ownBotClient } from '../slack/agent-apps/index.ts';
+import type { AgentAppBot } from '../slack/agent-app-bots.ts';
 import { renderSlackActionLink } from '../slack/message-format.ts';
 import type { SlackPresentationStatePort } from '../slack/agent-view-presentation.ts';
 import {
@@ -637,6 +637,8 @@ export async function deliverManagementReceiptToSlack(
     agentPresence?: (agentId: string) => Promise<AgentSlackPresence | undefined>;
     /** A schedule action's Agent and the person who asked, so its receipts come from the bot that can post where it was asked. */
     scheduleAction?: (actionId: string) => Promise<Pick<RoutineScheduleAction, 'agentId' | 'actorUserId'> | undefined>;
+    /** The workspace's Agent app bots, read before a schedule action so a workspace with none reads nothing more. */
+    agentAppBots?: () => Promise<readonly AgentAppBot[]>;
     onDelivered?: (
       record: ManagementReceiptOutboxRecord,
       delivery: {
@@ -662,7 +664,7 @@ export async function deliverManagementReceiptToSlack(
     if (execution.workspaceId !== destination.workspaceId) {
       throw new Error('Acknowledgement workspace does not match the Slack installation.');
     }
-    const client = await scheduleReceiptBot(record, input, execution, destination.channelId) ?? execution.client;
+    const client = await scheduleReceiptBot(record, input, execution.workspaceId, destination.channelId) ?? execution.client;
     try {
       const response = await client.reactions.add({
         channel: destination.channelId,
@@ -743,7 +745,7 @@ export async function deliverManagementReceiptToSlack(
           : {}),
       }))
     : undefined;
-  const client = ownBot ?? await scheduleReceiptBot(record, input, execution, channel) ?? execution.client;
+  const client = ownBot ?? await scheduleReceiptBot(record, input, workspaceId, channel) ?? execution.client;
   const baseMessage = {
     channel,
     ...(threadTs ? { thread_ts: threadTs } : {}),
@@ -822,28 +824,27 @@ export async function deliverManagementReceiptToSlack(
 }
 
 /**
- * The client of an Agent's own app for a schedule action's receipt where
- * Chickpea's bot cannot post and that app's bot can: the app's own DM with
- * the person who asked, or a Channel or group DM only its bot is in.
- * Undefined wherever Chickpea's bot is, for any other receipt, for an Agent
- * with no app, and without the port, which then reads nothing. The app's bot
- * posts with no persona; no schedule receipt carries one.
+ * The client of an Agent's own app for a schedule action's receipt wherever
+ * that app's bot speaks for the Agent: its own DM with the person who asked,
+ * or a Channel or group DM its bot is in. So the Agent's reply and the receipt
+ * beneath it have one sender. Undefined for any other receipt, for an Agent
+ * with no live app, and without the port. A workspace with no Agent app reads
+ * only its list of app bots. The app's bot posts with no persona; no schedule
+ * receipt carries one.
  */
 async function scheduleReceiptBot(
   record: ManagementReceiptOutboxRecord,
-  input: Pick<Parameters<typeof deliverManagementReceiptToSlack>[1], 'env' | 'identity' | 'agentPresence' | 'scheduleAction'>,
-  installation: SlackInstallationExecutionContext,
+  input: Pick<Parameters<typeof deliverManagementReceiptToSlack>[1], 'env' | 'identity' | 'agentPresence' | 'agentAppBots' | 'scheduleAction'>,
+  workspaceId: string,
   channelId: string,
 ): Promise<WebClient | undefined> {
   if (!isScheduleActionAcknowledgement(record.receipt) || !agentSlackAppsHost() || !input.scheduleAction) return undefined;
+  if (!(await input.agentAppBots?.())?.length) return undefined;
   const action = await input.scheduleAction(record.operationId);
   const presence = action && await input.agentPresence?.(action.agentId);
   if (!action || presence?.kind !== 'agent_app') return undefined;
-  const { workspaceId } = installation;
-  const dm = channelId.startsWith('D');
-  if (!dm && await installationBotIsIn(installation.client, channelId)) return undefined;
   // A DM is the app's own only when Slack names it as the app's DM with the person who asked.
-  const userId = dm
+  const userId = channelId.startsWith('D')
     ? (await input.identity.listExternalIdentities()).find((binding) =>
       binding.userId === action.actorUserId && binding.slackTeamId === workspaceId)?.slackUserId
     : undefined;
