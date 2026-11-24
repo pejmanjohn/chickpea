@@ -164,7 +164,7 @@ const OWNER_PRINCIPAL: AuthPrincipal = {
  * A workspace whose setting is on, with an Agent of each kind: not in Slack
  * yet, in a user group, waiting for Allow, stopped partway, and live.
  */
-async function fixture(t: TestContext, options: { mayCreateApps?: boolean } = { mayCreateApps: false }) {
+async function fixture(t: TestContext, options: { mayCreateApps?: boolean; now?: () => number } = { mayCreateApps: false }) {
   const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const host = hostWith(options.mayCreateApps);
@@ -194,7 +194,7 @@ async function fixture(t: TestContext, options: { mayCreateApps?: boolean } = { 
   const jobs: AgentAppSwitchJob[] = [];
   const placed: string[] = [];
   const service = new AgentSlackApps({
-    env: ENV, stores: { config, settings }, host, slack, keyring, now: () => NOW,
+    env: ENV, stores: { config, settings }, host, slack, keyring, now: options.now ?? (() => NOW),
     publicOrigin: async () => ORIGIN, armSwitch: async (job) => { jobs.push(job); },
     appBot: () => ({
       lookupChannel: async () => { throw new SlackTransportError('conversations.info', 'channel_not_found'); },
@@ -380,6 +380,18 @@ test('while paused, Cancel, removing the token, turning the setting off, Slack r
   const removed = await f.adminJson(`${API}/token`, 'DELETE');
   assert.equal(removed.status, 200);
   assert.equal((await removed.json() as { removed: string }).removed, 'discarded', 'and the token is removed');
+});
+
+// Defect caught: a pause that also stops the configuration token's rotation, so an archive or a Cancel after its access
+// token lapses leaves the app in Slack.
+test('while paused, an archive and a Cancel still rotate a lapsed configuration token to delete their apps', async (t) => {
+  const f = await fixture(t, { mayCreateApps: false, now: () => NOW + 13 * 3_600_000 });
+  assert.equal((await f.service.retire(await f.config.getAgent('agent_stuck'))).outcome, 'removed');
+  assert.deepEqual(f.slack.calls, ['tooling.tokens.rotate', 'apps.manifest.delete'], 'the archive rotates, then deletes');
+  f.slack.calls = [];
+  const cancelled = await f.service.cancel('agent_ready', OWNER);
+  assert.deepEqual([cancelled.kind, cancelled.kind === 'cancelled' && cancelled.app], ['cancelled', 'deleted']);
+  assert.deepEqual(f.slack.calls, ['tooling.tokens.rotate', 'apps.manifest.delete'], 'and so does the Cancel');
 });
 
 // Defects caught: a new Agent left out of Slack while nothing can add it; an Agent already waiting given a group the
