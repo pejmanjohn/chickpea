@@ -4757,6 +4757,34 @@ test('Agent editing no longer exposes a separate Slack identity control', async 
   assert.doesNotMatch(harness.app.innerHTML, /profile-slack-identity|Manage @Chickpea|Manage @Finance/);
 });
 
+// Defect caught: the Slack summary on the Agent page kept the handle from before a save until the page was reloaded.
+test("the Agent page's Slack summary names the handle a save gave the Agent", async () => {
+  const presence = { requestedHandle: 'release-profile', normalizedHandle: 'release-profile', desiredState: 'active', health: 'healthy', avatar: { kind: 'generated', revision: 1 } };
+  const agent = { ...releaseAgent, slackPresence: presence };
+  const harness = runAdminPageHarness({
+    agents: [agent],
+    agentPatchResponse: (body) => ({
+      ...agent,
+      ...(typeof body.name === 'string' ? { name: body.name } : {}),
+      revision: 2,
+      slackPresence: { ...presence, requestedHandle: body.handle, normalizedHandle: body.handle },
+    }),
+  });
+  await flushAsync();
+  const { click, input } = harness.listeners;
+  assert.ok(click && input);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': agent.id }) });
+  await flushAsync();
+  const summary = () => harness.app.innerHTML.match(/<summary class="agent-destination-summary"[\s\S]*?<\/summary>/)?.[0] ?? '';
+  assert.match(summary(), /@release-profile/);
+  input({ target: inputTarget({ 'data-action': 'profile-handle' }, 'release-help') });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(harness.agentPatchBodies[0]?.body.handle, 'release-help');
+  assert.match(summary(), /@release-help/);
+  assert.doesNotMatch(summary(), /@release-profile/);
+});
+
 test('Agent-owned presence removes wildcard identity preflight from profile saves', async () => {
   const harness = runAdminPageHarness({
     assignments: [

@@ -19615,7 +19615,8 @@
       loadSlackChannels(false);
     }
     render();
-    revalidateCurrentVisibleResources();
+    // A route change: a hidden or automation tab still loads what it shows, or Agents in Slack stays on "Loading…".
+    revalidateCurrentVisibleResources({ navigation: true });
   }
 
   function openDestinations() {
