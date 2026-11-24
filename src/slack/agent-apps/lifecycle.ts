@@ -97,6 +97,11 @@ export function pendingSwitchStep(app: AgentAppLifecycle): Exclude<AgentAppSwitc
   return app.state === 'active' && app.switchProgress && app.switchProgress !== 'done' ? app.switchProgress : undefined;
 }
 
+/** A start that stopped before Slack made any app: a Cancel withdraws it, with nothing in Slack to remove. */
+export function stoppedBeforeAnyApp(app: AgentAppLifecycle): app is Extract<AgentAppLifecycle, { state: 'needs_attention' }> {
+  return app.state === 'needs_attention' && app.resume === 'creating' && !app.app;
+}
+
 /**
  * A presence whose app Slack removed while the app held the handle, so the
  * group it released has not yet been turned back on: the driver's restore is
@@ -138,7 +143,8 @@ export function agentAppMoveJob(agentId: string, presence: AgentSlackPresence | 
  */
 export type AgentSlackState =
   | { state: 'user_group' | 'not_in_slack' | 'creating' | 'waiting_for_allow' | 'cancelling' | 'switching' | 'own_app' }
-  | { state: 'needs_attention'; reason: AgentAppAttention };
+  /** `cancellable` when the start stopped before Slack made any app, so Cancel withdraws it. */
+  | { state: 'needs_attention'; reason: AgentAppAttention; cancellable?: true };
 
 export function agentSlackState(presence: AgentSlackPresence): AgentSlackState {
   const app = appRecordOf(presence);
@@ -155,7 +161,9 @@ export function agentSlackState(presence: AgentSlackPresence): AgentSlackState {
     case 'needs_attention':
       // A Cancel's removal Slack refused to finish reads as the Cancel it is; the next Cancel or Start picks it up.
       if (app.resume === 'uninstalling' && presence.kind !== 'agent_app') return { state: 'cancelling' };
-      return { state: 'needs_attention', reason: app.reason };
+      return {
+        state: 'needs_attention', reason: app.reason, ...(presence.kind !== 'agent_app' && stoppedBeforeAnyApp(app) ? { cancellable: true as const } : {}),
+      };
     case 'uninstalling':
       // On a user group's presence this is a Cancel's removal, finished by the next Cancel or Start; the group answers
       // throughout. An archive's uninstall of a live app is passing.
@@ -308,8 +316,7 @@ export function transition(app: AgentAppLifecycle, event: AgentAppEvent): AgentA
       };
     }
     case 'cancel':
-      // A record that stopped before any app was made has nothing to remove in Slack.
-      if (app.state === 'needs_attention' && app.resume === 'creating' && !app.app) return WITHDRAWN;
+      if (stoppedBeforeAnyApp(app)) return WITHDRAWN;
       return app.state === 'awaiting_consent'
         ? {
             state: 'uninstalling',

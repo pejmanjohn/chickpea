@@ -70,6 +70,7 @@ import {
   pendingSwitchStep,
   placedNowhere,
   restorePending,
+  stoppedBeforeAnyApp,
   transition,
 } from './lifecycle.ts';
 import {
@@ -215,11 +216,6 @@ export type AgentAppPressOutcome =
   | { kind: 'not_eligible' };
 
 /**
- * An Owner's Cancel. `cancelled` says whether the app is deleted or was left
- * for the Owner to delete; `unfinished` is a removal Slack did not finish,
- * which the next Cancel or Start finishes.
- */
-/**
  * Where a run left the Agent; `withdrawn` when its create step withdrew the record: Slack would make no more apps, or
  * another Agent in Slack holds the handle.
  */
@@ -228,8 +224,14 @@ interface Advanced {
   withdrawn?: 'app_limit' | 'handle_taken';
 }
 
+/**
+ * An Owner's Cancel. `cancelled` says whether the app is deleted, was left
+ * for the Owner to delete (or may exist, after a create Slack never answered),
+ * or never existed; `unfinished` is a removal Slack did not finish, which the
+ * next Cancel or Start finishes.
+ */
 export type AgentAppCancelOutcome =
-  | { kind: 'cancelled'; agent: CustomAgentConfig; app: 'deleted' | 'left_for_owner' }
+  | { kind: 'cancelled'; agent: CustomAgentConfig; app: 'deleted' | 'left_for_owner' | 'none' }
   | { kind: 'unfinished'; agent: CustomAgentConfig }
   | { kind: 'not_waiting' }
   | { kind: 'not_eligible' };
@@ -476,7 +478,8 @@ export class AgentSlackApps {
       return handoffPage(await this.pageAgent(agent), 'creating', pressOnOpen);
     }
     if (app.state === 'active') return addedPage(await this.pageAgent(agent), await this.pageLinks(agent), 'already');
-    return handoffPage(await this.pageAgent(agent), app.state === 'awaiting_consent' ? 'opening' : 'creating', pressOnOpen);
+    // An app Slack already made (waiting for Allow, partway, or removed from the workspace) is not created again.
+    return handoffPage(await this.pageAgent(agent), agentAppRecord(app) ? 'opening' : 'creating', pressOnOpen);
   }
 
   /**
@@ -503,7 +506,8 @@ export class AgentSlackApps {
         return refused('still_creating', pressed.agent);
       case 'needs_attention': {
         const app = appRecordOf(pressed.agent.slackPresence);
-        return refused(app?.state === 'needs_attention' && app.reason === 'ambiguous_create' ? 'ambiguous_create' : 'slack_refused', pressed.agent);
+        const reason = app?.state === 'needs_attention' ? app.reason : undefined;
+        return refused(reason === 'ambiguous_create' || reason === 'create_refused' ? reason : 'not_finished', pressed.agent);
       }
       case 'cancelling':
         return refused('cancelling', pressed.agent);
@@ -522,7 +526,7 @@ export class AgentSlackApps {
   async addPressFailedPage(agentId: string): Promise<Response> {
     const agent = await this.knownAgent(agentId).catch(() => undefined);
     if (!agent) return notAddablePage(await this.pageLinks().catch(() => ({ admin: ADMIN_PATH })));
-    return addRefusedPage('slack_refused', await this.pageAgent(agent), await this.pageLinks(agent));
+    return addRefusedPage('not_finished', await this.pageAgent(agent), await this.pageLinks(agent));
   }
 
   /** Slack's authorize page for an app waiting for Allow, under a fresh nonce bound to this Owner; undefined for any other record. */
@@ -613,12 +617,15 @@ export class AgentSlackApps {
     } else if (app.state === 'needs_attention' && cancelPending(app)) {
       // Slack refused the uninstall last time: pick the removal up where it stopped.
       settled = (await this.tryAgain(agent, app, ownerSlackUserId)).agent;
-    } else if (app.state === 'needs_attention' && app.resume === 'creating' && !app.app) {
+    } else if (stoppedBeforeAnyApp(app)) {
       // Stopped before Slack made an app: nothing in Slack to remove, and the Agent is as it was before the press.
       const withdrawn = await this.commit(agent, { type: 'cancel', at: this.now(), hasBotToken: false });
       if (withdrawn.outcome !== 'withdrawn') return { kind: 'not_waiting' };
       await this.placeIfShared(withdrawn.agent);
-      settled = await this.deps.stores.config.getAgent(agentId);
+      // After a create Slack never answered, an app may exist that Chickpea has no record of: only the Owner can delete it.
+      return {
+        kind: 'cancelled', agent: await this.deps.stores.config.getAgent(agentId), app: app.reason === 'ambiguous_create' ? 'left_for_owner' : 'none',
+      };
     } else if (app.state === 'uninstalling') {
       settled = (await this.advance(agentId)).agent;
     } else {
@@ -1153,7 +1160,7 @@ export class AgentSlackApps {
     return {
       admin: `${origin}${ADMIN_PATH}`,
       tokenPage: `${origin}${TOKEN_PAGE_PATH}`,
-      ...(agent ? { allow: this.deps.host.allowUrl(agent.id), agentPage: `${origin}${ADMIN_PATH}/agents/${encodeURIComponent(agent.id)}` } : {}),
+      ...(agent ? { add: this.deps.host.addUrl(agent.id), agentPage: `${origin}${ADMIN_PATH}/agents/${encodeURIComponent(agent.id)}` } : {}),
       ...(live ? { openInSlack: slackAppRedirect(live, (await this.installation()).teamId) } : {}),
     };
   }
@@ -1193,7 +1200,9 @@ export class AgentSlackApps {
     create: async (run) => {
       if (!run.wroteCreating || run.app.state !== 'creating') return 'wait';
       const { startedBy } = run.app;
-      if (handleTakenAtCreate(await this.deps.stores.config.listAgents(), run.agent)) {
+      // Again just before Slack is asked: two Starts on two Agents can both pass the check at Start. Each run checks after
+      // its own `creating` write, so at least one of two sees the other; at the same instant both stop, never both go on.
+      if (handleHeldByAnother(await this.deps.stores.config.listAgents(), run.agent)) {
         return {
           event: { type: 'handle_taken', at: run.now },
           after: async () => {
@@ -1529,28 +1538,13 @@ function addable(agent: CustomAgentConfig): boolean {
   return agent.kind === 'user' && agent.lifecycle !== 'archived' && agent.lifecycle !== 'draft' && agent.slackPresence !== undefined;
 }
 
-/** Taking the handle at Start: another unarchived Agent in Slack holds it, an app record on its way counting as holding it. */
+/**
+ * Taking the handle, at Start and again in the create step: another unarchived Agent in Slack holds it, an app record
+ * on its way counting as holding it.
+ */
 function handleHeldByAnother(agents: readonly CustomAgentConfig[], agent: CustomAgentConfig): boolean {
   const handle = agent.slackPresence?.normalizedHandle;
   return handle !== undefined && handlesOtherAgentsHoldInSlack(agents, agent.id).has(handle);
-}
-
-/**
- * Taking the handle again just before Slack is asked to create, since two
- * Starts on two Agents can both pass the first check. A group, a live app or
- * a created app holds the handle; between two records that have not created
- * yet, the Agent with the smaller ID goes on, so exactly one of them does.
- */
-function handleTakenAtCreate(agents: readonly CustomAgentConfig[], agent: CustomAgentConfig): boolean {
-  const handle = agent.slackPresence?.normalizedHandle;
-  return agents.some((other) => {
-    const presence = other.slackPresence;
-    if (!presence || other.id === agent.id || other.lifecycle === 'archived' || presence.normalizedHandle !== handle) return false;
-    if (presence.kind === 'agent_app' || presence.userGroupId) return true;
-    const app = appRecordOf(presence);
-    if (!app) return false;
-    return agentAppRecord(app) !== undefined || other.id < agent.id;
-  });
 }
 
 function slackAppRedirect(appId: string, teamId: string): string {

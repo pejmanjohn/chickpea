@@ -128,7 +128,7 @@ const DM_COPY = {
   /** Another Agent in Slack holds the handle, so nothing was created. */
   handle_taken: {
     text: ({ name, handle }) =>
-      `Another Agent in Slack already uses @${handle}, so Chickpea didn't create ${name}'s app. Rename ${name} in Chickpea Admin, then add it again.`,
+      `Another Agent is using @${handle} in Slack, or is being added with it, so Chickpea didn't create ${name}'s app. Rename ${name} in Chickpea Admin, then add it again.`,
     buttons: (links) => openAdmin(links.adminUrl),
   },
   /** Removed, and its user group is back on. */

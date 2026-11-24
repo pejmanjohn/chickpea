@@ -529,7 +529,7 @@ test('the read lists each user Agent with its name, handle, avatar, Channels and
     agent_waiting: { state: 'waiting_for_allow' },
     agent_switching: { state: 'switching' },
     agent_own: { state: 'own_app' },
-    agent_attention: { state: 'needs_attention', reason: 'create_refused' },
+    agent_attention: { state: 'needs_attention', reason: 'create_refused', cancellable: true },
   });
   assert.match(byId.get('agent_new')!.avatarUrl!, /^http:\/\/localhost\/assets\/i\/inst_a\/agents\/agent_new\/avatar\/\d+$/,
     'a generated avatar is served by Admin itself');
@@ -599,7 +599,8 @@ test("Start with no token changes nothing; with one Slack refuses, the Agent's r
   assert.deepEqual(refusedPresence?.app && { state: refusedPresence.app.state, reason: 'reason' in refusedPresence.app ? refusedPresence.app.reason : undefined },
     { state: 'needs_attention', reason: 'config_token_needed' }, "a refused token is recorded on the Agent's record");
   const listed = await (await owner.request(API)).json() as { agents: Array<{ id: string; slack: unknown }> };
-  assert.deepEqual(listed.agents.find((row) => row.id === 'agent_support')?.slack, { state: 'needs_attention', reason: 'config_token_needed' });
+  assert.deepEqual(listed.agents.find((row) => row.id === 'agent_support')?.slack, { state: 'needs_attention', reason: 'config_token_needed', cancellable: true },
+    'no app was made, so Cancel is offered');
   assert.deepEqual(owner.calls, ['dm:UOWNER', 'post:D_UOWNER'], 'and the Owner is asked in Slack for a new token');
 
   owner.script.rotate = undefined;
@@ -624,6 +625,39 @@ test("Cancel deletes an app waiting for Allow and leaves the Agent's user group 
   assert.deepEqual(owner.script.deleted, ['A0APP1']);
   assert.deepEqual((await owner.config.getAgent('agent_support')).slackPresence, before);
   assert.equal(owner.calls.some((call) => call.startsWith('disable:') || call.startsWith('enable:')), false);
+});
+
+// Defects caught: a start that stopped before Slack made any app offered no Cancel; Cancel answering that an app was
+// deleted when none existed, or saying nothing when Slack may have made one Chickpea never heard of.
+test('Cancel withdraws a start that stopped before Slack made any app, and says no app existed or that one may', async (t) => {
+  const owner = await adminApp(t);
+  const cases = [
+    ['create_refused', 'none'], ['slack_busy', 'none'], ['config_token_needed', 'none'], ['ambiguous_create', 'left_for_owner'],
+  ] as const;
+  for (const [reason, app] of cases) {
+    const current = await owner.config.getAgent('agent_support');
+    await owner.config.updateAgent('agent_support', {
+      slackPresence: { ...group('support'), app: { state: 'needs_attention', at: NOW, startedBy: OWNER, reason, resume: 'creating' } },
+    }, current.revision);
+    const listed = await (await owner.request(API)).json() as { agents: Array<{ id: string; slack: unknown }> };
+    assert.deepEqual(listed.agents.find((row) => row.id === 'agent_support')?.slack, { state: 'needs_attention', reason, cancellable: true }, reason);
+    const cancelled = await owner.request(`${API}/agents/agent_support/cancel`, owner.json('POST', {}));
+    assert.equal(cancelled.status, 200, reason);
+    const body = await cancelled.json() as { agent: { slack: unknown }; app: string };
+    assert.equal(body.app, app, reason);
+    assert.deepEqual(body.agent.slack, { state: 'user_group' }, `${reason}: the group answers as before`);
+  }
+  assert.deepEqual(owner.script.deleted, [], 'nothing is deleted in Slack');
+  assert.equal(owner.audits().filter((audit) => audit.action === 'agent_apps.cancelled').map((audit) => audit.reasonCode).join(), 'none,none,none,left_for_owner');
+
+  // Once Slack has made the app, Cancel is not offered and is refused: that app is removed only from Allow.
+  const current = await owner.config.getAgent('agent_support');
+  await owner.config.updateAgent('agent_support', {
+    slackPresence: { ...group('support'), app: { state: 'needs_attention', at: NOW, startedBy: OWNER, reason: 'config_token_needed', resume: 'created', app: APP } },
+  }, current.revision);
+  const listed = await (await owner.request(API)).json() as { agents: Array<{ id: string; slack: unknown }> };
+  assert.deepEqual(listed.agents.find((row) => row.id === 'agent_support')?.slack, { state: 'needs_attention', reason: 'config_token_needed' });
+  assert.equal((await owner.request(`${API}/agents/agent_support/cancel`, owner.json('POST', {}))).status, 409);
 });
 
 const CREATOR = 'membership_ada';

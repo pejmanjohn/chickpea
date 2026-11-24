@@ -180,6 +180,9 @@ test('opening the hand-off page creates nothing, for an Owner, for anyone else, 
   const html = await page.text();
   assert.equal(headline(html), 'Adding Support to Slack');
   assert.match(html, /<form id="agent-app-press" method="post">/, 'the page presses by posting to its own address');
+  assert.match(html, /<div class="journey-later"><div class="auth-actions"><form id="agent-app-press"/,
+    "Continue shows only after a few seconds, so a click cannot cut the page's own press short");
+  assert.match(html, /\.journey-later\{animation:journey-reveal 0s 4s both\}@keyframes journey-reveal\{from\{visibility:hidden\}to\{visibility:visible\}\}/);
   const nonce = page.headers.get('content-security-policy')?.match(/'nonce-([a-f0-9]+)'/)?.[1];
   assert.ok(nonce && html.includes(`<script nonce="${nonce}">document.forms['agent-app-press'].submit();</script>`), 'and submits it by itself');
   assert.match(page.headers.get('content-security-policy') ?? '', /form-action 'self' https:\/\/slack\.com https:\/\/\*\.slack\.com;/,
@@ -193,6 +196,7 @@ test('opening the hand-off page creates nothing, for an Owner, for anyone else, 
   assert.equal(headline(refused), 'A workspace Owner adds Agents to Slack');
   assert.doesNotMatch(words(refused), /Support/, "anyone but an Owner learns nothing about the Agent");
   assert.doesNotMatch(refused, /<form/, 'and gets no press');
+  assert.doesNotMatch(refused, /<ol class="onboarding-orientation"/, 'a page about no Agent draws no step bar');
 
   configureAgentSlackApps(undefined);
   assert.equal((await f.request(`${ADD}/agent_support`)).status, 404, 'without the port the route does not exist');
@@ -210,6 +214,7 @@ test("the press is the Owner's: without the Owner hand-off, or from another site
   const page = await forged.text();
   assert.equal(headline(page), 'Adding Support to Slack', 'another site gets the page');
   assert.doesNotMatch(page, /<script nonce=/, 'which does not press by itself: only Continue does');
+  assert.doesNotMatch(page, /class="journey-later"/, 'so Continue shows at once');
   assert.doesNotMatch(forged.headers.get('content-security-policy') ?? '', /nonce/);
   assert.equal(appsMade(f), 0);
   assert.equal(await recordOf(f), undefined);
@@ -246,7 +251,8 @@ test('a press that stopped partway is finished by the next press, with one app',
   const stopped = await press(f);
   assert.equal(stopped.status, 502);
   const html = await stopped.text();
-  assert.equal(headline(html), "Slack didn't create Support's app");
+  assert.equal(headline(html), "Adding Support to Slack didn't finish", 'true whether or not Slack made the app: here it did');
+  assert.doesNotMatch(words(html), /allows new apps/, 'Slack did not refuse the create');
   assert.deepEqual(primary(html), { label: 'Try again', href: undefined }, 'Try again is the press again');
   assert.equal((await recordOf(f))?.state, 'icon_set', 'what was done is kept');
   assert.equal(appsMade(f), 1);
@@ -264,7 +270,7 @@ test("each press outcome that stops short of Slack's Allow renders its own page 
   const cases: Array<[string, (f: Fixture) => Promise<void>, number, string, string, string | undefined]> = [
     ['no token', async () => undefined, 409, 'Slack needs one token first', 'Add the token', `${ORIGIN}/admin/destinations/slack/connection/token`],
     ['limit', async (f) => { f.slack.refuseCreate = 'managed_app_limit_reached'; }, 409, "This workspace may have reached Slack's app limit", 'Open Your Apps in Slack', 'https://api.slack.com/apps'],
-    ['refused', async (f) => { f.slack.refuseCreate = 'invalid_manifest'; }, 502, "Slack didn't create Support's app", 'Try again', undefined],
+    ['refused', async (f) => { f.slack.refuseCreate = 'invalid_manifest'; }, 502, "Adding Support to Slack didn't finish", 'Try again', undefined],
     ['ambiguous', async (f) => { f.slack.ambiguousCreate = true; }, 409, "Slack may have created Support's app", 'Open Your Apps in Slack', 'https://api.slack.com/apps'],
   ];
   for (const [name, arrange, status, title, action, href] of cases) {
@@ -276,6 +282,7 @@ test("each press outcome that stops short of Slack's Allow renders its own page 
     assert.equal(headline(html), title, name);
     assert.deepEqual(primary(html), { label: action, href }, name);
     assert.equal(response.headers.get('content-type'), 'text/html; charset=utf-8', `${name}: a page, never JSON`);
+    if (name === 'refused') assert.match(words(html), /check that your workspace allows new apps/, 'only a refused create names the workspace setting');
   }
 });
 
@@ -322,34 +329,55 @@ test('Start refuses a handle another Agent in Slack holds, before anything is wr
   assert.equal((await f.service.start('agent_support', OWNER)).kind, 'handle_taken');
 });
 
-// Defects caught: two Starts on two Agents with one handle both passing the check at Start and both creating.
-test('two Starts on two Agents with one handle create one app: the create step checks again, and one goes on', async (t) => {
+const creatingRecord = (id: string) =>
+  ({ ...agentConfig(id, 'x', 'support').slackPresence!, app: { state: 'creating', at: NOW, startedBy: OWNER, manifestFingerprint: 'f' } }) as AgentSlackPresence;
+
+// Defects caught: two Starts on two Agents with one handle both passing the check at Start and both creating, in
+// either order or with one Agent's record written while the other's create is already with Slack.
+test('two Starts on two Agents with one handle make one app, in either order: the create step checks again', async (t) => {
+  for (const [first, second] of [['agent_zeta', 'agent_support'], ['agent_support', 'agent_zeta']] as const) {
+    const f = await fixture(t);
+    await f.config.createAgent(agentConfig('agent_zeta', 'Zeta', 'support'));
+    // Both pass the check at Start: each writes `creating` before the other's create runs.
+    await f.config.updateAgent('agent_support', { slackPresence: creatingRecord('agent_support') }, 1);
+    await f.config.updateAgent('agent_zeta', { slackPresence: creatingRecord('agent_zeta') }, 1);
+
+    const stopped = await f.service.advance(first, { wroteCreating: true });
+    const went = await f.service.advance(second, { wroteCreating: true });
+
+    assert.equal(appsMade(f), 1, `${first} first: one app`);
+    assert.equal(stopped.withdrawn, 'handle_taken', `${first} sees the other's record and stops, whichever ID is smaller`);
+    assert.equal(await recordOf(f, first), undefined, 'as it was before the press');
+    assert.equal(appRecordOf(went.agent.slackPresence)?.state, 'awaiting_consent');
+    const stoppedName = first === 'agent_zeta' ? 'Zeta' : 'Support';
+    assert.match(f.posted.map((message) => message.text).join('\n'),
+      new RegExp(`Another Agent is using @(?:\u2060)?support in Slack, or is being added with it, so Chickpea didn't create ${stoppedName}'s app`));
+    assert.equal((await press(f, first)).status, 409, 'and a press on it now finds the handle held');
+    assert.equal(appsMade(f), 1);
+  }
+});
+
+test("a Start whose record is written while another Agent's create is with Slack stops: one app, not two", async (t) => {
   const f = await fixture(t);
-  await f.config.createAgent(agentConfig('agent_zeta', 'Zeta', 'support'));
-  // Both pass the check at Start: each writes `creating` before the other's create runs.
-  const creating = (id: string) => ({ ...agentConfig(id, 'x', 'support').slackPresence!, app: { state: 'creating', at: NOW, startedBy: OWNER, manifestFingerprint: 'f' } }) as AgentSlackPresence;
-  await f.config.updateAgent('agent_support', { slackPresence: creating('agent_support') }, 1);
-  await f.config.updateAgent('agent_zeta', { slackPresence: creating('agent_zeta') }, 1);
+  const zetaCreated = await f.config.createAgent(agentConfig('agent_zeta', 'Zeta', 'support'));
+  // Support (the smaller ID) passed its check at Start before Zeta wrote anything, and writes `creating` only once
+  // Zeta's create step has checked and is asking Slack.
+  const create = f.slack.create.bind(f.slack);
+  let supportStopped: Awaited<ReturnType<AgentSlackApps['advance']>> | undefined;
+  f.slack.create = async (token, manifest) => {
+    if (manifest.display_information.name === 'Zeta' && !supportStopped) {
+      await f.config.updateAgent('agent_support', { slackPresence: creatingRecord('agent_support') }, 1);
+      supportStopped = await f.service.advance('agent_support', { wroteCreating: true });
+    }
+    return create(token, manifest);
+  };
+  await f.config.updateAgent('agent_zeta', { slackPresence: creatingRecord('agent_zeta') }, zetaCreated.revision);
+  const zeta = await f.service.advance('agent_zeta', { wroteCreating: true });
 
-  const later = await f.service.advance('agent_zeta', { wroteCreating: true });
-  const earlier = await f.service.advance('agent_support', { wroteCreating: true });
-
-  assert.equal(appsMade(f), 1, 'one app');
-  assert.equal(appRecordOf(earlier.agent.slackPresence)?.state, 'awaiting_consent', 'the smaller ID goes on');
-  assert.equal(appRecordOf(later.agent.slackPresence), undefined, 'the other is withdrawn, as it was before the press');
-  assert.deepEqual(later.withdrawn, 'handle_taken');
-  assert.match(f.posted.map((message) => message.text).join('\n'), /Another Agent in Slack already uses @(?:⁠)?support, so Chickpea didn't create Zeta's app/);
-
-  // Run in the other order, the same Agent wins.
-  const g = await fixture(t);
-  await g.config.createAgent(agentConfig('agent_zeta', 'Zeta', 'support'));
-  await g.config.updateAgent('agent_support', { slackPresence: creating('agent_support') }, 1);
-  await g.config.updateAgent('agent_zeta', { slackPresence: creating('agent_zeta') }, 1);
-  await g.service.advance('agent_support', { wroteCreating: true });
-  await g.service.advance('agent_zeta', { wroteCreating: true });
-  assert.equal(appsMade(g), 1);
-  assert.equal((await recordOf(g, 'agent_support'))?.state, 'awaiting_consent');
-  assert.equal(await recordOf(g, 'agent_zeta'), undefined);
+  assert.deepEqual(f.slack.created, ['Zeta'], 'one app');
+  assert.equal(supportStopped?.withdrawn, 'handle_taken', 'the later record sees the one already with Slack');
+  assert.equal(await recordOf(f, 'agent_support'), undefined);
+  assert.equal(appRecordOf(zeta.agent.slackPresence)?.state, 'awaiting_consent');
 });
 
 async function allowFrom(f: Fixture, state: string): Promise<Response> {
@@ -417,11 +445,20 @@ test('Cancel withdraws a start that stopped before any app was made, and back in
 
   const cancelled = await f.service.cancel('agent_support', OWNER);
 
-  assert.equal(cancelled.kind, 'cancelled');
+  assert.deepEqual(cancelled.kind === 'cancelled' && cancelled.app, 'none', 'Cancel says no app existed, never that one was deleted');
   assert.equal(await recordOf(f), undefined, 'the record is gone');
   assert.equal(appsMade(f), 0, 'nothing existed in Slack, so nothing was deleted there');
   assert.deepEqual(placed, ['agent_support'], 'it gets its user group, as every waiting Agent does in shared mode');
   assert.deepEqual(await f.service.cancel('agent_support', OWNER), { kind: 'not_waiting' });
+});
+
+test('Cancel after a create Slack never answered says an app may exist, for the Owner to delete', async (t) => {
+  const f = await fixture(t);
+  f.slack.ambiguousCreate = true;
+  assert.equal((await f.service.press('agent_support', OWNER, 'admin')).kind, 'needs_attention');
+  const cancelled = await f.service.cancel('agent_support', OWNER);
+  assert.deepEqual(cancelled.kind === 'cancelled' && cancelled.app, 'left_for_owner');
+  assert.equal(await recordOf(f), undefined);
 });
 
 test('Cancel of a start that stopped after Slack made an app is still refused: that app is removed only from Allow', async (t) => {
@@ -432,6 +469,30 @@ test('Cancel of a start that stopped after Slack made an app is still refused: t
   }, agent.revision);
   assert.deepEqual(await f.service.cancel('agent_support', OWNER), { kind: 'not_waiting' });
   assert.equal((await recordOf(f))?.state, 'needs_attention');
+});
+
+// Defects caught: Try again after Slack's permission screen leading to the Allow link, which answers the same expired
+// page when the record no longer waits for Allow (a start cancelled in Admin, then an old Slack tab).
+test("every Try again after Slack's permission screen goes to the hand-off page; another person and no Agent go to Admin", async (t) => {
+  const f = await fixture(t);
+  const opened = await f.service.press('agent_support', OWNER, 'slack');
+  const state = new URL(opened.kind === 'authorize' ? opened.url : '').searchParams.get('state')!;
+  const handoff = HOST.addUrl('agent_support');
+  for (const [name, pending, href] of [
+    ['cancelled', f.service.completeConsent(new URLSearchParams({ error: 'access_denied', state }), OWNER), handoff],
+    ['another', f.service.completeConsent(new URLSearchParams({ code: 'c', state }), 'UOTHER'), `${ORIGIN}/admin`],
+    ['unnamed', f.service.completeConsent(new URLSearchParams({ code: 'c', state: 'garbage' }), OWNER), `${ORIGIN}/admin`],
+  ] as const) {
+    const html = await (await pending).text();
+    assert.equal(primary(html)?.href, href, name);
+    if (name === 'unnamed') assert.doesNotMatch(html, /<ol class="onboarding-orientation"/, 'a page about no Agent draws no step bar');
+  }
+
+  assert.equal((await f.service.cancel('agent_support', OWNER)).kind, 'cancelled');
+  const expired = await (await allowFrom(f, state)).text();
+  assert.equal(headline(expired), 'That link expired');
+  assert.equal(primary(expired)?.href, handoff);
+  assert.equal(headline(await (await f.request(`${ADD}/agent_support`)).text()), 'Adding Support to Slack', 'where the press starts again');
 });
 
 // Defects caught: an Owner shown an internal ID, a code, a nonce or a Slack ID on a page meant only to say what to do.
@@ -492,6 +553,10 @@ test("a removed app is added back from the hand-off, whichever presence holds th
       app: { state: 'needs_attention', at: NOW, startedBy: OWNER, reason: 'app_removed', resume: 'icon_set', app: { appId: 'A0OLD', clientId: '7.c' }, icon: 'agent_avatar' },
     },
   }, agent.revision);
+
+  const page = words(await (await f.request(`${ADD}/agent_support`)).text());
+  assert.doesNotMatch(page, /Creating Support's Slack app/, 'the app exists, so the page does not say it is creating one');
+  assert.match(page, /Created Support's Slack app Opening Slack's permission screen…/);
 
   const response = await press(f);
 

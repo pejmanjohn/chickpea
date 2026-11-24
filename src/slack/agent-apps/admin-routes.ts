@@ -104,8 +104,10 @@ type SlackAppsAuditAction =
  *   `{ next: 'creating', agent }`; 409 `{ error: 'token_needed' | 'permission_needed' | 'app_limit' }` or
  *   `{ error: 'needs_attention' | 'already_own_app' | 'cancelling' | 'handle_taken', agent }`; 404. Slack's Allow then
  *   lands the Owner back on Admin's Slack connection section.
- * - `POST /admin/api/slack-apps/agents/:agentId/cancel` → `{ agent, app: 'deleted' | 'left_for_owner' }`; 409
- *   `{ error: 'not_waiting' }`; 503 `{ error: 'slack_unavailable' }`; 404.
+ * - `POST /admin/api/slack-apps/agents/:agentId/cancel` → `{ agent, app: 'deleted' | 'left_for_owner' | 'none' }`:
+ *   `none` when the start stopped before Slack made any app, `left_for_owner` too when one may exist after a create
+ *   Slack never answered; 409 `{ error: 'not_waiting' }`; 503 `{ error: 'slack_unavailable' }`; 404. A row whose start
+ *   stopped before any app reads `{ state: 'needs_attention', reason, cancellable: true }`.
  *
  * Each change is recorded as an audit event; a failed record is logged and never fails the request.
  */

@@ -16,15 +16,15 @@ export interface AgentAppPageLinks {
   /** Admin's home, or its Slack connection section. */
   admin: string;
   tokenPage?: string;
-  /** The Allow link: Slack's permission screen again, creating nothing. */
-  allow?: string;
+  /** The hand-off page: the press again, which picks the Agent's record up wherever it is. */
+  add?: string;
   /** The Agent's own app in Slack. */
   openInSlack?: string;
   /** The Agent's page in Admin, where it is renamed. */
   agentPage?: string;
 }
 
-/** Where an Owner is on the three steps: the step under way, 3 once all are done, or -1 where it is not known. */
+/** Where an Owner is on the three steps: the step under way, 3 once all are done, or -1 for a page about no Agent, which has no bar. */
 type Step = -1 | 0 | 1 | 2 | 3;
 
 interface Card {
@@ -55,13 +55,15 @@ function card(spec: Card): Response {
   const press = spec.pressNonce
     ? `<script nonce="${escapeHtml(spec.pressNonce)}">document.forms['agent-app-press'].submit();</script>`
     : '';
+  const actions = `${spec.actions ? `<div class="auth-actions">${spec.actions}</div>` : ''}${next}`;
   const html = renderSlackJourneyPage({
     surface: AGENT_SLACK_APP_SURFACE,
     title: spec.title,
-    progress: { steps: STEPS, current: spec.step },
+    ...(spec.step === -1 ? {} : { progress: { steps: STEPS, current: spec.step } }),
     ...(spec.agent ? { agent: { ...spec.agent, ...(spec.mark ? { mark: spec.mark } : {}) } } : {}),
     // The intro is in the body so its one strong word can be markup; it sits where the shell puts an intro.
-    body: `<p class="auth-intro">${strong(spec.intro)}</p>${lines}${spec.actions ? `<div class="auth-actions">${spec.actions}</div>` : ''}${next}${press}`,
+    // While the page presses by itself, Continue shows only after a few seconds, so a click cannot cut that press short.
+    body: `<p class="auth-intro">${strong(spec.intro)}</p>${lines}${press ? `<div class="journey-later">${actions}</div>` : actions}${press}`,
   });
   return new Response(html, { status: spec.status, headers: pageHeaders(spec.pressNonce) });
 }
@@ -135,7 +137,10 @@ export function handoffPage(agent: AgentAppPageAgent, stage: 'creating' | 'openi
 /** Why a press stopped short of Slack's permission screen. */
 export type AddRefusal =
   | 'token_needed'
-  | 'slack_refused'
+  /** Slack refused to create the app. */
+  | 'create_refused'
+  /** Stopped for any other reason, before or after Slack made the app. */
+  | 'not_finished'
   | 'ambiguous_create'
   | 'still_creating'
   | 'cancelling'
@@ -154,10 +159,13 @@ export function addRefusedPage(refusal: AddRefusal, agent: AgentAppPageAgent, li
         actions: link(links.tokenPage ?? links.admin, 'Add the token'),
         next: `After that, choose Add to Slack again. Chickpea creates ${name}'s app and opens Slack's permission screen.`,
       });
-    case 'slack_refused':
+    case 'create_refused':
+    case 'not_finished':
       return card({
-        status: 502, step: 1, agent, mark: 'warn', title: `Slack didn't create ${name}'s app`,
-        intro: 'Try again in a minute. If it keeps happening, check that your workspace allows new apps.',
+        status: 502, step: 1, agent, mark: 'warn', title: `Adding ${name} to Slack didn't finish`,
+        intro: refusal === 'create_refused'
+          ? 'Try again in a minute. If it keeps happening, check that your workspace allows new apps.'
+          : 'Try again in a minute.',
         actions: tryAgain,
         next: "Slack's permission screen opens. Choose **Allow**.",
       });
@@ -189,7 +197,7 @@ export function addRefusedPage(refusal: AddRefusal, agent: AgentAppPageAgent, li
     case 'handle_taken':
       return card({
         status: 409, step: 1, agent, mark: 'warn', title: `Another Agent uses @${handle}`,
-        intro: `An Agent already in Slack has the handle @${handle}. Rename ${name} in Chickpea Admin, then add it again.`,
+        intro: `Another Agent is using @${handle} in Slack, or is being added with it. Rename ${name} in Chickpea Admin, then add it again.`,
         actions: link(links.agentPage ?? links.admin, `Rename ${name}`),
       });
     case 'permission_needed':
@@ -284,8 +292,8 @@ export function consentPage(outcome: ConsentOutcome, agent: AgentAppPageAgent, l
   const [title, intro] = copy[outcome];
   return card({
     status, step: 2, agent, mark: 'warn', title, intro,
-    actions: links.allow ? link(links.allow, 'Try again', { slack: true }) : link(links.admin, 'Open Chickpea Admin'),
-    ...(links.allow ? { next: "Slack's permission screen opens. Choose **Allow**." } : {}),
+    actions: links.add ? link(links.add, 'Try again', { slack: true }) : link(links.admin, 'Open Chickpea Admin'),
+    ...(links.add ? { next: "Slack's permission screen opens. Choose **Allow**." } : {}),
   });
 }
 

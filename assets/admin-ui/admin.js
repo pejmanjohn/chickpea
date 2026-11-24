@@ -5445,6 +5445,8 @@
       var attention = slackAppsAttention(agent);
       sub = '<p class="slack-apps-row-note">' + esc(attention.text) + '</p>';
       actions = attention.actions.map(function (button) { return slackAppsButtonHtml(agent, button); }).join("");
+      // A start that stopped before Slack made any app can be withdrawn.
+      if (agent.slack.cancellable) actions += slackAppsButtonHtml(agent, { label: "Cancel", action: "slack-apps-cancel", link: true });
     } else if (stateName === "own_app") {
       actions = '<span class="slack-apps-own"><span class="dot"></span>Its own Slack app</span>';
     }
@@ -5737,7 +5739,7 @@
       case "app_limit":
         return { error: true, yourApps: true, text: slackAppsWorkspaceName() + " has reached Slack's limit on apps, so " + agent.name + " stays as it is. Delete an app you no longer need in Your Apps in Slack, then try again." };
       case "handle_taken":
-        return { error: true, text: "Another Agent in Slack already uses @" + agent.handle + ". Rename " + agent.name + ", then try again." };
+        return { error: true, text: "Another Agent is using @" + agent.handle + " in Slack, or is being added with it. Rename " + agent.name + ", then try again." };
       case "not_found":
         return { error: true, text: "Chickpea couldn't find this Agent. Reload the page." };
       default:
@@ -5801,6 +5803,8 @@
   function cancelSlackApp(agentId) {
     var apps = slackAppsState();
     if (!agentId || apps.rowBusy || apps.busy) return;
+    var before = slackAppsRow(agentId);
+    var unanswered = !!(before && before.slack && before.slack.reason === "ambiguous_create");
     apps.rowBusy = agentId;
     apps.rowNotes = {};
     render();
@@ -5813,7 +5817,9 @@
       replaceSlackAppsRow(body && body.agent);
       if (body && body.app === "left_for_owner") {
         var name = slackAppsRow(agentId).name;
-        apps.rowNotes[agentId] = { yourApps: true, text: "Chickpea couldn't delete the Slack app it made for " + name + ", so delete " + name + " in Your Apps in Slack. " + name + " keeps answering as it did before." };
+        apps.rowNotes[agentId] = unanswered
+          ? { yourApps: true, text: "Slack may have made an app for " + name + " before Chickpea stopped. If you see one in Your Apps in Slack that you don't use, delete it." }
+          : { yourApps: true, text: "Chickpea couldn't delete the Slack app it made for " + name + ", so delete " + name + " in Your Apps in Slack. " + name + " keeps answering as it did before." };
       }
       render();
     }).catch(function (error) {
