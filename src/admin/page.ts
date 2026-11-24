@@ -117,8 +117,11 @@ export function adminUiConfig(input: {
   };
 }
 
+/** A step in a journey page's bar: onboarding's own steps, or a journey's labels. */
+type JourneyStep = Pick<OnboardingStep, 'label' | 'note'> & { id?: OnboardingStepId };
+
 /** The same step bar Admin's script paints, so the server's first paint already shows every step. */
-function onboardingOrientationHtml(steps: readonly OnboardingStep[], current: number, githubDone: boolean): string {
+function onboardingOrientationHtml(steps: readonly JourneyStep[], current: number, githubDone: boolean): string {
   const items = steps.map((step, index) => {
     const done = index < current || (githubDone && step.id === 'github');
     const active = !done && index === current;
@@ -127,7 +130,7 @@ function onboardingOrientationHtml(steps: readonly OnboardingStep[], current: nu
   return `<ol class="onboarding-orientation" role="list" aria-label="Onboarding progress">${items}</ol>`;
 }
 
-function onboardingStepText(step: OnboardingStep, done: boolean): string {
+function onboardingStepText(step: JourneyStep, done: boolean): string {
   const note = done ? 'Done' : step.note;
   return `<span class="onboarding-step-label">${escapeHtml(step.label)}</span>${note ? `<span class="onboarding-step-note">${escapeHtml(note)}</span>` : ''}`;
 }
@@ -263,7 +266,7 @@ interface SlackAuthWorkspace {
  */
 export function renderSlackJourneyPage(input: {
   surface: string;
-  eyebrow: string;
+  eyebrow?: string;
   title: string;
   intro?: string;
   titleSuccess?: boolean;
@@ -272,8 +275,13 @@ export function renderSlackJourneyPage(input: {
   body: string;
   alert?: string | undefined;
   rootAttributes?: string;
-  /** The onboarding step bar, under the brand row; steps before `current` show as done. */
-  progress?: { steps: readonly OnboardingStep[]; current: OnboardingStepId } | undefined;
+  /**
+   * The step bar, under the brand row; steps before `current` show as done.
+   * `current` is a step's ID, or an index, where the steps' length shows every step done.
+   */
+  progress?: { steps: readonly JourneyStep[]; current: OnboardingStepId | number } | undefined;
+  /** The Agent a page is about: its avatar, name and handle above the title, with a small mark of where it stands. */
+  agent?: SlackJourneyAgent | undefined;
   /** A success card above the eyebrow, such as the Slack workspace a person signed in to. */
   badge?: string | undefined;
   /**
@@ -287,7 +295,11 @@ export function renderSlackJourneyPage(input: {
 }): string {
   const bar = input.progress;
   const progress = bar
-    ? onboardingOrientationHtml(bar.steps, bar.steps.findIndex((step) => step.id === bar.current), false)
+    ? onboardingOrientationHtml(
+      bar.steps,
+      typeof bar.current === 'number' ? bar.current : bar.steps.findIndex((step) => step.id === bar.current),
+      false,
+    )
     : '';
   const badgeText = input.badge?.trim();
   const badge = badgeText ? slackJourneyBadgeHtml(badgeText, input.badgeAction) : '';
@@ -305,7 +317,9 @@ export function renderSlackJourneyPage(input: {
   const intro = input.intro
     ? `<p class="auth-intro">${escapeHtml(input.intro)}</p>`
     : '';
-  const content = `<p class="auth-eyebrow">${escapeHtml(input.eyebrow)}</p>${title}${intro}${alert}${status}${input.body}`;
+  const eyebrow = input.eyebrow === undefined ? '' : `<p class="auth-eyebrow">${escapeHtml(input.eyebrow)}</p>`;
+  const agent = input.agent ? slackJourneyAgentHtml(input.agent) : '';
+  const content = `${eyebrow}${agent}${title}${intro}${alert}${status}${input.body}`;
   const page = input.scene
     ? `<body class="auth-scened"><div class="auth-split"><div class="auth-split-brand">${AUTH_BRAND_HTML}</div>${onboardingSceneHtml(input.scene)}<main class="auth-card" aria-labelledby="auth-title">${progress}<div class="auth-body">${badge}${content}</div></main></div></body>`
     : `<body><main class="auth-card" aria-labelledby="auth-title">${AUTH_BRAND_HTML}${progress}${badge}${content}</main></body>`;
@@ -317,8 +331,44 @@ ${JOURNEY_FONT_FACES_CSS}
 :root{${CHICKPEA_WORDMARK_CSS}}
 :root{--canvas:#f4ebd8;--card:#fffdf6;--well:#f8f1df;--ink:#3b3220;--muted:#6b5c42;--gold:#dda033;--gold-press:#b27e1f;--line:rgba(59,50,32,.16);--danger:#a83f34;--focus:#b05415;--success:#4f8a3f}*{box-sizing:border-box}html{color-scheme:light}body{margin:0;min-height:100dvh;display:grid;place-items:center;background:var(--canvas);color:var(--ink);font-family:Quicksand,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-weight:500;padding:clamp(12px,4vw,32px);overflow-wrap:anywhere}.auth-card{width:min(600px,100%);background:var(--card);border:1px solid var(--line);border-radius:22px;padding:clamp(22px,6vw,46px);box-shadow:0 14px 38px rgba(59,50,32,.1)}.auth-brand{display:flex;align-items:center;gap:10px;margin-bottom:30px}.auth-brand-mark{width:42px;height:42px;display:block}.auth-brand-name{font-weight:850;font-size:1.15rem}.auth-eyebrow{margin:0;color:var(--muted);font-size:.76rem;font-weight:850;letter-spacing:.09em;text-transform:uppercase}.auth-title-line{align-items:center;display:flex;gap:13px;margin:8px 0 10px}.auth-title{margin:8px 0 10px;font-family:"Baloo 2",Quicksand,system-ui,sans-serif;font-size:clamp(1.85rem,7vw,2.8rem);font-weight:800;line-height:1.02;letter-spacing:-.01em;text-wrap:balance}.auth-title-line .auth-title{margin:0}.auth-title-success{align-items:center;background:var(--success);border-radius:50%;color:#fff;display:inline-flex;flex:0 0 auto;font-size:1.15rem;font-weight:850;height:36px;justify-content:center;width:36px}.auth-intro,.auth-status,.auth-help{color:var(--muted);line-height:1.55}.auth-help a:not(.auth-link){color:#8a6410}.auth-status{min-height:1.5em;margin:14px 0}.auth-alert{margin:18px 0;border-left:4px solid var(--danger);border-radius:8px;background:#fff3ee;color:var(--danger);padding:12px 14px;font-weight:750;line-height:1.45}.auth-section{margin-top:24px;padding:20px;border:1px solid var(--line);border-radius:15px;background:var(--well)}.auth-section h2{margin:0 0 8px;font-size:1.08rem}label{display:block;margin:17px 0 6px;font-weight:750}label span{display:block;margin-top:2px;color:var(--muted);font-size:.78rem;font-weight:500}input,textarea{width:100%;min-height:46px;border:1px solid var(--line);border-radius:11px;background:#fff;color:var(--ink);padding:11px 12px;font:inherit}textarea{min-height:220px;resize:vertical}details{margin-top:20px;border-top:1px solid var(--line);padding-top:17px}summary{cursor:pointer;font-weight:800}.auth-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:22px}.auth-button,.auth-link{display:inline-flex;align-items:center;justify-content:center;min-height:48px;border:0;border-radius:12px;padding:11px 17px;background:var(--gold);box-shadow:0 3px 0 var(--gold-press);color:var(--ink);font:inherit;font-weight:850;text-decoration:none;cursor:pointer}.auth-button{width:100%}.slack-provider-button{gap:12px;background:#fff;border:1px solid var(--line);box-shadow:0 1px 2px rgba(45,44,47,.04);color:#2d2c2f;font-weight:750}.slack-provider-button:hover{background:#fbfbfb;border-color:rgba(59,50,32,.32);box-shadow:0 2px 7px rgba(45,44,47,.09)}.slack-provider-logo{width:24px;height:24px}.slack-provider-button.auth-primary{background:var(--gold);border:0;box-shadow:0 3px 0 var(--gold-press);color:var(--ink);font-weight:700}.slack-provider-button.auth-primary:hover{background:#e5ac44}.auth-primary .slack-provider-logo{background-color:#fff;background-size:22px;border-radius:10px;box-shadow:0 1px 0 rgba(0,0,0,.08);height:34px;margin-left:-8px;width:34px}.auth-button.secondary,.auth-link.secondary{background:transparent;border:1px solid var(--line);box-shadow:none}.auth-button:active,.auth-link:active{transform:translateY(2px);box-shadow:none}input:focus-visible,textarea:focus-visible,summary:focus-visible,.auth-alert:focus-visible{outline:3px solid color-mix(in srgb,var(--focus) 48%,transparent);outline-offset:3px}.auth-button:focus-visible,.auth-link:focus-visible{outline:2px solid var(--gold-press);outline-offset:0}.slack-provider-button:focus-visible{outline:2px solid #656468;outline-offset:0}.auth-warning{margin-top:22px;border:1px solid rgba(168,63,52,.25);border-radius:13px;background:#fff3ee;padding:15px}.auth-warning strong{display:block;margin-bottom:5px}.auth-meta{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.83rem}.auth-manifest{max-height:280px;overflow:auto;white-space:pre-wrap;font-size:.75rem}.slack-logo-image{background:url("${SLACK_LOGO_DATA_URL}") center/contain no-repeat;display:inline-block}.setup-token-callout{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:14px;align-items:center;margin:22px 0;padding:15px 17px;border-left:3px solid var(--gold-press);border-radius:12px;background:var(--well)}.setup-token-callout strong{display:block;margin-bottom:3px}.setup-token-callout p{margin:0;color:var(--muted);font-size:.86rem;line-height:1.45}.setup-slack-link{display:inline-flex;align-items:center;gap:8px;min-height:44px;padding:9px 13px;border:1px solid var(--line);border-radius:11px;background:var(--card);color:var(--ink);font-weight:800;text-decoration:none;white-space:nowrap}.setup-slack-logo{width:22px;height:22px}.setup-token-note{display:flex;gap:8px;align-items:flex-start;margin:13px 0 0;color:var(--muted);font-size:.8rem;line-height:1.45}.setup-manual-choice p{margin-bottom:14px}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-card,html[data-slack-auth-surface="owner-complete"] .auth-card{padding-block:56px}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-brand,html[data-slack-auth-surface="owner-complete"] .auth-brand{margin-bottom:38px}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-title,html[data-slack-auth-surface="owner-complete"] .auth-title{margin:14px 0 0}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-title-line{margin:14px 0 0}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-title-line .auth-title{margin:0}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-intro{margin:18px 0 0}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-intro+form{margin-top:28px}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] form+details{margin-top:30px}html[data-slack-auth-surface="owner-complete"] .auth-actions{margin-top:32px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}@media(max-width:440px){body{padding:8px}.auth-card{border-radius:14px;padding:21px 16px}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-card,html[data-slack-auth-surface="owner-complete"] .auth-card{padding-block:32px}.auth-actions{display:grid}.auth-link,.auth-button{width:100%}.auth-section{padding:16px 13px}.setup-token-callout{grid-template-columns:1fr}.setup-slack-link{width:100%;justify-content:center}}
 .brand-wordmark{aspect-ratio:2106/518;background-color:currentColor;display:block;flex:0 0 auto;height:36px;-webkit-print-color-adjust:exact;print-color-adjust:exact;-webkit-mask:var(--chickpea-wordmark-image) center/contain no-repeat;mask:var(--chickpea-wordmark-image) center/contain no-repeat}@media(forced-colors:active){.brand-wordmark{background-color:CanvasText;forced-color-adjust:none}}
-${progress || input.scene ? ONBOARDING_SCENE_CSS : ''}${progress ? SLACK_JOURNEY_PROGRESS_CSS : ''}${badge ? SLACK_JOURNEY_BADGE_CSS : ''}${input.scene ? SLACK_JOURNEY_SCENE_CSS : ''}</style></head>${page}</html>`;
+${progress || input.scene ? ONBOARDING_SCENE_CSS : ''}${progress ? SLACK_JOURNEY_PROGRESS_CSS : ''}${badge ? SLACK_JOURNEY_BADGE_CSS : ''}${input.scene ? SLACK_JOURNEY_SCENE_CSS : ''}${input.surface === AGENT_SLACK_APP_SURFACE ? AGENT_SLACK_APP_CSS : ''}</style></head>${page}</html>`;
 }
+
+/** The journey surface of an Agent's own Slack app; only its pages get the styles below. */
+export const AGENT_SLACK_APP_SURFACE = 'agent-slack-app';
+
+export interface SlackJourneyAgent {
+  name: string;
+  handle: string;
+  /** A missing avatar shows the name's first letter. */
+  avatarUrl?: string | undefined;
+  mark?: 'wait' | 'warn' | 'ok' | undefined;
+}
+
+function slackJourneyAgentHtml(agent: SlackJourneyAgent): string {
+  const initial = escapeHtml([...agent.name.trim()][0]?.toUpperCase() ?? '?');
+  const image = agent.avatarUrl
+    ? `<img src="${escapeHtml(agent.avatarUrl)}" alt="" width="48" height="48">`
+    : `<span class="journey-agent-initial">${initial}</span>`;
+  const mark = agent.mark
+    ? `<span class="journey-agent-mark journey-agent-mark-${agent.mark}" aria-hidden="true">${agent.mark === 'ok' ? '&#10003;' : agent.mark === 'warn' ? '!' : ''}</span>`
+    : '';
+  return `<div class="journey-agent"><span class="journey-agent-avatar">${image}${mark}</span><span class="journey-agent-names"><span class="journey-agent-name">${escapeHtml(agent.name)}</span><span class="journey-agent-handle">@${escapeHtml(agent.handle)}</span></span></div>`;
+}
+
+// An Agent app page: a smaller title, a button sized to its label on a wide
+// screen, the Agent's row, the status lines of a hand-off and the line under
+// the actions that says what happens next.
+const AGENT_SLACK_APP_CSS = '.auth-card{width:min(560px,100%)}.auth-brand{margin-bottom:26px}.auth-brand-mark{height:34px;width:34px}.auth-brand .brand-wordmark{height:27px}.onboarding-orientation{margin:0 0 28px}.auth-title{font-size:clamp(1.75rem,5.2vw,2.2rem);line-height:1.08;margin:0 0 10px}.auth-intro{font-size:1.0625rem;margin:0}.auth-intro strong{color:var(--ink);font-weight:700}' +
+  '.auth-actions{align-items:center;gap:12px 20px;margin-top:26px}.auth-actions form{margin:0}.auth-button,.auth-link{width:auto;gap:10px}.auth-text-link{background:none;border:0;color:#8a6410;cursor:pointer;font:inherit;font-weight:700;padding:0;text-decoration:underline;text-underline-offset:3px}' +
+  '.auth-button .slack-provider-logo,.auth-link .slack-provider-logo{background-color:#fff;background-size:20px;border-radius:9px;box-shadow:0 1px 0 rgba(0,0,0,.08);flex:none;height:30px;margin-left:-6px;width:30px}' +
+  '.journey-agent{align-items:center;display:flex;gap:12px;margin:0 0 16px}.journey-agent-avatar{flex:none;height:48px;position:relative;width:48px}.journey-agent-avatar img,.journey-agent-initial{border-radius:14px;display:block;height:48px;width:48px}.journey-agent-initial{align-items:center;background:var(--well);color:var(--muted);display:flex;font-weight:800;font-size:1.25rem;justify-content:center}' +
+  '.journey-agent-mark{align-items:center;border:2.5px solid var(--card);border-radius:50%;bottom:-6px;color:#fff;display:flex;font-size:.7rem;font-weight:800;height:22px;justify-content:center;position:absolute;right:-6px;width:22px}.journey-agent-mark-ok{background:#6fa25b}.journey-agent-mark-warn{background:var(--gold);color:#3a2a08}.journey-agent-mark-wait{background:var(--card)}.journey-agent-mark-wait::after{animation:journey-spin .8s linear infinite;box-sizing:border-box;border:2.5px solid rgba(221,160,51,.35);border-radius:50%;border-top-color:#8a6410;content:"";height:12px;width:12px}' +
+  '.journey-agent-names{min-width:0}.journey-agent-name{display:block;font-weight:700;line-height:1.2}.journey-agent-handle{color:var(--muted);display:block;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.8125rem;font-weight:600}' +
+  '.journey-steps{background:var(--well);border-radius:14px;display:grid;gap:10px;list-style:none;margin:24px 0 0;padding:14px 16px}.journey-steps li{align-items:center;display:flex;font-weight:700;gap:12px}.journey-steps li::before{border-radius:50%;box-sizing:border-box;content:"";flex:none;height:18px;width:18px}.journey-steps .todo{color:#9f8f72}.journey-steps .todo::before{border:2px solid rgba(59,50,32,.18)}.journey-steps .done::before{background:#6fa25b url("data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Cpath d=%27M4.5 8.2 7 10.5l4.5-5%27 fill=%27none%27 stroke=%27%23fff%27 stroke-width=%272%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27/%3E%3C/svg%3E") center/14px no-repeat}.journey-steps .now::before{animation:journey-spin .8s linear infinite;border:2.5px solid rgba(221,160,51,.35);border-top-color:#8a6410}' +
+  '.journey-next{align-items:flex-start;color:var(--muted);display:flex;font-size:.9rem;gap:10px;line-height:1.45;margin:14px 0 0}.journey-next::before{background:rgba(221,160,51,.18);border-radius:50%;color:#8a6410;content:"\\2192";flex:none;font-size:.75rem;font-weight:800;height:18px;line-height:18px;margin-top:1px;text-align:center;width:18px}' +
+  '.journey-later{animation:journey-reveal 0s 4s both}@keyframes journey-reveal{from{visibility:hidden}to{visibility:visible}}' +
+  '@keyframes journey-spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.journey-agent-mark-wait::after,.journey-steps .now::before{animation:none}}@media(max-width:440px){.auth-actions{display:grid;justify-items:center}.auth-actions>#agent-app-press,.auth-actions>.auth-link{justify-self:stretch}.auth-button,.auth-link{width:100%}}\n';
 
 interface SlackJourneyBadgeAction {
   href: string;

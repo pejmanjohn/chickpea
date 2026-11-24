@@ -24,6 +24,7 @@ test('the port is absent until a host installs it, and gone again when it is rem
     }),
     redirectUri: 'https://host/slack/agent-apps/callback',
     allowUrl: (agentId) => `https://host/slack/agent-apps/allow/${agentId}`,
+    addUrl: (agentId) => `https://host/slack/agent-apps/add/${agentId}`,
   };
   configureAgentSlackApps(host);
   assert.equal(agentSlackAppsHost(), host);

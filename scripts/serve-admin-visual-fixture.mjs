@@ -753,6 +753,9 @@ function closeServer(server) {
   });
 }
 
+/** The attention reasons that stop a start before Slack made any app. */
+const STOPPED_BEFORE_APP = new Set(['create_refused', 'slack_busy', 'ambiguous_create', 'config_token_needed']);
+
 /**
  * Agents in Slack, for looking at Admin's section and token page: the port
  * is installed and the service is an in-memory stand-in. A paste of a token
@@ -773,6 +776,7 @@ async function visualAgentSlackApps(store) {
     requestUrls: () => ({ events: 'https://visual.test/e', interactions: 'https://visual.test/i' }),
     redirectUri: 'https://visual.test/callback',
     allowUrl: (agentId) => `https://visual.test/allow/${agentId}`,
+    addUrl: (agentId) => `https://visual.test/add/${agentId}`,
   });
   let setting = { mode: 'shared' };
   let token = { stored: false };
@@ -785,7 +789,13 @@ async function visualAgentSlackApps(store) {
       case 'creating': return { ...presence, app: { ...app, state: 'creating' } };
       case 'waiting_for_allow': return { ...presence, app: { ...app, state: 'awaiting_consent' } };
       case 'cancelling': return { ...presence, app: { ...app, state: 'uninstalling' } };
-      case 'needs_attention': return { ...presence, app: { ...app, state: 'needs_attention', reason: reason ?? 'create_refused', resume: 'create' } };
+      case 'needs_attention': {
+        // A start that stopped before Slack made any app holds no app; Cancel withdraws it.
+        const { app: _made, icon: _icon, ...unmade } = app;
+        return STOPPED_BEFORE_APP.has(reason ?? 'create_refused')
+          ? { ...presence, app: { ...unmade, state: 'needs_attention', reason: reason ?? 'create_refused', resume: 'creating' } }
+          : { ...presence, app: { ...app, state: 'needs_attention', reason, resume: 'created' } };
+      }
       case 'switching':
       case 'own_app':
         return {
@@ -855,7 +865,12 @@ async function visualAgentSlackApps(store) {
     },
     cancel: async (agentId) => {
       await agent(agentId);
-      const now = states.get(agentId);
+      const now = states.get(agentId) ?? '';
+      const [slackState, reason] = now.split(':');
+      if (slackState === 'needs_attention' && STOPPED_BEFORE_APP.has(reason ?? 'create_refused')) {
+        states.delete(agentId);
+        return { kind: 'cancelled', agent: await agent(agentId), app: reason === 'ambiguous_create' ? 'left_for_owner' : 'none' };
+      }
       if (now !== 'waiting_for_allow' && now !== 'cancelling') return { kind: 'not_waiting' };
       const next = nextOutcome.get(agentId);
       nextOutcome.delete(agentId);

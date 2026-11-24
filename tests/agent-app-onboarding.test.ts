@@ -44,6 +44,7 @@ const HOST: AgentSlackAppsHost = {
   requestUrls: () => ({ events: 'https://cloud.test/e', interactions: 'https://cloud.test/i' }),
   redirectUri: 'https://cloud.test/slack/agent-apps/callback',
   allowUrl: (agentId) => `https://cloud.test/slack/agent-apps/allow/${agentId}`,
+  addUrl: (agentId) => `https://cloud.test/slack/agent-apps/add/${agentId}`,
 };
 const GITHUB_APP = { appId: '900100', appSlug: 'chickpea-test', privateKeyPem: '-----BEGIN PRIVATE KEY-----\nkey\n-----END PRIVATE KEY-----', botUserId: 900_200 };
 

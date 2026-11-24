@@ -18,6 +18,8 @@ export interface AgentSlackAppsHost {
   readonly redirectUri: string;
   /** Where "Allow <Agent> in Slack" sends the Owner: the host's allow route. */
   allowUrl(agentId: string): string;
+  /** Where Add to Slack in Chickpea's messages sends an Owner: the host's add route, whose page makes the press. */
+  addUrl(agentId: string): string;
 }
 
 let installedHost: AgentSlackAppsHost | undefined;

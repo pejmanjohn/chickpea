@@ -8,6 +8,7 @@ const LINKS = { agentId: 'agent_support', allowUrl: 'https://cloud.test/allow', 
 const KINDS: AgentAppMessageKind[] = [
   'allow', 'archived_left', 'archived_installed', 'handle_release_failed', 'ambiguous_create', 'create_refused', 'slack_busy',
   'urls_refused', 'config_token_needed', 'app_removed', 'uninstall_failed', 'app_removed_unreachable', 'app_removed_permission', 'recreated',
+  'handle_taken',
 ];
 
 function sectionText(kind: AgentAppMessageKind): string {

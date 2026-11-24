@@ -36,10 +36,12 @@ const NOW = 1_800_000_000_000;
 const PASTED = 'xoxe-1-pasted-refresh-token-0000';
 const PASTED_AGAIN = 'xoxe-1-pasted-again-token-0000';
 const PASTED_THIRD = 'xoxe-1-pasted-third-token-0000';
+const ADMIN_ORIGIN = 'https://core.test';
 const HOST: AgentSlackAppsHost = {
   requestUrls: () => ({ events: 'https://cloud.test/e', interactions: 'https://cloud.test/i' }),
   redirectUri: 'https://cloud.test/slack/agent-apps/callback',
   allowUrl: (agentId) => `https://cloud.test/slack/agent-apps/allow/${agentId}`,
+  addUrl: (agentId) => `https://cloud.test/slack/agent-apps/add/${agentId}`,
 };
 const HOSTED = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_a' });
 const API = '/admin/api/slack-apps';
@@ -230,7 +232,7 @@ async function adminApp(t: TestContext, options: {
   const secrets: SecretDeps = { credentials: settings, keyring, slack, now: () => script.now };
   const service: AgentSlackApps = new AgentSlackApps({
     env: HOSTED, stores: { config, settings }, host: HOST, slack, keyring, armSwitch: async () => undefined,
-    now: () => script.now,
+    now: () => script.now, publicOrigin: async () => ADMIN_ORIGIN,
     transport: {
       disableUserGroup: async (id) => { calls.push(`disable:${id}`); return { id, name: 'x', handle: 'x', disabled: true }; },
       enableUserGroup: async (id) => { calls.push(`enable:${id}`); return { id, name: 'x', handle: 'x', disabled: false }; },
@@ -534,7 +536,7 @@ test('the read lists each user Agent with its name, handle, avatar, Channels and
     agent_waiting: { state: 'waiting_for_allow' },
     agent_switching: { state: 'switching' },
     agent_own: { state: 'own_app' },
-    agent_attention: { state: 'needs_attention', reason: 'create_refused' },
+    agent_attention: { state: 'needs_attention', reason: 'create_refused', cancellable: true },
   });
   assert.match(byId.get('agent_new')!.avatarUrl!, /^http:\/\/localhost\/assets\/i\/inst_a\/agents\/agent_new\/avatar\/\d+$/,
     'a generated avatar is served by Admin itself');
@@ -552,7 +554,7 @@ test('Start moves a user-group Agent: the group keeps answering and the press le
   assert.equal(url.origin + url.pathname, 'https://slack.com/oauth/v2/authorize');
   assert.equal(url.searchParams.get('client_id'), '1.client');
   assert.equal(url.searchParams.get('redirect_uri'), HOST.redirectUri);
-  assert.match(url.searchParams.get('state')!, /^agent_support\.[a-f0-9-]{36}$/);
+  assert.match(url.searchParams.get('state')!, /^agent_support\.[a-f0-9-]{36}\.admin$/, 'the state says the press came from Admin');
   const presence = (await owner.config.getAgent('agent_support')).slackPresence;
   assert.equal(presence?.kind, undefined, 'still a user-group Agent');
   assert.equal(presence?.userGroupId, 'S_support');
@@ -604,7 +606,8 @@ test("Start with no token changes nothing; with one Slack refuses, the Agent's r
   assert.deepEqual(refusedPresence?.app && { state: refusedPresence.app.state, reason: 'reason' in refusedPresence.app ? refusedPresence.app.reason : undefined },
     { state: 'needs_attention', reason: 'config_token_needed' }, "a refused token is recorded on the Agent's record");
   const listed = await (await owner.request(API)).json() as { agents: Array<{ id: string; slack: unknown }> };
-  assert.deepEqual(listed.agents.find((row) => row.id === 'agent_support')?.slack, { state: 'needs_attention', reason: 'config_token_needed' });
+  assert.deepEqual(listed.agents.find((row) => row.id === 'agent_support')?.slack, { state: 'needs_attention', reason: 'config_token_needed', cancellable: true },
+    'no app was made, so Cancel is offered');
   assert.deepEqual(owner.calls, ['dm:UOWNER', 'post:D_UOWNER'], 'and the Owner is asked in Slack for a new token');
 
   owner.script.rotate = undefined;
@@ -629,6 +632,43 @@ test("Cancel deletes an app waiting for Allow and leaves the Agent's user group 
   assert.deepEqual(owner.script.deleted, ['A0APP1']);
   assert.deepEqual((await owner.config.getAgent('agent_support')).slackPresence, before);
   assert.equal(owner.calls.some((call) => call.startsWith('disable:') || call.startsWith('enable:')), false);
+});
+
+// Defects caught: a start that stopped before Slack made any app offered no Cancel; Cancel answering that an app was
+// deleted when none existed, or saying nothing when Slack may have made one Chickpea never heard of.
+test('Cancel withdraws a start that stopped before Slack made any app, and says no app existed or that one may', async (t) => {
+  const owner = await adminApp(t);
+  const cases = [
+    ['create_refused', 'none'], ['slack_busy', 'none'], ['config_token_needed', 'none'], ['ambiguous_create', 'left_for_owner'],
+  ] as const;
+  for (const [reason, app] of cases) {
+    const current = await owner.config.getAgent('agent_support');
+    await owner.config.updateAgent('agent_support', {
+      slackPresence: { ...group('support'), app: { state: 'needs_attention', at: NOW, startedBy: OWNER, reason, resume: 'creating' } },
+    }, current.revision);
+    const listed = await (await owner.request(API)).json() as { agents: Array<{ id: string; slack: unknown }> };
+    assert.deepEqual(listed.agents.find((row) => row.id === 'agent_support')?.slack, { state: 'needs_attention', reason, cancellable: true }, reason);
+    const cancelled = await owner.request(`${API}/agents/agent_support/cancel`, owner.json('POST', {}));
+    assert.equal(cancelled.status, 200, reason);
+    const body = await cancelled.json() as { agent: { slack: unknown }; app: string };
+    assert.equal(body.app, app, reason);
+    assert.deepEqual(body.agent.slack, { state: 'user_group' }, `${reason}: the group answers as before`);
+  }
+  assert.deepEqual(owner.script.deleted, [], 'nothing is deleted in Slack');
+  assert.equal(owner.audits().filter((audit) => audit.action === 'agent_apps.cancelled').map((audit) => audit.reasonCode).join(), 'none,none,none,left_for_owner');
+
+  // Once Slack has made the app, Cancel is not offered and is refused: that app is removed only from Allow. The second
+  // record is one no transition writes today; a record that holds an app is never withdrawn, whatever it would resume.
+  for (const [reason, resume] of [['config_token_needed', 'created'], ['create_refused', 'creating']] as const) {
+    const current = await owner.config.getAgent('agent_support');
+    await owner.config.updateAgent('agent_support', {
+      slackPresence: { ...group('support'), app: { state: 'needs_attention', at: NOW, startedBy: OWNER, reason, resume, app: APP } },
+    }, current.revision);
+    const listed = await (await owner.request(API)).json() as { agents: Array<{ id: string; slack: unknown }> };
+    assert.deepEqual(listed.agents.find((row) => row.id === 'agent_support')?.slack, { state: 'needs_attention', reason }, resume);
+    assert.equal((await owner.request(`${API}/agents/agent_support/cancel`, owner.json('POST', {}))).status, 409, resume);
+    assert.equal(appRecordOf((await owner.config.getAgent('agent_support')).slackPresence)?.state, 'needs_attention', `${resume}: the record stays`);
+  }
 });
 
 const CREATOR = 'membership_ada';
@@ -670,7 +710,10 @@ async function allowAndSwitch(owner: Awaited<ReturnType<typeof adminApp>>, agent
     botToken: `xoxb-${agentId}`, botUserId: 'UBOTNEW', teamId: TEAM, appId, installerUserId: OWNER, scopes: [...AGENT_APP_BOT_SCOPES],
   });
   const callback = new URLSearchParams({ code: 'code-1', state: new URL(authorizeUrl).searchParams.get('state')! });
-  assert.equal((await owner.service.completeConsent(callback, OWNER)).status, 303, 'the Allow went through');
+  const landed = await owner.service.completeConsent(callback, OWNER);
+  assert.equal(landed.status, 303, 'the Allow went through');
+  const from = new URL(authorizeUrl).searchParams.get('state')!.split('.').at(-1);
+  if (from === 'admin') assert.equal(landed.headers.get('location'), `${ADMIN_ORIGIN}/admin/destinations/slack/connection`, 'a press in Admin lands back in Admin');
   assert.equal(await owner.service.continueSwitch(agentId), 'done');
 }
 
@@ -770,6 +813,37 @@ test("after Allow, a waiting Channel whose writer has left it stays waiting and 
   assert.equal(f.owner.texts.at(-1)!.includes('CSALES'), false);
 });
 
+// Defects caught: the creator's welcome carries both a Channel to approve and the Add to Slack link, and one order lost
+// the Channel: approving first refused for an Agent not in Slack yet, or adding first left the approval nothing to do.
+test("the welcome's Channel ends with the Agent in it whichever comes first: approving it, or adding the Agent to Slack", async (t) => {
+  const approve = (f: Awaited<ReturnType<typeof ownAppWorkspace>>) => f.owner.presence().publish({
+    workspaceId: TEAM, agentId: 'agent_new', channelId: 'CSALES', actorMembershipId: CREATOR, actorSlackUserId: CREATOR_SLACK,
+  });
+  /** The Add to Slack link's press, then Slack's Allow and the switch. */
+  const add = async (f: Awaited<ReturnType<typeof ownAppWorkspace>>) => {
+    const pressed = await f.owner.service.addPress('agent_new', OWNER);
+    assert.equal(pressed.response.status, 303);
+    await allowAndSwitch(f.owner, 'agent_new', pressed.response.headers.get('location')!);
+  };
+  for (const order of ['approve, then add', 'add, then approve'] as const) {
+    const f = await ownAppWorkspace(t);
+    f.slack.channel('CSALES', { members: [CREATOR_SLACK] });
+    await f.owner.config.createAgent({ ...agent('agent_new', 'Newbie', notInSlack('newbie')), creatorMembershipId: CREATOR, model: 'local-stub/newbie' });
+    await f.owner.presence().retry('agent_new');
+
+    if (order === 'approve, then add') {
+      assert.equal((await approve(f)).grant.status, 'pending', 'approving first keeps the Channel waiting');
+      await add(f);
+    } else {
+      await add(f);
+      assert.equal((await approve(f)).grant.status, 'active', 'approving after the add is an ordinary add');
+    }
+    assert.equal((await grantOf(f.owner, 'CSALES'))?.status, 'active', order);
+    assert.equal((await f.owner.config.getAgent('agent_new')).slackPresence?.kind, 'agent_app', order);
+    if (order === 'approve, then add') assert.ok(f.slack.appBotIn.has('CSALES'), "the Agent's own bot joins at the switch");
+  }
+});
+
 // Defects caught: a wait made active in a private Channel Chickpea's bot has since been removed from, where nothing
 // answers, with the Owner told the Agent answers through Chickpea there.
 test("after Allow, a creator's private Channel Chickpea's bot is no longer in stays waiting and is not named", async (t) => {
@@ -811,6 +885,25 @@ test('back to shared, each Agent in Slack nowhere gets a group and its creatorâ€
   const again = await f.owner.request(`${API}/mode`, f.owner.json('PUT', { mode: 'shared' }));
   assert.deepEqual((await again.json() as { waiting: unknown[] }).waiting, []);
   assert.ok((await f.owner.config.getAgent('agent_taken')).slackPresence?.userGroupId);
+});
+
+// Defects caught (finding 1): back in `shared` mode, an Agent whose group Slack refused was still kept waiting with no
+// failure recorded, so Admin showed no cause and no recovery, and a taken handle offered no suggestions.
+test('back to shared, a group Slack refuses is recorded on the Agent with its cause and suggestions, as for any Agent', async (t) => {
+  const f = await ownAppWorkspace(t);
+  f.slack.groups.push({ id: 'S_TAKEN', name: 'Taken', handle: 'taken', disabled: false });
+  await f.owner.config.createAgent(agent('agent_taken', 'Taken', notInSlack('taken')));
+  await f.owner.presence().retry('agent_taken').catch(() => undefined);
+  assert.equal((await f.owner.config.getAgent('agent_taken')).slackPresence?.errorCode, AWAITING_OWN_APP, 'while each Agent is its own app, it waits');
+
+  await f.owner.request(`${API}/mode`, f.owner.json('PUT', { mode: 'shared' }));
+
+  const taken = await f.owner.config.getAgent('agent_taken');
+  assert.equal(taken.lifecycle, 'needs_attention');
+  assert.equal(taken.slackPresence?.health, 'needs_attention');
+  assert.equal(taken.slackPresence?.errorCode, 'handle_collision');
+  assert.match(taken.slackPresence?.errorDetail ?? '', /@taken is already in use/);
+  assert.ok((taken.slackPresence?.handleSuggestions ?? []).length > 0, 'the taken handle carries its suggestions');
 });
 
 // Defects caught: turning the setting off published a draft Agent that was never meant to be in Slack, giving it a user

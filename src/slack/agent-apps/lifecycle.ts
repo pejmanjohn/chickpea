@@ -40,6 +40,8 @@ export type AgentAppEvent =
   | { type: 'create_ambiguous'; at: number }
   /** Slack refused the create because the workspace has all the apps its plan allows: nothing was made. */
   | { type: 'app_limit_reached'; at: number }
+  /** Another Agent in Slack holds this Agent's handle, so nothing is created. */
+  | { type: 'handle_taken'; at: number }
   /** The recorded app has no record, so it is left for the Owner; create again. */
   | { type: 'recreate'; at: number; manifestFingerprint: string }
   | { type: 'urls_set'; at: number }
@@ -47,13 +49,18 @@ export type AgentAppEvent =
   | { type: 'config_token_needed'; at: number }
   | { type: 'icon_set'; at: number; icon: AgentAppIcon }
   | { type: 'allow_dm_posted'; at: number; channelId: string; ts: string }
+  /** The press is sending the Owner's browser to Slack's Allow screen, so no message asks them to choose Allow. */
+  | { type: 'handed_to_slack'; at: number }
   | { type: 'consent_opened'; at: number; nonceDigest: string; owner: string; expiresAt: number }
   | { type: 'consent_granted'; at: number; botUserId: string; installedBy: string }
   /** That Owner's open Allow link is spent or undone; any other Owner's stays open. */
   | { type: 'consent_undone'; at: number; owner: string }
   | { type: 'app_removed'; at: number }
   | { type: 'archive'; at: number; hasBotToken: boolean }
-  /** An Owner's Cancel before Allow: allowed only while the app waits for Allow, so a record that went live is never cancelled. */
+  /**
+   * An Owner's Cancel before Allow: allowed while the app waits for Allow, or when a start stopped before Slack
+   * made an app, so a record that went live is never cancelled.
+   */
   | { type: 'cancel'; at: number; hasBotToken: boolean }
   | { type: 'uninstalled'; at: number }
   | { type: 'uninstall_refused'; at: number }
@@ -91,6 +98,11 @@ export function isRefusal(result: AgentAppTransition): result is AgentAppRefusal
 /** The switch step a live app still owes; undefined once the switch is done, as for a record stored before it was tracked. */
 export function pendingSwitchStep(app: AgentAppLifecycle): Exclude<AgentAppSwitchProgress, 'done'> | undefined {
   return app.state === 'active' && app.switchProgress && app.switchProgress !== 'done' ? app.switchProgress : undefined;
+}
+
+/** A start that stopped before Slack made any app: a Cancel withdraws it, with nothing in Slack to remove. */
+export function stoppedBeforeAnyApp(app: AgentAppLifecycle): app is Extract<AgentAppLifecycle, { state: 'needs_attention' }> {
+  return app.state === 'needs_attention' && app.resume === 'creating' && !app.app;
 }
 
 /**
@@ -134,7 +146,8 @@ export function agentAppMoveJob(agentId: string, presence: AgentSlackPresence | 
  */
 export type AgentSlackState =
   | { state: 'user_group' | 'not_in_slack' | 'creating' | 'waiting_for_allow' | 'cancelling' | 'switching' | 'own_app' }
-  | { state: 'needs_attention'; reason: AgentAppAttention };
+  /** `cancellable` when the start stopped before Slack made any app, so Cancel withdraws it. */
+  | { state: 'needs_attention'; reason: AgentAppAttention; cancellable?: true };
 
 export function agentSlackState(presence: AgentSlackPresence): AgentSlackState {
   const app = appRecordOf(presence);
@@ -151,7 +164,9 @@ export function agentSlackState(presence: AgentSlackPresence): AgentSlackState {
     case 'needs_attention':
       // A Cancel's removal Slack refused to finish reads as the Cancel it is; the next Cancel or Start picks it up.
       if (app.resume === 'uninstalling' && presence.kind !== 'agent_app') return { state: 'cancelling' };
-      return { state: 'needs_attention', reason: app.reason };
+      return {
+        state: 'needs_attention', reason: app.reason, ...(presence.kind !== 'agent_app' && stoppedBeforeAnyApp(app) ? { cancellable: true as const } : {}),
+      };
     case 'uninstalling':
       // On a user group's presence this is a Cancel's removal, finished by the next Cancel or Start; the group answers
       // throughout. An archive's uninstall of a live app is passing.
@@ -236,6 +251,7 @@ export function transition(app: AgentAppLifecycle, event: AgentAppEvent): AgentA
     case 'create_ambiguous':
       return app.state === 'creating' ? attention(app.startedBy, at, 'ambiguous_create', 'creating') : WRONG_STATE;
     case 'app_limit_reached':
+    case 'handle_taken':
       return app.state === 'creating' ? WITHDRAWN : WRONG_STATE;
     case 'recreate':
       return app.state === 'created'
@@ -265,6 +281,10 @@ export function transition(app: AgentAppLifecycle, event: AgentAppEvent): AgentA
             icon: app.icon,
             allowDm: { channelId: event.channelId, ts: event.ts },
           }
+        : WRONG_STATE;
+    case 'handed_to_slack':
+      return app.state === 'icon_set'
+        ? { state: 'awaiting_consent', at, startedBy: app.startedBy, app: app.app, icon: app.icon }
         : WRONG_STATE;
     case 'consent_opened': {
       if (app.state !== 'awaiting_consent') return WRONG_STATE;
@@ -315,6 +335,7 @@ export function transition(app: AgentAppLifecycle, event: AgentAppEvent): AgentA
       };
     }
     case 'cancel':
+      if (stoppedBeforeAnyApp(app)) return WITHDRAWN;
       return app.state === 'awaiting_consent'
         ? {
             state: 'uninstalling',

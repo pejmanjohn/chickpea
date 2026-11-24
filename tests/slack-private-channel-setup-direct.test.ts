@@ -382,7 +382,7 @@ test('an unexpected failure before the claim answers beside the card, which stil
 // Defects caught: choosing an Agent not in Slack yet on the card told the inviter to retry in Admin, where Retry does
 // nothing for it, and recorded the setup as a failed publication, though the Channel was kept for it.
 test('choosing an Agent not in Slack yet keeps the Channel for it, and the card says it joins once an Owner adds it to Slack', async (t) => {
-  configureAgentSlackApps({ requestUrls: () => ({ events: '', interactions: '' }), redirectUri: '', allowUrl: () => '' });
+  configureAgentSlackApps({ requestUrls: () => ({ events: '', interactions: '' }), redirectUri: '', allowUrl: () => '', addUrl: () => '' });
   t.after(() => configureAgentSlackApps(undefined));
   const waiting = {
     ...OPS,

@@ -23,7 +23,7 @@ interface Row {
   name: string;
   handle: string;
   avatarUrl: string | null;
-  slack: { state: string; reason?: string };
+  slack: { state: string; reason?: string; cancellable?: boolean };
   channels: Array<{ id: string; name: string | null; private: boolean; status: string }>;
 }
 
@@ -558,7 +558,7 @@ const attentionRows: Array<[string, RegExp, string[]]> = [
   ['create_refused', /Slack didn&#39;t finish Ops&#39;s app\. Choose Try again\. If it keeps happening, check that your workspace allows new apps\./, ['Try again']],
   ['urls_refused', /Slack didn&#39;t finish connecting Ops&#39;s app to Chickpea\. Wait a minute, then choose Try again\./, ['Try again']],
   ['slack_busy', /Slack is limiting how fast apps are set up\. Wait a minute, then choose Try again\./, ['Try again']],
-  ['app_removed', /Ops&#39;s Slack app was removed from this workspace\. Open your messages with Chickpea and choose Allow to add it back\./, []],
+  ['app_removed', /Ops&#39;s Slack app was removed from this workspace\. Open your messages with Chickpea and choose Add Ops to Slack to add it back\./, []],
   ['uninstall_failed', /Removing Ops&#39;s Slack app didn&#39;t finish\. Choose Try again\./, ['Try again']],
   ['something_new', /Ops&#39;s Slack app needs your attention\. Open your messages with Chickpea for details\./, []],
 ];
@@ -616,6 +616,10 @@ test("Start's other answers: the row it carries, the limit on apps in words, and
   assert.match(limit.text(), /Acme has reached Slack&#39;s limit on apps, so Sales Desk stays as it is\. Delete an app you no longer need in Your Apps in Slack, then try again\. Open Your Apps in Slack/);
   assert.match(limit.html(), /<a class="hint-link" href="https:\/\/api\.slack\.com\/apps" target="_blank" rel="noopener">Open Your Apps in Slack &nearr;<\/a>/);
   assert.match(limit.html(), /data-agent="agent_sales"[^>]*>Move to its own app</, 'the Agent stays as it was');
+
+  const taken = await harness({ handle: (path) => path.endsWith('/start') ? respond({ error: 'handle_taken', agent: row('agent_sales', 'Sales Desk', 'sales-desk', 'user_group') }, 409) : undefined });
+  await taken.click({ 'data-action': 'slack-apps-start', 'data-agent': 'agent_sales' });
+  assert.match(taken.text(), /Another Agent is using @sales-desk in Slack, or is being added with it\. Rename Sales Desk, then try again\./);
 
   for (const [error, status] of [['something_new', 409], ['', 500]] as const) {
     const odd = await harness({ handle: (path) => path.endsWith('/start') ? respond(error ? { error } : {}, status) : undefined });
@@ -681,6 +685,45 @@ test("Cancel's answers: an app left for the Owner, Slack not answering, and a Ca
   await late.click({ 'data-action': 'slack-apps-cancel', 'data-agent': 'agent_sales' });
   assert.match(late.text(), /Chickpea couldn&#39;t cancel this\. Reload the page and try again\./);
   assert.match(late.text(), /Moving Sales Desk/);
+});
+
+// Defects caught: a start that stopped before Slack made any app had no Cancel on its row; Cancel's answer for it
+// saying an app was deleted, or saying nothing where Slack may have made one.
+test('a row whose start stopped before Slack made any app offers a quiet Cancel, and says what Cancel found', async () => {
+  const stopped = (reason: string, cancellable = true) =>
+    apiState({ agents: [row('agent_ops', 'Ops', 'ops', 'needs_attention', { slack: { state: 'needs_attention', reason, ...(cancellable ? { cancellable } : {}) } })] });
+  const actionsOf = (html: string) => html.split('class="slack-apps-row-action">')[1]!.split('</div>')[0]!;
+  for (const [reason, labels] of [
+    ['create_refused', ['Try again', 'Cancel']],
+    ['slack_busy', ['Try again', 'Cancel']],
+    ['config_token_needed', ['Add a token', 'Cancel']],
+    ['ambiguous_create', ['Open Your Apps in Slack', 'Try again', 'Cancel']],
+  ] as const) {
+    const page = await harness({ api: stopped(reason) });
+    const actions = actionsOf(page.html());
+    assert.deepEqual([...actions.matchAll(/>([^<>]+)<\/(?:button|a)>/g)].map((match) => match[1]), labels, reason);
+    assert.match(actions, /<button type="button" class="link-btn" data-action="slack-apps-cancel" data-agent="agent_ops" aria-label="Cancel, Ops">Cancel<\/button>/, reason);
+  }
+  const made = await harness({ api: stopped('config_token_needed', false) });
+  assert.doesNotMatch(actionsOf(made.html()), />Cancel</, 'once Slack made the app, no Cancel');
+
+  const none = await harness({
+    api: stopped('create_refused'),
+    handle: (path) => path.endsWith('/cancel') ? respond({ agent: row('agent_ops', 'Ops', 'ops', 'user_group'), app: 'none' }) : undefined,
+  });
+  await none.click({ 'data-action': 'slack-apps-cancel', 'data-agent': 'agent_ops' });
+  assert.deepEqual(none.requests.filter((request) => request.path.endsWith('/cancel')).map((request) => request.path), ['/admin/api/slack-apps/agents/agent_ops/cancel']);
+  assert.match(none.html(), /data-agent="agent_ops"[^>]*>Move to its own app</);
+  assert.doesNotMatch(none.text(), /delete|Your Apps|didn&#39;t finish/, 'nothing existed, so nothing is said to be deleted');
+
+  const unanswered = await harness({
+    api: stopped('ambiguous_create'),
+    handle: (path) => path.endsWith('/cancel') ? respond({ agent: row('agent_ops', 'Ops', 'ops', 'user_group'), app: 'left_for_owner' }) : undefined,
+  });
+  await unanswered.click({ 'data-action': 'slack-apps-cancel', 'data-agent': 'agent_ops' });
+  assert.match(unanswered.text(), /Slack may have made an app for Ops before Chickpea stopped\. If you see one in Your Apps in Slack that you don&#39;t use, delete it\. Open Your Apps in Slack/);
+  assert.doesNotMatch(unanswered.text(), /couldn&#39;t delete the Slack app it made/);
+  assert.match(unanswered.html(), /<a class="hint-link" href="https:\/\/api\.slack\.com\/apps" target="_blank" rel="noopener">Open Your Apps in Slack &nearr;<\/a>/);
 });
 
 test('each removal says what it did: retired, not confirmed by Slack, or no token held', async () => {

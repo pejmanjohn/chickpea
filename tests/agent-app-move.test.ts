@@ -33,6 +33,7 @@ const HOST: AgentSlackAppsHost = {
   requestUrls: (installationId, appId) => ({ events: `https://cloud.test/${installationId}/${appId}/e`, interactions: `https://cloud.test/${installationId}/${appId}/i` }),
   redirectUri: 'https://cloud.test/slack/agent-apps/callback',
   allowUrl: (agentId) => `https://cloud.test/slack/agent-apps/allow/${agentId}`,
+  addUrl: (agentId) => `https://cloud.test/slack/agent-apps/add/${agentId}`,
 };
 const ENV = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_a' });
 const OPENING = escapeMrkdwn('Support is now its own Slack app. People keep using @support.');
@@ -663,7 +664,7 @@ test('an app retired before the switch turned its group off hands back the group
 });
 
 const UNINSTALLED = { event: { type: 'app_uninstalled' } };
-const REMOVED_BACK = escapeMrkdwn("Support's Slack app was removed from this workspace. People can still mention @support, and Support answers through Chickpea. Choose Allow to add the app back.");
+const REMOVED_BACK = escapeMrkdwn("Support's Slack app was removed from this workspace. People can still mention @support, and Support answers through Chickpea. Choose Add Support to Slack to add the app back.");
 const REMOVED_UNREACHABLE = escapeMrkdwn("Support's Slack app was removed from this workspace, so people can't mention @support for now. Support still answers through Chickpea in its threads and in messages with Chickpea.");
 
 /** A move through Allow and the whole switch: the app live and holding the handle, the group off. */
@@ -865,7 +866,7 @@ test('a refused re-enable of a group Slack never turned off leaves it answering,
   assert.equal(agentAppMoveJob('agent_support', presence, TEAM), undefined, 'the sweep arms nothing for it');
 });
 
-test('the Owner message for a refused re-enable carries Allow, Open Chickpea and Try again', async (t) => {
+test('the Owner message for a refused re-enable carries Add to Slack, Open Chickpea and Try again', async (t) => {
   const f = await fixture(t);
   await switched(f);
   await f.service.end('A0APP1', UNINSTALLED);
@@ -878,8 +879,10 @@ test('the Owner message for a refused re-enable carries Allow, Open Chickpea and
   await f.service.continueSwitch('agent_support');
   const actions = (posts[0] as { blocks: Array<{ type: string; elements?: Array<{ text: { text: string }; url?: string; action_id: string }> }> })
     .blocks.find((block) => block.type === 'actions');
-  assert.deepEqual(actions?.elements?.map((button) => button.text.text), ['Allow Support in Slack', 'Open Chickpea', 'Try again']);
+  assert.deepEqual(actions?.elements?.map((button) => button.text.text), ['Add Support to Slack', 'Open Chickpea', 'Try again']);
+  assert.equal(actions?.elements?.[0]?.url, 'https://cloud.test/slack/agent-apps/add/agent_support', 'adding the app back is the hand-off link');
   assert.equal(actions?.elements?.[1]?.url, 'https://chickpea.test/admin');
+  assert.equal(actions?.elements?.[2]?.action_id, 'agent_app_try_again', 'turning the group back on stays an action');
 });
 
 test('Remove App of an Agent that never had a user group gives back its handle-less presence, with the app attached', async (t) => {
@@ -892,7 +895,7 @@ test('Remove App of an Agent that never had a user group gives back its handle-l
   const presence = await presenceOf(f);
   assert.deepEqual(presence && [presence.kind, presence.userGroupId, presence.desiredState, appRecordOf(presence)?.state],
     [undefined, undefined, 'unpublished', 'needs_attention']);
-  assert.equal(ownerMessages(f).at(-1), `${REMOVED_UNREACHABLE} ${escapeMrkdwn('Choose Allow to add the app back.')}`);
+  assert.equal(ownerMessages(f).at(-1), `${REMOVED_UNREACHABLE} ${escapeMrkdwn('Choose Add Support to Slack to add the app back.')}`);
 });
 
 // Defects caught: a Remove App whose restore was never armed, or spent its tries, left for a person; a restore armed
@@ -1030,15 +1033,18 @@ test("Slack's app limit leaves the Agent as it was, with the message that says w
 });
 
 // Defects caught: a Slack press with no token doing nothing, so the Owner never learns what to do.
-test('an Owner\'s press in Slack with no token asks that Owner for one and starts nothing', async (t) => {
+test("an Owner's press from Slack with no token shows the way to add one and starts nothing", async (t) => {
   const f = await fixture(t, { userGroupId: undefined, grants: [] });
   await discardConfigurationToken(f.secrets, TEAM);
   const before = f.main.posted.length;
 
-  assert.deepEqual(await f.service.addFromSlack('agent_support', OWNER, true), { started: 'token_needed' }, 'the answer is the message');
+  const { response, pressed } = await f.service.addPress('agent_support', OWNER);
 
+  assert.equal(pressed, 'token_needed');
+  assert.equal(response.status, 409);
+  const html = await response.text();
+  assert.match(html, /Slack needs one token first/);
+  assert.match(html, /href="[^"]*\/admin\/destinations\/slack\/connection\/token">Add the token</);
   assert.equal(appRecordOf(await presenceOf(f)), undefined);
-  assert.deepEqual(f.main.posted.slice(before).map((message) => [message.channelId, message.text]), [[`D_${OWNER}`, escapeMrkdwn(
-    "Chickpea needs a Slack refresh token to add Support to Slack.",
-  )]], 'no token was ever kept, so none is called new');
+  assert.equal(f.main.posted.length, before, 'the page says it; no message is sent');
 });

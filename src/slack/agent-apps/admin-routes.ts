@@ -39,8 +39,9 @@ export interface AgentSlackAppAdminDeps {
   actor(c: Context): Promise<{ principal: AuthPrincipal; slackUserId: string; slackTeamId: string }>;
   /**
    * Give each of these Agents a user group and finish the Channels its
-   * creator asked for, as creation in `shared` mode would have; each one's
-   * failure is kept on it and the rest go on.
+   * creator asked for, as creation in `shared` mode would have. The mode is
+   * already `shared`, so each one's failure is recorded on it, with the
+   * recovery that names the cause, and the rest go on.
    */
   placeInSlack(c: Context, agentIds: readonly string[]): Promise<void>;
   /** Where each change is recorded as an audit event. */
@@ -101,9 +102,12 @@ type SlackAppsAuditAction =
  * - `DELETE /admin/api/slack-apps/token` → `{ token: { stored: false }, removed: 'discarded' | 'unconfirmed' | 'none' }`.
  * - `POST /admin/api/slack-apps/agents/:agentId/start` → 200 `{ next: 'authorize', authorizeUrl, agent }`; 202
  *   `{ next: 'creating', agent }`; 409 `{ error: 'token_needed' | 'permission_needed' | 'app_limit' }` or
- *   `{ error: 'needs_attention' | 'already_own_app' | 'cancelling', agent }`; 404.
- * - `POST /admin/api/slack-apps/agents/:agentId/cancel` → `{ agent, app: 'deleted' | 'left_for_owner' }`; 409
- *   `{ error: 'not_waiting' }`; 503 `{ error: 'slack_unavailable' }`; 404.
+ *   `{ error: 'needs_attention' | 'already_own_app' | 'cancelling' | 'handle_taken', agent }`; 404. Slack's Allow then
+ *   lands the Owner back on Admin's Slack connection section.
+ * - `POST /admin/api/slack-apps/agents/:agentId/cancel` → `{ agent, app: 'deleted' | 'left_for_owner' | 'none' }`:
+ *   `none` when the start stopped before Slack made any app, `left_for_owner` too when one may exist after a create
+ *   Slack never answered; 409 `{ error: 'not_waiting' }`; 503 `{ error: 'slack_unavailable' }`; 404. A row whose start
+ *   stopped before any app reads `{ state: 'needs_attention', reason, cancellable: true }`.
  *
  * Each change is recorded as an audit event; a failed record is logged and never fails the request.
  */
@@ -201,7 +205,7 @@ export function createAgentSlackAppAdminRoutes(deps: AgentSlackAppAdminDeps): Ho
     const gated = await owner(c);
     if (!gated.ok) return gated.response;
     const { apps } = gated;
-    const pressed = await known(() => apps.press(c.req.param('agentId'), gated.slackUserId));
+    const pressed = await known(() => apps.press(c.req.param('agentId'), gated.slackUserId, 'admin'));
     if (pressed && pressed.kind !== 'not_eligible') await audit(c, gated.principal, 'agent_apps.started', pressed.kind);
     switch (pressed?.kind) {
       case 'authorize':
@@ -211,6 +215,7 @@ export function createAgentSlackAppAdminRoutes(deps: AgentSlackAppAdminDeps): Ho
       case 'needs_attention':
       case 'already_own_app':
       case 'cancelling':
+      case 'handle_taken':
         return c.json({ error: pressed.kind, agent: await rowOf(c, apps, pressed.agent) }, 409);
       case 'token_needed':
       case 'permission_needed':

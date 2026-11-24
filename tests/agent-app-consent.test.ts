@@ -24,6 +24,7 @@ const HOST: AgentSlackAppsHost = {
   requestUrls: () => ({ events: 'https://cloud.test/e', interactions: 'https://cloud.test/i' }),
   redirectUri: 'https://cloud.test/slack/agent-apps/callback',
   allowUrl: (agentId) => `https://cloud.test/slack/agent-apps/allow/${agentId}`,
+  addUrl: (agentId) => `https://cloud.test/slack/agent-apps/add/${agentId}`,
 };
 const ENV = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_a' });
 
@@ -175,23 +176,23 @@ test('a bad, expired or reused state, another Owner, or a cancelled grant are re
   };
   /** The page's one paragraph is the whole sentence, with a tag's space on each side. */
   const says = (page: string, sentence: string) => assert.ok(page.includes(` ${sentence} `), page);
-  const nameless = 'That link has expired. Open your messages with Chickpea and choose Allow again.';
+  const nameless = "Links to Slack's permission screen only work for a short time. In Chickpea Admin, add the Agent to Slack again.";
   says(await refused({ code: 'c', state: 'garbage' }, OWNER, 410), nameless);
   says(
     await refused({ code: 'c', state: `agent_support.${crypto.randomUUID()}` }, OWNER, 410),
-    'That link has expired. Choose Allow Support in Slack again from your messages with Chickpea.',
+    "Links to Slack's permission screen only work for a short time. Start again; it takes a moment.",
   );
   says(await refused({ code: 'c', state: `agent_other.${state.split('.')[1]}` }, OWNER, 410), nameless);
-  assert.match(await refused({ code: 'c', state }, 'UOWNER2', 403), /Only the Owner who started this can finish it/);
+  assert.match(await refused({ code: 'c', state }, 'UOWNER2', 403), /Only the Owner who started adding Support can choose Allow/);
   f.clock.now = NOW + CONSENT_TTL_MS;
-  assert.match(await refused({ code: 'c', state }, OWNER, 410), /That link has expired/);
+  assert.match(await refused({ code: 'c', state }, OWNER, 410), /That link expired/);
   f.clock.now = NOW;
   assert.deepEqual(f.slack.exchanges, []);
 
   assert.match(await refused({ error: 'access_denied', state }, OWNER, 200), /Support wasn't added/);
   const app = await appOf(f.config);
   assert.equal(app?.state === 'awaiting_consent' && app.consents, undefined, 'a cancelled grant clears the consent');
-  assert.match(await refused({ code: 'c', state }, OWNER, 410), /That link has expired/, 'the cleared consent cannot be reused');
+  assert.match(await refused({ code: 'c', state }, OWNER, 410), /That link expired/, 'the cleared consent cannot be reused');
   assert.deepEqual(f.slack.exchanges, []);
   assert.equal(f.posted.length, 0);
 });
@@ -199,9 +200,9 @@ test('a bad, expired or reused state, another Owner, or a cancelled grant are re
 test('a grant for the wrong workspace, app or person, or with missing permissions, is undone', async (t) => {
   for (const [grant, status, pattern] of [
     [{ teamId: 'TOTHER' }, 409, /different Slack workspace/],
-    [{ appId: 'A0OTHER' }, 403, /Only the Owner who started this/],
-    [{ installerUserId: 'UMEMBER' }, 403, /Only the Owner who started this/],
-    [{ scopes: AGENT_APP_BOT_SCOPES.slice(1) }, 409, /needs every permission it asked for/],
+    [{ appId: 'A0OTHER' }, 403, /Only the Owner who started adding Support/],
+    [{ installerUserId: 'UMEMBER' }, 403, /Only the Owner who started adding Support/],
+    [{ scopes: AGENT_APP_BOT_SCOPES.slice(1) }, 409, /Support needs every permission/],
   ] as const) {
     const f = await fixture(t);
     f.slack.grant = grant;
@@ -232,7 +233,7 @@ test('a grant missing only channels:join, as from an app made before Chickpea as
   less.slack.grant = { scopes: withoutJoin.slice(1) };
   const refused = await less.service.completeConsent(new URLSearchParams({ code: 'c', state: await open(less) }), OWNER);
   assert.equal(refused.status, 409);
-  assert.match(pageText(await refused.text()), /needs every permission it asked for/);
+  assert.match(pageText(await refused.text()), /Support needs every permission/);
   assert.equal(less.slack.uninstalls, 1);
 });
 
@@ -292,7 +293,7 @@ test("app secrets that can't be opened answer the callback with the expired page
   const warn = t.mock.method(console, 'warn', () => undefined);
   const response = await rekeyed.completeConsent(new URLSearchParams({ code: 'c', state }), OWNER);
   assert.equal(response.status, 410);
-  assert.match(pageText(await response.text()), /That link has expired\. Choose Allow Support in Slack again/);
+  assert.match(pageText(await response.text()), /Links to Slack's permission screen only work for a short time\. Start again/);
   assert.deepEqual(f.slack.exchanges, []);
   assert.equal((await appOf(f.config))?.state, 'awaiting_consent');
   assert.deepEqual(warn.mock.calls.map((call) => call.arguments[0]), [`[chickpea] agent_app_secrets_unreadable {"appId":"${APP.appId}"}`]);
@@ -319,9 +320,16 @@ test('Allow from a removed app resumes the sequence first, and an active app say
   const active = await fixture(t, { state: 'active', at: NOW, app: APP, icon: 'agent_avatar', botUserId: 'UBOT', installedAt: NOW, installedBy: OWNER });
   const response = await active.service.allow('agent_support', OWNER);
   assert.equal(response.status, 409);
-  assert.match(pageText(await response.text()), /Support already has its own Slack app/);
+  assert.match(pageText(await response.text()), /Support is already in Slack/);
   const notStarted = await fixture(t, { state: 'created', at: NOW, startedBy: OWNER, app: APP });
   assert.equal((await notStarted.service.allow('agent_support', OWNER)).status, 410);
+
+  // The link sends the Owner to Slack's Allow screen, so no message asks them to choose Allow.
+  const removed = await fixture(t, { state: 'needs_attention', at: NOW, startedBy: OWNER, reason: 'app_removed', resume: 'icon_set', app: APP, icon: 'agent_avatar' });
+  const reopened = await removed.service.allow('agent_support', OWNER);
+  assert.equal(reopened.status, 303);
+  assert.equal((await appOf(removed.config))?.state, 'awaiting_consent');
+  assert.doesNotMatch(JSON.stringify(removed.posted), /Choose Allow/);
 });
 
 // Defects caught: a second Owner's Allow overwriting the first Owner's open link, one Owner's cancel spending
@@ -333,7 +341,7 @@ test("each Owner holds one open Allow link: another Owner's open or cancel leave
   let app = await appOf(f.config);
   assert.deepEqual(Object.keys(app?.state === 'awaiting_consent' ? app.consents ?? {} : {}).sort(), [OWNER, 'UOWNER2']);
   assert.match(pageText(await (await f.service.completeConsent(new URLSearchParams({ code: 'c', state: first }), 'UOWNER2')).text()),
-    /Only the Owner who started this can finish it/, "a link is its own Owner's, even beside the other Owner's");
+    /Only the Owner who started adding Support can choose Allow/, "a link is its own Owner's, even beside the other Owner's");
   const cancelled = await f.service.completeConsent(new URLSearchParams({ error: 'access_denied', state: second }), 'UOWNER2');
   assert.equal(cancelled.status, 200);
   app = await appOf(f.config);
@@ -343,7 +351,7 @@ test("each Owner holds one open Allow link: another Owner's open or cancel leave
   await open(f, 'UOWNER2');
   app = await appOf(f.config);
   assert.deepEqual(Object.keys(app?.state === 'awaiting_consent' ? app.consents ?? {} : {}), ['UOWNER2'], 'an expired link is dropped at the next open');
-  assert.match(pageText(await (await f.service.completeConsent(new URLSearchParams({ code: 'c', state: first }), OWNER)).text()), /That link has expired/);
+  assert.match(pageText(await (await f.service.completeConsent(new URLSearchParams({ code: 'c', state: first }), OWNER)).text()), /That link expired/);
   assert.deepEqual(f.slack.exchanges, []);
 });
 

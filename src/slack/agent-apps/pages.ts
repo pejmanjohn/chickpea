@@ -1,6 +1,5 @@
-/** The Owner-facing copy for an Agent's own Slack app: DMs, consent pages and App Home lines, each table keyed by outcome. */
+/** The Owner-facing copy for an Agent's own Slack app in Slack: DMs and App Home lines, each table keyed by outcome. */
 import type { AgentAppAttention } from '../../config/types.ts';
-import { escapeHtml } from '../../security/html-escape.ts';
 import { clampDisplay, escapeMrkdwn } from '../ui/text.ts';
 
 export const YOUR_APPS_URL = 'https://api.slack.com/apps';
@@ -9,6 +8,9 @@ const BUTTON_TEXT_MAX = 75;
 
 /** Admin's page where an Owner pastes the workspace's configuration token. */
 export const TOKEN_PAGE_PATH = '/admin/destinations/slack/connection/token';
+
+/** Admin's Slack connection section, where an Owner pressing in Admin lands after Slack's Allow. */
+export const SLACK_CONNECTION_PATH = '/admin/destinations/slack/connection';
 
 /** Where Admin shows its Slack permissions bar with Update in Slack; the bar is on every Admin page. */
 export const ADMIN_PATH = '/admin';
@@ -22,6 +24,8 @@ export interface AgentAppNames {
 export interface AgentAppLinks {
   agentId: string;
   allowUrl?: string;
+  /** The hand-off page whose press starts, resumes or finishes adding the Agent, then opens Slack's Allow. */
+  addUrl?: string;
   tokenPageUrl?: string;
   adminUrl?: string;
 }
@@ -37,7 +41,7 @@ export type AgentAppMessageKind =
   | 'app_removed_permission'
   | 'recreated'
   | 'app_limit'
-  | 'config_token_missing'
+  | 'handle_taken'
   | AgentAppAttention;
 
 type Button =
@@ -49,7 +53,10 @@ interface Copy {
   buttons(links: AgentAppLinks, names: AgentAppNames): Button[];
 }
 
+/** Try again on something that is not an add: a Cancel's removal, or turning a removed app's group back on. */
 const tryAgain = (links: AgentAppLinks): Button => ({ label: 'Try again', action: TRY_AGAIN_ACTION, value: links.agentId });
+/** Picks an add up where it stopped and goes on to Slack's Allow. */
+const add = (links: AgentAppLinks, label: string): Button[] => links.addUrl ? [{ label, url: links.addUrl }] : [];
 const yourApps: Button = { label: 'Open Your Apps in Slack', url: YOUR_APPS_URL };
 const allow = (links: AgentAppLinks, names: AgentAppNames): Button[] =>
   links.allowUrl ? [{ label: `Allow ${names.name} in Slack`, url: links.allowUrl }] : [];
@@ -77,12 +84,12 @@ const DM_COPY = {
   handle_release_failed: {
     text: ({ name, handle }) =>
       `Chickpea couldn't free the name @${handle} in Slack, so it didn't create ${name}'s app. In Chickpea Admin, choose Update in Slack, then choose Try again.`,
-    buttons: (links) => [tryAgain(links)],
+    buttons: (links) => add(links, 'Try again'),
   },
   ambiguous_create: {
     text: ({ name }) =>
       `Slack may have created an app for ${name}, but Chickpea didn't hear back. Open Your Apps in Slack and delete any ${name} app you don't recognize, then choose Try again.`,
-    buttons: (links) => [yourApps, tryAgain(links)],
+    buttons: (links) => [yourApps, ...add(links, 'Try again')],
   },
   /** Chickpea created again because it kept no record of an app it made: two apps share the name, and one is unused. */
   recreated: {
@@ -99,46 +106,47 @@ const DM_COPY = {
   },
   create_refused: {
     text: ({ name }) => `Slack didn't finish ${name}'s app. Choose Try again. If it keeps happening, check that your workspace allows new apps.`,
-    buttons: (links) => [tryAgain(links)],
+    buttons: (links) => add(links, 'Try again'),
   },
   /** The app exists; Slack refused the update that points its events and clicks at Chickpea. */
   urls_refused: {
     text: ({ name }) => `Slack didn't finish connecting ${name}'s app to Chickpea. Wait a minute, then choose Try again.`,
-    buttons: (links) => [tryAgain(links)],
+    buttons: (links) => add(links, 'Try again'),
   },
   slack_busy: {
     text: () => 'Slack is limiting how fast apps are set up. Wait a minute, then choose Try again.',
-    buttons: (links) => [tryAgain(links)],
+    buttons: (links) => add(links, 'Try again'),
   },
   permission_needed: {
     text: permissionNeededCopy,
     buttons: (links) => openAdmin(links.adminUrl),
   },
   config_token_needed: {
-    text: ({ name }) => `Chickpea needs a new Slack refresh token to finish ${name}'s app.`,
-    buttons: (links) => links.tokenPageUrl ? [{ label: 'Paste a new token', url: links.tokenPageUrl }] : [],
+    text: ({ name }) => `Chickpea needs a new Slack refresh token to finish ${name}'s app. Paste one, then choose Continue.`,
+    buttons: (links) => [...(links.tokenPageUrl ? [{ label: 'Paste a new token', url: links.tokenPageUrl }] : []), ...add(links, 'Continue')],
   },
-  /** Add to Slack pressed in a workspace that has never kept a token, or removed it. */
-  config_token_missing: {
-    text: ({ name }) => `Chickpea needs a Slack refresh token to add ${name} to Slack.`,
-    buttons: (links) => links.tokenPageUrl ? [{ label: 'Paste a token', url: links.tokenPageUrl }] : [],
+  /** Another Agent in Slack holds the handle, so nothing was created. */
+  handle_taken: {
+    text: ({ name, handle }) =>
+      `Another Agent is using @${handle} in Slack, or is being added with it, so Chickpea didn't create ${name}'s app. Rename ${name} in Chickpea Admin, then add it again.`,
+    buttons: (links) => openAdmin(links.adminUrl),
   },
   /** Removed, and its user group is back on. */
   app_removed: {
     text: ({ name, handle }) =>
-      `${name}'s Slack app was removed from this workspace. People can still mention @${handle}, and ${name} answers through Chickpea. Choose Allow to add the app back.`,
-    buttons: allow,
+      `${name}'s Slack app was removed from this workspace. People can still mention @${handle}, and ${name} answers through Chickpea. Choose Add ${name} to Slack to add the app back.`,
+    buttons: (links, names) => add(links, `Add ${names.name} to Slack`),
   },
   /** Removed, with no user group to answer @handle: none to turn back on, or Slack refused. */
   app_removed_unreachable: {
-    text: (names) => `${removedUnreachable(names)} Choose Allow to add the app back.`,
-    buttons: allow,
+    text: (names) => `${removedUnreachable(names)} Choose Add ${names.name} to Slack to add the app back.`,
+    buttons: (links, names) => add(links, `Add ${names.name} to Slack`),
   },
   /** Removed, and Slack refused to turn the user group back on for want of the Owner's permission. */
   app_removed_permission: {
     text: (names) =>
-      `${removedUnreachable(names)} To bring back @${names.handle} without the app, choose Update in Slack in Chickpea Admin, then choose Try again. Or choose Allow to add the app back.`,
-    buttons: (links, names) => [...allow(links, names), ...openAdmin(links.adminUrl), tryAgain(links)],
+      `${removedUnreachable(names)} To bring back @${names.handle} without the app, choose Update in Slack in Chickpea Admin, then choose Try again. Or choose Add ${names.name} to Slack to add the app back.`,
+    buttons: (links, names) => [...add(links, `Add ${names.name} to Slack`), ...openAdmin(links.adminUrl), tryAgain(links)],
   },
   /** The archive refusal Admin shows, sent too because the Agent no longer answers. */
   uninstall_failed: {
@@ -170,23 +178,20 @@ const DM_COPY = {
   },
 } satisfies Record<AgentAppMessageKind, Copy>;
 
-/** What the person who pressed Add to Slack sees when the press starts nothing. */
-export function addPressReply(
-  kind: 'gone' | 'owner_needed' | 'archived' | 'in_slack' | 'already_started',
-  names?: AgentAppNames,
-): string {
-  const name = names?.name ?? '';
+/**
+ * The private answer to Add to Slack on a message an earlier build posted,
+ * whose button was an action: an Owner gets the link that adds the Agent now.
+ * Mrkdwn; the name is escaped.
+ */
+export function addPressReply(kind: 'gone' | 'owner_needed' | 'link', names?: AgentAppNames, addUrl?: string): string {
+  const name = escapeMrkdwn(names?.name ?? '');
   switch (kind) {
     case 'gone':
       return 'That Agent no longer exists.';
     case 'owner_needed':
       return `A workspace Owner needs to add ${name} to Slack.`;
-    case 'archived':
-      return `${name} is archived, so it can't be added to Slack.`;
-    case 'in_slack':
-      return `${name} is already in Slack.`;
-    case 'already_started':
-      return `Chickpea is already adding ${name} to Slack. Its latest message to you says what's next.`;
+    case 'link':
+      return `<${addUrl}|Add ${name} to Slack>`;
   }
 }
 
@@ -237,60 +242,18 @@ function listed(items: readonly string[]): string {
   return `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`;
 }
 
-export type ConsentOutcome =
-  | 'cancelled'
-  | 'expired'
-  | 'another_person'
-  | 'other_workspace'
-  | 'missing_permissions'
-  | 'slack_down'
-  | 'already_active';
-
-const CONSENT_COPY = {
-  cancelled: ({ name }) => `${name} wasn't added. You can choose Allow ${name} in Slack again from your messages with Chickpea.`,
-  expired: ({ name }) => `That link has expired. Choose Allow ${name} in Slack again from your messages with Chickpea.`,
-  another_person: ({ name }) => `Only the Owner who started this can finish it. Choose Allow ${name} in Slack from your own messages with Chickpea.`,
-  other_workspace: ({ name }) => `That was a different Slack workspace. Choose Allow ${name} in Slack from your messages with Chickpea in this workspace.`,
-  missing_permissions: ({ name }) => `${name} needs every permission it asked for. Choose Allow ${name} in Slack again and allow them all.`,
-  slack_down: ({ name }) => `Slack didn't answer. Choose Allow ${name} in Slack again in a minute.`,
-  already_active: ({ name }) => `${name} already has its own Slack app.`,
-} satisfies Record<ConsentOutcome, (names: AgentAppNames) => string>;
-
-const CONSENT_STATUS = {
-  cancelled: 200,
-  expired: 410,
-  another_person: 403,
-  other_workspace: 409,
-  missing_permissions: 409,
-  slack_down: 503,
-  already_active: 409,
-} satisfies Record<ConsentOutcome, number>;
-
-export function consentPage(outcome: ConsentOutcome, names: AgentAppNames): Response {
-  return noticePage(CONSENT_COPY[outcome](names), CONSENT_STATUS[outcome]);
-}
-
-/** The Expired page for a callback whose state names no Agent. */
-export function unnamedExpiredPage(): Response {
-  return noticePage('That link has expired. Open your messages with Chickpea and choose Allow again.', CONSENT_STATUS.expired);
-}
-
-/** A plain page with one sentence; nothing on it is a diagnostic. */
-function noticePage(text: string, status: number): Response {
-  const body = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">` +
-    `<title>Chickpea</title><style>body{font:16px/1.5 system-ui,sans-serif;margin:0;padding:48px 24px;max-width:36rem}</style></head>` +
-    `<body><p>${escapeHtml(text)}</p></body></html>`;
-  return new Response(body, { status, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
-}
-
+/** Add to Slack as an action, on messages posted before it became a link; it is answered with the link. */
 export const START_APP_ACTION = 'agent_app_start';
 export const FINISH_APP_ACTION = 'agent_app_finish';
+/** A link button's own ID: Slack still reports its press, which nothing acts on. */
+export const ADD_LINK_ACTION = 'agent_app_add_link';
 /** A sequence that has not moved for this long shows "Finish setting up". */
 export const STALLED_AFTER_MS = 2 * 60_000;
 
 export type AgentAppHomeRow =
   | { kind: 'setting_up' }
-  | { kind: 'stalled' }
+  /** `add` for an add on its way to Allow, which the hand-off page picks up; otherwise a switch or a removal. */
+  | { kind: 'stalled'; add?: true }
   | { kind: 'waiting' }
   | { kind: 'active' }
   /** Live, and the Owner never got the switch's result message: the row says what it would have. */
@@ -303,21 +266,23 @@ export type AgentAppHomeRow =
 const HOME_COPY = {
   setting_up: ({ handle }: AgentAppNames) => `Setting up @${handle}'s own Slack app.`,
   stalled: ({ handle }: AgentAppNames) => `Setting up @${handle}'s Slack app stopped partway.`,
-  waiting: ({ handle }: AgentAppNames) => `@${handle}'s Slack app is ready to add. Open your messages with Chickpea to allow it.`,
+  waiting: ({ handle }: AgentAppNames) => `@${handle}'s Slack app is ready to add. Choose Allow in Slack to finish.`,
   active: ({ handle }: AgentAppNames) => `@${handle} has its own Slack app. People can message @${handle} directly.`,
   attention: ({ handle }: AgentAppNames) => `@${handle}'s Slack app needs your attention. Open your messages with Chickpea for details.`,
   removing: ({ handle }: AgentAppNames) => `Removing the Slack app Chickpea made for @${handle}.`,
   removing_stalled: ({ handle }: AgentAppNames) => `Removing the Slack app Chickpea made for @${handle} stopped partway.`,
 } satisfies Record<Exclude<AgentAppHomeRow['kind'], 'active_untold'>, (names: AgentAppNames) => string>;
 
-/** The Owner's App Home line under an Agent, with its one control. */
-export function agentAppHomeBlocks(row: AgentAppHomeRow, names: AgentAppNames, agentId: string): object[] {
+/** The Owner's App Home line under an Agent, with its one control: a link to the hand-off page for an add. */
+export function agentAppHomeBlocks(row: AgentAppHomeRow, names: AgentAppNames, agentId: string, addUrl?: string): object[] {
   const button = (text: string, extra: Record<string, unknown>) => ({
     type: 'actions',
     elements: [{ type: 'button', text: { type: 'plain_text', text: clampDisplay(text, BUTTON_TEXT_MAX) }, ...extra }],
   });
   const text = row.kind === 'active_untold' ? agentAppSwitchedMessage(names, row.report).text : escapeMrkdwn(HOME_COPY[row.kind](names));
   const line = { type: 'context', elements: [{ type: 'mrkdwn', text }] };
+  if (addUrl && row.kind === 'waiting') return [line, button('Allow in Slack', { action_id: ADD_LINK_ACTION, url: addUrl })];
+  if (addUrl && row.kind === 'stalled' && row.add) return [line, button('Finish setting up', { action_id: ADD_LINK_ACTION, url: addUrl })];
   if (row.kind === 'stalled') return [line, button('Finish setting up', { action_id: FINISH_APP_ACTION, value: agentId })];
   if (row.kind === 'removing_stalled') return [line, button('Finish removing', { action_id: FINISH_APP_ACTION, value: agentId })];
   return [line];
