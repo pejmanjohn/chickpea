@@ -236,6 +236,7 @@ import {
   type SlackInboundEnvelope,
   type SlackMember,
   type SlackTransport,
+  SlackTransportError,
 } from '../slack/transport/types.ts';
 import { createGatewaySlackTransport } from '../slack/transport/gateway.ts';
 import {
@@ -872,6 +873,7 @@ function handleAgentAppSlackEvents(
       await processSlackStopButton(payload as unknown as SlackEventFixture, platformEnv, execution);
       return;
     }
+    if (eventType !== 'member_joined_channel' && !await agentAppMessageConfirmed((payload as { event?: unknown }).event, bot, handoff.appId)) return;
     await processSlackEvent(
       payload as unknown as SlackEventFixture,
       platformEnv,
@@ -881,6 +883,27 @@ function handleAgentAppSlackEvents(
       { installation },
     );
   };
+}
+
+/**
+ * A message an Agent app delivers names its sender, and whoever holds the
+ * app's secrets can name anyone: it goes on only once Slack shows the same
+ * message (sender.ts). One line, with no content, for each it stops; a read
+ * Slack does not answer is logged and thrown, so the delivery is retried.
+ */
+async function agentAppMessageConfirmed(event: unknown, bot: AgentAppBotCredentials, appId: string): Promise<boolean> {
+  const warn = (reason: string) => console.warn(JSON.stringify({
+    component: 'agent_apps', event: 'delivery_not_confirmed', appId, reason,
+  }));
+  const { confirmAgentAppMessage } = await import('../slack/agent-apps/sender.ts');
+  try {
+    const check = await confirmAgentAppMessage(event, bot);
+    if (!check.confirmed) warn(check.reason);
+    return check.confirmed;
+  } catch (error) {
+    warn(error instanceof SlackTransportError ? error.code : 'unavailable');
+    throw error;
+  }
 }
 
 function handleAgentAppSlackInteractions(

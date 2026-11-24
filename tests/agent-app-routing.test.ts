@@ -56,14 +56,14 @@ test("an Agent app's own delivery selects its Agent only for a mention of its ow
     'a plain group DM message is no DM of its own');
 });
 
-test("Chickpea's delivery ignores a Channel or group DM message naming an Agent-app bot only while that app can answer there", async () => {
+test("Chickpea's delivery ignores a Channel message naming an Agent-app bot only while that app can answer there, and routes every group DM one", async () => {
   const heard = (text: string) => ({ text, source: 'agent_mention' as const });
   const inGroupDm = (text: string) => ({ text, source: 'dm_message' as const, channelType: 'mpim' as const });
   assert.deepEqual(await agentAppRouteSelection(heard('hey <@UBOTSUP|support> can you look'), agents, undefined, answersWhereLive), { kind: 'ignore' });
   assert.equal(await agentAppRouteSelection(heard('hey <@UBOTSUP>'), agents, undefined, answersNowhere), undefined,
     'its bot is not in the Channel, or its token cannot be read: Chickpea routes it');
-  assert.deepEqual(await agentAppRouteSelection(inGroupDm('hey <@UBOTSUP>'), agents, undefined, answersWhereLive), { kind: 'ignore' },
-    'a group DM the app can answer in is the same');
+  assert.equal(await agentAppRouteSelection(inGroupDm('hey <@UBOTSUP>'), agents, undefined, answersWhereLive), undefined,
+    "a group DM the app can answer in is routed by Chickpea, since the app's own delivery from it is never admitted");
   assert.equal(await agentAppRouteSelection(inGroupDm('hey <@UBOTSUP>'), agents, undefined, answersNowhere), undefined,
     'and a group DM it cannot answer in is routed by Chickpea');
   assert.equal(await agentAppRouteSelection({ text: 'hey <@UBOTSUP>', source: 'dm_message', channelType: 'im' }, agents, undefined, answersWhereLive), undefined,

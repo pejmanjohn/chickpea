@@ -799,6 +799,39 @@ export async function slackConversationsInfo(
   };
 }
 
+export interface SlackMessageReadResult {
+  ok: boolean;
+  error: string | undefined;
+  /** The message Slack holds at that ts in that conversation; undefined when it holds none. */
+  message: Record<string, unknown> | undefined;
+  retryAfterMs: number | undefined;
+}
+
+/**
+ * The one message at `ts` in a conversation, as Slack holds it now. A reply
+ * is read in its thread (`conversations.replies`), anything else from the
+ * conversation's history; either needs the token's history scope there.
+ */
+export async function slackMessageAt(
+  botToken: string,
+  input: { channelId: string; ts: string; threadTs?: string | undefined },
+): Promise<SlackMessageReadResult> {
+  const reply = input.threadTs !== undefined && input.threadTs !== input.ts;
+  const params = new URLSearchParams({ channel: input.channelId, oldest: input.ts, latest: input.ts, inclusive: 'true' });
+  // Slack puts a thread's parent first whatever the window, so a reply needs room for two.
+  if (reply) params.set('ts', input.threadTs!);
+  params.set('limit', reply ? '2' : '1');
+  const result = await slackFormPost(reply ? 'conversations.replies' : 'conversations.history', botToken, params);
+  if (!result.ok || result.body.ok !== true) {
+    const error = result.error ?? (typeof result.body.error === 'string' ? result.body.error : 'invalid_response');
+    return { ok: false, error, message: undefined, retryAfterMs: result.retryAfterMs };
+  }
+  const messages = Array.isArray(result.body.messages) ? result.body.messages : [];
+  const message = messages.find((candidate): candidate is Record<string, unknown> =>
+    !!candidate && typeof candidate === 'object' && (candidate as { ts?: unknown }).ts === input.ts);
+  return { ok: true, error: undefined, message, retryAfterMs: result.retryAfterMs };
+}
+
 export interface SlackConversationsOpenResult {
   ok: boolean;
   error: string | undefined;
