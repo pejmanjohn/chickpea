@@ -10,7 +10,7 @@ import {
   type PlatformEnv,
 } from '../../config/state-backend.ts';
 import { parseSlackManagementSignal, type SlackManagementSignal } from '../../management/slack-tools.ts';
-import { storedRunSpeaker } from '../agent-apps/index.ts';
+import { agentSlackAppsHost, installationBotIsIn, storedRunSpeaker } from '../agent-apps/index.ts';
 import { resolveSlackInstallationExecutionContext } from '../installation-execution.ts';
 import { assertSlackListsAccess } from '../lists/tools.ts';
 import { ListWriteLedger } from '../lists/writes.ts';
@@ -29,8 +29,11 @@ export const SLACK_CANVASES_INSTRUCTION = [
 
 const MAX_CANVAS_MARKDOWN_CHARS = 100_000;
 
-export const CANVASES_NOT_IN_AGENT_DM =
+export const CANVASES_NOT_IN_THIS_CONVERSATION =
   'Canvases are not available in this conversation. Nothing was read or changed. If the requester needs a canvas, suggest asking for it in a channel.';
+
+export const CANVASES_NOT_IN_THIS_CHANNEL =
+  'Canvases are not available in this conversation. Nothing was read or changed. If the requester needs a canvas, suggest adding Chickpea to this channel.';
 
 const text = (max: number) => v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(max));
 const markdown = v.pipe(v.string(), v.maxLength(MAX_CANVAS_MARKDOWN_CHARS), v.check((value) => value.trim().length > 0, 'Markdown is required.'));
@@ -105,11 +108,16 @@ export async function slackCanvasService(
 ): Promise<SlackCanvasService> {
   const config = getConfigStore(env);
   const identity = getIdentityStore(env);
-  await assertSlackListsAccess(plan, signal, config, identity);
-  // Chickpea's bot is not in an Agent app's own DM.
-  if (signal.conversationKind === 'im' && (await storedRunSpeaker(env, signal.turnJobId))?.kind === 'own_bot') {
-    throw new SlackCanvasError('not_in_this_conversation', CANVASES_NOT_IN_AGENT_DM);
-  }
+  const agent = await assertSlackListsAccess(plan, signal, config, identity);
+  // Canvases go through Chickpea's bot. It is never in an Agent app's own DM,
+  // and may not be in a Channel or group DM where the app's bot speaks.
+  const dm = signal.conversationKind === 'im';
+  const ownBotRun = (dm || (agentSlackAppsHost() && agent.slackPresence?.kind === 'agent_app')) &&
+    (await storedRunSpeaker(env, signal.turnJobId))?.kind === 'own_bot';
+  const notHere = () => new SlackCanvasError('not_in_this_conversation', signal.conversationKind === 'channel'
+    ? CANVASES_NOT_IN_THIS_CHANNEL
+    : CANVASES_NOT_IN_THIS_CONVERSATION);
+  if (ownBotRun && dm) throw notHere();
   const settings = getSettingsStore(env);
   const [installation, { SlackCanvasService, createSlackCanvasesCall }] = await Promise.all([
     resolveSlackInstallationExecutionContext(signal.workspaceId, env, {
@@ -120,6 +128,7 @@ export async function slackCanvasService(
     }),
     import('./service.ts'),
   ]);
+  if (ownBotRun && !await installationBotIsIn(installation.client, signal.channelId)) throw notHere();
   return new SlackCanvasService({
     workspaceId: signal.workspaceId,
     botUserId: installation.botUserId,

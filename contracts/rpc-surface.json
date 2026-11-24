@@ -3161,6 +3161,26 @@
           ],
           "returns": "#HostSlackManagementApprovalResult"
         },
+        "slackOwnBotRun": {
+          "params": [
+            {
+              "name": "id",
+              "type": "string"
+            }
+          ],
+          "returns": {
+            "ref": "#StateRpcResult",
+            "args": [
+              {
+                "union": [
+                  "#SlackRunSpeaker",
+                  "null"
+                ]
+              }
+            ]
+          },
+          "fallback": true
+        },
         "slackPresentationAppendCooldown": {
           "params": [
             {
@@ -4546,10 +4566,22 @@
       ]
     },
     "AgentAppBot": {
-      "object": {
-        "agentId": "string",
-        "botUserId": "string"
-      }
+      "union": [
+        {
+          "object": {
+            "agentId": "string",
+            "appId": "string",
+            "botUserId?": "undefined"
+          }
+        },
+        {
+          "object": {
+            "agentId": "string",
+            "appId?": "string",
+            "botUserId": "string"
+          }
+        }
+      ]
     },
     "AgentAppConsent": {
       "object": {
@@ -20474,6 +20506,37 @@
         "turnJobId": "string",
         "updatedAt": "number",
         "workBindingGeneration": "number"
+      }
+    },
+    "SlackRunSpeaker": {
+      "object": {
+        "agentId": "string",
+        "speaker?": {
+          "union": [
+            {
+              "object": {
+                "botUserId": "string",
+                "kind": "\"own_bot\""
+              }
+            },
+            {
+              "object": {
+                "kind": "\"chickpea_as_agent\""
+              }
+            },
+            {
+              "object": {
+                "kind": "\"unavailable\"",
+                "reason": {
+                  "union": [
+                    "\"app_removed\"",
+                    "\"no_bot_can_post\""
+                  ]
+                }
+              }
+            }
+          ]
+        }
       }
     },
     "SlackScheduleActionOutcome": {

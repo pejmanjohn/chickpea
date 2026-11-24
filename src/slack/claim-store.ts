@@ -367,7 +367,7 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   turnJobView?(id: string): Promise<RunnerTurnJobView>;
   /**
    * A retained turn's run, delivered or not, when its stored speaker is its
-   * Agent app's own bot, so a repair edits with that bot. Local stores only.
+   * Agent app's own bot, so a repair edits with that bot.
    */
   ownBotRun?(id: string): Promise<SlackRunSpeaker | undefined>;
   /**

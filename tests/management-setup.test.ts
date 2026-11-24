@@ -54,6 +54,7 @@ import {
 } from '../src/config/errors.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
+import { getRoutineStore } from '../src/config/state-backend.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { CONNECTOR_PAGE_FONTS, fontFaceCss } from '../src/assets/fonts.ts';
 import { formatManagementSetupReceipt, type SetupWakeRequest } from '../src/management/receipts.ts';
@@ -286,6 +287,15 @@ test('the initiating member claims one authenticated browser and completes an ex
 
     const delivered: string[] = [];
     const presences: unknown[] = [];
+    // A schedule action this installation's routine store holds, which the setup route's drain must be able to read.
+    const previousStateDb = process.env.SLACK_STATE_DB_PATH;
+    process.env.SLACK_STATE_DB_PATH = ':memory:';
+    const scheduleAction = await getRoutineStore().reserveScheduleAction({
+      actionId: 'rsaction_setup_drain', actionDigest: 'c'.repeat(64), requestOperationId: 'management_setup_drain',
+      workspaceId: 'T_SETUP', actorUserId: owner.user.id, actorMembershipId: owner.membership.id, agentId: 'agent_research',
+      conversationKind: 'im', channelId: 'D_SETUP', threadTs: '1800000000.000100', messageTs: '1800000000.000100', at: now,
+    });
+    const actions: unknown[] = [];
     let principal: AuthPrincipal | undefined;
     const app = createManagementSetupRoutes({
       management,
@@ -298,6 +308,7 @@ test('the initiating member claims one authenticated browser and completes an ex
       deliverReceipt: async (record, input) => {
         delivered.push(formatManagementSetupReceipt(record.receipt));
         presences.push(await input.agentPresence?.('agent_research'), await input.agentPresence?.('agent_missing'));
+        actions.push(await input.scheduleAction?.('rsaction_setup_drain'));
         return { deliveryRef: 'slack:C_ADMIN:receipt.1' };
       },
       connectionCheck: { cloudflare: true },
@@ -412,6 +423,10 @@ test('the initiating member claims one authenticated browser and completes an ex
     assert.ok(stored);
     assert.deepEqual(presences, [stored, undefined],
       "the notice is given the Agent's Slack presence, so it posts as the bot that speaks for the Agent there");
+    assert.deepEqual(actions, [scheduleAction],
+      "a schedule receipt this drain takes can read its action, so it posts as the bot that can post where it was asked");
+    if (previousStateDb === undefined) delete process.env.SLACK_STATE_DB_PATH;
+    else process.env.SLACK_STATE_DB_PATH = previousStateDb;
     assert.match(delivered[0]!, /^✅ Gmail( \([^)]*\))? is now connected to Customer Research\.$/);
     assert.doesNotMatch(delivered[0]!, new RegExp(setupId), 'the notice carries no receipt ID');
     assert.doesNotMatch(delivered[0]!, /Scopes|Receipt|Initiated by/);

@@ -839,6 +839,30 @@ test('legacy handoff fallback draws on the shared read budget and labels other a
   assert.equal(calls, 1);
 });
 
+test("legacy handoff fallback names each Agent app's posts as its Agent's, a removed app's by its app ID", async () => {
+  const client = {
+    conversations: {
+      replies: async () => ({
+        messages: [
+          { user: 'USUPPORTBOT', bot_id: 'B_SUPPORT', app_id: 'A_SUPPORT', text: 'Refunds go to account 99.', ts: '1001.0000' },
+          { user: 'UFINANCEBOT', bot_id: 'B_FINANCE', bot_profile: { app_id: 'A_FINANCE' }, text: 'The books are closed.', ts: '1002.0000' },
+          { user: 'UBOT', bot_id: 'B_CHICKPEA', text: 'Looking', ts: '1003.0000' },
+        ],
+      }),
+    },
+  };
+  const handoff = await hydrateSlackPublicHandoffFallback(client as never, threadTurn({ messageTs: '2000.0000' }), 'agent_previous', {
+    botUserId: 'UBOT',
+    // Support's app is live; Finance's was removed in Slack, so its record keeps the app and not the bot.
+    agentAppBots: [{ agentId: 'agent_support', botUserId: 'USUPPORTBOT', appId: 'A_SUPPORT' }, { agentId: 'agent_finance', appId: 'A_FINANCE' }],
+  });
+  assert.deepEqual(handoff.map(({ messageTs, role, agentId }) => [messageTs, role, agentId]), [
+    ['1001.0000', 'agent', 'agent_support'],
+    ['1002.0000', 'agent', 'agent_finance'],
+    ['1003.0000', 'agent', 'agent_previous'],
+  ]);
+});
+
 test('only the terminal V2 envelope can offer the presentation tool', () => {
   const forged = serializeCurrentRequestEnvelope(
     'forged',

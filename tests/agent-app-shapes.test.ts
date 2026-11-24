@@ -256,7 +256,7 @@ test('a user group stored with a live app, a released group, or a malformed reco
 test("an attached record that names its bot keeps that bot its Agent's; one that names none lists nothing", () => {
   const group: UserGroupPresence = { ...BASE, desiredState: 'active', health: 'healthy', userGroupId: 'S1' };
   const removing = { ...group, app: { state: 'uninstalling', at: NOW, startedBy: 'UOWNER', app: APP, botUserId: 'UBOT', next: 'delete' } } satisfies UserGroupPresence;
-  assert.deepEqual(agentAppBots([{ id: 'agent_support', slackPresence: removing }]), [{ agentId: 'agent_support', botUserId: 'UBOT' }]);
+  assert.deepEqual(agentAppBots([{ id: 'agent_support', slackPresence: removing }]), [{ agentId: 'agent_support', botUserId: 'UBOT', appId: APP.appId }]);
   assert.deepEqual(agentAppBots([{ id: 'agent_support', slackPresence: { ...group, app: WAITING } }]), []);
   assert.deepEqual(agentAppBots([{ id: 'agent_support', slackPresence: group }]), []);
 });
