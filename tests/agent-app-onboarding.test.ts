@@ -289,6 +289,31 @@ test('a journey stored before the step existed reads as this build expects', asy
   assert.deepEqual(parseOnboardingJourney(JSON.stringify(stored)), rest);
 });
 
+test('a journey an older build stored before the model, or finished, is where it was', async (t) => {
+  host(t, { github: true });
+  const stored = async (raw: Record<string, unknown>) => {
+    const hosted = await atSlackApps(t);
+    await hosted.settings.setSetting(ONBOARDING_JOURNEY_KEY, JSON.stringify(raw));
+    return hosted;
+  };
+  const early = await stored({ version: 2, state: 'active', startedAt: 100, selectedWorkspaceId: TEAM, selectedProviderId: 'anthropic' });
+  const atModel = await early.read();
+  assert.equal(atModel.stage, 'choose_model');
+  assert.equal((await early.settle(atModel.revision)).status, 409, 'the step waits for the model');
+  assert.equal((await journey(early.settings)).slackAppsStepAt, undefined);
+
+  const tried = { version: 2, state: 'complete', startedAt: 100, agentId: 'agent_chickpea', selectedWorkspaceId: TEAM, selectedProviderId: 'anthropic',
+    selectedModelId: 'anthropic/claude-sonnet-5', trySlackUserId: 'UONBOARD', tryStartedAt: 300, completedAt: 500 };
+  // Finished past Connect GitHub, and finished while still at it: neither is reopened, and settling writes nothing.
+  for (const raw of [{ ...tried, githubStepAt: 400 }, tried]) {
+    const done = await stored(raw);
+    const view = await done.read();
+    assert.equal(view.stage, 'complete');
+    assert.equal(((await (await done.settle(view.revision)).json()) as View).stage, 'complete');
+    assert.equal(await done.settings.getSetting(ONBOARDING_JOURNEY_KEY), JSON.stringify(raw), 'stored as the older build left it');
+  }
+});
+
 test('the step is part of the journey: it follows the model, Connect GitHub settles it too, and choosing a provider again resets it', async () => {
   const settings = new SqliteSettingsStore(':memory:');
   try {
