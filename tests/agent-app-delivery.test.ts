@@ -94,6 +94,7 @@ import type { SlackTransport } from '../src/slack/transport/types.ts';
 import { editTurnJobId } from '../src/slack/edits.ts';
 import type { PendingTurnJob } from '../src/slack/turn-jobs.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
+import { formFieldBlockId } from '../src/slack/ui/render-form.ts';
 import { displaySurfaceId, uiActionId, uiBlockId, uiSurfaceId, uiValue, type UiSurfaceRecord } from '../src/slack/ui/surface.ts';
 import { escapeMrkdwn } from '../src/slack/ui/text.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
@@ -173,7 +174,7 @@ function userAgent(id: string, name: string, handle: string): CustomAgentConfig 
  * `rateLimits` answers the next call matching each entry once with HTTP 429 and that Retry-After, in seconds.
  * `history` and `replies` are the messages `conversations.history` and `conversations.replies` return; `reactions.get` finds its message in `replies`.
  * `grantedScopes` are, per Agent app bot token, the scopes Slack granted it; by default today's.
- * `beforeCall` sees each call that is not refused or rate limited, before Slack answers it.
+ * `beforeCall` sees each call that is not refused or rate limited, before Slack answers it; Slack answers once it settles.
  */
 async function withHarness(
   t: TestContext,
@@ -189,7 +190,7 @@ async function withHarness(
     replies?: readonly Record<string, unknown>[];
     grantedScopes?: Partial<Record<string, readonly string[]>>;
     rateLimits?: Array<{ call: string; retryAfter: number }>;
-    beforeCall?: (method: string, body: URLSearchParams) => void;
+    beforeCall?: (method: string, body: URLSearchParams) => void | Promise<unknown>;
   } = {},
 ): Promise<void> {
   await stopNodeTurnRelay();
@@ -316,7 +317,7 @@ async function withHarness(
       const { retryAfter } = options.rateLimits!.splice(limit, 1)[0]!;
       return Response.json({ ok: false, error: 'ratelimited' }, { status: 429, headers: { 'retry-after': String(retryAfter) } });
     }
-    options.beforeCall?.(method, body);
+    await options.beforeCall?.(method, body);
     // As in Slack, an Agent app's token is refused what its scopes leave out: reading a DM (im:read), a group DM's
     // messages when it was granted no mpim:history, and opening a group DM (mpim:write).
     if (token && APP_DMS[token] && (
@@ -4039,7 +4040,7 @@ test("an edit naming the app's bot rewrites nobody's row in the thread record, a
 
 const shortLimits: Array<{ call: string; retryAfter: number }> = [];
 
-test("a read Slack limits for two seconds or less is waited out and made once more; a longer limit fails the delivery as before", async (t) => withHarness(t, async (h) => {
+test("a read Slack limits for no longer than the check may pause is waited out and made once more; a longer limit fails the delivery as before", async (t) => withHarness(t, async (h) => {
   const warn = t.mock.method(console, 'warn', () => undefined);
   t.mock.method(console, 'error', () => undefined);
   t.after(() => { shortLimits.length = 0; });
@@ -4050,7 +4051,7 @@ test("a read Slack limits for two seconds or less is waited out and made once mo
   assert.equal(confirmations(h, ts).length, 2, 'the limited read, then one more');
 
   const later = '1900011100.000200';
-  shortLimits.push({ call: `conversations.history ${AGENT_BOT}`, retryAfter: 3 });
+  shortLimits.push({ call: `conversations.history ${AGENT_BOT}`, retryAfter: 2 });
   assert.equal((await h.deliver('events', appDm(later, { text: 'and last week?' }), { settle: true })).ok, false, 'Slack delivers it again');
   assert.equal(await pendingTurn(h.stores, (job) => job.turn.messageTs === later), undefined);
   assert.deepEqual(notConfirmed(warn).map((line) => (line as { reason: string }).reason), ['ratelimited']);
@@ -4094,49 +4095,71 @@ function interactionsRefused(warn: { mock: { calls: Array<{ arguments: unknown[]
     typeof line === 'string' && line.includes('"interaction_refused"') ? [JSON.parse(line) as unknown] : []);
 }
 
-test("a press or modal submission through an Agent's app on a card its bot did not post is refused, with one line and no content", async (t) => withHarness(t, async (h) => {
-  const warn = t.mock.method(console, 'warn', () => undefined);
+/**
+ * An open approval card in a #C1 thread, for `agentId`, posted by `poster` (Chickpea's bot unless named); with
+ * `stored` false, one not pressed before, so no message is stored for it.
+ */
+async function putApprovalCard(
+  h: Harness,
+  input: { agentId: string; threadTs: string; cardTs: string; stored?: boolean; poster?: Record<string, unknown> },
+): Promise<string> {
+  const { agentId, threadTs, cardTs, stored = true } = input;
   const owner = await h.stores.identity.resolveSlackIdentity(TEAM, 'U1');
   assert.ok(owner);
-  // An approval card Chickpea's bot posted in a #C1 thread, for `agentId`; with no `cardTs` stored, one not pressed before.
-  const chickpeaPosted = async (agentId: string, threadTs: string, cardTs: string, stored = true) => {
-    await h.stores.config.putAgentThreadRoute({ workspaceId: TEAM, channelId: 'C1', threadTs, agentId, agentGeneration: 1 });
-    const scope = `slack:${TEAM}:C1:${threadTs}:agent:${agentId}`;
-    const proposalId = `proposal_${threadTs}`;
-    await h.stores.management.putChangeSetProposal({
-      proposalId, organizationId: owner.membership.organizationId,
-      actorUserId: owner.user.id, actorMembershipId: owner.membership.id,
-      originKey: scope, approvalScopeKey: scope, idempotencyKey: proposalId,
-      guideVersion: 'test', authoringReason: 'agent_edit', digest: 'd'.repeat(64),
-      operations: [{ itemId: 'memory', kind: 'update_agent_memory', agentId, expectedRevision: 0, body: 'Refunds go to account 99.' }],
-      preview: { summary: 'Preview', changes: [], missingSetup: [] },
-      targetRevisions: { [`memory:${agentId}`]: 0 }, at: Date.now(),
-    });
-    const surfaceId = uiSurfaceId(`msg:C1:${threadTs}`, 'host-approval:1');
-    const now = Date.now();
-    await h.stores.slackState.executeUiSurface!({
-      kind: 'put_surface',
-      record: {
-        id: surfaceId, namespace: 'host', workspaceId: TEAM, channelId: 'C1', threadTs, conversationThreadTs: threadTs,
-        conversationKind: 'channel', agentId, turnJobId: `msg:C1:${threadTs}`, requesterUserId: 'U1',
-        spec: { kind: 'approval', approval: 'workspace_change', proposalId },
-        status: 'open', ...(stored ? { messageTs: cardTs } : {}), createdAt: now, updatedAt: now, expiresAt: now + 60_000,
-      },
-    });
-    h.hold('C1', { ts: threadTs, user: 'U1', text: 'remember the refund account' });
-    h.hold('C1', { ts: cardTs, user: 'UBOT', bot_id: 'BCHICKPEA', app_id: MAIN_APP.appId, text: 'Approve this change?', thread_ts: threadTs });
-    return surfaceId;
-  };
-  const press = (surfaceId: string, threadTs: string, messageTs: string, patch: { private?: true } = {}) => h.deliver('interactions', {
+  await h.stores.config.putAgentThreadRoute({ workspaceId: TEAM, channelId: 'C1', threadTs, agentId, agentGeneration: 1 });
+  const scope = `slack:${TEAM}:C1:${threadTs}:agent:${agentId}`;
+  const proposalId = `proposal_${threadTs}`;
+  await h.stores.management.putChangeSetProposal({
+    proposalId, organizationId: owner.membership.organizationId,
+    actorUserId: owner.user.id, actorMembershipId: owner.membership.id,
+    originKey: scope, approvalScopeKey: scope, idempotencyKey: proposalId,
+    guideVersion: 'test', authoringReason: 'agent_edit', digest: 'd'.repeat(64),
+    operations: [{ itemId: 'memory', kind: 'update_agent_memory', agentId, expectedRevision: 0, body: 'Refunds go to account 99.' }],
+    preview: { summary: 'Preview', changes: [], missingSetup: [] },
+    targetRevisions: { [`memory:${agentId}`]: 0 }, at: Date.now(),
+  });
+  const surfaceId = uiSurfaceId(`msg:C1:${threadTs}`, 'host-approval:1');
+  const now = Date.now();
+  await h.stores.slackState.executeUiSurface!({
+    kind: 'put_surface',
+    record: {
+      id: surfaceId, namespace: 'host', workspaceId: TEAM, channelId: 'C1', threadTs, conversationThreadTs: threadTs,
+      conversationKind: 'channel', agentId, turnJobId: `msg:C1:${threadTs}`, requesterUserId: 'U1',
+      spec: { kind: 'approval', approval: 'workspace_change', proposalId },
+      status: 'open', ...(stored ? { messageTs: cardTs } : {}), createdAt: now, updatedAt: now, expiresAt: now + 60_000,
+    },
+  });
+  h.hold('C1', { ts: threadTs, user: 'U1', text: 'remember the refund account' });
+  const poster = input.poster ?? { user: 'UBOT', bot_id: 'BCHICKPEA', app_id: MAIN_APP.appId };
+  h.hold('C1', { ts: cardTs, ...poster, text: 'Approve this change?', thread_ts: threadTs });
+  return surfaceId;
+}
+
+/** A press of an approval card's first button, on the message at `messageTs`, as an Agent app delivers it. */
+function pressCard(h: Harness, surfaceId: string, threadTs: string, messageTs: string, patch: { private?: true } = {}) {
+  return h.deliver('interactions', {
     type: 'block_actions', api_app_id: AGENT_APP, team: { id: TEAM }, user: { id: 'U1' }, trigger_id: 'trigger-1',
     container: { type: 'message', channel_id: 'C1', message_ts: messageTs, is_ephemeral: patch.private === true },
     channel: { id: 'C1' }, message: { ts: messageTs, thread_ts: threadTs },
     actions: [{ type: 'button', action_id: uiActionId('host', 'approval', 0), block_id: uiBlockId('host', surfaceId, 1), value: uiValue(surfaceId, 0), action_ts: `${messageTs.split('.')[0]}.000400` }],
   }, { settle: true });
-  const submit = (surfaceId: string) => h.deliver('interactions', {
+}
+
+/** A modal submission naming a card, as an Agent app delivers it. */
+function submitCard(h: Harness, surfaceId: string) {
+  return h.deliver('interactions', {
     type: 'view_submission', api_app_id: AGENT_APP, team: { id: TEAM }, user: { id: 'U1' },
     view: { id: 'V1', callback_id: 'chickpea.ui.v1.form', private_metadata: surfaceId, state: { values: {} } },
   }, { settle: true });
+}
+
+test("a press or modal submission through an Agent's app on a card its bot did not post is refused, with one line and no content", async (t) => withHarness(t, async (h) => {
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  const chickpeaPosted = (agentId: string, threadTs: string, cardTs: string, stored = true) =>
+    putApprovalCard(h, { agentId, threadTs, cardTs, stored });
+  const press = (surfaceId: string, threadTs: string, messageTs: string, patch: { private?: true } = {}) =>
+    pressCard(h, surfaceId, threadTs, messageTs, patch);
+  const submit = (surfaceId: string) => submitCard(h, surfaceId);
   const reasons = () => interactionsRefused(warn).map((line) => (line as { reason: string }).reason);
   const cardReads = () => h.calls.splice(0).map((call) => [call.method, call.token]);
 
@@ -4178,3 +4201,112 @@ test("a press or modal submission through an Agent's app on a card its bot did n
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.deepEqual((await h.stores.slackState.listPendingTurns!()).map((pending) => pending.turn.threadTs), [], 'nothing is approved');
 }));
+
+/**
+ * What `work` settles to, and how long it waited on timers first, on the suite's clock: the test owns the timers, and
+ * the clock moves one millisecond whenever nothing else can run.
+ */
+async function onSuiteClock<T>(t: TestContext, work: () => Promise<T>): Promise<{ value: T; waitedMs: number }> {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    let settled = false;
+    const running = work().finally(() => { settled = true; });
+    running.catch(() => undefined);
+    let waitedMs = 0;
+    for (;;) {
+      await new Promise((resolve) => setImmediate(resolve));
+      if (settled) break;
+      t.mock.timers.tick(1);
+      waitedMs += 1;
+    }
+    return { value: await running, waitedMs };
+  } finally {
+    t.mock.timers.reset();
+  }
+}
+
+const budgetLimits: Array<{ call: string; retryAfter: number }> = [];
+let budgetRead: ((method: string, body: URLSearchParams) => void | Promise<unknown>) | undefined;
+
+test("a message's pauses, for a rate limit and for a re-read, share a second and a half, so they alone never keep Slack waiting three seconds", async (t) => withHarness(t, async (h) => {
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  t.mock.method(console, 'error', () => undefined);
+  t.after(() => { budgetLimits.length = 0; budgetRead = undefined; });
+  const ts = `${Math.floor(Date.now() / 1_000)}.000900`;
+  // Limited for a second, then not shown yet, then limited for a second again.
+  budgetLimits.push({ call: `conversations.history ${AGENT_BOT}`, retryAfter: 1 });
+  budgetRead = (method, body) => {
+    if (method === 'conversations.history' && body.get('latest') === ts) budgetLimits.push({ call: `conversations.history ${AGENT_BOT}`, retryAfter: 1 });
+  };
+  const { value: response, waitedMs } = await onSuiteClock(t, () => h.deliver('events', appDm(ts, { text: 'refund order 17' }), { forged: true }));
+  assert.ok(waitedMs >= 1_500 && waitedMs < 1_700, `the delivery is answered after ${waitedMs} ms of pauses`);
+  assert.equal(response.ok, false, 'Slack delivers it again');
+  assert.equal(confirmations(h, ts).length, 3, 'the limit that no longer fits is not waited out');
+  assert.deepEqual(notConfirmed(warn).map((line) => (line as { reason: string }).reason), ['ratelimited']);
+}, { rateLimits: budgetLimits, beforeCall: (method, body) => budgetRead?.(method, body) }));
+
+test("a delivery Slack sends again while the first waits out a rate limit ends in one turn", async (t) => withHarness(t, async (h) => {
+  t.mock.method(console, 'warn', () => undefined);
+  t.after(() => { budgetLimits.length = 0; });
+  const ts = '1900011600.000100';
+  h.hold('D1', { user: 'U1', text: 'refund order 18', ts });
+  budgetLimits.push({ call: `conversations.history ${AGENT_BOT}`, retryAfter: 1 });
+  const event = appDm(ts, { text: 'refund order 18' });
+  const { value: responses } = await onSuiteClock(t, async () => {
+    const first = h.deliver('events', event, { settle: true, forged: true });
+    while (confirmations(h, ts).length < 1) await new Promise((resolve) => setImmediate(resolve));
+    const again = await h.deliver('events', event, { settle: true, forged: true });
+    return [again, await first];
+  });
+  assert.deepEqual(responses.map((response) => response.status), [200, 200]);
+  assert.equal(confirmations(h, ts).length, 3, 'the limited read, the redelivery, and the first once more');
+  assert.deepEqual((await turnsOn(h, ts)).map((job) => job.turn.text), ['refund order 18'], 'one turn');
+}, { rateLimits: budgetLimits }));
+
+const SUPPORT_CARD_TS = '1900011700.000300';
+const OWN_BOT_POST = { user: AGENT_BOT_USER, bot_id: 'BAGENT', app_id: AGENT_APP };
+
+test("a press whose card Slack does not answer for within two seconds is told so privately, and nothing is applied; another Agent's card is still refused unread and unanswered", async (t) => withHarness(t, async (h) => {
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  const threadTs = '1900011700.000100';
+  const card = await putApprovalCard(h, { agentId: 'agent_support', threadTs, cardTs: SUPPORT_CARD_TS, poster: OWN_BOT_POST });
+  h.calls.length = 0;
+  const { value: response, waitedMs } = await onSuiteClock(t, () => pressCard(h, card, threadTs, SUPPORT_CARD_TS));
+  assert.equal(response.status, 200);
+  assert.ok(waitedMs >= 2_000 && waitedMs < 2_200, `the press is answered after ${waitedMs} ms`);
+  assert.deepEqual(h.calls.splice(0).map((call) => [call.method, call.token, call.body.get('user'), call.body.get('text')]), [
+    ['conversations.replies', AGENT_BOT, null, null],
+    ['chat.postEphemeral', AGENT_BOT, 'U1', "This button isn't available right now. Reply in the thread instead."],
+  ], 'one read, given up on, and a private notice from the app bot');
+  assert.deepEqual(interactionsRefused(warn).map((line) => (line as { reason: string }).reason), ['slack_request_timeout']);
+  const kept = await h.stores.slackState.executeUiSurface!({ kind: 'get_surface', id: card });
+  assert.equal(kept.kind === 'surface' ? kept.surface?.status : 'unread', 'open', 'the card is still open');
+  assert.deepEqual(await h.stores.slackState.listPendingTurns!(), [], 'nothing is approved');
+
+  const financeThread = '1900011800.000100';
+  const finance = await putApprovalCard(h, { agentId: 'agent_finance', threadTs: financeThread, cardTs: '1900011800.000300' });
+  h.calls.length = 0;
+  assert.equal((await pressCard(h, finance, financeThread, '1900011800.000300')).status, 200);
+  assert.deepEqual(h.calls.map((call) => call.method), [], 'no read and no notice');
+}, { beforeCall: (method, body) => method === 'conversations.replies' && body.get('latest') === SUPPORT_CARD_TS ? new Promise(() => undefined) : undefined }));
+
+const cardLimits: Array<{ call: string; retryAfter: number }> = [];
+
+test("a modal submission whose card read Slack rate limits keeps the modal open with what was typed, says it was not sent, and applies nothing", async (t) => withHarness(t, async (h) => {
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  t.after(() => { cardLimits.length = 0; });
+  const threadTs = '1900011900.000100';
+  const card = await putApprovalCard(h, { agentId: 'agent_support', threadTs, cardTs: '1900011900.000300', poster: OWN_BOT_POST });
+  cardLimits.push({ call: `conversations.replies ${AGENT_BOT}`, retryAfter: 1 });
+  h.calls.length = 0;
+  const submitted = await submitCard(h, card);
+  assert.equal(submitted.status, 200);
+  assert.deepEqual(await submitted.json(), {
+    response_action: 'errors', errors: { [formFieldBlockId(card, 0)]: 'Not sent yet. Try again, or reply in the thread instead.' },
+  });
+  assert.deepEqual(h.calls.map((call) => call.method), ['conversations.replies'], 'the limit is not waited out');
+  assert.deepEqual(interactionsRefused(warn).map((line) => (line as { reason: string }).reason), ['ratelimited']);
+  const kept = await h.stores.slackState.executeUiSurface!({ kind: 'get_surface', id: card });
+  assert.equal(kept.kind === 'surface' ? kept.surface?.status : 'unread', 'open');
+  assert.deepEqual(await h.stores.slackState.listPendingTurns!(), [], 'nothing is applied');
+}, { rateLimits: cardLimits }));

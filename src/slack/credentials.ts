@@ -815,13 +815,14 @@ export interface SlackMessageReadResult {
 export async function slackMessageAt(
   botToken: string,
   input: { channelId: string; ts: string; threadTs?: string | undefined },
+  options: SlackTruthFetchOptions = {},
 ): Promise<SlackMessageReadResult> {
   const reply = input.threadTs !== undefined && input.threadTs !== input.ts;
   const params = new URLSearchParams({ channel: input.channelId, oldest: input.ts, latest: input.ts, inclusive: 'true' });
   // Slack puts a thread's parent first whatever the window, so a reply needs room for two.
   if (reply) params.set('ts', input.threadTs!);
   params.set('limit', reply ? '2' : '1');
-  const result = await slackFormPost(reply ? 'conversations.replies' : 'conversations.history', botToken, params);
+  const result = await slackFormPost(reply ? 'conversations.replies' : 'conversations.history', botToken, params, options);
   if (!result.ok || result.body.ok !== true) {
     const error = result.error ?? (typeof result.body.error === 'string' ? result.body.error : 'invalid_response');
     return { ok: false, error, message: undefined, retryAfterMs: result.retryAfterMs };

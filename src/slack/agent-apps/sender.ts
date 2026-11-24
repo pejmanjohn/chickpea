@@ -28,8 +28,13 @@ const STALE_AFTER_MS = 60 * 60_000;
 /** A message this young that Slack does not show yet is read once more, after a pause. */
 const JUST_SENT_MS = 10_000;
 const REREAD_AFTER_MS = 500;
-/** A rate limit no longer than this is waited out, and the read made once more. */
-const SHORT_LIMIT_MS = 2_000;
+/**
+ * All a message's check may pause, for a rate limit waited out and a re-read together: Slack sends a delivery again
+ * after three seconds without its acknowledgement, and the pauses alone stay well inside that.
+ */
+const PAUSE_BUDGET_MS = 1_500;
+/** A press is acknowledged, and a modal opened from it, within Slack's three seconds: its read waits for no more. */
+const CARD_READ_TIMEOUT_MS = 2_000;
 
 const refused = (reason: string | undefined): AgentAppMessageCheck => ({ confirmed: false, reason });
 
@@ -70,10 +75,17 @@ export async function confirmAgentAppMessage(
   const threadTs = (deleted ? previous : claimed)?.thread_ts;
   const place = { channelId, ts, ...(typeof threadTs === 'string' ? { threadTs } : {}) };
 
-  let read = await readMessage(bot.botToken, place);
-  if (!deleted && read.ok && !read.message && Math.abs(Date.now() - slackTsMs(ts)) < JUST_SENT_MS) {
-    await pause(REREAD_AFTER_MS);
-    read = await readMessage(bot.botToken, place);
+  let budget = PAUSE_BUDGET_MS;
+  const pauseWithin = async (ms: number): Promise<boolean> => {
+    if (ms > budget) return false;
+    budget -= ms;
+    await pause(ms);
+    return true;
+  };
+  let read = await readMessage(bot.botToken, place, pauseWithin);
+  if (!deleted && read.ok && !read.message && Math.abs(Date.now() - slackTsMs(ts)) < JUST_SENT_MS &&
+      await pauseWithin(REREAD_AFTER_MS)) {
+    read = await readMessage(bot.botToken, place, pauseWithin);
   }
   if (!read.ok) {
     const code = read.error ?? 'invalid_response';
@@ -112,25 +124,30 @@ export async function confirmAgentAppMessage(
  * honored, or undefined when it is: Slack sends a card's presses, and the
  * submission of a modal a press opened, only to the app whose bot posted the
  * card, so the card must be one Slack shows that app's own bot posted. Slack
- * does not send a press again, so a read it does not answer refuses it.
+ * does not send a press again, so a read it does not answer refuses it, with
+ * Slack's transient error as the reason; the read waits out no rate limit.
  */
 export async function agentAppCardRefusal(
   card: { channelId: string; messageTs: string; threadTs?: string | null | undefined },
   bot: { botToken: string; botUserId: string },
   appId: string,
 ): Promise<string | undefined> {
-  const read = await readMessage(bot.botToken, {
+  const read = await slackMessageAt(bot.botToken, {
     channelId: card.channelId, ts: card.messageTs, ...(card.threadTs ? { threadTs: card.threadTs } : {}),
-  });
+  }, { timeoutMs: CARD_READ_TIMEOUT_MS });
   if (!read.ok) return read.error ?? 'invalid_response';
   if (!read.message) return 'not_in_slack';
   return read.message.user === bot.botUserId || read.message.app_id === appId ? undefined : 'other_poster';
 }
 
-async function readMessage(botToken: string, place: MessagePlace): Promise<SlackMessageReadResult> {
+/** A read whose rate limit fits in what is left of the check's pauses is waited out, and made once more. */
+async function readMessage(
+  botToken: string,
+  place: MessagePlace,
+  pauseWithin: (ms: number) => Promise<boolean>,
+): Promise<SlackMessageReadResult> {
   const read = await slackMessageAt(botToken, place);
-  if (read.ok || read.error !== 'ratelimited' || read.retryAfterMs === undefined || read.retryAfterMs > SHORT_LIMIT_MS) return read;
-  await pause(read.retryAfterMs);
+  if (read.ok || read.error !== 'ratelimited' || read.retryAfterMs === undefined || !await pauseWithin(read.retryAfterMs)) return read;
   return slackMessageAt(botToken, place);
 }
 

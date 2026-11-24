@@ -130,6 +130,7 @@ import {
   requestWithBufferedBody,
 } from '../security/request-body-limit.ts';
 import {
+  isTransientSlackApiError,
   resolveSlackCredentials,
   resolveSlackPublicUrl,
   slackAuthTest,
@@ -322,6 +323,7 @@ import {
   encodeFormValues,
   FORM_VIEW_CALLBACK_ID,
   formErrorsText,
+  formFieldBlockId,
   formLayout,
   parseFormValues,
   readFormSubmission,
@@ -938,9 +940,20 @@ function handleAgentAppSlackInteractions(
     if (uiAction?.containerType === 'message') {
       const control = parseUiControl(uiAction);
       const card = control ? await readUiSurface(execution.stores!, control.surfaceId) : undefined;
-      if ((card || !uiAction.isEphemeral) && !await agentAppCardIsOwn(
+      const refused = (card || !uiAction.isEphemeral) && await agentAppCardRefused(
         card, { channelId: uiAction.channelId!, messageTs: uiAction.messageTs!, threadTs: uiAction.threadTs }, bot, handoff.appId,
-      )) return;
+      );
+      if (refused) {
+        // A card Slack could not be asked about may be a real one: the person is told, privately, rather than left with
+        // a button that does nothing.
+        if (isTransientSlackApiError(refused)) {
+          const threadTs = card?.threadTs ?? uiAction.threadTs;
+          detach(c, sendUiNotice(context.client, {
+            channelId: uiAction.channelId, userId: uiAction.userId, text: uiRefusalText('unavailable'), ...(threadTs ? { threadTs } : {}),
+          }));
+        }
+        return;
+      }
     }
     if (uiAction && opensModal(uiAction) && await openSlackUiModal(uiAction, context)) return;
     if (uiAction) {
@@ -956,10 +969,17 @@ function handleAgentAppSlackInteractions(
       ? (await import('../slack/ui/key-card.ts')).parseKeyFormMetadata(submission.privateMetadata)?.cardId
       : viewSubmissionSurfaceId(submission);
     const card = cardId ? await readUiSurface(execution.stores!, cardId) : undefined;
-    if (!await agentAppCardIsOwn(
+    const refused = await agentAppCardRefused(
       card, card?.messageTs ? { channelId: card.channelId, messageTs: card.messageTs, threadTs: card.threadTs } : undefined, bot, handoff.appId,
-    )) return;
-    return receiveSlackUiViewSubmission(c, submission, platformEnv, context);
+    );
+    if (!refused) return receiveSlackUiViewSubmission(c, submission, platformEnv, context);
+    // Only a read that failed: the modal stays open with what the person typed, and says it was not sent.
+    const ack = slackInteractionAckOf(platformEnv);
+    if (!cardId || !isTransientSlackApiError(refused) || (ack && !ack.claim())) return;
+    const field = submission.callbackId === KEY_FORM_CALLBACK_ID
+      ? (await import('../slack/ui/key-card.ts')).keyFieldBlockId(cardId)
+      : formFieldBlockId(cardId, 0);
+    return Response.json({ response_action: 'errors', errors: { [field]: UNSENT_ANSWER_TEXT } });
   };
 }
 
@@ -970,19 +990,19 @@ function handleAgentAppSlackInteractions(
  * when it names one, must be that Agent's: a card not pressed before has no
  * message stored to hold the press to. The message at `place` must then be
  * one Slack shows that bot posted (sender.ts). Any other is refused with one
- * line and no content.
+ * line and no content; the reason is returned, or undefined for an honored one.
  */
-async function agentAppCardIsOwn(
+async function agentAppCardRefused(
   card: Pick<UiSurfaceRecord, 'agentId'> | undefined,
   place: { channelId: string; messageTs: string; threadTs?: string | null } | undefined,
   bot: AgentAppBotCredentials,
   appId: string,
-): Promise<boolean> {
+): Promise<string | undefined> {
   const reason = card && card.agentId !== bot.agentId
     ? 'other_agent'
     : place ? await (await import('../slack/agent-apps/sender.ts')).agentAppCardRefusal(place, bot, appId) : 'no_card';
   if (reason) console.warn(JSON.stringify({ component: 'agent_apps', event: 'interaction_refused', appId, reason }));
-  return !reason;
+  return reason;
 }
 
 function handleDirectSlackEvents(
@@ -2992,8 +3012,10 @@ function unsentModalAnswer(
     const read = readFormSubmission(surface, spec.form, submission.state);
     if (!read.ok) return { refusal: 'unavailable', text: formErrorsText(surface, spec.form, read.errors) };
   }
-  return { refusal: 'unavailable', text: 'Not sent yet. Try again, or reply in the thread instead.' };
+  return { refusal: 'unavailable', text: UNSENT_ANSWER_TEXT };
 }
+
+const UNSENT_ANSWER_TEXT = 'Not sent yet. Try again, or reply in the thread instead.';
 
 /**
  * The answer becomes a synthetic message from the person, through the same
