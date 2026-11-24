@@ -45,6 +45,7 @@ class FakeSlack implements AgentAppSlackApi {
     return { accessToken: `xoxe.xoxp-1-access-${this.rotations}`, refreshToken: `xoxe-1-refresh-${this.rotations}`, teamId: TEAM, expiresAt: NOW + 12 * 3_600_000 };
   }
   async create(): Promise<never> { throw new Error('not in this unit'); }
+  async definedBotScopes(): Promise<never> { throw new Error('not in this unit'); }
   async update(): Promise<never> { throw new Error('not in this unit'); }
   async setIcon(): Promise<never> { throw new Error('not in this unit'); }
   async exchange(): Promise<never> { throw new Error('not in this unit'); }
@@ -140,6 +141,7 @@ async function fixture(
       },
       bringBotIn: async () => { throw new Error('archive brings no bot in'); },
       ownAppMode: async () => false,
+      follow: async () => undefined,
     },
   });
   return { config, settings, secrets, slack, transport, clock, service, reconciler, agent, retirements };

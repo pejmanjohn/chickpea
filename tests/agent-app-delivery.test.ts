@@ -48,6 +48,7 @@ import {
 import { START_APP_ACTION } from '../src/slack/agent-apps/pages.ts';
 import { clearAdmissionMembershipsForTests } from '../src/slack/agent-apps/place.ts';
 import { readAppSecrets, saveConfigurationToken, writeAppSecrets } from '../src/slack/agent-apps/secrets.ts';
+import { agentAppFollow } from '../src/slack/agent-apps/service.ts';
 import { createAgentAppSlackApi } from '../src/slack/agent-apps/slack-api.ts';
 import { generateCredentialKeyring, loadCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { AGENT_ASK_PAUSE_TEXT, AGENT_ASK_TURN_LIMIT, createAgentAskCollector } from '../src/slack/agent-asks.ts';
@@ -85,7 +86,10 @@ import type { RoutineDefinition, RoutineRun, RoutineScheduleActionResult } from 
 import { recordDeliveredSlackAgentMessage } from '../src/slack/public-context.ts';
 import { SLACK_READ_MESSAGES, SlackReadError } from '../src/slack/reading/errors.ts';
 import { slackReadingService } from '../src/slack/reading/tools.ts';
+import { AgentPresenceReconciler } from '../src/slack/agent-presence/reconciler.ts';
+import { AGENT_APP_BOT_SCOPES } from '../src/slack/scopes.ts';
 import { createDirectSlackTransport } from '../src/slack/transport/direct.ts';
+import type { SlackTransport } from '../src/slack/transport/types.ts';
 import type { PendingTurnJob } from '../src/slack/turn-jobs.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { displaySurfaceId, uiActionId, uiBlockId, uiSurfaceId, uiValue, type UiSurfaceRecord } from '../src/slack/ui/surface.ts';
@@ -218,9 +222,10 @@ async function withHarness(
       createdByMembershipId: owner.membership.id, channelLabel: 'team', channelIsPrivate: false,
     }, 0);
   }
+  // As this build makes an app: it already matches its Agent.
   const live: AgentAppLifecycle = {
     state: 'active', at: installedAt, app: { appId: AGENT_APP, clientId: '1.client' }, icon: 'agent_avatar',
-    botUserId: AGENT_BOT_USER, installedAt, installedBy: 'U1',
+    botUserId: AGENT_BOT_USER, installedAt, installedBy: 'U1', follows: agentAppFollow(support, AGENT_APP, HOST, 'inst_tenant_a').target,
   };
   await stores.config.updateAgent(support.id, {
     slackPresence: {
@@ -331,6 +336,8 @@ async function withHarness(
               : { id: channel, is_im: true, user: 'U1' } }
           : method === 'apps.manifest.create'
             ? { ok: true, app_id: 'A0NEWAPP', credentials: { client_id: '7.client', client_secret: 'cs-new', signing_secret: 'ss-new' } }
+          : method === 'apps.manifest.export'
+            ? { ok: true, manifest: { oauth_config: { scopes: { bot: [...AGENT_APP_BOT_SCOPES] } } } }
           : method === 'conversations.create'
             ? { ok: true, channel: { id: 'C9NEW', name: body.get('name'), is_channel: true, is_private: body.get('is_private') === 'true', is_member: true } }
           : method === 'conversations.join'
@@ -468,6 +475,31 @@ async function drainMoves(h: Harness): Promise<string[]> {
   return refs;
 }
 
+// Defects caught: a rename that never reaches the Agent's own app, or reaches it inside the request that saved it; a job
+// whose run in the state store cannot read the configuration token or the app's record.
+test("a renamed Agent's own app is renamed by its job, armed at the save and run by the drain, through the real stores and Slack client", async (t) => withHarness(t, async (h) => {
+  const rotated = { accessToken: 'xoxe.xoxp-1-config-access', refreshToken: 'xoxe-1-config-refresh', teamId: TEAM, expiresAt: Date.now() + 12 * 3_600_000 };
+  assert.equal(await saveConfigurationToken({ ...h.secrets(), slack: { rotate: async () => rotated } }, TEAM, 'xoxe-1-pasted-token-0000'), 'saved');
+  const agent = await h.stores.config.getAgent('agent_support');
+  await h.stores.config.updateAgent(agent.id, { name: 'Helpdesk' }, agent.revision);
+  const reconciler = new AgentPresenceReconciler({
+    config: h.stores.config, transport: {} as SlackTransport, announce: null, agentApps: agentAppPresenceHooks(h.base)!,
+  });
+  await reconciler.retry('agent_support');
+  assert.deepEqual(h.calls, [], 'the save asks nothing of Slack');
+
+  assert.deepEqual(await drainMoves(h), ['agent_app_switch:done']);
+  assert.deepEqual(h.calls.map(({ method, token }) => [method, token]), [
+    ['apps.manifest.export', rotated.accessToken],
+    ['apps.manifest.update', rotated.accessToken],
+  ], 'the picture is unchanged, so only the definition is sent');
+  const renamed = await h.stores.config.getAgent('agent_support');
+  const app = await appOf(h.stores);
+  assert.deepEqual(app?.state === 'active' && app.follows, agentAppFollow(renamed, AGENT_APP, HOST, 'inst_tenant_a').target);
+  await armUnfinishedAgentAppMoves(h.stores, Date.now(), h.base);
+  assert.deepEqual(await drainMoves(h), [], 'an app that matches its Agent is armed no more');
+}));
+
 async function appOf(stores: AppStores): Promise<AgentAppLifecycle | undefined> {
   const presence = (await stores.config.getAgent('agent_support')).slackPresence;
   return presence?.kind === 'agent_app' ? presence.app : undefined;
@@ -570,8 +602,8 @@ test("a switch whose job was never armed is found by the state store's sweep and
   } as never, agent.revision);
   assert.deepEqual(await drainMoves(h), [], 'no job was armed');
 
-  await armUnfinishedAgentAppMoves(h.stores, Date.now());
-  await armUnfinishedAgentAppMoves(h.stores, Date.now());
+  await armUnfinishedAgentAppMoves(h.stores, Date.now(), h.base);
+  await armUnfinishedAgentAppMoves(h.stores, Date.now(), h.base);
   assert.deepEqual(await drainMoves(h), ['agent_app_switch:done'], 'the sweep armed one job, and the drain ran it');
   const presence = (await h.stores.config.getAgent('agent_support')).slackPresence;
   const app = presence?.kind === 'agent_app' ? presence.app : undefined;
@@ -584,7 +616,7 @@ test("a switch whose job was never armed is found by the state store's sweep and
   assert.equal(told.length, 1);
   assert.match(told[0]?.body.get('text') ?? '', /Support is now its own Slack app/);
 
-  await armUnfinishedAgentAppMoves(h.stores, Date.now());
+  await armUnfinishedAgentAppMoves(h.stores, Date.now(), h.base);
   assert.deepEqual(await drainMoves(h), [], 'a finished switch is armed no more');
 }));
 

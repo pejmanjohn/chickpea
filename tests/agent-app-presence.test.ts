@@ -220,6 +220,7 @@ test("publishing an Agent brings its own app's bot into the Channel through the 
           return placement;
         },
         ownAppMode: async () => false,
+        follow: async () => undefined,
       },
     });
     const publish = (channelId: string) => reconciler.publish({
@@ -317,6 +318,7 @@ test('archiving an Agent app retires the app first, and refuses without a host f
         },
         async bringBotIn() { throw new Error('archive brings no bot in'); },
         ownAppMode: async () => false,
+        follow: async () => undefined,
       },
     }).archive('agent_support');
     assert.deepEqual(retired, ['agent_support']);

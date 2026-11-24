@@ -54,7 +54,7 @@ function agent(id: string): CustomAgentConfig {
 function fakeService(config: SqliteConfigStore, settings: SqliteSettingsStore, slack: Partial<AgentAppSlackApi> = {}, permissionMissing = false) {
   const refuse = (name: string) => async (): Promise<never> => { throw new Error(`unexpected ${name}`); };
   const api = {
-    rotate: refuse('rotate'), create: refuse('create'), update: refuse('update'), setIcon: refuse('setIcon'),
+    rotate: refuse('rotate'), create: refuse('create'), definedBotScopes: refuse('definedBotScopes'), update: refuse('update'), setIcon: refuse('setIcon'),
     exchange: refuse('exchange'), uninstall: refuse('uninstall'), delete: refuse('delete'), ...slack,
   } as AgentAppSlackApi;
   const calls: string[] = [];

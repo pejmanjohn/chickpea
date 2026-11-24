@@ -10391,6 +10391,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             }
           : {}),
       });
+      // An Agent with its own Slack app gets the new picture there too, from the app's job.
+      await agentAppPresenceHooks(c.env as PlatformEnv | undefined, settings(c))?.follow(updated);
       return c.json({
         agent: await agentAdminProjectionForRequest(c, updated),
       });

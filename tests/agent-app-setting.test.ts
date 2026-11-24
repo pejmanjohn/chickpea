@@ -198,6 +198,7 @@ async function adminApp(t: TestContext, options: {
       script.created += 1;
       return { appId: `A0APP${script.created}`, clientId: `${script.created}.client`, clientSecret: 'cs', signingSecret: 'ss' };
     },
+    definedBotScopes: async () => [...AGENT_APP_BOT_SCOPES],
     update: async (_token, _appId, manifest) => {
       if (script.update === 'unanswered') throw new SlackUnavailable('apps.manifest.update', 'network_error');
       refuseLikeSlack('apps.manifest.update', manifest);
@@ -250,6 +251,7 @@ async function adminApp(t: TestContext, options: {
       retire: async (current) => (await service.retire(current)).agent,
       bringBotIn: async () => undefined,
       ownAppMode: async () => (await readAgentSlackAppsSetting(settings)).mode === 'own_app',
+      follow: async () => undefined,
     },
   });
   configureAgentSlackApps(options.port === false ? undefined : HOST);

@@ -2871,11 +2871,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       stores.management.cleanupRetention(retentionStartedAt, 250);
       this.lastRetentionSweepAt = retentionStartedAt;
       // A move to or from an Agent's own app cut off before its job was armed, or whose job spent every try, is
-      // armed again here, so it finishes without a person; the receipts drain below runs it.
+      // armed again here, so it finishes without a person, and so is a live app that no longer matches its Agent;
+      // the receipts drain below runs it.
       await armUnfinishedAgentAppMoves({
         config: localGatewayAppStores(stores).config,
         management: stores.management as unknown as ManagementStore,
-      }, retentionStartedAt).catch((error: unknown) => {
+      }, retentionStartedAt, this.env as PlatformEnv).catch((error: unknown) => {
         console.warn('[chickpea] Agent app move sweep failed', error instanceof Error ? error.name : typeof error);
       });
       retentionMs = Date.now() - retentionStartedAt;

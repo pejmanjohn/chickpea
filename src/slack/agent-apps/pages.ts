@@ -42,6 +42,7 @@ export type AgentAppMessageKind =
   | 'recreated'
   | 'app_limit'
   | 'handle_taken'
+  | 'update_refused'
   | AgentAppAttention;
 
 type Button =
@@ -124,6 +125,12 @@ const DM_COPY = {
   config_token_needed: {
     text: ({ name }) => `Chickpea needs a new Slack refresh token to finish ${name}'s app. Paste one, then choose Continue.`,
     buttons: (links) => [...(links.tokenPageUrl ? [{ label: 'Paste a new token', url: links.tokenPageUrl }] : []), ...add(links, 'Continue')],
+  },
+  /** A live app: Slack refused to take the Agent's new name, handle, description or picture, so the app shows the earlier ones. */
+  update_refused: {
+    text: ({ name }) =>
+      `Slack didn't accept the changes to ${name}, so its Slack app still shows its earlier name, handle or picture. ${name} keeps answering as before. Change ${name} in Chickpea Admin, or choose Try again.`,
+    buttons: (links) => [...openAdmin(links.adminUrl), tryAgain(links)],
   },
   /** Another Agent in Slack holds the handle, so nothing was created. */
   handle_taken: {

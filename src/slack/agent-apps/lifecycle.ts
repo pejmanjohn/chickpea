@@ -3,6 +3,8 @@ import {
   type ActiveAgentApp,
   type AgentSlackPresence,
   type AgentAppAttention,
+  type AgentAppFollowRefusal,
+  type AgentAppFollowTarget,
   type AgentAppIcon,
   type AgentAppLifecycle,
   type AgentAppPresence,
@@ -43,10 +45,12 @@ export type AgentAppEvent =
   | { type: 'handle_taken'; at: number }
   /** The recorded app has no record, so it is left for the Owner; create again. */
   | { type: 'recreate'; at: number; manifestFingerprint: string }
-  | { type: 'urls_set'; at: number }
+  /** `manifestFingerprint` is the definition Slack took, so a live app made from it is not updated again. */
+  | { type: 'urls_set'; at: number; manifestFingerprint?: string }
   | { type: 'urls_refused'; at: number }
   | { type: 'config_token_needed'; at: number }
-  | { type: 'icon_set'; at: number; icon: AgentAppIcon }
+  /** `avatarRevision` is the avatar whose picture Slack took; absent when Slack took none. */
+  | { type: 'icon_set'; at: number; icon: AgentAppIcon; avatarRevision?: number }
   | { type: 'allow_dm_posted'; at: number; channelId: string; ts: string }
   | { type: 'consent_opened'; at: number; nonceDigest: string; owner: string; expiresAt: number }
   | { type: 'consent_granted'; at: number; botUserId: string; installedBy: string }
@@ -123,16 +127,38 @@ export interface AgentAppSwitchJob {
   ownerSlackUserId: string;
 }
 
-/** The job an Agent's move still owes: a live app's switch with steps left, or a removed app's restore. */
-export function agentAppMoveJob(agentId: string, presence: AgentSlackPresence | undefined, teamId: string): AgentAppSwitchJob | undefined {
+/**
+ * The job an Agent's app still owes: a live app's switch with steps left, or
+ * one that must be brought to match its Agent (`followDue`), or a removed
+ * app's restore.
+ */
+export function agentAppMoveJob(
+  agentId: string,
+  presence: AgentSlackPresence | undefined,
+  teamId: string,
+  followDue = false,
+): AgentAppSwitchJob | undefined {
   if (presence?.kind !== 'agent_app') return undefined;
   const { app } = presence;
-  if (app.state === 'active' && pendingSwitchStep(app)) {
+  if (app.state === 'active' && (pendingSwitchStep(app) || followDue)) {
     return { agentId, appId: app.app.appId, teamId, ownerSlackUserId: app.installedBy };
   }
   if (restorePending(presence) && presence.app.app) {
     return { agentId, appId: presence.app.app.appId, teamId, ownerSlackUserId: presence.app.startedBy };
   }
+  return undefined;
+}
+
+/**
+ * The step that brings a live app to match its Agent: its definition, then
+ * its picture. Nothing while a refusal holds for this same target.
+ */
+export function agentAppFollowStep(app: ActiveAgentApp, target: AgentAppFollowTarget): 'definition' | 'picture' | undefined {
+  const { follows } = app;
+  const refused = follows?.refused;
+  if (refused?.manifestFingerprint === target.manifestFingerprint && refused.avatarRevision === target.avatarRevision) return undefined;
+  if (follows?.manifestFingerprint !== target.manifestFingerprint) return 'definition';
+  if (follows?.avatarRevision !== target.avatarRevision) return 'picture';
   return undefined;
 }
 
@@ -144,7 +170,7 @@ export function agentAppMoveJob(agentId: string, presence: AgentSlackPresence | 
 export type AgentSlackState =
   | { state: 'user_group' | 'not_in_slack' | 'creating' | 'waiting_for_allow' | 'cancelling' | 'switching' | 'own_app' }
   /** `cancellable` when the start stopped before Slack made any app, so Cancel withdraws it. */
-  | { state: 'needs_attention'; reason: AgentAppAttention; cancellable?: true };
+  | { state: 'needs_attention'; reason: AgentAppAttention | Exclude<AgentAppFollowRefusal, 'record_refused'>; cancellable?: true };
 
 export function agentSlackState(presence: AgentSlackPresence): AgentSlackState {
   const app = appRecordOf(presence);
@@ -156,8 +182,12 @@ export function agentSlackState(presence: AgentSlackPresence): AgentSlackState {
   switch (app.state) {
     case 'awaiting_consent':
       return { state: 'waiting_for_allow' };
-    case 'active':
-      return { state: pendingSwitchStep(app) ? 'switching' : 'own_app' };
+    case 'active': {
+      if (pendingSwitchStep(app)) return { state: 'switching' };
+      // A live app Slack would not bring to match its Agent still answers, under what it last took.
+      const refused = app.follows?.refused?.reason;
+      return refused && refused !== 'record_refused' ? { state: 'needs_attention', reason: refused } : { state: 'own_app' };
+    }
     case 'needs_attention':
       // A Cancel's removal Slack refused to finish reads as the Cancel it is; the next Cancel or Start picks it up.
       if (app.resume === 'uninstalling' && presence.kind !== 'agent_app') return { state: 'cancelling' };
@@ -243,7 +273,12 @@ export function transition(app: AgentAppLifecycle, event: AgentAppEvent): AgentA
         ? { state: 'creating', at, startedBy: app.startedBy, manifestFingerprint: event.manifestFingerprint }
         : WRONG_STATE;
     case 'urls_set':
-      return app.state === 'created' ? { state: 'urls_set', at, startedBy: app.startedBy, app: app.app } : WRONG_STATE;
+      return app.state === 'created'
+        ? {
+            state: 'urls_set', at, startedBy: app.startedBy, app: app.app,
+            ...(event.manifestFingerprint ? { follows: { manifestFingerprint: event.manifestFingerprint } } : {}),
+          }
+        : WRONG_STATE;
     case 'urls_refused':
       return app.state === 'created'
         ? attention(app.startedBy, at, 'urls_refused', 'created', { app: app.app })
@@ -252,10 +287,11 @@ export function transition(app: AgentAppLifecycle, event: AgentAppEvent): AgentA
       if (app.state === 'creating') return attention(app.startedBy, at, 'config_token_needed', 'creating');
       if (app.state === 'created') return attention(app.startedBy, at, 'config_token_needed', 'created', { app: app.app });
       return WRONG_STATE;
-    case 'icon_set':
-      return app.state === 'urls_set'
-        ? { state: 'icon_set', at, startedBy: app.startedBy, app: app.app, icon: event.icon }
-        : WRONG_STATE;
+    case 'icon_set': {
+      if (app.state !== 'urls_set') return WRONG_STATE;
+      const follows = event.avatarRevision === undefined ? app.follows : { ...app.follows, avatarRevision: event.avatarRevision };
+      return { state: 'icon_set', at, startedBy: app.startedBy, app: app.app, icon: event.icon, ...(follows ? { follows } : {}) };
+    }
     case 'allow_dm_posted':
       return app.state === 'icon_set'
         ? {
@@ -264,6 +300,7 @@ export function transition(app: AgentAppLifecycle, event: AgentAppEvent): AgentA
             startedBy: app.startedBy,
             app: app.app,
             icon: app.icon,
+            ...(app.follows ? { follows: app.follows } : {}),
             allowDm: { channelId: event.channelId, ts: event.ts },
           }
         : WRONG_STATE;
@@ -288,6 +325,7 @@ export function transition(app: AgentAppLifecycle, event: AgentAppEvent): AgentA
             installedBy: event.installedBy,
             // The switch's first step turns off a group that still answers, and passes when none does.
             switchProgress: 'group_pending',
+            ...(app.follows ? { follows: app.follows } : {}),
           }
         : WRONG_STATE;
     case 'consent_undone': {

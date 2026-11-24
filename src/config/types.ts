@@ -281,19 +281,46 @@ export interface AgentAppConsent {
  */
 export type AgentAppSwitchProgress = 'live' | 'group_pending' | 'bring_in_pending' | 'owner_told' | 'done';
 
+/**
+ * Why bringing a live app to match its Agent stopped: no usable configuration
+ * token, Slack refused the change, or the app's own record would not let
+ * Chickpea touch it. It holds for the Agent as it was then, so the app is
+ * tried again once the Agent changes, a token is pasted, or an Owner asks.
+ */
+export type AgentAppFollowRefusal = 'config_token_needed' | 'update_refused' | 'record_refused';
+
+/** One Agent as its app in Slack shows it: the fingerprint of the definition Chickpea makes for it, and its avatar revision. */
+export interface AgentAppFollowTarget {
+  manifestFingerprint: string;
+  avatarRevision: number;
+}
+
+/**
+ * What the app in Slack was last brought to match: the definition, once
+ * Slack took it, and the avatar revision whose picture it set; and a refusal
+ * with the target it was refused for. An app recorded without it, or without
+ * a field, is brought to match on the next run.
+ */
+export interface AgentAppFollows {
+  manifestFingerprint?: string;
+  avatarRevision?: number;
+  refused?: AgentAppFollowTarget & { reason: AgentAppFollowRefusal; at: number };
+}
+
 export type AgentAppLifecycle =
   | { state: 'releasing_handle'; at: number; startedBy: string }
   /** Written before the create call, which has no idempotency key. */
   | { state: 'creating'; at: number; startedBy: string; manifestFingerprint: string }
   | { state: 'created'; at: number; startedBy: string; app: AgentAppRecord }
-  | { state: 'urls_set'; at: number; startedBy: string; app: AgentAppRecord }
-  | { state: 'icon_set'; at: number; startedBy: string; app: AgentAppRecord; icon: AgentAppIcon }
+  | { state: 'urls_set'; at: number; startedBy: string; app: AgentAppRecord; follows?: AgentAppFollows }
+  | { state: 'icon_set'; at: number; startedBy: string; app: AgentAppRecord; icon: AgentAppIcon; follows?: AgentAppFollows }
   | {
       state: 'awaiting_consent';
       at: number;
       startedBy: string;
       app: AgentAppRecord;
       icon: AgentAppIcon;
+      follows?: AgentAppFollows;
       allowDm: { channelId: string; ts: string };
       /** One unexpired nonce per Owner, keyed by that Owner's Slack user ID. */
       consents?: Readonly<Record<string, AgentAppConsent>>;
@@ -309,6 +336,7 @@ export type AgentAppLifecycle =
       switchProgress?: AgentAppSwitchProgress;
       /** The switch finished without the Owner's result message: Slack refused it, or every try failed. */
       ownerNotTold?: true;
+      follows?: AgentAppFollows;
     }
   | { state: 'uninstalling'; at: number; startedBy: string; app: AgentAppRecord; botUserId?: string; next: 'uninstall' | 'delete' }
   | {

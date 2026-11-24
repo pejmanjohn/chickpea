@@ -5385,6 +5385,8 @@
         return { text: "Slack didn't finish " + name + "'s app. Choose Try again. If it keeps happening, check that your workspace allows new apps.", actions: [tryAgain] };
       case "urls_refused":
         return { text: "Slack didn't finish connecting " + name + "'s app to Chickpea. Wait a minute, then choose Try again.", actions: [tryAgain] };
+      case "update_refused":
+        return { text: "Slack didn't accept the changes to " + name + ", so its Slack app still shows its earlier name, handle or picture. " + name + " keeps answering. Change " + name + ", then choose Try again.", actions: [tryAgain] };
       case "slack_busy":
         return { text: "Slack is limiting how fast apps are set up. Wait a minute, then choose Try again.", actions: [tryAgain] };
       case "app_removed":

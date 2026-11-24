@@ -93,6 +93,7 @@ class FakeSlack implements AgentAppSlackApi {
       return created;
     });
   }
+  definedBotScopes() { return this.calls.through('export', async () => [...AGENT_APP_BOT_SCOPES]); }
   update(_token: string, appId: string, manifest: SlackAppManifest) {
     return this.calls.through('update', async () => {
       refuseLikeSlack('apps.manifest.update', manifest);
