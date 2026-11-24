@@ -10,7 +10,8 @@ import type { EncryptedCredentialStore } from '../src/config/settings-store.ts';
 import { closeNodeStateStores, getSettingsStore, resolveStores, type AppStores, type PlatformEnv } from '../src/config/state-backend.ts';
 import type { AgentAppLifecycle, AgentSlackPresence, CustomAgentConfig, ResolvedAssignment } from '../src/config/types.ts';
 import { type AgentSlackAppsHost, configureAgentSlackApps } from '../src/slack/agent-apps/host.ts';
-import { AgentSlackApps, type AgentAppTransport, withAgentAppExecution } from '../src/slack/agent-apps/index.ts';
+import { withAgentAppExecution } from '../src/slack/agent-apps/index.ts';
+import { AgentSlackApps, type AgentAppTransport } from '../src/slack/agent-apps/service.ts';
 import { saveConfigurationToken, writeAppSecrets } from '../src/slack/agent-apps/secrets.ts';
 import { type AgentAppSlackApi, createAgentAppSlackApi, SlackUnavailable } from '../src/slack/agent-apps/slack-api.ts';
 import { AgentPresenceError } from '../src/slack/agent-presence/errors.ts';
@@ -283,7 +284,7 @@ test("Slack not answering an archive's uninstall leaves the Agent answering as i
   } as unknown as AgentAppTransport;
   const service = new AgentSlackApps({
     env: h.env, stores: { config: h.stores.config, settings: h.stores.settings as AppStores['settings'] & EncryptedCredentialStore },
-    host: HOST, transport, slack, keyring,
+    host: HOST, transport, slack, keyring, armSwitch: async () => undefined,
   });
 
   const live = await h.stores.config.getAgent('agent_support');

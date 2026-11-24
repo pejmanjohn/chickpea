@@ -7,13 +7,13 @@ import { SqliteConfigStore } from '../src/config/store.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { AgentAppLifecycle, CustomAgentConfig } from '../src/config/types.ts';
 import type { AgentSlackAppsHost } from '../src/slack/agent-apps/host.ts';
-import { AgentSlackApps, type AgentAppTransport } from '../src/slack/agent-apps/index.ts';
+import { AgentSlackApps, type AgentAppTransport } from '../src/slack/agent-apps/service.ts';
 import { readAppSecrets, writeAppSecrets } from '../src/slack/agent-apps/secrets.ts';
-import { CONSENT_TTL_MS } from '../src/slack/agent-apps/service.ts';
+import { type AgentAppSwitchJob, CONSENT_TTL_MS } from '../src/slack/agent-apps/service.ts';
 import { type AgentAppGrant, type AgentAppSlackApi, SlackRefused, SlackUnavailable } from '../src/slack/agent-apps/slack-api.ts';
+import { sha256Hex } from '../src/security/digest.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { AGENT_APP_BOT_SCOPES } from '../src/slack/scopes.ts';
-import { escapeMrkdwn } from '../src/slack/ui/text.ts';
 import { captureSlackRefusals } from './helpers/agent-app-refusals.ts';
 
 const NOW = 1_800_000_000_000;
@@ -92,8 +92,12 @@ async function fixture(t: TestContext, app: AgentAppLifecycle = waiting()) {
   await writeAppSecrets(secrets, APP.appId, created.id, { clientSecret: 'client-secret-1', signingSecret: 'signing-secret-1' }, null);
   const posted: Posted[] = [];
   const clock = { now: NOW };
-  const service = new AgentSlackApps({ env: ENV, stores: { config, settings }, host: HOST, transport: transport(posted), slack, keyring, now: () => clock.now });
-  return { config, settings, secrets, slack, posted, clock, service };
+  const armed: AgentAppSwitchJob[] = [];
+  const service = new AgentSlackApps({
+    env: ENV, stores: { config, settings }, host: HOST, transport: transport(posted), slack, keyring, now: () => clock.now,
+    armSwitch: async (job) => { armed.push(job); },
+  });
+  return { config, settings, secrets, slack, posted, clock, service, armed };
 }
 
 /** The sentence on a notice page, with its HTML entities decoded. */
@@ -123,15 +127,15 @@ test('Allow records a fresh consent and sends the Owner to Slack; the nonce neve
   const state = await open(f);
   const app = await appOf(f.config);
   assert.equal(app?.state, 'awaiting_consent');
-  const consent = app?.state === 'awaiting_consent' ? app.consent : undefined;
-  assert.equal(consent?.owner, OWNER);
-  assert.equal(consent?.expiresAt, NOW + CONSENT_TTL_MS);
+  const consents = app?.state === 'awaiting_consent' ? app.consents : undefined;
+  assert.deepEqual(Object.keys(consents ?? {}), [OWNER]);
+  assert.equal(consents?.[OWNER]?.expiresAt, NOW + CONSENT_TTL_MS);
   assert.equal(JSON.stringify(app).includes(state.split('.')[1]!), false, 'only a digest of the nonce is stored');
   const again = await open(f);
   assert.notEqual(again, state, 'opening Allow again replaces the nonce');
 });
 
-test('a valid callback activates the app, stores the bot token, tells the Owner, and sends them to the Agent', async (t) => {
+test('a valid callback activates the app, stores the bot token, arms the switch, and sends the Owner to the Agent', async (t) => {
   const f = await fixture(t);
   const state = await open(f);
   const response = await f.service.completeConsent(new URLSearchParams({ code: 'code-1', state }), OWNER);
@@ -143,9 +147,9 @@ test('a valid callback activates the app, stores the bot token, tells the Owner,
   assert.equal(app?.state === 'active' && app.botUserId, 'UBOT');
   assert.equal(app?.state === 'active' && app.installedBy, OWNER);
   assert.equal((await readAppSecrets(f.secrets, APP.appId))?.secrets.botToken, 'xoxb-agent');
-  assert.deepEqual(f.posted.map((message) => [message.channelId, message.text]), [
-    [`D_${OWNER}`, escapeMrkdwn("@support is in Slack now. Message it directly, or add it to a channel from the channel's Add people or agents.")],
-  ]);
+  assert.equal(app?.state === 'active' && app.switchProgress, 'group_pending', 'the switch is left to its job');
+  assert.deepEqual(f.posted, [], 'the callback tells nobody: the switch job does, once it is done');
+  assert.deepEqual(f.armed, [{ agentId: 'agent_support', appId: APP.appId, installedAt: NOW, teamId: TEAM, ownerSlackUserId: OWNER }]);
   const presence = (await f.config.getAgent('agent_support')).slackPresence;
   assert.equal(presence?.health, 'healthy');
   assert.equal(presence?.desiredState, 'active');
@@ -153,7 +157,8 @@ test('a valid callback activates the app, stores the bot token, tells the Owner,
   const replay = await f.service.completeConsent(new URLSearchParams({ code: 'code-1', state }), OWNER);
   assert.equal(replay.status, 409);
   assert.equal(f.slack.exchanges.length, 1, 'a replay exchanges nothing');
-  assert.equal(f.posted.length, 1, 'a replay posts nothing');
+  assert.deepEqual(f.posted, [], 'a replay posts nothing');
+  assert.equal(f.armed.length, 1, 'and arms nothing');
 });
 
 test('a bad, expired or reused state, another Owner, or a cancelled grant are refused before any exchange', async (t) => {
@@ -182,7 +187,7 @@ test('a bad, expired or reused state, another Owner, or a cancelled grant are re
 
   assert.match(await refused({ error: 'access_denied', state }, OWNER, 200), /Support wasn't added/);
   const app = await appOf(f.config);
-  assert.equal(app?.state === 'awaiting_consent' && app.consent, undefined, 'a cancelled grant clears the consent');
+  assert.equal(app?.state === 'awaiting_consent' && app.consents, undefined, 'a cancelled grant clears the consent');
   assert.match(await refused({ code: 'c', state }, OWNER, 410), /That link has expired/, 'the cleared consent cannot be reused');
   assert.deepEqual(f.slack.exchanges, []);
   assert.equal(f.posted.length, 0);
@@ -204,7 +209,7 @@ test('a grant for the wrong workspace, app or person, or with missing permission
     assert.equal(f.slack.uninstalls, 1, `the grant is undone for ${JSON.stringify(grant)}`);
     const app = await appOf(f.config);
     assert.equal(app?.state, 'awaiting_consent');
-    assert.equal(app?.state === 'awaiting_consent' && app.consent, undefined);
+    assert.equal(app?.state === 'awaiting_consent' && app.consents, undefined);
     assert.equal((await readAppSecrets(f.secrets, APP.appId))?.secrets.botToken, undefined, 'no bot token is kept');
     assert.equal(f.posted.length, 0);
   }
@@ -279,7 +284,7 @@ test("app secrets that can't be opened answer the callback with the expired page
   const state = await open(f);
   const rekeyed = new AgentSlackApps({
     env: ENV, stores: { config: f.config, settings: f.settings }, host: HOST, transport: transport(f.posted), slack: f.slack,
-    keyring: generateCredentialKeyring('k2'), now: () => f.clock.now,
+    keyring: generateCredentialKeyring('k2'), now: () => f.clock.now, armSwitch: async () => undefined,
   });
   const warn = t.mock.method(console, 'warn', () => undefined);
   const response = await rekeyed.completeConsent(new URLSearchParams({ code: 'c', state }), OWNER);
@@ -314,4 +319,37 @@ test('Allow from a removed app resumes the sequence first, and an active app say
   assert.match(pageText(await response.text()), /Support already has its own Slack app/);
   const notStarted = await fixture(t, { state: 'created', at: NOW, startedBy: OWNER, app: APP });
   assert.equal((await notStarted.service.allow('agent_support', OWNER)).status, 410);
+});
+
+// Defects caught: a second Owner's Allow overwriting the first Owner's open link, one Owner's cancel spending
+// another's, and an expired link kept forever beside a fresh one.
+test("each Owner holds one open Allow link: another Owner's open or cancel leaves it, and expired ones are dropped", async (t) => {
+  const f = await fixture(t);
+  const first = await open(f, OWNER);
+  const second = await open(f, 'UOWNER2');
+  let app = await appOf(f.config);
+  assert.deepEqual(Object.keys(app?.state === 'awaiting_consent' ? app.consents ?? {} : {}).sort(), [OWNER, 'UOWNER2']);
+  assert.match(pageText(await (await f.service.completeConsent(new URLSearchParams({ code: 'c', state: first }), 'UOWNER2')).text()),
+    /Only the Owner who started this can finish it/, "a link is its own Owner's, even beside the other Owner's");
+  const cancelled = await f.service.completeConsent(new URLSearchParams({ error: 'access_denied', state: second }), 'UOWNER2');
+  assert.equal(cancelled.status, 200);
+  app = await appOf(f.config);
+  assert.deepEqual(Object.keys(app?.state === 'awaiting_consent' ? app.consents ?? {} : {}), [OWNER], "the other Owner's cancel spends only theirs");
+
+  f.clock.now = NOW + CONSENT_TTL_MS;
+  await open(f, 'UOWNER2');
+  app = await appOf(f.config);
+  assert.deepEqual(Object.keys(app?.state === 'awaiting_consent' ? app.consents ?? {} : {}), ['UOWNER2'], 'an expired link is dropped at the next open');
+  assert.match(pageText(await (await f.service.completeConsent(new URLSearchParams({ code: 'c', state: first }), OWNER)).text()), /That link has expired/);
+  assert.deepEqual(f.slack.exchanges, []);
+});
+
+// Defects caught: an Allow link opened before per-Owner consent, stored with the single field, no longer completing.
+test('an Allow link stored with the single consent field still completes for its Owner', async (t) => {
+  const nonce = crypto.randomUUID();
+  const consent = { nonceDigest: await sha256Hex(nonce), owner: OWNER, expiresAt: NOW + CONSENT_TTL_MS };
+  const f = await fixture(t, { ...waiting(), consent } as unknown as AgentAppLifecycle);
+  const response = await f.service.completeConsent(new URLSearchParams({ code: 'code-1', state: `agent_support.${nonce}` }), OWNER);
+  assert.equal(response.status, 303);
+  assert.equal((await appOf(f.config))?.state, 'active');
 });

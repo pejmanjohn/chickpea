@@ -10,7 +10,8 @@ import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
 import { type AgentSlackAppsHost, configureAgentSlackApps, withAgentSlackAppHandoff } from '../src/slack/agent-apps/host.ts';
-import { AgentSlackApps, createAgentSlackAppRoutes } from '../src/slack/agent-apps/index.ts';
+import { createAgentSlackAppRoutes } from '../src/slack/agent-apps/index.ts';
+import { AgentSlackApps } from '../src/slack/agent-apps/service.ts';
 import type { AgentAppSlackApi } from '../src/slack/agent-apps/slack-api.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
@@ -58,7 +59,7 @@ function fakeService(config: SqliteConfigStore, settings: SqliteSettingsStore, s
   } as AgentAppSlackApi;
   const calls: string[] = [];
   const service = new AgentSlackApps({
-    env: HOSTED, stores: { config, settings }, host: HOST, slack: api, keyring: generateCredentialKeyring('k1'),
+    env: HOSTED, stores: { config, settings }, host: HOST, slack: api, keyring: generateCredentialKeyring('k1'), armSwitch: async () => undefined,
     transport: {
       disableUserGroup: async (id) => { calls.push(`disable:${id}`); return { id, name: 'Support', handle: 'support', disabled: true }; },
       enableUserGroup: refuse('enableUserGroup'),
@@ -172,9 +173,10 @@ test('a pasted token is checked with Slack, refused with the right sentence, and
   assert.match(html, /Creating Support(&#39;|')s Slack app/);
   assert.match(html, /Go back to Slack\. Chickpea will message you in a moment so you can allow it\./);
   assert.equal(html.includes('xoxe-1-good-token-0000'), false, 'the token never echoes');
-  assert.deepEqual(owner.calls, ['disable:S1', 'dm:UOWNER', 'post:D_UOWNER']);
+  assert.deepEqual(owner.calls, ['dm:UOWNER', 'post:D_UOWNER'], 'the user group keeps answering until Allow');
   const presence = (await owner.config.getAgent('agent_support')).slackPresence;
-  assert.equal(presence?.kind === 'agent_app' && presence.app.state, 'awaiting_consent', 'Slack accepted the create and the update');
+  assert.equal(presence?.kind, undefined);
+  assert.equal(presence?.app?.state, 'awaiting_consent', 'Slack accepted the create and the update');
 
   const again = await owner.request(api, owner.form({ action: 'create' }));
   assert.equal(again.status, 409);

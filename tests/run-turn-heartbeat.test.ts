@@ -55,6 +55,7 @@ import { withEnv } from './helpers/env.ts';
 import { activityStatus } from '../src/activity/semantic.ts';
 import { setObservedSlackStatus, SlackStatusRegistry } from '../src/slack/status-registry.ts';
 import { parseDisplayComponents } from '../src/slack/ui/display-tools.ts';
+import { asUserGroup } from './helpers/user-group-presence.ts';
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -854,7 +855,7 @@ test('runTurn suppresses model prose and defers one immediate-creation welcome',
     const created = await f.config.getAgent('agent_run_turn_deck');
     await f.config.updateAgent(created.id, {
       slackPresence: {
-        ...created.slackPresence!,
+        ...asUserGroup(created.slackPresence),
         kind: 'user_group',
         desiredState: 'active',
         health: 'healthy',
@@ -1194,7 +1195,7 @@ async function deferredWelcomeTurn(name: string) {
   const created = await f.config.getAgent('agent_welcome_run_deck');
   await f.config.updateAgent(created.id, {
     slackPresence: {
-      ...created.slackPresence!,
+      ...asUserGroup(created.slackPresence),
       kind: 'user_group',
       desiredState: 'active',
       health: 'healthy',

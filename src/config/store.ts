@@ -96,7 +96,7 @@ import { agentModelEffortAfterPatch, isModelEffort, type ModelEffort } from './m
 import { canonicalMcpServerUrl, sameMcpServerUrl } from './mcp-url.ts';
 import { MemoryStoreLogic } from '../memory/store.ts';
 import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
-import { normalizeAgentAppPresence } from '../slack/agent-apps/index.ts';
+import { attachedAgentApp, normalizeAgentAppPresence } from '../slack/agent-apps/index.ts';
 import { type AgentAppBot, agentAppBots } from '../slack/agent-app-bots.ts';
 import {
   isDefaultAgentAvatarSeed,
@@ -4189,10 +4189,29 @@ function parseAgentSlackPresence(
       if (!parsed.app) return fallback;
       return normalizeAgentAppPresence({ ...fallback, ...parsed, kind: 'agent_app', app: parsed.app, avatar });
     }
-    return { ...fallback, ...(parsed as Partial<UserGroupPresence>), avatar };
+    // A user group never carries a released group, and holds only an app record that is not live.
+    const { app, released: _released, ...group } = parsed as Omit<Partial<UserGroupPresence>, 'app'> & { app?: unknown; released?: unknown };
+    const attached = attachedAgentApp(app);
+    if (app !== undefined && !attached) logDroppedAttachedApp(agentId, app);
+    return { ...fallback, ...group, avatar, ...(attached ? { app: attached } : {}) };
   } catch {
     return defaultAgentSlackPresence(agentId, name);
   }
+}
+
+/**
+ * A user group's stored app record that this build cannot keep: a live one, which only an `agent_app` presence
+ * holds, or one that is no lifecycle record. The next write-back of the presence erases it, so the operator gets
+ * the app ID it named.
+ */
+function logDroppedAttachedApp(agentId: string, app: unknown): void {
+  const record = app && typeof app === 'object' ? app as { state?: unknown; app?: { appId?: unknown } } : undefined;
+  console.warn(JSON.stringify({
+    event: 'chickpea.agent_app.attached_record_dropped',
+    agentId,
+    state: typeof record?.state === 'string' ? record.state : null,
+    appId: typeof record?.app?.appId === 'string' ? record.app.appId : null,
+  }));
 }
 
 function rowToWorkspaceInstallation(row: WorkspaceInstallationRow): WorkspaceInstallation {

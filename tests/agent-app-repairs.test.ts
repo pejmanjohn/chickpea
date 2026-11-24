@@ -184,6 +184,8 @@ test("the Cloudflare state store repairs, and ends welcomes of, a run stored wit
     asked.length = 0;
     const receipts = cloudflareFunction<(...args: unknown[]) => Promise<unknown>>('drainCloudflareManagementReceipts', {
       localSlackPresentationState: () => ({}),
+      localGatewayAppStores: () => ({}),
+      localSettingsStore: () => ({}),
       drainManagementReceiptOutbox: async (options: { onTerminalFailure(record: object): Promise<void> }) => options.onTerminalFailure({}),
       failAgentWelcomeTurn: async (_record: object, presentation: Resolving) => resolveEach(presentation),
     });

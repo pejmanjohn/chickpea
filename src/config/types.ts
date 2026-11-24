@@ -225,11 +225,27 @@ export interface PendingUserGroupCreate {
   startedAt: number;
 }
 
-/** An Agent addressed through a Slack user group. Stored JSON without `kind` is this shape. */
+/**
+ * Why a user-group presence has no group: the Agent waits for its own Slack
+ * app and is not in Slack yet. Stored as the presence's `errorCode`, as a
+ * Slack plan without user groups stores `paid_plan_required`.
+ */
+export const AWAITING_OWN_APP = 'awaiting_own_app';
+
+/**
+ * An Agent addressed through a Slack user group. Stored JSON without `kind` is this shape.
+ * `app` is an app lifecycle record attached while the group still holds the
+ * handle: an app being created or waiting for Allow, or one that was removed
+ * after the group took the handle back. It never derives the group's
+ * `desiredState` or `health`, and it is never live: once the app holds the
+ * handle the presence is an `AgentAppPresence`, so the type admits no live
+ * record here, and the read boundary drops a stored one with an operator line.
+ */
 export interface UserGroupPresence extends AgentPresenceBase {
   kind?: 'user_group';
   userGroupId?: string;
   pendingCreate?: PendingUserGroupCreate;
+  app?: AttachedAgentApp;
 }
 
 /** The Slack app Chickpea created for one Agent, without its secrets. */
@@ -253,6 +269,18 @@ export type AgentAppAttention =
   | 'app_removed'
   | 'uninstall_failed';
 
+/** One Owner's open Allow link: a digest of its nonce and when it expires. */
+export interface AgentAppConsent {
+  nonceDigest: string;
+  expiresAt: number;
+}
+
+/**
+ * How far moving the handle from the user group to the live app has got.
+ * Absent means `done`, so a record stored before the switch was tracked reads as finished.
+ */
+export type AgentAppSwitchProgress = 'live' | 'group_pending' | 'bring_in_pending' | 'owner_told' | 'done';
+
 export type AgentAppLifecycle =
   | { state: 'releasing_handle'; at: number; startedBy: string }
   /** Written before the create call, which has no idempotency key. */
@@ -267,7 +295,8 @@ export type AgentAppLifecycle =
       app: AgentAppRecord;
       icon: AgentAppIcon;
       allowDm: { channelId: string; ts: string };
-      consent?: { nonceDigest: string; owner: string; expiresAt: number };
+      /** One unexpired nonce per Owner, keyed by that Owner's Slack user ID. */
+      consents?: Readonly<Record<string, AgentAppConsent>>;
     }
   | {
       state: 'active';
@@ -277,6 +306,7 @@ export type AgentAppLifecycle =
       botUserId: string;
       installedAt: number;
       installedBy: string;
+      switchProgress?: AgentAppSwitchProgress;
     }
   | { state: 'uninstalling'; at: number; startedBy: string; app: AgentAppRecord; botUserId?: string; next: 'uninstall' | 'delete' }
   | {
@@ -301,9 +331,15 @@ export interface AgentAppPresence extends AgentPresenceBase {
   /**
    * The user group that held the handle, and its state before the start.
    * Retire re-enables the group; an undone start restores that state, which
-   * older records lack.
+   * older records lack. `answers` is true while the group is still enabled
+   * and its ID still routes to this Agent; absent means false.
    */
-  released?: { userGroupId: string; desiredState?: AgentPresenceDesiredState; health?: AgentPresenceHealth };
+  released?: {
+    userGroupId: string;
+    desiredState?: AgentPresenceDesiredState;
+    health?: AgentPresenceHealth;
+    answers?: boolean;
+  };
   userGroupId?: never;
   pendingCreate?: never;
 }
@@ -312,6 +348,20 @@ export interface AgentAppPresence extends AgentPresenceBase {
 export type AgentSlackPresence = UserGroupPresence | AgentAppPresence;
 
 export type ActiveAgentApp = Extract<AgentAppLifecycle, { state: 'active' }>;
+
+/** An app record a user group holds the handle beside: any state but live. */
+export type AttachedAgentApp = Exclude<AgentAppLifecycle, ActiveAgentApp>;
+
+/** The Agent's app lifecycle record, whether the app holds the handle or is attached to its user group. */
+export function appRecordOf(presence: AgentSlackPresence | undefined): AgentAppLifecycle | undefined {
+  return presence?.app;
+}
+
+/** The user group whose ID routes to this Agent: its own, or the released one while it still answers. */
+export function answeringUserGroupId(presence: AgentSlackPresence | undefined): string | undefined {
+  if (presence?.kind !== 'agent_app') return presence?.userGroupId;
+  return presence.released?.answers === true ? presence.released.userGroupId : undefined;
+}
 
 /** An Agent whose own Slack app is installed and answering. */
 export function agentAppIsLive(

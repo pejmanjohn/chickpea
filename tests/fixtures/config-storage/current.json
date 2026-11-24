@@ -1,5 +1,5 @@
 {
-  "scenario": "66a470f047d2f02b267be5c8592af71e890506f839f6f458ba5ffec48706924a",
+  "scenario": "112dd42937b3d3f93cbf027141defa833a451dba350c946b3c1016f82dbedae3",
   "contract": {
     "schemaVersion": 12,
     "schemaMarker": "agent-first-v1",
@@ -41,7 +41,7 @@
       "config_agents.mcp_servers_json": 1,
       "config_agents.repositories_json": 1,
       "config_agents.skills_json": 1,
-      "config_agents.slack_presence_json": 1,
+      "config_agents.slack_presence_json": 2,
       "config_agents.website_logins_json": 1,
       "config_connection_accounts.identity_json": 1,
       "config_connection_accounts.policy_json": 6,
@@ -168,7 +168,7 @@
             "creator_membership_id": "\"membership_scenario_member\"",
             "edit_policy": "\"all_workspace_members\"",
             "configuration_generation": "2",
-            "slack_presence_json": "{\"app\":{\"app\":{\"appId\":\"A0SCENARIOCON\",\"clientId\":\"1000000000.3000000000\"},\"at\":1792080000000,\"botUserId\":\"U0SCENARIOCON\",\"icon\":\"agent_avatar\",\"installedAt\":1792080000000,\"installedBy\":\"membership_scenario_owner\",\"state\":\"active\"},\"avatar\":{\"generatedSeedHistory\":[{\"seed\":\"chickpea-avatar-v1:04:agent_scenario_concierge\",\"throughRevision\":1}],\"kind\":\"uploaded\",\"revision\":2,\"url\":\"https://assets.example.com/avatars/concierge-2.png\"},\"desiredState\":\"active\",\"health\":\"healthy\",\"kind\":\"agent_app\",\"normalizedHandle\":\"scenario-concierge\",\"observedAt\":1792080000000,\"released\":{\"desiredState\":\"active\",\"health\":\"healthy\",\"userGroupId\":\"S0SCENARIOCON\"},\"requestedHandle\":\"scenario-concierge\"}",
+            "slack_presence_json": "{\"app\":{\"app\":{\"appId\":\"A0SCENARIOCON\",\"clientId\":\"1000000000.3000000000\"},\"at\":1792080000000,\"botUserId\":\"U0SCENARIOCON\",\"icon\":\"agent_avatar\",\"installedAt\":1792080000000,\"installedBy\":\"membership_scenario_owner\",\"state\":\"active\",\"switchProgress\":\"group_pending\"},\"avatar\":{\"generatedSeedHistory\":[{\"seed\":\"chickpea-avatar-v1:04:agent_scenario_concierge\",\"throughRevision\":1}],\"kind\":\"uploaded\",\"revision\":2,\"url\":\"https://assets.example.com/avatars/concierge-2.png\"},\"desiredState\":\"active\",\"health\":\"healthy\",\"kind\":\"agent_app\",\"normalizedHandle\":\"scenario-concierge\",\"observedAt\":1792080000000,\"released\":{\"answers\":true,\"desiredState\":\"active\",\"health\":\"healthy\",\"userGroupId\":\"S0SCENARIOCON\"},\"requestedHandle\":\"scenario-concierge\"}",
             "archived_at": "null",
             "model": "null",
             "skills_json": "[]",
@@ -192,7 +192,7 @@
             "creator_membership_id": "\"membership_scenario_owner\"",
             "edit_policy": "\"creator_and_admins\"",
             "configuration_generation": "1",
-            "slack_presence_json": "{\"avatar\":{\"kind\":\"generated\",\"revision\":1,\"seed\":\"chickpea-avatar-v1:09:agent_scenario_researcher\"},\"desiredState\":\"unpublished\",\"health\":\"unpublished\",\"normalizedHandle\":\"scenario-researcher\",\"requestedHandle\":\"scenario-researcher\"}",
+            "slack_presence_json": "{\"app\":{\"allowDm\":{\"channelId\":\"D0SCENARIOOWN\",\"ts\":\"1800000000.000100\"},\"app\":{\"appId\":\"A0SCENARIORES\",\"clientId\":\"1000000000.5000000000\"},\"at\":1792080000000,\"consents\":{\"U0SCENARIOADM\":{\"expiresAt\":1792084200000,\"nonceDigest\":\"scenario-consent-digest-admin\"},\"U0SCENARIOOWN\":{\"expiresAt\":1792084500000,\"nonceDigest\":\"scenario-consent-digest-owner\"}},\"icon\":\"agent_avatar\",\"startedBy\":\"membership_scenario_owner\",\"state\":\"awaiting_consent\"},\"avatar\":{\"kind\":\"generated\",\"revision\":1,\"seed\":\"chickpea-avatar-v1:01:agent_scenario_researcher\"},\"desiredState\":\"active\",\"errorCode\":\"awaiting_own_app\",\"health\":\"pending\",\"normalizedHandle\":\"scenario-researcher\",\"observedAt\":1792080000000,\"requestedHandle\":\"scenario-researcher\"}",
             "archived_at": "null",
             "model": "\"anthropic/claude-sonnet-4-5\"",
             "skills_json": "[{\"description\":\"Write the weekly digest.\",\"enabled\":true,\"instructions\":\"# Weekly digest\\nList three highlights from the week.\",\"name\":\"weekly-digest\",\"suggestedSkillId\":\"suggested_weekly_digest\"},{\"description\":\"Run the imported checklist.\",\"enabled\":false,\"importSource\":{\"commit\":\"0123456789abcdef0123456789abcdef01234567\",\"contentSha256\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"path\":\"skills/checklist/SKILL.md\",\"repository\":\"example-org/scenario-skills\"},\"instructions\":\"# Checklist\\nConfirm each item before replying.\",\"name\":\"imported-checklist\"}]",
