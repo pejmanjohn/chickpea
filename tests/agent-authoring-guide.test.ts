@@ -153,7 +153,7 @@ test('instruction-update tool example survives both runtime schema validators', 
   assert.match(description, /including a final sentence that refers to the text itself/);
 });
 
-test('Agent creation shows the model a call Pi accepts, and a refused call is corrected and sent again', () => {
+test('Agent creation shows the model a call both validators accept, and says how to read a refusal', () => {
   const description = workspaceManagementToolDescription('apply_workspace_changes');
   const parameters = toJsonSchema(slackApplyWorkspaceChangesValibotSchema, { errorMode: 'ignore' });
   const precheck = (args: JsonObject) => validateToolArguments({ name: 'apply_workspace_changes', description, parameters }, {
@@ -175,8 +175,26 @@ test('Agent creation shows the model a call Pi accepts, and a refused call is co
   assert.deepEqual(v.parse(slackApplyWorkspaceChangesValibotSchema, args), args);
   assert.deepEqual(precheck(args), args);
   assert.deepEqual(Object.keys(args.operations[0].agent).sort(), Object.keys(agent).sort());
+  const operations = (parameters as any).properties.operations.items;
+  const createAgent = (operations.anyOf ?? operations.oneOf)
+    .find((operation: any) => operation.properties.kind.const === 'create_agent');
+  assert.match(description, /The agent object takes only these fields and the optional model, modelEffort and editPolicy;/);
+  assert.deepEqual(
+    Object.keys(createAgent.properties.agent.properties).sort(),
+    [...Object.keys(args.operations[0].agent), 'model', 'modelEffort', 'editPolicy'].sort(),
+    'the description lists every field the create schema takes on an Agent',
+  );
   assert.match(description, /tool access belongs to each mcpServers entry's allowedTools, never to the agent/);
-  assert.match(description, /A call refused for its arguments changed nothing: correct the fields the error names and call again/);
+
+  // Pi answers a refused operation with what other kinds require. Here no line names the Channel that is missing.
+  assert.throws(
+    () => precheck({ idempotencyKey: 'k', operations: [{ itemId: 'grant', kind: 'grant_agent_channel', agentId: 'demo_alpha' }] }),
+    (error: Error) => {
+      const refusal = error.message.split('\n\nReceived arguments:')[0]!;
+      return /operations\.0\.agent: must have required properties agent/.test(refusal) && !/channelId/.test(refusal);
+    },
+  );
+  assert.match(description, /A call refused for its arguments changed nothing: correct it and call again in the same turn\. The refusal also lists what other operation kinds require, so act only on a line that is true of the kind you sent, and keep every field that kind takes\./);
   assert.match(AGENT_AUTHORING_GUIDE, /send that `mcpServers` entry with a new `allowedTools`[^.]*\. The Agent itself has no `allowedTools`/);
 });
 
