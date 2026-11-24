@@ -291,6 +291,8 @@ interface SwitchStepDone {
 }
 
 const MAX_STEPS_PER_RUN = 12;
+/** The steps toward Allow that turn a group off for a new app, create the app, or change it in Slack. */
+const STEPS_A_PAUSE_HOLDS: ReadonlySet<AgentAppStep> = new Set(['release_handle', 'create', 'set_urls', 'set_icon']);
 /** How long an opened Allow link stays valid. */
 export const CONSENT_TTL_MS = 15 * 60_000;
 /** Agent, nonce and, since the press said where it came from, that; a state without it lands as one from Slack. */
@@ -474,6 +476,8 @@ export class AgentSlackApps {
       }
       const step = nextStep(app, now);
       if (!step) return { agent };
+      // Whatever door led here, a pause runs no step that frees a handle for a new app, creates one, or changes one.
+      if (STEPS_A_PAUSE_HOLDS.has(step) && !this.mayCreateApps()) return { agent };
       const outcome = await this.performers[step]({ agent, presence, app, now, wroteCreating, archiving, handOff });
       if (outcome === 'wait') return { agent };
       const committed = await this.commit(agent, outcome.event);
@@ -893,8 +897,13 @@ export class AgentSlackApps {
       ? (await this.deps.stores.config.listAgentChannelGrants()).filter((grant) => grant.status === 'active' && grant.channelIsPrivate)
       : [];
     const now = this.now();
+    const paused = !this.mayCreateApps();
     for (const { agent, app } of withApps) {
-      rows.set(agent.id, agentAppHomeBlocks(homeRowFor(agent, app, now, privateGrants), this.names(agent), agent.id, this.deps.host.addUrl(agent.id)));
+      const row = homeRowFor(agent, app, now, privateGrants);
+      // While creating is paused the hand-off page presses nothing, and Allow on an app Slack already made still
+      // completes: the row waiting for Allow links to Allow itself, as the Owner's message does.
+      const link = paused && row.kind === 'waiting' ? this.deps.host.allowUrl(agent.id) : this.deps.host.addUrl(agent.id);
+      rows.set(agent.id, agentAppHomeBlocks(row, this.names(agent), agent.id, link));
     }
     return rows;
   }

@@ -279,6 +279,9 @@ test('while creating apps is paused, each action that would create or change an 
 // held by the pause, so the Agent's app is live while its group is off, or the reverse.
 test("Allow on an app Slack already made still completes during a pause, and the switch after it runs: the Agent ends on its own bot", async (t) => {
   const f = await fixture(t);
+  const homeButton = async () => JSON.stringify((await f.service.homeRows([await f.config.getAgent('agent_ready')], { role: 'owner' })).get('agent_ready'));
+  assert.match(await homeButton(), /"text":"Allow in Slack"\},"action_id":"agent_app_add_link","url":"https:\/\/cloud\.test\/slack\/agent-apps\/allow\/agent_ready"/,
+    "the Owner's Home tab offers Allow through the Allow link, never the hand-off page that presses nothing");
   const opened = await f.routes.request('/channels/slack/agent-apps/allow/agent_ready', {}, AS_OWNER);
   assert.equal(opened.status, 303, "the Allow link still opens Slack's permission screen");
   const state = new URL(opened.headers.get('location')!).searchParams.get('state')!;
@@ -297,6 +300,34 @@ test("Allow on an app Slack already made still completes during a pause, and the
   assert.equal(switched.released?.answers, false);
   assert.match(f.groups.posted.at(-1) ?? '', /Helpdesk is now its own Slack app/, 'the Owner is told');
   assert.deepEqual(createdOrChanged(f.slack), [], 'nothing was created or changed: Allow spends only the app’s own credentials');
+});
+
+// Defect caught: a door nobody closed (a new caller, a job, a retry) that runs a record's next step during a pause and
+// frees a handle, creates an app, or changes one.
+test('while paused, running a record forward performs no step that frees a handle, creates an app or changes one', async (t) => {
+  const f = await fixture(t);
+  f.groups.groups.push({ id: 'S_OLD', name: 'Older', handle: 'older', disabled: false });
+  const partway: Array<[string, AgentSlackPresence]> = [
+    ['agent_creating', presence('creating', { app: { state: 'creating', at: NOW, startedBy: OWNER, manifestFingerprint: 'made-now' } })],
+    ['agent_created', presence('created', { app: { state: 'created', at: NOW, startedBy: OWNER, app: appRecord(6) } })],
+    ['agent_urls', presence('urls', { app: { state: 'urls_set', at: NOW, startedBy: OWNER, app: appRecord(7) } })],
+    ['agent_older', {
+      ...presence('older'), kind: 'agent_app', released: { userGroupId: 'S_OLD', answers: true }, app: { state: 'releasing_handle', at: NOW, startedBy: OWNER },
+    } as AgentSlackPresence],
+  ];
+  for (const [id, slackPresence] of partway) await f.config.createAgent(agent(id, id, slackPresence));
+  await writeAppSecrets(f.secrets, 'A0APP6', 'agent_created', { clientSecret: 'cs6', signingSecret: 'ss6' }, null);
+  await writeAppSecrets(f.secrets, 'A0APP7', 'agent_urls', { clientSecret: 'cs7', signingSecret: 'ss7' }, null);
+  const before = await f.agents();
+
+  for (const [id] of partway) await f.service.advance(id, { wroteCreating: true, handOff: true });
+  assert.deepEqual(f.slack.calls, [], 'Slack is asked for nothing');
+  assert.deepEqual(f.groups.disabled, [], 'no group is turned off for an app that cannot be made');
+  assert.deepEqual(await f.agents(), before, 'and every record is where it stopped');
+
+  f.host.mayCreateApps = true;
+  await f.service.advance('agent_created', { handOff: true });
+  assert.equal(appRecordOf((await f.config.getAgent('agent_created')).slackPresence)?.state, 'awaiting_consent', 'once allowed, the same run goes on to Allow');
 });
 
 // Defects caught: a held sync that tells the Owner something failed, records a refusal, or never resumes; a sweep that
@@ -392,6 +423,8 @@ test('a host that says nothing about creating apps, or allows it, makes exactly 
   for (const mayCreateApps of [undefined, true]) {
     const f = await fixture(t, mayCreateApps === undefined ? {} : { mayCreateApps });
     assert.equal((await (await f.adminJson(API, 'GET')).json() as { paused: boolean }).paused, false);
+    assert.match(JSON.stringify((await f.service.homeRows([await f.config.getAgent('agent_ready')], { role: 'owner' })).get('agent_ready')),
+      /"url":"https:\/\/cloud\.test\/slack\/agent-apps\/add\/agent_ready"/, "the Home tab's Allow goes through the hand-off page");
     const pressed = await f.handOff('agent_new', 'POST');
     assert.equal(pressed.status, 303, "the press goes on to Slack's Allow");
     assert.equal((await f.adminJson(`${API}/token`, 'PUT', { refreshToken: 'xoxe-1-another-token-0000' })).status, 200);

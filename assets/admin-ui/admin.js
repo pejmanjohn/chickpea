@@ -5493,7 +5493,8 @@
 
   // While the host does not let Chickpea create or change apps, an Agent on
   // its way to its own app says so and keeps only Cancel, where Cancel can
-  // withdraw it. Every other row is as it always is.
+  // withdraw it, and a live app that does not match its Agent says it waits.
+  // Every other row is as it always is.
   function slackAppsPausedRow(agent) {
     var name = agent.name;
     var slack = agent.slack || {};
@@ -5509,6 +5510,9 @@
       case "needs_attention":
         if (slack.reason === "app_removed" || slack.reason === "uninstall_failed") return null;
         return { text: SLACK_APPS_PAUSED + " " + name + " keeps answering as it does now.", cancel: !!slack.cancellable };
+      case "own_app":
+        // A live app that does not match its Agent stays so until the pause ends: no Try again, no token.
+        return slack.attention ? { text: SLACK_APPS_PAUSED + " Chickpea can't update " + name + "'s Slack app now. " + name + " keeps answering." } : null;
       default:
         return null;
     }
@@ -5571,6 +5575,11 @@
       return '<div class="slack-token-page">' + back + title +
         '<p class="onboarding-success-badge slack-token-success" role="status">' + esc(connected) + '</p>' +
         '<div><button type="button" class="btn btn-primary" data-action="slack-apps-token-back" data-role="slack-apps-token-continue">Continue</button></div></div>';
+    }
+    // Paused, a pasted token would be refused, so none is asked for.
+    if (slackAppsState().data && slackAppsState().data.paused === true) {
+      return '<div class="slack-token-page">' + back + title +
+        '<p class="callout slack-token-why" role="status"><span>' + esc(SLACK_TOKEN_ERRORS.paused) + '</span></p></div>';
     }
     var checking = token.phase === "checking";
     var fieldStatus = token.error

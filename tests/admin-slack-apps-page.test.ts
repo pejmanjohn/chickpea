@@ -1306,6 +1306,8 @@ test('paused, the section says so, offers nothing that creates or changes an app
     row('agent_removed', 'Ops', 'ops', 'needs_attention', { slack: { state: 'needs_attention', reason: 'app_removed' } }),
     row('agent_undo', 'Finance', 'finance', 'cancelling'),
     row('agent_support', 'Support', 'support', 'own_app'),
+    row('agent_stale', 'Research', 'research', 'own_app', { slack: { state: 'own_app', attention: 'update_refused' } }),
+    row('agent_tokenless', 'Payroll', 'payroll', 'own_app', { slack: { state: 'own_app', attention: 'config_token_needed' } }),
   ];
   const page = await harness({ api: apiState({ paused: true, token: { stored: false }, agents }) });
   const html = page.html();
@@ -1329,6 +1331,14 @@ test('paused, the section says so, offers nothing that creates or changes an app
   assert.match(text, /Ops(&#39;|')s Slack app was removed from this workspace/, 'a removed app reads as always: its Allow still works');
   assert.match(html, /data-action="slack-apps-cancel" data-agent="agent_undo"[^>]*>Finish removing</, 'and so does finishing a Cancel');
   assert.match(text, /Support @support Its own Slack app/, 'an Agent with its own app is unchanged');
+  for (const name of ['Research', 'Payroll']) {
+    assert.match(text, new RegExp(`${name} @${name.toLowerCase()} Adding Slack apps is paused\\. Chickpea can(&#39;|')t update ${name}(&#39;|')s Slack app now\\. ${name} keeps answering\\.`),
+      'a live app that does not match its Agent says it waits, and offers neither Try again nor a token');
+  }
+
+  const tokenPage = await harness({ path: '/admin/destinations/slack/connection/token', api: apiState({ paused: true, token: { stored: false } }) });
+  assert.match(tokenPage.text(), /Adding Slack apps is paused, so Chickpea isn(&#39;|')t taking a Slack token now\./, 'the token page, as a link in an older message opens it, says so');
+  assert.doesNotMatch(tokenPage.html(), /id="slack-apps-token"|slack-apps-token-form/, 'and asks for no token');
 
   const off = await harness({ api: apiState({ paused: true, setting: { mode: 'shared', changedBy: null, changedAt: null }, agents: [] }) });
   assert.match(off.text(), /Agents answer through the Chickpea app\. People mention them by @handle in channels Chickpea is in\. Adding Slack apps is paused\./);
