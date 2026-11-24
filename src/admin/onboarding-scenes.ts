@@ -5,6 +5,7 @@ export type OnboardingSceneId =
   | 'add-to-slack'
   | 'setting-up'
   | 'own-model'
+  | 'slack-apps'
   | 'github'
   | 'github-connected'
   | 'try'
@@ -24,6 +25,7 @@ export const ONBOARDING_SCENES: Readonly<Record<OnboardingSceneId, OnboardingSce
   'add-to-slack': { pose: 'moving-in', tone: 'apricot', caption: 'Bags packed. Where to?' },
   'setting-up': { pose: 'setup', tone: 'apricot', caption: 'Moving in…' },
   'own-model': { pose: 'setup', tone: 'gold', caption: 'Power me up!' },
+  'slack-apps': { pose: 'chat', tone: 'lilac', caption: 'Everyone gets a name tag.' },
   github: { pose: 'coding', tone: 'sage', caption: 'Ready to read some code.' },
   'github-connected': { pose: 'coding-done', tone: 'sage', caption: 'Code connected!' },
   try: { pose: 'chat', tone: 'lilac', caption: 'Come say hi in Slack!' },
@@ -57,6 +59,13 @@ export const ONBOARDING_SCENE_CSS = `.onboarding-tone-gold { --tone: #f7e2ad; --
 .onboarding-orientation li.active, .onboarding-orientation li.complete { color: #3b3220; }
 .onboarding-step-label, .onboarding-step-note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .onboarding-step-note { color: #6b5c42; font-size: .8125rem; font-weight: 600; }
+.onboarding-orientation:has(> li:nth-child(4)) { grid-auto-columns: auto; }
+.onboarding-orientation:has(> li:nth-child(4)) li { min-width: min-content; }
+.onboarding-orientation:has(> li:nth-child(4)) :is(.onboarding-step-label, .onboarding-step-note) { white-space: normal; }
+@media (max-width: 900px) {
+  .onboarding-orientation:has(> li:nth-child(4)) { gap: 6px; }
+  .onboarding-orientation:has(> li:nth-child(4)) li { font-size: .8125rem; }
+}
 @media (max-width: 720px) {
   .onboarding-scene { --arch: 84px; align-self: stretch; flex-direction: row; gap: 18px; height: auto; justify-content: flex-start; min-height: 0; padding: 70px 24px 24px; position: relative; }
   .onboarding-arch { border-radius: 42px 42px 10px 10px; }
@@ -84,6 +93,8 @@ export function onboardingSceneId(input: {
     case 'choose_provider':
     case 'choose_model':
       return input.onChickpeaModels ? 'setting-up' : 'own-model';
+    case 'slack_apps':
+      return 'slack-apps';
     case 'connect_github':
       return input.githubConnected ? 'github-connected' : 'github';
     case 'try':

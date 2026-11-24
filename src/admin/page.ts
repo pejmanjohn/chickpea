@@ -189,6 +189,7 @@ export function renderAdminPage(
       selfHosted,
       onChickpeaModels,
       githubOffered: options.onboarding.githubConnectPath !== null,
+      slackAppsOffered: options.agentSlackAppsOffered === true,
     }),
     scenes: onboardingScenesHtml(),
   };
