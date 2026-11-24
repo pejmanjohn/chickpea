@@ -974,6 +974,22 @@ test("an Agent's reply Slack echoes after its app began uninstalling stays its A
     "the app's bot is still Support's while the app is being removed");
 }));
 
+test("a reply of an Agent's app that Slack delivers after the app was removed is not recorded as another app's, by the app its record keeps", async (t) => withHarness(t, async (h) => {
+  const root = '1900001450.000100';
+  const reply = '1900001450.000200';
+  await h.stores.config.putAgentThreadRoute({ workspaceId: TEAM, channelId: 'C1', threadTs: root, agentId: 'agent_support', agentGeneration: 1 });
+  await setSupportApp(h, {
+    state: 'needs_attention', at: Date.now(), startedBy: 'U1', reason: 'app_removed', resume: 'icon_set',
+    app: { appId: AGENT_APP, clientId: '1.client' }, icon: 'agent_avatar',
+  });
+  assert.equal((await h.deliverToChickpea(chickpeaEvent('EvRemovedEcho', {
+    type: 'message', user: AGENT_BOT_USER, bot_id: 'BAGENT', app_id: AGENT_APP, bot_profile: { app_id: AGENT_APP, name: 'support' },
+    text: 'Refunds go to account 99.', ts: reply, event_ts: reply, thread_ts: root,
+  }))).status, 200);
+  assert.deepEqual(await h.stores.config.listSlackPublicContext(TEAM, 'C1', root), [],
+    "it is an Agent's post, not another app's, so the ingress records no app row for it");
+}));
+
 const HANDOFF_ROOT = '1900001500.000100';
 const HANDOFF_TS = '1900001500.000600';
 
