@@ -46,6 +46,7 @@ import type {
 } from './turn-job-types.ts';
 import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
 import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
+import { AWAITING_OWN_APP } from '../config/types.ts';
 import type { SlackInteractionIntent } from './interaction-intent.ts';
 import {
   SlackRunPresentationStoreLogic,
@@ -162,16 +163,20 @@ export function selectSlackPresentationOwner(input: {
     kind?: 'user_group' | 'agent_app';
     desiredState: 'unpublished' | 'active' | 'disabled';
     health: 'unpublished' | 'pending' | 'healthy' | 'needs_attention';
+    errorCode?: string;
     avatar: { revision: number };
   };
 }): SlackPresentationOwner {
   if (input.agentId === CHICKPEA_AGENT_ID) return { kind: 'chickpea' };
   if (input.speaker.kind === 'own_bot') return { kind: 'agent_app', agentName: input.agentName };
   const presence = input.slackPresence;
-  // A routed creator-private DM does not need a published Slack user group.
+  // A routed creator-private DM does not need a published Slack user group:
+  // a draft's, or one not in Slack yet while it waits for its own app.
   // Admission has already checked private use; retain Channel publication gates.
-  const privateUnpublished = input.conversationKind === 'im' &&
-    presence?.desiredState === 'unpublished' && presence.health === 'unpublished';
+  const privateUnpublished = input.conversationKind === 'im' && (
+    (presence?.desiredState === 'unpublished' && presence.health === 'unpublished') ||
+    presence?.errorCode === AWAITING_OWN_APP
+  );
   if (
     input.installationHealth !== 'healthy' ||
     !input.avatarUrl ||

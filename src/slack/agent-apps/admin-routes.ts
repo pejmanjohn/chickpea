@@ -20,7 +20,7 @@ import { requestOrigin } from '../../http/request-origin.ts';
 import { escapeHtml } from '../../security/html-escape.ts';
 import { agentAvatarInstallation, agentAvatarUrlForPresentation } from '../agent-presence/avatar-assets.ts';
 import { agentSlackAppsHost, type AgentSlackAppsHost } from './host.ts';
-import { type AgentSlackState, agentSlackState } from './lifecycle.ts';
+import { type AgentSlackState, agentSlackState, placedNowhere } from './lifecycle.ts';
 import { liveAgentSlackApps } from './live.ts';
 import { ADMIN_PATH, permissionNeededCopy, tokenApiPath, YOUR_APPS_URL } from './pages.ts';
 import type { AgentSlackApps } from './service.ts';
@@ -45,8 +45,12 @@ export function isAgentSlackAppTokenApiPath(path: string): boolean {
 export interface AgentSlackAppAdminDeps {
   actor(c: Context): Promise<{ principal: AuthPrincipal; slackUserId: string; slackTeamId: string }>;
   getAgent(c: Context, agentId: string): Promise<CustomAgentConfig | undefined>;
-  /** Reconcile these Agents' Slack presence, as Retry does; each one's failure is kept on it. */
-  reconcileAgents(c: Context, agentIds: readonly string[]): Promise<void>;
+  /**
+   * Give each of these Agents a user group and finish the Channels its
+   * creator asked for, as creation in `shared` mode would have; each one's
+   * failure is kept on it and the rest go on.
+   */
+  placeInSlack(c: Context, agentIds: readonly string[]): Promise<void>;
   /** Where each change is recorded as an audit event. */
   identity(c: Context): IdentityStore;
   /** Test seam: the service for an env; live stores and the main bot otherwise. */
@@ -117,7 +121,9 @@ type SlackAppsAuditAction =
  *
  * - `GET /admin/api/slack-apps` → `{ setting: { mode, changedBy, changedAt }, token: { stored: false } |
  *   { stored: true, pastedBy, pastedAt }, agents: SlackAppsAgentRow[] }`.
- * - `PUT /admin/api/slack-apps/mode` `{ mode: 'shared' | 'own_app' }` → `{ setting }`.
+ * - `PUT /admin/api/slack-apps/mode` `{ mode: 'shared' | 'own_app' }` → `{ setting }`; with `shared`, every such PUT
+ *   also gives each Agent in Slack nowhere a user group and answers `{ setting, waiting: SlackAppsAgentRow[] }`, the
+ *   Agents still not in Slack after it, so pressing again repairs a reconcile that stopped partway.
  * - `PUT /admin/api/slack-apps/token` `{ refreshToken }` → `{ token }`; 400 `{ error: 'not_refresh_token' | 'rejected' |
  *   'other_workspace' }`; 503 `{ error: 'slack_down' }`.
  * - `DELETE /admin/api/slack-apps/token` → `{ token: { stored: false }, removed: 'discarded' | 'unconfirmed' | 'none' }`.
@@ -184,12 +190,14 @@ export function createAgentSlackAppAdminRoutes(deps: AgentSlackAppAdminDeps): Ho
     if (!parsed.success) return invalidRequest(c);
     const { setting, changed } = await gated.apps.setMode(parsed.output.mode, gated.slackUserId);
     if (changed) await audit(c, gated.principal, 'agent_apps.mode_changed', setting.mode);
-    // Back to shared: each Agent still waiting for its own app gets a user group. Agents with an app keep it.
-    if (setting.mode === 'shared') {
-      const waiting = (await gated.apps.userAgents()).filter((agent) => agentSlackState(agent.slackPresence!).state === 'not_in_slack');
-      if (waiting.length > 0) await deps.reconcileAgents(c, waiting.map((agent) => agent.id));
-    }
-    return c.json({ setting: settingJson(setting) });
+    if (setting.mode !== 'shared') return c.json({ setting: settingJson(setting) });
+    // Shared: each Agent in Slack nowhere gets a user group. Agents with an app, or one on its way, keep it.
+    const unplaced = async () => (await gated.apps.userAgents()).filter((agent) => placedNowhere(agent.slackPresence));
+    const before = await unplaced();
+    if (before.length > 0) await deps.placeInSlack(c, before.map((agent) => agent.id));
+    const grants = await gated.apps.agentChannelGrants();
+    const waiting = before.length > 0 ? await unplaced() : [];
+    return c.json({ setting: settingJson(setting), waiting: waiting.map((agent) => agentRow(c, agent, grants)) });
   });
 
   app.put(`${API}/token`, async (c) => {

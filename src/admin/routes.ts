@@ -682,7 +682,7 @@ import {
   agentPresenceAnnouncements,
   type AgentPresenceAnnouncements,
 } from '../slack/agent-presence/announcements.ts';
-import { AgentPresenceReconciler } from '../slack/agent-presence/reconciler.ts';
+import { AgentPresenceReconciler, agentCreatorInSlack } from '../slack/agent-presence/reconciler.ts';
 import {
   resolvePrivateAgentAudience,
   type PrivateAgentAudience,
@@ -11890,12 +11890,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         throw error;
       }
     },
-    reconcileAgents: async (c, agentIds) => {
+    placeInSlack: async (c, agentIds) => {
       const actor = await agentActor(c);
       const transport = await agentSlackTransport(c, actor.slackTeamId);
       const reconciler = presenceReconciler(c, transport, presenceAnnouncements(c, transport));
       // Each Agent's own failure is recorded on it, for its Retry; the rest go on.
-      for (const agentId of agentIds) await reconciler.retry(agentId).catch(() => undefined);
+      for (const agentId of agentIds) {
+        const creator = await agentCreatorInSlack(identity(c), await store(c).getAgent(agentId)).catch(() => undefined);
+        await reconciler.placeInSlack(agentId, creator).catch(() => undefined);
+      }
     },
     ...(options.agentSlackApps ? { service: options.agentSlackApps } : {}),
   }));

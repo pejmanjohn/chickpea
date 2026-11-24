@@ -383,15 +383,29 @@ export async function liveAgentSlackApps(
   const settings = local?.settings ?? getSettingsStore(env);
   const management = local?.management ?? resolved.management;
   const credentials = installationCredentials(env, local?.identity);
+  const config = local?.config ?? resolved.config;
+  const identity = local?.identity ?? resolved.identity;
   const { AgentSlackApps } = await import('./service.ts');
   return new AgentSlackApps({
     env,
-    stores: { config: local?.config ?? resolved.config, settings },
+    stores: { config, settings },
     host,
     transport: mainBotTransport(credentials, settings),
     armSwitch: (job) => armAgentAppSwitch(management, job, Date.now()),
     publicOrigin: () => resolveSlackPublicUrl(env, resolved.settings, resolved.identity),
     userGroupPermissionMissing: async () => hostedSlackUpdateGrantsUserGroupToken() && !(await credentials()).userGroupToken,
+    placeInSlack: async (agentId) => {
+      const resolved = await credentials();
+      const hooks = agentAppPresenceHooks(env, settings);
+      const { AgentPresenceReconciler, agentCreatorInSlack } = await import('../agent-presence/reconciler.ts');
+      const reconciler = new AgentPresenceReconciler({
+        config,
+        transport: createDirectSlackTransport(resolved.botToken ?? '', ownerUserGroupToken(resolved, settings)),
+        announce: null,
+        ...(hooks ? { agentApps: hooks } : {}),
+      });
+      await reconciler.placeInSlack(agentId, await agentCreatorInSlack(identity, await config.getAgent(agentId)));
+    },
   });
 }
 
@@ -507,5 +521,7 @@ function mainBotTransport(
     enableUserGroup: async (id) => (await bot()).enableUserGroup(id),
     openDirectConversation: async (userId) => (await bot()).openDirectConversation(userId),
     postMessage: async (input) => (await bot()).postMessage(input),
+    lookupChannel: async (channelId) => (await bot()).lookupChannel(channelId),
+    joinPublicChannel: async (channelId) => (await bot()).joinPublicChannel(channelId),
   };
 }

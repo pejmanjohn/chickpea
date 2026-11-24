@@ -1751,6 +1751,23 @@ test("a live app Agent's reply in a thread in Chickpea's DM posts with Chickpea'
   assert.deepEqual(await readingTokens(h, job), [MAIN_BOT], 'it reads the thread it answers in as the bot that answers');
 }));
 
+// Defects caught: the presentation owner giving a group-less user-group presence its persona only as a draft, so an
+// Agent not in Slack yet answered its creator in Chickpea's DM as plain Chickpea.
+test("an Agent not in Slack yet answers in Chickpea's DM under its own name and picture", async (t) => withHarness(t, async (h) => {
+  const support = await h.stores.config.getAgent('agent_support');
+  await h.stores.config.updateAgent(support.id, {
+    slackPresence: {
+      requestedHandle: 'support', normalizedHandle: 'support', desiredState: 'active', health: 'unpublished',
+      errorCode: AWAITING_OWN_APP, avatar: support.slackPresence!.avatar,
+    },
+  }, support.revision);
+  const job = await admitSupportTurn(h, CHICKPEA_DM, '1900003050.000100', '1900003050.000200');
+  assert.deepEqual(job.turn.speaker, { kind: 'chickpea_as_agent' });
+  const reply = await postAsRun(h, job);
+  assert.deepEqual(sender(reply), AS_SUPPORT, "Chickpea's bot posts under Support's name and picture, not as Chickpea");
+  assert.match(reply!.body.get('icon_url') ?? '', /\/agents\/agent_support\/avatar\//);
+}));
+
 test("a live app Agent's turn in its own DM is marked with its bot, and posts and reads as that bot with no persona", async (t) => withHarness(t, async (h) => {
   assert.equal((await h.deliver('events', dmEvent())).status, 200);
   const job = await pendingTurn(h.stores, () => true);

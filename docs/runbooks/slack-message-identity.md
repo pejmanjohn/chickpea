@@ -95,6 +95,18 @@ Without the port, that mention addresses nobody, and the Agent's other turns
 answer through Chickpea's bot under its name and picture. Code lives in
 `src/slack/agent-apps/`.
 
+An Agent that is not in Slack yet, because the workspace gives each new Agent
+its own app and no Owner has added this one, has no user group and no app.
+In Chickpea's DM it answers its creator through Chickpea's bot under its own
+name and picture, as a draft Agent does: the presence's `awaiting_own_app`
+marker passes the same DM exception (`selectSlackPresentationOwner` in
+`src/slack/claim-store.ts`). The marker stays through a failed attempt to give
+the Agent a user group, so a refused or rate-limited Retry never turns its
+replies back into Chickpea's. Anywhere other than a one-to-one DM it has no
+persona and posts as Chickpea. To verify, read the exact reply's `username`
+and `icon_url` and the fresh desktop and mobile sender; files it uploads still
+belong to Chickpea's bot.
+
 The app's manifest subscribes to no `message.channels` event. A thread
 follow-up in a Channel that does not mention the app's bot reaches the Agent
 only through Chickpea's thread-owner routing, so only when Chickpea's bot is in

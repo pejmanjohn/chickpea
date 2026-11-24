@@ -58,6 +58,8 @@ interface Posted { channelId: string; text: string; idempotencyKey: string | und
 const transport = (posted: Posted[]): AgentAppTransport => ({
   async disableUserGroup(): Promise<never> { throw new Error('not in this unit'); },
   async enableUserGroup(): Promise<never> { throw new Error('not in this unit'); },
+  async lookupChannel(): Promise<never> { throw new Error('not in this unit'); },
+  async joinPublicChannel(): Promise<never> { throw new Error('not in this unit'); },
   async openDirectConversation(userId: string) { return { id: `D_${userId}`, private: true, member: true, archived: false }; },
   async postMessage(input: { channelId: string; text: string; idempotencyKey?: string }) {
     posted.push({ channelId: input.channelId, text: input.text, idempotencyKey: input.idempotencyKey });

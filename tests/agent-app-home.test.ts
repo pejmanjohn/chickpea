@@ -37,6 +37,7 @@ const slack = {
 const transport: AgentAppTransport = {
   disableUserGroup: refuse('disableUserGroup'), enableUserGroup: refuse('enableUserGroup'),
   openDirectConversation: refuse('openDirectConversation'), postMessage: refuse('postMessage'),
+  lookupChannel: refuse('lookupChannel'), joinPublicChannel: refuse('joinPublicChannel'),
 };
 
 function presence(app?: AgentAppLifecycle): AgentSlackPresence {

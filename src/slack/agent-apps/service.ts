@@ -62,6 +62,7 @@ import {
   nextStep,
   normalizeAgentAppPresence,
   pendingSwitchStep,
+  placedNowhere,
   restorePending,
   transition,
 } from './lifecycle.ts';
@@ -112,7 +113,7 @@ import {
 
 export type AgentAppTransport = Pick<
   SlackTransport,
-  'disableUserGroup' | 'enableUserGroup' | 'openDirectConversation' | 'postMessage'
+  'disableUserGroup' | 'enableUserGroup' | 'openDirectConversation' | 'postMessage' | 'lookupChannel' | 'joinPublicChannel'
 >;
 
 /** What an Agent app's own bot does at the switch: see a Channel and join a public one. */
@@ -125,7 +126,8 @@ export interface AgentSlackAppsDeps {
   stores: {
     config: Pick<
       ConfigStore,
-      'getAgent' | 'listAgents' | 'updateAgent' | 'listWorkspaceInstallations' | 'listAgentChannelGrants' | 'putAgentChannelGrant'
+      | 'getAgent' | 'listAgents' | 'updateAgent' | 'listWorkspaceInstallations' | 'listAgentChannelGrants' | 'putAgentChannelGrant'
+      | 'deleteAgentChannelGrant'
     >;
     settings: SettingsStore & EncryptedCredentialStore;
   };
@@ -149,6 +151,12 @@ export interface AgentSlackAppsDeps {
    * Absent on a host whose permissions update grants no such permission.
    */
   userGroupPermissionMissing?: () => Promise<boolean>;
+  /**
+   * Gives an Agent in Slack nowhere its user group and its creator's
+   * Channels, as creation in `shared` mode would have: for a record that ended
+   * after the workspace went back to `shared`.
+   */
+  placeInSlack?: (agentId: string) => Promise<void>;
   now?: () => number;
 }
 
@@ -353,6 +361,7 @@ export class AgentSlackApps {
       wroteCreating = outcome.event.type === 'handle_released' || outcome.event.type === 'recreate';
       if (outcome.after) await outcome.after();
       if (committed.outcome === 'deleted' || committed.outcome === 'withdrawn') {
+        if (!archiving) await this.placeIfShared(agent);
         return { agent, appLimit: outcome.event.type === 'app_limit_reached' };
       }
       if (appRecordOf(agent.slackPresence)?.state === 'needs_attention') {
@@ -830,13 +839,30 @@ export class AgentSlackApps {
 
   /**
    * An Agent that was not in Slack yet, so released no group: the Channels its
-   * creator asked for when creating it waited as pending grants, and are its
-   * Channels now. Any other pending add is left as it is.
+   * creator asked for when creating it waited as pending grants, and end as
+   * an add to them would. Chickpea's bot joins a public one it is not in, so
+   * replies in the Agent's threads there need no mention; a private one is
+   * granted where Chickpea's bot already is; an archived one's grant is
+   * dropped. Any other pending add is left as it is.
    */
   private async grantCreatorChannels(agent: CustomAgentConfig): Promise<void> {
     const { config } = this.deps.stores;
     for (const grant of await config.listAgentChannelGrants()) {
       if (grant.agentId !== agent.id || grant.status !== 'pending' || grant.createdByMembershipId !== agent.creatorMembershipId) continue;
+      const channel = await seenBy(this.deps.transport, grant.channelId);
+      if (channel?.archived) {
+        await config.deleteAgentChannelGrant(grant.workspaceId, grant.channelId, agent.id);
+        continue;
+      }
+      if (channel && !channel.private && !channel.member) {
+        try {
+          await this.deps.transport.joinPublicChannel(grant.channelId);
+        } catch (error) {
+          if (!(error instanceof SlackTransportError) || error.retryable) throw error;
+          // The Agent's own bot still answers mentions there; follow-ups without one wait for Chickpea's bot.
+          console.warn({ event: 'chickpea.agent_app.chickpea_not_joined', agentId: agent.id, channelId: grant.channelId, error: error.code });
+        }
+      }
       try {
         await config.putAgentChannelGrant({ ...grant, status: 'active' }, grant.revision);
       } catch (error) {
@@ -844,6 +870,22 @@ export class AgentSlackApps {
         const now = (await config.listAgentChannelGrants(grant.workspaceId, grant.channelId)).find((g) => g.agentId === agent.id);
         if (now?.status !== 'active') throw error;
       }
+    }
+  }
+
+  /**
+   * A record that ended (a Cancel, a limit refusal) on an Agent in Slack
+   * nowhere, after the workspace went back to `shared`: it gets its group
+   * now, so it is never left out of Slack in that mode. Best effort: the
+   * next `shared` press repairs it.
+   */
+  private async placeIfShared(agent: CustomAgentConfig): Promise<void> {
+    if (!this.deps.placeInSlack || agent.lifecycle === 'archived' || !placedNowhere(agent.slackPresence)) return;
+    if ((await this.setting()).mode !== 'shared') return;
+    try {
+      await this.deps.placeInSlack(agent.id);
+    } catch (error) {
+      console.warn({ event: 'chickpea.agent_app.not_placed', agentId: agent.id, error: error instanceof Error ? error.name : 'unknown' });
     }
   }
 

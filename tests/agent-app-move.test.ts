@@ -101,7 +101,28 @@ class FakeMainBot implements AgentAppTransport {
   groups = new Map<string, SlackUserGroup>([['S1', { id: 'S1', name: 'Support', handle: 'support', disabled: false }]]);
   ownerPermission = true;
   posted: Array<{ channelId: string; text: string; idempotencyKey: string | undefined }> = [];
+  /** Channels Chickpea's bot is in; as for any bot, a private one it is not in is not found. */
+  readonly in = new Set<string>();
+  joined: string[] = [];
   constructor(private readonly calls: Calls) {}
+  lookupChannel(channelId: string) {
+    return this.calls.through(`main-lookup:${channelId}`, async (): Promise<SlackChannel> => {
+      const channel = CHANNELS.get(channelId);
+      if (!channel || (channel.private && !this.in.has(channelId))) throw new SlackTransportError('conversations.info', 'channel_not_found');
+      return { id: channelId, private: channel.private, member: this.in.has(channelId), archived: channel.archived ?? false };
+    });
+  }
+  joinPublicChannel(channelId: string) {
+    return this.calls.through(`main-join:${channelId}`, async (): Promise<SlackChannel> => {
+      const channel = CHANNELS.get(channelId);
+      if (!channel) throw new SlackTransportError('conversations.join', 'channel_not_found');
+      if (channel.private) throw new SlackTransportError('conversations.join', 'method_not_supported_for_channel_type');
+      if (channel.archived) throw new SlackTransportError('conversations.join', 'is_archived');
+      this.in.add(channelId);
+      this.joined.push(channelId);
+      return { id: channelId, private: false, member: true, archived: false };
+    });
+  }
   disableUserGroup(id: string) {
     return this.calls.through('disableUserGroup', async () => this.toggle('usergroups.disable', id, true));
   }
@@ -166,11 +187,12 @@ class FakeAppBot implements AgentAppBotTransport {
   }
 }
 
-const CHANNELS = new Map([
+const CHANNELS = new Map<string, { private: boolean; archived?: boolean }>([
   ['CSALES', { private: false }],
   ['CDEALS', { private: false }],
   ['GPRIV', { private: true }],
   ['COTHER', { private: false }],
+  ['COLD', { private: false, archived: true }],
 ]);
 
 async function fixture(

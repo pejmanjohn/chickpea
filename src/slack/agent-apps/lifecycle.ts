@@ -137,7 +137,10 @@ export type AgentSlackState =
 
 export function agentSlackState(presence: AgentSlackPresence): AgentSlackState {
   const app = appRecordOf(presence);
-  const unattached = (): AgentSlackState => ({ state: presence.errorCode === AWAITING_OWN_APP ? 'not_in_slack' : 'user_group' });
+  // An Agent with no group answers no mention, whatever a failed attempt to give it one left behind.
+  const unattached = (): AgentSlackState => ({
+    state: presence.errorCode === AWAITING_OWN_APP || !presence.userGroupId ? 'not_in_slack' : 'user_group',
+  });
   if (!app) return unattached();
   switch (app.state) {
     case 'awaiting_consent':
@@ -155,6 +158,15 @@ export function agentSlackState(presence: AgentSlackPresence): AgentSlackState {
     default:
       return { state: 'creating' };
   }
+}
+
+/**
+ * An Agent no mention reaches and nothing is giving one: no user group, no
+ * app of its own, and no app record on its way. Told from what the presence
+ * holds, never from a marker a failure could have overwritten.
+ */
+export function placedNowhere(presence: AgentSlackPresence | undefined): boolean {
+  return presence !== undefined && presence.kind !== 'agent_app' && !presence.userGroupId && !presence.app;
 }
 
 /** A `creating` record Slack never answered within the settle window; nothing creates again until Try again. */

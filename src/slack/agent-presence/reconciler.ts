@@ -1,4 +1,5 @@
 import type { ConfigStore } from '../../config/store.ts';
+import type { IdentityStore } from '../../identity/types.ts';
 import {
   AWAITING_OWN_APP,
   type AgentChannelGrant,
@@ -303,6 +304,17 @@ async function repairMentionedAgentUserGroupOnce(
   }
 }
 
+/** The Agent's creator as a person in Slack, for the publish of a Channel they asked for; undefined when unknown. */
+export async function agentCreatorInSlack(
+  identity: Pick<IdentityStore, 'getMembership' | 'getUser'>,
+  agent: Pick<CustomAgentConfig, 'creatorMembershipId'>,
+): Promise<{ membershipId: string; slackUserId: string } | undefined> {
+  if (!agent.creatorMembershipId) return undefined;
+  const membership = await identity.getMembership(agent.creatorMembershipId);
+  const user = membership?.status === 'active' ? await identity.getUser(membership.userId) : undefined;
+  return user ? { membershipId: agent.creatorMembershipId, slackUserId: user.slackUserId } : undefined;
+}
+
 export class AgentPresenceReconciler {
   private readonly now: () => number;
 
@@ -322,6 +334,15 @@ export class AgentPresenceReconciler {
     if (waitingForApp && !input.keepPendingUntilInSlack) {
       if (agent.slackPresence?.errorCode !== AWAITING_OWN_APP) await this.retry(agent.id).catch(() => undefined);
       throw notInSlackYetError(agent);
+    }
+    if (waitingForApp) {
+      // Nothing new is granted: the Channel already waits for this Agent's own app, under whoever first asked for it,
+      // so a later edit or Retry by anyone leaves it as it is.
+      const waitingGrant = (await config.listAgentChannelGrants(input.workspaceId, input.channelId))
+        .find((grant) => grant.agentId === agent.id && grant.status === 'pending');
+      if (waitingGrant) {
+        return { agent: agent.slackPresence?.errorCode === AWAITING_OWN_APP ? agent : await this.reconcile(agent.id), grant: waitingGrant };
+      }
     }
     // A Channel Slack will not take yet leaves a waiting Agent as it is: not in Slack yet, not needing attention.
     const recordFailure = waitingForApp
@@ -478,7 +499,8 @@ export class AgentPresenceReconciler {
           ...withoutPresenceErrors(presence),
           normalizedHandle,
           desiredState: 'active',
-          health: 'pending',
+          // Not in Slack yet stays so until Slack gives it a group, whatever this attempt meets.
+          ...(presence.errorCode === AWAITING_OWN_APP ? { health: 'unpublished', errorCode: AWAITING_OWN_APP } : { health: 'pending' }),
         },
       },
       agent.revision,
@@ -607,6 +629,37 @@ export class AgentPresenceReconciler {
       },
       current.revision,
     );
+  }
+
+  /**
+   * A workspace back to one user group per Agent: give an Agent that waited
+   * for its own app its group, then finish each Channel its creator asked
+   * for at creation with the creator's own publish, as creation would have
+   * ended. A Channel whose publish fails stays pending with its own failure;
+   * the group stands.
+   */
+  async placeInSlack(
+    agentId: string,
+    creator: { membershipId: string; slackUserId: string } | undefined,
+  ): Promise<CustomAgentConfig> {
+    let agent = await this.retry(agentId);
+    if (!creator || !agent.slackPresence?.userGroupId) return agent;
+    const asked = (await this.dependencies.config.listAgentChannelGrants()).filter((grant) =>
+      grant.agentId === agentId && grant.status === 'pending' && grant.createdByMembershipId === creator.membershipId);
+    for (const grant of asked) {
+      try {
+        agent = (await this.publish({
+          workspaceId: grant.workspaceId,
+          agentId,
+          channelId: grant.channelId,
+          actorMembershipId: creator.membershipId,
+          actorSlackUserId: creator.slackUserId,
+        })).agent;
+      } catch {
+        // Recorded on the Agent and kept pending, as a failed add at creation is.
+      }
+    }
+    return agent;
   }
 
   async retry(agentId: string): Promise<CustomAgentConfig> {
@@ -851,6 +904,9 @@ export class AgentPresenceReconciler {
     error: AgentPresenceError,
   ): Promise<void> {
     const current = await this.dependencies.config.getAgent(agent.id);
+    // A failure gives an Agent not in Slack yet no handle, so it stays waiting; the caller still gets the error. Only an
+    // ambiguous create is recorded, because Slack may have made the group and the next attempt adopts it by that code.
+    if (current.slackPresence?.errorCode === AWAITING_OWN_APP && error.code !== 'user_group_create_ambiguous') return;
     const presence = withoutPresenceErrors(requiredPresence(current));
     await this.dependencies.config.updateAgent(
       current.id,
