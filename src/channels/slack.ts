@@ -130,7 +130,6 @@ import {
   requestWithBufferedBody,
 } from '../security/request-body-limit.ts';
 import {
-  isTransientSlackApiError,
   resolveSlackCredentials,
   resolveSlackPublicUrl,
   slackAuthTest,
@@ -238,7 +237,6 @@ import {
   type SlackInboundEnvelope,
   type SlackMember,
   type SlackTransport,
-  SlackTransportError,
 } from '../slack/transport/types.ts';
 import { createGatewaySlackTransport } from '../slack/transport/gateway.ts';
 import {
@@ -878,7 +876,9 @@ function handleAgentAppSlackEvents(
     }
     const delivered = (payload as { event?: unknown }).event;
     // A message goes on as Slack holds it, never as it was delivered.
-    const event = eventType === 'member_joined_channel' ? delivered : await agentAppMessageConfirmed(delivered, bot, handoff.appId);
+    const event = eventType === 'member_joined_channel'
+      ? delivered
+      : await (await import('../slack/agent-apps/sender.ts')).agentAppMessageConfirmed(delivered, bot, handoff.appId);
     if (!event) return;
     await processSlackEvent(
       { ...payload, event } as unknown as SlackEventFixture,
@@ -889,30 +889,6 @@ function handleAgentAppSlackEvents(
       { installation },
     );
   };
-}
-
-/**
- * A message an Agent app delivers names its sender, and whoever holds the
- * app's secrets can name anyone: it goes on only once Slack shows that
- * message from that person, and as Slack's copy of it (sender.ts). Undefined
- * for one it stops, with one line and no content (none for an edit of the
- * app's own bot); a read Slack does not answer is logged and thrown, so the
- * delivery is retried.
- */
-async function agentAppMessageConfirmed(event: unknown, bot: AgentAppBotCredentials, appId: string): Promise<Record<string, unknown> | undefined> {
-  const warn = (reason: string) => console.warn(JSON.stringify({
-    component: 'agent_apps', event: 'delivery_not_confirmed', appId, reason,
-  }));
-  const { confirmAgentAppMessage } = await import('../slack/agent-apps/sender.ts');
-  try {
-    const check = await confirmAgentAppMessage(event, bot);
-    if (check.confirmed) return check.event;
-    if (check.reason) warn(check.reason);
-    return undefined;
-  } catch (error) {
-    warn(error instanceof SlackTransportError ? error.code : 'unavailable');
-    throw error;
-  }
 }
 
 function handleAgentAppSlackInteractions(
@@ -935,18 +911,19 @@ function handleAgentAppSlackInteractions(
       execution, botUserId: bot.botUserId,
     };
     const uiAction = parseSlackUiBlockAction(payload);
+    const { agentAppCardRefused } = await import('../slack/agent-apps/sender.ts');
     // A press inside a modal acts on nothing. Any other must be on a card this app's bot posted. Only a press that
     // names no stored card can be on a private message, which Slack does not return: that one goes on as before.
     if (uiAction?.containerType === 'message') {
       const control = parseUiControl(uiAction);
       const card = control ? await readUiSurface(execution.stores!, control.surfaceId) : undefined;
       const refused = (card || !uiAction.isEphemeral) && await agentAppCardRefused(
-        card, { channelId: uiAction.channelId!, messageTs: uiAction.messageTs!, threadTs: uiAction.threadTs }, bot, handoff.appId,
+        card, { channelId: uiAction.channelId!, messageTs: uiAction.messageTs!, threadTs: uiAction.threadTs }, bot,
       );
       if (refused) {
         // A card Slack could not be asked about may be a real one: the person is told, privately, rather than left with
         // a button that does nothing.
-        if (isTransientSlackApiError(refused)) {
+        if (refused.unread) {
           const threadTs = card?.threadTs ?? uiAction.threadTs;
           detach(c, sendUiNotice(context.client, {
             channelId: uiAction.channelId, userId: uiAction.userId, text: uiRefusalText('unavailable'), ...(threadTs ? { threadTs } : {}),
@@ -970,39 +947,17 @@ function handleAgentAppSlackInteractions(
       : viewSubmissionSurfaceId(submission);
     const card = cardId ? await readUiSurface(execution.stores!, cardId) : undefined;
     const refused = await agentAppCardRefused(
-      card, card?.messageTs ? { channelId: card.channelId, messageTs: card.messageTs, threadTs: card.threadTs } : undefined, bot, handoff.appId,
+      card, card?.messageTs ? { channelId: card.channelId, messageTs: card.messageTs, threadTs: card.threadTs } : undefined, bot,
     );
     if (!refused) return receiveSlackUiViewSubmission(c, submission, platformEnv, context);
     // Only a read that failed: the modal stays open with what the person typed, and says it was not sent.
     const ack = slackInteractionAckOf(platformEnv);
-    if (!cardId || !isTransientSlackApiError(refused) || (ack && !ack.claim())) return;
+    if (!cardId || !refused.unread || (ack && !ack.claim())) return;
     const field = submission.callbackId === KEY_FORM_CALLBACK_ID
       ? (await import('../slack/ui/key-card.ts')).keyFieldBlockId(cardId)
       : formFieldBlockId(cardId, 0);
     return Response.json({ response_action: 'errors', errors: { [field]: UNSENT_ANSWER_TEXT } });
   };
-}
-
-/**
- * Slack sends a card's presses only to the app whose bot posted it, so one an
- * Agent's app delivers is honored only for a card its own bot posted. An
- * app's bot posts only its own Agent's cards, so the stored `card` it names,
- * when it names one, must be that Agent's: a card not pressed before has no
- * message stored to hold the press to. The message at `place` must then be
- * one Slack shows that bot posted (sender.ts). Any other is refused with one
- * line and no content; the reason is returned, or undefined for an honored one.
- */
-async function agentAppCardRefused(
-  card: Pick<UiSurfaceRecord, 'agentId'> | undefined,
-  place: { channelId: string; messageTs: string; threadTs?: string | null } | undefined,
-  bot: AgentAppBotCredentials,
-  appId: string,
-): Promise<string | undefined> {
-  const reason = card && card.agentId !== bot.agentId
-    ? 'other_agent'
-    : place ? await (await import('../slack/agent-apps/sender.ts')).agentAppCardRefusal(place, bot, appId) : 'no_card';
-  if (reason) console.warn(JSON.stringify({ component: 'agent_apps', event: 'interaction_refused', appId, reason }));
-  return reason;
 }
 
 function handleDirectSlackEvents(

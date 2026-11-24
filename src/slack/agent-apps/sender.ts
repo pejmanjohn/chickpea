@@ -8,11 +8,13 @@
  * that message, in that conversation and thread, from that person. What goes
  * on is Slack's copy: the delivery's text, rich text and files are never
  * read, so an edit Slack already holds is admitted as edited. A press cannot
- * be read back, but the card it was made on can (agentAppCardRefusal).
+ * be read back, but the card it was made on can (agentAppCardRefused).
  * Loaded only for an Agent app's delivery.
  */
 import { isTransientSlackApiError, slackMessageAt, type SlackMessageReadResult } from '../credentials.ts';
 import { SlackTransportError } from '../transport/types.ts';
+import type { UiSurfaceRecord } from '../ui/surface.ts';
+import type { AgentAppBotCredentials } from './live.ts';
 
 /** `event` is what admission reads in the delivery's place. A refusal with no reason is dropped without a line. */
 export type AgentAppMessageCheck = { confirmed: true; event: Message } | { confirmed: false; reason: string | undefined };
@@ -37,6 +39,56 @@ const PAUSE_BUDGET_MS = 1_500;
 const CARD_READ_TIMEOUT_MS = 2_000;
 
 const refused = (reason: string | undefined): AgentAppMessageCheck => ({ confirmed: false, reason });
+
+/**
+ * A message an Agent app delivers names its sender, and whoever holds the
+ * app's secrets can name anyone: it goes on only once Slack shows that
+ * message from that person, and as Slack's copy of it. Undefined for one it
+ * stops, with one line and no content (none for an edit of the app's own
+ * bot); a read Slack does not answer is logged and thrown, so the delivery is
+ * retried.
+ */
+export async function agentAppMessageConfirmed(
+  event: unknown,
+  bot: AgentAppBotCredentials,
+  appId: string,
+): Promise<Message | undefined> {
+  const warn = (reason: string) => console.warn(JSON.stringify({
+    component: 'agent_apps', event: 'delivery_not_confirmed', appId, reason,
+  }));
+  try {
+    const check = await confirmAgentAppMessage(event, bot);
+    if (check.confirmed) return check.event;
+    if (check.reason) warn(check.reason);
+    return undefined;
+  } catch (error) {
+    warn(error instanceof SlackTransportError ? error.code : 'unavailable');
+    throw error;
+  }
+}
+
+/**
+ * Slack sends a card's presses only to the app whose bot posted it, so one an
+ * Agent's app delivers is honored only for a card its own bot posted. An
+ * app's bot posts only its own Agent's cards, so the stored `card` it names,
+ * when it names one, must be that Agent's: a card not pressed before has no
+ * message stored to hold the press to. The message at `place` must then be
+ * one Slack shows that bot posted. Any other is refused with one line and no
+ * content, `unread` when Slack could not be asked, so it may be a real one.
+ * Undefined for one that is honored.
+ */
+export async function agentAppCardRefused(
+  card: Pick<UiSurfaceRecord, 'agentId'> | undefined,
+  place: { channelId: string; messageTs: string; threadTs?: string | null } | undefined,
+  bot: AgentAppBotCredentials,
+): Promise<{ unread: boolean } | undefined> {
+  const reason = card && card.agentId !== bot.agentId
+    ? 'other_agent'
+    : place ? await agentAppCardRefusal(place, bot, bot.appId) : 'no_card';
+  if (!reason) return undefined;
+  console.warn(JSON.stringify({ component: 'agent_apps', event: 'interaction_refused', appId: bot.appId, reason }));
+  return { unread: isTransientSlackApiError(reason) };
+}
 
 /**
  * Whether Slack holds what a `message` or `app_mention` event delivered
@@ -127,7 +179,7 @@ export async function confirmAgentAppMessage(
  * does not send a press again, so a read it does not answer refuses it, with
  * Slack's transient error as the reason; the read waits out no rate limit.
  */
-export async function agentAppCardRefusal(
+async function agentAppCardRefusal(
   card: { channelId: string; messageTs: string; threadTs?: string | null | undefined },
   bot: { botToken: string; botUserId: string },
   appId: string,
