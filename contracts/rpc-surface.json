@@ -9955,6 +9955,7 @@
         "notInSlackYet?": {
           "union": [
             "\"creator_adds\"",
+            "\"owner_needed\"",
             "\"owners_asked\""
           ]
         },
