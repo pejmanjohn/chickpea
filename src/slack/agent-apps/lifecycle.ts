@@ -62,8 +62,8 @@ export type AgentAppEvent =
   | { type: 'app_removed'; at: number }
   | { type: 'archive'; at: number; hasBotToken: boolean }
   /**
-   * An Owner's Cancel before Allow: allowed while the app waits for Allow, or when a start stopped before Slack
-   * made an app, so a record that went live is never cancelled.
+   * An Owner's Cancel before Allow: allowed from any record Slack made an app for that is not yet allowed, or when a
+   * start stopped before Slack made an app, so a record that went live is never cancelled.
    */
   | { type: 'cancel'; at: number; hasBotToken: boolean }
   | { type: 'uninstalled'; at: number }
@@ -107,6 +107,34 @@ export function pendingSwitchStep(app: AgentAppLifecycle): Exclude<AgentAppSwitc
 /** A start that stopped before Slack made any app: a Cancel withdraws it, with nothing in Slack to remove. */
 export function stoppedBeforeAnyApp(app: AgentAppLifecycle): app is Extract<AgentAppLifecycle, { state: 'needs_attention' }> {
   return app.state === 'needs_attention' && app.resume === 'creating' && !app.app;
+}
+
+/**
+ * The app Slack made for a record nobody has allowed yet, which a Cancel
+ * deletes: none for a record already being removed, or for an app Slack
+ * removed after it was allowed.
+ */
+export function appBeforeAllow(app: AgentAppLifecycle): AgentAppRecord | undefined {
+  switch (app.state) {
+    case 'created':
+    case 'urls_set':
+    case 'icon_set':
+    case 'awaiting_consent':
+      return app.app;
+    case 'needs_attention':
+      return app.resume === 'uninstalling' || app.reason === 'app_removed' ? undefined : app.app;
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * A record whose only step left before Allow creates and changes nothing:
+ * one waiting for Allow, or one that only hands the Owner to Slack, as an
+ * app Slack removed does when it is offered again.
+ */
+export function onlyAllowLeft(app: AgentAppLifecycle): boolean {
+  return app.state === 'awaiting_consent' || app.state === 'icon_set' || (app.state === 'needs_attention' && app.resume === 'icon_set');
 }
 
 /**
@@ -192,10 +220,12 @@ export function followAttention(app: ActiveAgentApp): AgentAppFollowAttention | 
  * the way to, or at, its own app.
  */
 export type AgentSlackState =
-  | { state: 'user_group' | 'not_in_slack' | 'creating' | 'waiting_for_allow' | 'cancelling' | 'switching' }
+  | { state: 'user_group' | 'not_in_slack' | 'waiting_for_allow' | 'cancelling' | 'switching' }
+  /** `cancellable` once Slack made the app, so Cancel deletes it. */
+  | { state: 'creating'; cancellable?: true }
   /** `attention` when Slack would not bring the live app to match its Agent; it keeps answering under what it last took. */
   | { state: 'own_app'; attention?: AgentAppFollowAttention }
-  /** `cancellable` when the start stopped before Slack made any app, so Cancel withdraws it. */
+  /** `cancellable` when the start stopped before Slack made any app, so Cancel withdraws it, or after, so Cancel deletes the app. */
   | { state: 'needs_attention'; reason: AgentAppAttention; cancellable?: true };
 
 export function agentSlackState(presence: AgentSlackPresence): AgentSlackState {
@@ -205,6 +235,9 @@ export function agentSlackState(presence: AgentSlackPresence): AgentSlackState {
     state: presence.errorCode === AWAITING_OWN_APP || !presence.userGroupId ? 'not_in_slack' : 'user_group',
   });
   if (!app) return unattached();
+  const cancellable = presence.kind !== 'agent_app' && (stoppedBeforeAnyApp(app) || appBeforeAllow(app) !== undefined)
+    ? { cancellable: true as const }
+    : {};
   switch (app.state) {
     case 'awaiting_consent':
       return { state: 'waiting_for_allow' };
@@ -216,15 +249,13 @@ export function agentSlackState(presence: AgentSlackPresence): AgentSlackState {
     case 'needs_attention':
       // A Cancel's removal Slack refused to finish reads as the Cancel it is; the next Cancel or Start picks it up.
       if (app.resume === 'uninstalling' && presence.kind !== 'agent_app') return { state: 'cancelling' };
-      return {
-        state: 'needs_attention', reason: app.reason, ...(presence.kind !== 'agent_app' && stoppedBeforeAnyApp(app) ? { cancellable: true as const } : {}),
-      };
+      return { state: 'needs_attention', reason: app.reason, ...cancellable };
     case 'uninstalling':
       // On a user group's presence this is a Cancel's removal, finished by the next Cancel or Start; the group answers
       // throughout. An archive's uninstall of a live app is passing.
       return { state: presence.kind === 'agent_app' ? 'switching' : 'cancelling' };
     default:
-      return { state: 'creating' };
+      return { state: 'creating', ...cancellable };
   }
 }
 
@@ -394,17 +425,13 @@ export function transition(app: AgentAppLifecycle, event: AgentAppEvent): AgentA
         next: event.hasBotToken ? 'uninstall' : 'delete',
       };
     }
-    case 'cancel':
+    case 'cancel': {
       if (stoppedBeforeAnyApp(app)) return WITHDRAWN;
-      return app.state === 'awaiting_consent'
-        ? {
-            state: 'uninstalling',
-            at,
-            startedBy: app.startedBy,
-            app: app.app,
-            next: event.hasBotToken ? 'uninstall' : 'delete',
-          }
+      const made = appBeforeAllow(app);
+      return made && 'startedBy' in app
+        ? { state: 'uninstalling', at, startedBy: app.startedBy, app: made, next: event.hasBotToken ? 'uninstall' : 'delete' }
         : WRONG_STATE;
+    }
     case 'uninstalled':
       return app.state === 'uninstalling' && app.next === 'uninstall' ? { ...app, at, next: 'delete' } : WRONG_STATE;
     case 'uninstall_refused':

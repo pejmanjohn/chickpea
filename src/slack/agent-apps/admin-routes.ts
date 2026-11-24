@@ -74,6 +74,8 @@ export interface SlackAppsAgentRow {
   handle: string;
   avatarUrl: string | null;
   slack: AgentSlackState;
+  /** Set when turning the setting off would give this Agent a user group. */
+  waitsForOwnApp?: true;
   channels: Array<{ id: string; name: string | null; private: boolean; status: AgentChannelGrant['status'] }>;
 }
 
@@ -87,6 +89,7 @@ function agentRow(c: Context, agent: CustomAgentConfig, grants: readonly AgentCh
     handle: presence.normalizedHandle,
     avatarUrl: agentAvatarUrlForPresentation(agent, requestOrigin(c), installationId) ?? null,
     slack: agentSlackState(presence),
+    ...(waitsForOwnApp(agent) ? { waitsForOwnApp: true as const } : {}),
     channels: grants.filter((grant) => grant.agentId === agent.id).map((grant) => ({
       id: grant.channelId, name: grant.channelLabel ?? null, private: grant.channelIsPrivate === true, status: grant.status,
     })),
@@ -126,8 +129,8 @@ type SlackAppsAuditAction =
  *   lands the Owner back on Admin's Slack connection section.
  * - `POST /admin/api/slack-apps/agents/:agentId/cancel` → `{ agent, app: 'deleted' | 'left_for_owner' | 'not_found' | 'none' }`:
  *   `none` when the start stopped before Slack made any app, `left_for_owner` too when one may exist after a create
- *   Slack never answered, `not_found` when Slack refused the delete and says the app does not exist; 409 `{ error: 'not_waiting' }`; 503 `{ error: 'slack_unavailable' }`; 404. A row whose start
- *   stopped before any app reads `{ state: 'needs_attention', reason, cancellable: true }`.
+ *   Slack never answered, `not_found` when Slack refused the delete and says the app does not exist; 409 `{ error: 'not_waiting' }`; 503 `{ error: 'slack_unavailable' }`; 404. A row Cancel
+ *   can end reads `cancellable: true`: one whose start stopped before any app, and one whose app Slack made and nobody allowed.
  *
  * Each change is recorded as an audit event; a failed record is logged and never fails the request.
  */

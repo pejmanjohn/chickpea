@@ -72,11 +72,13 @@ import {
   agentAppIsLive,
   agentAppMoveJob,
   agentAppRecord,
+  appBeforeAllow,
   attachedAgentApp,
   createIsStale,
   isRefusal,
   nextStep,
   normalizeAgentAppPresence,
+  onlyAllowLeft,
   pendingSwitchStep,
   waitsForOwnApp,
   restorePending,
@@ -450,7 +452,8 @@ export class AgentSlackApps {
 
   /** What an Owner who pressed Finish setting up is told while the host does not let Chickpea create or change apps. */
   async pausedReply(agentId: string): Promise<string> {
-    return pausedReply(this.names(await this.deps.stores.config.getAgent(agentId)));
+    const agent = await this.deps.stores.config.getAgent(agentId);
+    return pausedReply(this.names(agent), agentAppIsLive(agent.slackPresence));
   }
 
   /**
@@ -513,9 +516,13 @@ export class AgentSlackApps {
     if (presence?.kind === 'agent_app' && presence.released?.enableRefused) {
       agent = await config.updateAgent(agentId, { slackPresence: { ...presence, released: unrefused(presence.released) } }, agent.revision);
     }
-    if (app.state === 'active' || restorePending(agent.slackPresence)) return this.followAgain(agent);
-    // Every other record goes on toward Allow, which creates or changes the app; a Cancel's removal is Cancel's to finish.
-    if (!this.mayCreateApps() && !cancelPending(app)) return 'paused';
+    if (app.state === 'active' || restorePending(agent.slackPresence)) {
+      const followed = await this.followAgain(agent);
+      // A live app's update holds while paused, and the sweep runs it once allowed: the Owner is told it waits.
+      return app.state === 'active' && !pendingSwitchStep(app) && !this.mayCreateApps() ? 'paused' : followed;
+    }
+    // Every other record goes on toward Allow; a Cancel's removal is Cancel's to finish.
+    if (this.pauseHolds(app) && !cancelPending(app)) return 'paused';
     if (app.state !== 'needs_attention') return (await this.advance(agentId)).agent;
     return (await this.tryAgain(agent, app, ownerSlackUserId)).agent;
   }
@@ -565,7 +572,7 @@ export class AgentSlackApps {
       return handoffPage(await this.pageAgent(agent), 'creating', pressOnOpen);
     }
     if (app.state === 'active') return addedPage(await this.pageAgent(agent), await this.pageLinks(agent), 'already');
-    if (!this.mayCreateApps()) return this.pausedPage(agent);
+    if (this.pauseHolds(app)) return this.pausedPage(agent);
     // An app Slack already made (waiting for Allow, partway, or removed from the workspace) is not created again.
     return handoffPage(await this.pageAgent(agent), agentAppRecord(app) ? 'opening' : 'creating', pressOnOpen);
   }
@@ -652,8 +659,7 @@ export class AgentSlackApps {
     }
     const record = appRecordOf(agent.slackPresence);
     const attached = agent.slackPresence.kind !== 'agent_app';
-    // A live app is already the Agent's; every other press goes on toward Allow, creating or changing the app.
-    if (!this.mayCreateApps() && record?.state !== 'active') return { kind: 'paused', agent };
+    if (record?.state !== 'active' && this.pauseHolds(record)) return { kind: 'paused', agent };
     // Every press sends the Owner's browser on to Slack's Allow screen, so none posts the message asking them to choose Allow.
     if (!record) {
       const started = await this.start(agentId, ownerSlackUserId, { handOff: true });
@@ -691,9 +697,10 @@ export class AgentSlackApps {
   }
 
   /**
-   * An Owner's Cancel before Allow: the created app is deleted under its own
-   * record, and the Agent goes back to how it answered before the press. The
-   * check that the app still waits for Allow is the `cancel` event itself, so
+   * An Owner's Cancel before Allow: an app Slack made is deleted under its
+   * own record, whether it waits for Allow or its start stopped partway, and
+   * the Agent goes back to how it answered before the press. The check that
+   * the app is still not allowed is the `cancel` event itself, so
    * an Allow that lands first wins and nothing is deleted. A removal an
    * earlier Cancel left unfinished is finished.
    */
@@ -703,8 +710,9 @@ export class AgentSlackApps {
     const app = appRecordOf(agent.slackPresence);
     if (!app || agent.slackPresence?.kind === 'agent_app') return { kind: 'not_waiting' };
     let settled: CustomAgentConfig;
-    if (app.state === 'awaiting_consent') {
-      const stored = await readAppSecrets(this.secrets, app.app.appId).catch(unreadableAsNone);
+    const made = appBeforeAllow(app);
+    if (made) {
+      const stored = await readAppSecrets(this.secrets, made.appId).catch(unreadableAsNone);
       const cancelled = await this.commit(agent, { type: 'cancel', at: this.now(), hasBotToken: Boolean(stored?.secrets.botToken) });
       if (cancelled.outcome === 'refused') return { kind: 'not_waiting' };
       settled = (await this.advance(agentId)).agent;
@@ -897,13 +905,8 @@ export class AgentSlackApps {
       ? (await this.deps.stores.config.listAgentChannelGrants()).filter((grant) => grant.status === 'active' && grant.channelIsPrivate)
       : [];
     const now = this.now();
-    const paused = !this.mayCreateApps();
     for (const { agent, app } of withApps) {
-      const row = homeRowFor(agent, app, now, privateGrants);
-      // While creating is paused the hand-off page presses nothing, and Allow on an app Slack already made still
-      // completes: the row waiting for Allow links to Allow itself, as the Owner's message does.
-      const link = paused && row.kind === 'waiting' ? this.deps.host.allowUrl(agent.id) : this.deps.host.addUrl(agent.id);
-      rows.set(agent.id, agentAppHomeBlocks(row, this.names(agent), agent.id, link));
+      rows.set(agent.id, agentAppHomeBlocks(homeRowFor(agent, app, now, privateGrants), this.names(agent), agent.id, this.deps.host.addUrl(agent.id)));
     }
     return rows;
   }
@@ -1556,6 +1559,14 @@ export class AgentSlackApps {
   /** Whether the host lets Chickpea create apps or change them in Slack now; every refusal of a pause asks here. */
   mayCreateApps(): boolean {
     return agentSlackAppsMayCreate(this.deps.host);
+  }
+
+  /**
+   * Whether a pause refuses a press that takes `app` on toward Allow: every
+   * one, unless Allow is all that is left, which creates and changes nothing.
+   */
+  private pauseHolds(app: AgentAppLifecycle | undefined): boolean {
+    return !this.mayCreateApps() && !(app && onlyAllowLeft(app));
   }
 
   private async userGroupPermissionMissing(): Promise<boolean> {

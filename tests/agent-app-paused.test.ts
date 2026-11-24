@@ -25,7 +25,7 @@ import { createAgentSlackAppRoutes } from '../src/slack/agent-apps/routes.ts';
 import { readAppSecrets, saveConfigurationToken, type SecretDeps, writeAppSecrets } from '../src/slack/agent-apps/secrets.ts';
 import { type AgentAppSwitchJob, AgentSlackApps } from '../src/slack/agent-apps/service.ts';
 import { readAgentSlackAppsSetting, writeAgentSlackAppsSetting } from '../src/slack/agent-apps/setting.ts';
-import type { AgentAppSlackApi } from '../src/slack/agent-apps/slack-api.ts';
+import { type AgentAppSlackApi, SlackRefused } from '../src/slack/agent-apps/slack-api.ts';
 import { AgentPresenceReconciler } from '../src/slack/agent-presence/reconciler.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { AGENT_APP_BOT_SCOPES } from '../src/slack/scopes.ts';
@@ -66,6 +66,10 @@ function hostWith(mayCreateApps: boolean | undefined): AgentSlackAppsHost & { ma
 /** Slack's app API, recording every call by method and refusing what Slack refuses. */
 class FakeSlack implements AgentAppSlackApi {
   calls: string[] = [];
+  /** The apps that exist in Slack; one not here is refused as Slack refuses it. */
+  apps = new Set(['A0APP1', 'A0APP2', 'A0APP3']);
+  /** Slack will not let this token delete an app that exists. */
+  refuseDelete = false;
   async rotate(refreshToken: string) {
     this.calls.push('tooling.tokens.rotate');
     const n = this.calls.length;
@@ -74,9 +78,14 @@ class FakeSlack implements AgentAppSlackApi {
   async create(_token: string, manifest: Parameters<AgentAppSlackApi['create']>[1]) {
     this.calls.push('apps.manifest.create');
     refuseLikeSlack('apps.manifest.create', manifest);
+    this.apps.add('A0NEW');
     return { appId: 'A0NEW', clientId: '7.client', clientSecret: 'client-secret-new', signingSecret: 'signing-secret-new' };
   }
-  async definedBotScopes() { this.calls.push('apps.manifest.export'); return [...AGENT_APP_BOT_SCOPES]; }
+  async definedBotScopes(_token: string, appId: string) {
+    this.calls.push('apps.manifest.export');
+    if (!this.apps.has(appId)) throw new SlackRefused('apps.manifest.export', 'app_not_found');
+    return [...AGENT_APP_BOT_SCOPES];
+  }
   async update(_token: string, _appId: string, manifest: Parameters<AgentAppSlackApi['update']>[2]) {
     this.calls.push('apps.manifest.update');
     refuseLikeSlack('apps.manifest.update', manifest);
@@ -88,7 +97,13 @@ class FakeSlack implements AgentAppSlackApi {
     return { botToken: `xoxb-${appId}`, botUserId: `UBOT${appId}`, teamId: TEAM, appId, installerUserId: OWNER, scopes: [...AGENT_APP_BOT_SCOPES] };
   }
   async uninstall() { this.calls.push('apps.uninstall'); return 'removed' as const; }
-  async delete() { this.calls.push('apps.manifest.delete'); return 'deleted' as const; }
+  async delete(_token: string, appId: string) {
+    this.calls.push('apps.manifest.delete');
+    // Slack refuses a delete of an app that does not exist as it refuses one it will not let this token delete.
+    if (!this.apps.has(appId) || this.refuseDelete) throw new SlackRefused('apps.manifest.delete', 'invalid_app_id');
+    this.apps.delete(appId);
+    return 'deleted' as const;
+  }
   async botInstalled() { this.calls.push('auth.test'); return true; }
 }
 
@@ -233,7 +248,7 @@ test('while creating apps is paused, each action that would create or change an 
   const f = await fixture(t);
   const before = await f.agents();
 
-  for (const agentId of ['agent_new', 'agent_sales', 'agent_ready', 'agent_stuck']) {
+  for (const agentId of ['agent_new', 'agent_sales', 'agent_stuck']) {
     const start = await f.adminJson(`${API}/agents/${agentId}/start`, 'POST', {});
     assert.equal(start.status, 409, agentId);
     const body = await start.json() as { error: string; agent: { id: string } };
@@ -252,19 +267,20 @@ test('while creating apps is paused, each action that would create or change an 
   assert.equal((await readAgentSlackAppsSetting(f.settings)).mode, 'shared', 'the setting stays off');
   await writeAgentSlackAppsSetting(f.settings, { mode: 'own_app', changedBy: OWNER, changedAt: NOW });
 
-  for (const agentId of ['agent_new', 'agent_ready', 'agent_stuck']) {
+  for (const agentId of ['agent_new', 'agent_stuck']) {
     for (const method of ['GET', 'POST']) {
       const page = await f.handOff(agentId, method);
       assert.equal(page.status, 409, `${agentId} ${method}`);
       const html = await page.text();
       assert.match(words(html), /^.*Adding Slack apps is paused/, `${agentId} ${method}: the hand-off says so`);
       assert.doesNotMatch(html, /<form/, `${agentId} ${method}: and offers no press`);
+      assert.doesNotMatch(html, /Create app|Allow in Slack/, `${agentId} ${method}: and no steps, as it has no place among them`);
     }
   }
   assert.match(words(await (await f.handOff('agent_new')).text()),
     /Scout keeps answering as it does now\. .*To give Scout an @handle people can mention now, an Owner can choose Stop creating Slack apps for new Agents in Chickpea Admin\./,
     'an Agent waiting for its own app is told how an Owner gives it a handle instead');
-  assert.doesNotMatch(words(await (await f.handOff('agent_ready')).text()), /Stop creating/, 'one already in a user group is not');
+  assert.doesNotMatch(words(await (await f.handOff('agent_stuck')).text()), /Stop creating/, 'one already in a user group is not');
 
   assert.equal(await f.service.retry('agent_stuck', OWNER), 'paused', 'Finish setting up in Slack is refused');
   assert.equal(await f.service.pausedReply('agent_stuck'),
@@ -280,8 +296,8 @@ test('while creating apps is paused, each action that would create or change an 
 test("Allow on an app Slack already made still completes during a pause, and the switch after it runs: the Agent ends on its own bot", async (t) => {
   const f = await fixture(t);
   const homeButton = async () => JSON.stringify((await f.service.homeRows([await f.config.getAgent('agent_ready')], { role: 'owner' })).get('agent_ready'));
-  assert.match(await homeButton(), /"text":"Allow in Slack"\},"action_id":"agent_app_add_link","url":"https:\/\/cloud\.test\/slack\/agent-apps\/allow\/agent_ready"/,
-    "the Owner's Home tab offers Allow through the Allow link, never the hand-off page that presses nothing");
+  assert.match(await homeButton(), /"text":"Allow in Slack"\},"action_id":"agent_app_add_link","url":"https:\/\/cloud\.test\/slack\/agent-apps\/add\/agent_ready"/,
+    "the Owner's Home tab offers Allow through the hand-off page, as it does when nothing is paused");
   const opened = await f.routes.request('/channels/slack/agent-apps/allow/agent_ready', {}, AS_OWNER);
   assert.equal(opened.status, 303, "the Allow link still opens Slack's permission screen");
   const state = new URL(opened.headers.get('location')!).searchParams.get('state')!;
@@ -445,4 +461,164 @@ test('a host that says nothing about creating apps, or allows it, makes exactly 
   }
   assert.ok(runs[0]!.includes('apps.manifest.create') && runs[0]!.includes('apps.manifest.update'));
   assert.deepEqual(runs[1], runs[0], 'call for call');
+});
+
+/** The records Slack made an app for that nobody has allowed, each with nothing but its app to remove. */
+const MADE_BEFORE_ALLOW = {
+  created: { state: 'created', at: NOW, startedBy: OWNER },
+  urls_set: { state: 'urls_set', at: NOW, startedBy: OWNER },
+  icon_set: { state: 'icon_set', at: NOW, startedBy: OWNER, icon: 'default_avatar' },
+  urls_refused: { state: 'needs_attention', at: NOW, startedBy: OWNER, reason: 'urls_refused', resume: 'created' },
+  token_needed: { state: 'needs_attention', at: NOW, startedBy: OWNER, reason: 'config_token_needed', resume: 'created' },
+} as const;
+
+/** An Agent being moved (it has its group) or added (it has none) whose record Slack made app `n` for. */
+async function madeBeforeAllow(f: Awaited<ReturnType<typeof fixture>>, name: keyof typeof MADE_BEFORE_ALLOW, moving: boolean, n: number) {
+  const id = `agent_${name}_${moving ? 'moved' : 'added'}`;
+  const app = { ...MADE_BEFORE_ALLOW[name], app: appRecord(n) } as AttachedAgentApp;
+  await f.config.createAgent(agent(id, `Agent ${n}`, presence(`h${n}`, moving ? { userGroupId: `S_${n}`, app } : { health: 'unpublished', app })));
+  await writeAppSecrets(f.secrets, `A0APP${n}`, id, { clientSecret: `cs${n}`, signingSecret: `ss${n}` }, null);
+  f.slack.apps.add(`A0APP${n}`);
+  return { id, appId: `A0APP${n}`, group: moving ? `S_${n}` : undefined };
+}
+
+// Defects caught: an app Slack made before Allow that no Cancel can remove, so an Agent being added has nothing but
+// archive while paused; Admin offering no Cancel on its row; a second Cancel that asks Slack for anything again.
+test('with or without a pause, Cancel deletes the app Slack made for any record not yet allowed, and a second Cancel does nothing more', async (t) => {
+  for (const mayCreateApps of [false, true]) {
+    const f = await fixture(t, { mayCreateApps });
+    const made = [];
+    let n = 10;
+    for (const name of Object.keys(MADE_BEFORE_ALLOW) as Array<keyof typeof MADE_BEFORE_ALLOW>) {
+      for (const moving of [true, false]) made.push(await madeBeforeAllow(f, name, moving, (n += 1)));
+    }
+    const rows = (await (await f.adminJson(API, 'GET')).json() as { agents: Array<{ id: string; slack: { cancellable?: boolean } }> }).agents;
+    for (const { id } of made) assert.equal(rows.find((row) => row.id === id)?.slack.cancellable, true, `${id}: Admin's row offers Cancel`);
+
+    for (const { id, appId, group } of made) {
+      f.slack.calls = [];
+      const cancelled = await f.adminJson(`${API}/agents/${id}/cancel`, 'POST', {});
+      assert.equal(cancelled.status, 200, id);
+      assert.equal((await cancelled.json() as { app: string }).app, 'deleted', id);
+      assert.deepEqual(f.slack.calls, ['apps.manifest.delete'], `${id}: the app is deleted, and nothing else is asked of Slack`);
+      assert.equal(f.slack.apps.has(appId), false);
+      const after = (await f.config.getAgent(id)).slackPresence;
+      assert.equal(appRecordOf(after), undefined, `${id}: the record is gone`);
+      assert.equal(after?.userGroupId, group, `${id}: a moved Agent answers through its group, an added one waits with none`);
+      assert.equal(await readAppSecrets(f.secrets, appId), undefined, "and the app's own record is gone with it");
+
+      const again = await f.adminJson(`${API}/agents/${id}/cancel`, 'POST', {});
+      assert.equal(again.status, 409);
+      assert.deepEqual(await again.json(), { error: 'not_waiting' });
+      assert.deepEqual(f.slack.calls, ['apps.manifest.delete'], `${id}: a second Cancel asks Slack for nothing`);
+    }
+    assert.deepEqual(f.groups.disabled, [], 'no group was turned off');
+  }
+});
+
+// Defect caught: an Agent being added whose app a paused Cancel removed, left out of Slack because turning the setting
+// off placed only Agents with no record.
+test('while paused, an added Agent whose app Cancel removed gets its group when the setting is turned off', async (t) => {
+  const f = await fixture(t);
+  const added = await madeBeforeAllow(f, 'urls_refused', false, 11);
+  const moved = await madeBeforeAllow(f, 'created', true, 12);
+  for (const { id } of [added, moved]) assert.equal((await f.adminJson(`${API}/agents/${id}/cancel`, 'POST', {})).status, 200);
+  assert.deepEqual(f.placed, [], 'Cancel alone places nothing while the setting is on');
+
+  assert.equal((await f.adminJson(`${API}/mode`, 'PUT', { mode: 'shared' })).status, 200);
+  assert.deepEqual(f.placed.sort(), ['agent_new', added.id].sort(), 'the added Agent is given its group, and the moved one keeps its own');
+});
+
+// Defects caught: a Cancel before Allow that Slack refused, or whose app Slack cannot find, ending differently from the
+// same Cancel of an app waiting for Allow: another answer, another message, or a record left behind.
+test('a Cancel whose delete Slack refuses, or whose app Slack cannot find, ends as the same Cancel of an app waiting for Allow does', async (t) => {
+  const f = await fixture(t);
+  const ends: Array<{ app: string; message: string | undefined; record: unknown }> = [];
+  const cancel = async (id: string) => {
+    const answer = await (await f.adminJson(`${API}/agents/${id}/cancel`, 'POST', {})).json() as { app: string };
+    ends.push({ app: answer.app, message: f.groups.posted.at(-1), record: appRecordOf((await f.config.getAgent(id)).slackPresence) });
+  };
+
+  f.slack.refuseDelete = true;
+  await cancel('agent_ready');
+  await cancel('agent_stuck');
+  f.slack.refuseDelete = false;
+  const waiting = await madeBeforeAllow(f, 'created', true, 11);
+  await f.config.updateAgent(waiting.id, {
+    slackPresence: { ...(await f.config.getAgent(waiting.id)).slackPresence!, app: { ...waitingForAllow, app: appRecord(11) } } as AgentSlackPresence,
+  }, (await f.config.getAgent(waiting.id)).revision);
+  const partway = await madeBeforeAllow(f, 'icon_set', true, 12);
+  f.slack.apps.clear();
+  await cancel(waiting.id);
+  await cancel(partway.id);
+
+  const refusedReady = "Chickpea couldn't delete the Slack app it made for Helpdesk, so delete Helpdesk in Your Apps in Slack. Helpdesk keeps answering as it did before.";
+  assert.deepEqual(ends[0], { app: 'left_for_owner', message: refusedReady, record: undefined });
+  assert.deepEqual(ends[1], { app: 'left_for_owner', message: refusedReady.replaceAll('Helpdesk', 'Billing'), record: undefined }, 'refused: the same answer and message');
+  assert.equal(ends[2]!.app, 'not_found');
+  assert.match(ends[2]!.message ?? '', /^Chickpea couldn't find the Slack app it made for Agent 11 to delete it\./);
+  assert.deepEqual(ends[3], { ...ends[2], message: ends[2]!.message!.replaceAll('Agent 11', 'Agent 12') }, 'not found: the same answer and message');
+});
+
+// Defects caught: a pause that refuses Allow on an app that already exists, at any door, though that creates and changes
+// nothing; a door that lets such a press through by creating or changing an app.
+test('while paused, a press on an app Slack already made goes on to Allow from Admin, the hand-off page and Slack, and creates or changes nothing', async (t) => {
+  const f = await fixture(t);
+  const make = async (id: string, name: string, app: AttachedAgentApp, n: number) => {
+    await f.config.createAgent(agent(id, name, presence(name.toLowerCase(), { userGroupId: `S_${n}`, app })));
+    await writeAppSecrets(f.secrets, `A0APP${n}`, id, { clientSecret: `cs${n}`, signingSecret: `ss${n}` }, null);
+  };
+  const handingOver = (n: number): AttachedAgentApp => ({ state: 'icon_set', at: NOW, startedBy: OWNER, app: appRecord(n), icon: 'default_avatar' });
+  const removed = (n: number): AttachedAgentApp => ({
+    state: 'needs_attention', at: NOW, startedBy: OWNER, reason: 'app_removed', resume: 'icon_set', app: appRecord(n), icon: 'default_avatar',
+  });
+  await make('agent_handing', 'Payroll', handingOver(4), 4);
+  await make('agent_removed', 'Ops', removed(5), 5);
+  await make('agent_handing_slack', 'Legal', handingOver(6), 6);
+  await make('agent_removed_slack', 'Finance', removed(7), 7);
+  const state = async (id: string) => appRecordOf((await f.config.getAgent(id)).slackPresence)?.state;
+
+  const start = await f.adminJson(`${API}/agents/agent_ready/start`, 'POST', {});
+  assert.equal(start.status, 200, "Admin's Start on an app waiting for Allow");
+  assert.equal(new URL((await start.json() as { authorizeUrl: string }).authorizeUrl).origin, 'https://slack.com', "opens Slack's permission screen");
+
+  for (const id of ['agent_ready', 'agent_handing', 'agent_removed']) {
+    const page = await f.handOff(id);
+    assert.equal(page.status, 200, `${id}: the hand-off page is the ordinary one`);
+    assert.match(words(await page.text()), /Slack's permission screen is opening\. Choose Allow there\./, id);
+    const pressed = await f.handOff(id, 'POST');
+    assert.equal(pressed.status, 303, `${id}: its press goes on`);
+    assert.equal(new URL(pressed.headers.get('location')!).origin, 'https://slack.com', `${id}: to Slack's Allow`);
+    assert.equal(await state(id), 'awaiting_consent', id);
+  }
+
+  for (const id of ['agent_handing_slack', 'agent_removed_slack']) {
+    const retried = await f.service.retry(id, OWNER);
+    assert.notEqual(retried, 'paused', `${id}: Slack's Finish setting up goes on`);
+    assert.equal(await state(id), 'awaiting_consent', `${id}: to an app waiting for Allow`);
+  }
+  assert.match(f.groups.posted.join('\n'), /Legal/, 'whose Owner is asked to Allow it');
+
+  assert.deepEqual(createdOrChanged(f.slack), [], 'nothing was created or changed, and no token was spent');
+  assert.deepEqual([f.groups.disabled, f.groups.created], [[], []], "and no group's handle was freed");
+});
+
+// Defects caught: Admin hiding the Add and Cancel of an Agent waiting for Allow behind the paused sentence; the hint to
+// turn the setting off shown for an Agent turning it off would not place.
+test("while paused, Admin's row data says which Agents turning the setting off would give a group", async (t) => {
+  const f = await fixture(t);
+  await f.config.createAgent({ ...agent('agent_off', 'Quiet', presence('quiet', { health: 'unpublished', errorCode: AWAITING_OWN_APP })), enabled: false });
+  const rows = (await (await f.adminJson(API, 'GET')).json() as { agents: Array<{ id: string; slack: { state: string }; waitsForOwnApp?: true }> }).agents;
+  const row = (id: string) => rows.find((each) => each.id === id);
+  assert.deepEqual([row('agent_new')?.slack.state, row('agent_new')?.waitsForOwnApp], ['not_in_slack', true]);
+  assert.deepEqual([row('agent_off')?.slack.state, row('agent_off')?.waitsForOwnApp], ['not_in_slack', undefined], 'an Agent turned off is not placed');
+  assert.equal(row('agent_ready')?.waitsForOwnApp, undefined);
+});
+
+// Defect caught: Try again on a live app whose update holds while paused, answered with nothing.
+test('while paused, Try again on a live app whose update holds tells the Owner the update waits', async (t) => {
+  const f = await fixture(t);
+  assert.equal(await f.service.retry('agent_live', OWNER), 'paused');
+  assert.equal(await f.service.pausedReply('agent_live'), "Adding Slack apps is paused, so Chickpea can't update Support's Slack app now. Support keeps answering.");
+  assert.deepEqual(f.slack.calls, []);
 });

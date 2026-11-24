@@ -471,14 +471,16 @@ test('Cancel after a create Slack never answered says an app may exist, for the 
   assert.equal(await recordOf(f), undefined);
 });
 
-test('Cancel of a start that stopped after Slack made an app is still refused: that app is removed only from Allow', async (t) => {
+// Defect caught: Cancel deleting an app Slack made before Allow with no record of that app naming this Agent.
+test('Cancel of a start that stopped after Slack made an app with no record of its own deletes nothing: the app is left for the Owner', async (t) => {
   const f = await fixture(t);
   const agent = await f.config.getAgent('agent_support');
   await f.config.updateAgent('agent_support', {
     slackPresence: { ...agent.slackPresence!, app: { state: 'needs_attention', at: NOW, startedBy: OWNER, reason: 'urls_refused', resume: 'created', app: { appId: 'A0X', clientId: '1.c' } } } as AgentSlackPresence,
   }, agent.revision);
-  assert.deepEqual(await f.service.cancel('agent_support', OWNER), { kind: 'not_waiting' });
-  assert.equal((await recordOf(f))?.state, 'needs_attention');
+  const cancelled = await f.service.cancel('agent_support', OWNER);
+  assert.deepEqual(cancelled.kind === 'cancelled' && cancelled.app, 'left_for_owner');
+  assert.equal(await recordOf(f), undefined);
 });
 
 // Defects caught: Try again after Slack's permission screen leading to the Allow link, which answers the same expired

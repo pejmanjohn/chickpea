@@ -24,7 +24,7 @@ export interface AgentAppPageLinks {
   agentPage?: string;
 }
 
-/** Where an Owner is on the three steps: the step under way, 3 once all are done, or -1 for a page about no Agent, which has no bar. */
+/** Where an Owner is on the three steps: the step under way, 3 once all are done, or -1 for a page with no place among them, which has no bar. */
 type Step = -1 | 0 | 1 | 2 | 3;
 
 interface Card {
@@ -218,7 +218,7 @@ export function addRefusedPage(refusal: AddRefusal, agent: AgentAppPageAgent, li
 export function addPausedPage(agent: AgentAppPageAgent, links: AgentAppPageLinks, waiting: boolean): Response {
   const { name } = agent;
   return card({
-    status: 409, step: 1, agent, mark: 'wait', title: 'Adding Slack apps is paused',
+    status: 409, step: -1, agent, mark: 'wait', title: 'Adding Slack apps is paused',
     intro: `Chickpea isn't adding Agents to Slack as their own apps right now, so it can't add ${name} yet. ${name} keeps answering as it does now.`,
     actions: link(links.admin, 'Open Chickpea Admin'),
     ...(waiting ? { next: `To give ${name} an @handle people can mention now, an Owner can choose Stop creating Slack apps for new Agents in Chickpea Admin.` } : {}),

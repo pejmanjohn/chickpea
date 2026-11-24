@@ -736,17 +736,19 @@ test('Cancel withdraws a start that stopped before Slack made any app, and says 
   assert.deepEqual(owner.script.deleted, [], 'nothing is deleted in Slack');
   assert.equal(owner.audits().filter((audit) => audit.action === 'agent_apps.cancelled').map((audit) => audit.reasonCode).join(), 'none,none,none,left_for_owner');
 
-  // Once Slack has made the app, Cancel is not offered and is refused: that app is removed only from Allow. The second
-  // record is one no transition writes today; a record that holds an app is never withdrawn, whatever it would resume.
+  // Once Slack has made the app, Cancel removes the app instead of withdrawing the start. The second record is one no
+  // transition writes today; a record that holds an app is never withdrawn, whatever it would resume.
   for (const [reason, resume] of [['config_token_needed', 'created'], ['create_refused', 'creating']] as const) {
     const current = await owner.config.getAgent('agent_support');
     await owner.config.updateAgent('agent_support', {
       slackPresence: { ...group('support'), app: { state: 'needs_attention', at: NOW, startedBy: OWNER, reason, resume, app: APP } },
     }, current.revision);
     const listed = await (await owner.request(API)).json() as { agents: Array<{ id: string; slack: unknown }> };
-    assert.deepEqual(listed.agents.find((row) => row.id === 'agent_support')?.slack, { state: 'needs_attention', reason }, resume);
-    assert.equal((await owner.request(`${API}/agents/agent_support/cancel`, owner.json('POST', {}))).status, 409, resume);
-    assert.equal(appRecordOf((await owner.config.getAgent('agent_support')).slackPresence)?.state, 'needs_attention', `${resume}: the record stays`);
+    assert.deepEqual(listed.agents.find((row) => row.id === 'agent_support')?.slack, { state: 'needs_attention', reason, cancellable: true }, resume);
+    const cancelled = await owner.request(`${API}/agents/agent_support/cancel`, owner.json('POST', {}));
+    assert.equal(cancelled.status, 200, resume);
+    assert.notEqual((await cancelled.json() as { app: string }).app, 'none', `${resume}: never told no app existed`);
+    assert.equal(appRecordOf((await owner.config.getAgent('agent_support')).slackPresence), undefined, `${resume}: the record is gone`);
   }
 });
 
@@ -1190,7 +1192,7 @@ test('a Start that Slack left partway is resumed by the next press, which still 
   owner.script.update = 'unanswered';
   const first = await owner.request(`${API}/agents/agent_support/start`, owner.json('POST', {}));
   assert.equal(first.status, 202);
-  assert.deepEqual((await first.json() as { agent: { slack: unknown } }).agent.slack, { state: 'creating' });
+  assert.deepEqual((await first.json() as { agent: { slack: unknown } }).agent.slack, { state: 'creating', cancellable: true });
   assert.equal((await owner.config.getAgent('agent_support')).slackPresence?.app?.state, 'created');
 
   owner.script.update = undefined;

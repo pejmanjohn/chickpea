@@ -5396,7 +5396,8 @@
       case "app_removed":
         return { text: name + "'s Slack app was removed from this workspace. Open your messages with Chickpea and choose Add " + name + " to Slack to add it back.", actions: [] };
       case "uninstall_failed":
-        return { text: "Removing " + name + "'s Slack app didn't finish. Choose Try again.", actions: [tryAgain] };
+        // An archive Slack refused to finish: only archiving again finishes it.
+        return { text: "Chickpea couldn't remove " + name + "'s Slack app, so " + name + " is not archived. Archive " + name + " again to finish.", actions: [] };
       default:
         return { text: name + "'s Slack app needs your attention. Open your messages with Chickpea for details.", actions: [] };
     }
@@ -5449,6 +5450,7 @@
       rowClass = " needs-attention";
       sub = '<p class="slack-apps-row-note">' + esc("Creating " + name + "'s Slack app hasn't finished. Choose Try again.") + '</p>';
       actions = slackAppsButtonHtml(agent, tryAgain);
+      if (agent.slack.cancellable) actions += slackAppsButtonHtml(agent, { label: "Cancel", action: "slack-apps-cancel", link: true });
     } else if (stateName === "waiting_for_allow") {
       rowClass = " is-ready";
       sub = '<p class="slack-apps-row-note">' + esc("Ready. Add " + name + " to Slack to finish.") + '</p>' +
@@ -5466,7 +5468,7 @@
       var attention = slackAppsAttention(agent);
       sub = '<p class="slack-apps-row-note">' + esc(attention.text) + '</p>';
       actions = attention.actions.map(function (button) { return slackAppsButtonHtml(agent, button); }).join("");
-      // A start that stopped before Slack made any app can be withdrawn.
+      // A start that stopped before Slack made any app can be withdrawn, and one after can have its app deleted.
       if (agent.slack.cancellable) actions += slackAppsButtonHtml(agent, { label: "Cancel", action: "slack-apps-cancel", link: true });
     } else if (stateName === "own_app" && agent.slack.attention) {
       rowClass = " needs-attention";
@@ -5493,8 +5495,8 @@
 
   // While the host does not let Chickpea create or change apps, an Agent on
   // its way to its own app says so and keeps only Cancel, where Cancel can
-  // withdraw it, and a live app that does not match its Agent says it waits.
-  // Every other row is as it always is.
+  // end it, and a live app that does not match its Agent says it waits. An
+  // app waiting for Allow, and every other row, is as it always is.
   function slackAppsPausedRow(agent) {
     var name = agent.name;
     var slack = agent.slack || {};
@@ -5502,11 +5504,9 @@
       case "user_group":
         return { text: "" };
       case "not_in_slack":
-        return { text: SLACK_APPS_PAUSED + " To give " + name + " an @handle people can mention now, choose Stop creating Slack apps for new Agents." };
+        return { text: agent.waitsForOwnApp ? SLACK_APPS_PAUSED + " To give " + name + " an @handle people can mention now, choose Stop creating Slack apps for new Agents." : "" };
       case "creating":
-        return { text: SLACK_APPS_PAUSED + " " + name + " keeps answering as it does now." };
-      case "waiting_for_allow":
-        return { text: SLACK_APPS_PAUSED + " " + name + " keeps answering as it does now.", cancel: true };
+        return { text: SLACK_APPS_PAUSED + " " + name + " keeps answering as it does now.", cancel: !!slack.cancellable };
       case "needs_attention":
         if (slack.reason === "app_removed" || slack.reason === "uninstall_failed") return null;
         return { text: SLACK_APPS_PAUSED + " " + name + " keeps answering as it does now.", cancel: !!slack.cancellable };
