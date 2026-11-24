@@ -35,6 +35,7 @@ export type AgentAppMessageKind =
   | 'allow'
   | 'archived_left'
   | 'cancel_left'
+  | 'cancel_unfinished'
   | 'archived_installed'
   | 'permission_needed'
   | 'app_removed_unreachable'
@@ -152,6 +153,12 @@ const DM_COPY = {
       `Chickpea couldn't delete the Slack app it made for ${name}, so delete ${name} in Your Apps in Slack. ${name} keeps answering as it did before.`,
     buttons: () => [yourApps],
   },
+  /** An Owner cancelled before Allow and Slack refused to uninstall the app; the next Cancel or Try again picks it up. */
+  cancel_unfinished: {
+    text: ({ name }) =>
+      `Chickpea couldn't finish removing the Slack app it made for ${name}. Choose Try again in a minute. ${name} keeps answering as it did before.`,
+    buttons: (links) => [tryAgain(links)],
+  },
   /** Archived with the app still installed: no record proved it was the Agent's, so Chickpea neither uninstalled nor deleted it. */
   archived_installed: {
     text: ({ name }) =>
@@ -260,7 +267,10 @@ export type AgentAppHomeRow =
   | { kind: 'active' }
   /** Live, and the Owner never got the switch's result message: the row says what it would have. */
   | { kind: 'active_untold'; report: AgentAppSwitchReport }
-  | { kind: 'attention' };
+  | { kind: 'attention' }
+  /** An Owner's Cancel is deleting the app Chickpea made; the Agent answers as it did before. */
+  | { kind: 'removing' }
+  | { kind: 'removing_stalled' };
 
 const HOME_COPY = {
   setting_up: ({ handle }: AgentAppNames) => `Setting up @${handle}'s own Slack app.`,
@@ -268,6 +278,8 @@ const HOME_COPY = {
   waiting: ({ handle }: AgentAppNames) => `@${handle}'s Slack app is ready to add. Open your messages with Chickpea to allow it.`,
   active: ({ handle }: AgentAppNames) => `@${handle} has its own Slack app. People can message @${handle} directly.`,
   attention: ({ handle }: AgentAppNames) => `@${handle}'s Slack app needs your attention. Open your messages with Chickpea for details.`,
+  removing: ({ handle }: AgentAppNames) => `Removing the Slack app Chickpea made for @${handle}.`,
+  removing_stalled: ({ handle }: AgentAppNames) => `Removing the Slack app Chickpea made for @${handle} stopped partway.`,
 } satisfies Record<Exclude<AgentAppHomeRow['kind'], 'active_untold'>, (names: AgentAppNames) => string>;
 
 /** The Owner's App Home line under an Agent, with its one control. */
@@ -279,6 +291,7 @@ export function agentAppHomeBlocks(row: AgentAppHomeRow, names: AgentAppNames, a
   const text = row.kind === 'active_untold' ? agentAppSwitchedMessage(names, row.report).text : escapeMrkdwn(HOME_COPY[row.kind](names));
   const line = { type: 'context', elements: [{ type: 'mrkdwn', text }] };
   if (row.kind === 'stalled') return [line, button('Finish setting up', { action_id: FINISH_APP_ACTION, value: agentId })];
+  if (row.kind === 'removing_stalled') return [line, button('Finish removing', { action_id: FINISH_APP_ACTION, value: agentId })];
   return [line];
 }
 

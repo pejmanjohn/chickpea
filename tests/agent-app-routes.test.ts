@@ -187,10 +187,13 @@ test('a pasted token is checked with Slack, refused with the right sentence, and
   const removed = await owner.request(api, owner.form({ action: 'remove' }));
   assert.equal(removed.status, 200);
   const removal = await removed.text();
-  assert.match(removal, /<p>Chickpea deleted its copy of your configuration token, and the token no longer works\.<\/p>/);
+  assert.match(removal, /<p>Chickpea deleted its copy of your configuration token and retired that token at Slack\.<\/p>/);
   assert.equal(removal.includes('Your Apps'), false, 'Slack stops listing a token that still works, so the page never sends the Owner there to check');
   assert.equal(await owner.service.hasConfigurationToken(), false);
   assert.deepEqual(rotations.slice(2), ['xoxe-1-r'], 'removal spends the stored refresh token with one rotation');
+  const removedAgain = await owner.request(api, owner.form({ action: 'remove' }));
+  assert.match(await removedAgain.text(), /<p>Chickpea holds no configuration token for this workspace\.<\/p>/, 'a second removal claims nothing about Slack');
+  assert.equal(rotations.length, 3);
 });
 
 test("without the Owner's user-group permission a pasted token is kept, nothing starts, and the page sends the Owner to Admin's update", async (t) => {

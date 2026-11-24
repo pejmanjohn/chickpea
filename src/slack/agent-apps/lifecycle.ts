@@ -52,6 +52,8 @@ export type AgentAppEvent =
   | { type: 'consent_undone'; at: number; owner: string }
   | { type: 'app_removed'; at: number }
   | { type: 'archive'; at: number; hasBotToken: boolean }
+  /** An Owner's Cancel before Allow: allowed only while the app waits for Allow, so a record that went live is never cancelled. */
+  | { type: 'cancel'; at: number; hasBotToken: boolean }
   | { type: 'uninstalled'; at: number }
   | { type: 'uninstall_refused'; at: number }
   /** Slack never answered the uninstall of a live app, so it is still installed. */
@@ -130,7 +132,7 @@ export function agentAppMoveJob(agentId: string, presence: AgentSlackPresence | 
  * the way to, or at, its own app.
  */
 export type AgentSlackState =
-  | { state: 'user_group' | 'not_in_slack' | 'creating' | 'waiting_for_allow' | 'switching' | 'own_app' }
+  | { state: 'user_group' | 'not_in_slack' | 'creating' | 'waiting_for_allow' | 'cancelling' | 'switching' | 'own_app' }
   | { state: 'needs_attention'; reason: AgentAppAttention };
 
 export function agentSlackState(presence: AgentSlackPresence): AgentSlackState {
@@ -143,10 +145,13 @@ export function agentSlackState(presence: AgentSlackPresence): AgentSlackState {
     case 'active':
       return { state: pendingSwitchStep(app) ? 'switching' : 'own_app' };
     case 'needs_attention':
+      // A Cancel's removal Slack refused to finish reads as the Cancel it is; the next Cancel or Start picks it up.
+      if (app.resume === 'uninstalling' && presence.kind !== 'agent_app') return { state: 'cancelling' };
       return { state: 'needs_attention', reason: app.reason };
     case 'uninstalling':
-      // A cancel leaves the Agent answering as it did before the press; an archive's uninstall is passing.
-      return presence.kind === 'agent_app' ? { state: 'switching' } : unattached();
+      // On a user group's presence this is a Cancel's removal, finished by the next Cancel or Start; the group answers
+      // throughout. An archive's uninstall of a live app is passing.
+      return { state: presence.kind === 'agent_app' ? 'switching' : 'cancelling' };
     default:
       return { state: 'creating' };
   }
@@ -284,6 +289,16 @@ export function transition(app: AgentAppLifecycle, event: AgentAppEvent): AgentA
         next: event.hasBotToken ? 'uninstall' : 'delete',
       };
     }
+    case 'cancel':
+      return app.state === 'awaiting_consent'
+        ? {
+            state: 'uninstalling',
+            at,
+            startedBy: app.startedBy,
+            app: app.app,
+            next: event.hasBotToken ? 'uninstall' : 'delete',
+          }
+        : WRONG_STATE;
     case 'uninstalled':
       return app.state === 'uninstalling' && app.next === 'uninstall' ? { ...app, at, next: 'delete' } : WRONG_STATE;
     case 'uninstall_refused':

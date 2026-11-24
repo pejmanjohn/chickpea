@@ -273,7 +273,11 @@ async function writePair(
   return record?.revision;
 }
 
-/** Paste: refuses an access token, rotates at once, refuses another team, stores the new pair with who pasted it. */
+/**
+ * Paste: refuses an access token, rotates at once, refuses another team, then
+ * retires any stored pair as removal does, best effort, and stores the new
+ * pair with who pasted it.
+ */
 export async function saveConfigurationToken(
   d: SecretDeps,
   teamId: string,
@@ -298,8 +302,9 @@ export async function saveConfigurationToken(
     ...(pastedBy ? { pastedBy, pastedAt: d.now?.() ?? Date.now() } : {}),
   };
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const currentRevision = (await d.credentials.getEncryptedCredentialRevision(configurationTokenKey(teamId)))?.revision ?? null;
-    if (await writePair(d, teamId, pair, currentRevision)) return 'saved';
+    const current = await d.credentials.getEncryptedCredentialRevision(configurationTokenKey(teamId));
+    if (current) await spendRefreshToken(d, teamId, current);
+    if (await writePair(d, teamId, pair, current?.revision ?? null)) return 'saved';
   }
   throw new LostRevision(configurationTokenKey(teamId));
 }
