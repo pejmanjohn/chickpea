@@ -2800,8 +2800,9 @@ test("in the app Agent's own DM a teammate the person names gets no turn, and Su
   for (const [ts, text] of [
     ['1900005600.000100', '<!subteam^SFINANCE|@finance> what was Q3 revenue?'],
     ['1900005600.000200', `<@${FINANCE_BOT_USER}> what was Q3 revenue?`],
+    ['1900005600.000300', `<@${AGENT_BOT_USER}> ask <@${FINANCE_BOT_USER}> what Q3 revenue was`],
   ] as const) {
-    if (text.startsWith('<@')) await giveFinanceApp(h);
+    if (ts.endsWith('200')) await giveFinanceApp(h);
     assert.equal((await h.deliver('events', dmEvent({ event_id: `EvOwn${ts}` }, { text, ts, event_ts: ts }), { settle: true })).status, 200);
     const [job, ...others] = await turnsOn(h, ts);
     assert.deepEqual([job && shape(job), others.length], [['agent_support', undefined, SUPPORT_BOT], 0], `${text}: only Support answers`);
