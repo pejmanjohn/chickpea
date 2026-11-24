@@ -69,8 +69,8 @@ export function createAgentSlackAppRoutes(deps: AgentSlackAppRoutesDeps = {}): H
     if (handoff?.kind !== 'owner') return (await import('./journey.ts')).ownerNeededPage();
     const apps = await service(env, host);
     const agentId = c.req.param('agentId');
-    // The page posts to itself. A press from another site gets the page, whose own press is same-origin.
-    if (crossSite(c)) return apps.addPage(agentId);
+    // The page posts to itself. A press from another site presses nothing: it gets the page, where only Continue does.
+    if (crossSite(c)) return apps.addPage(agentId, { pressOnOpen: false });
     try {
       const { response, pressed } = await apps.addPress(agentId, handoff.slackUserId);
       if (pressed && pressed !== 'not_eligible') await audit(env, handoff.slackUserId, pressed);

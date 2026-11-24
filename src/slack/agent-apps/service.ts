@@ -465,17 +465,18 @@ export class AgentSlackApps {
    * only reads: the press is its POST, `addPress`. An Agent already in Slack
    * gets the Added page, and one an Owner cannot add says so.
    */
-  async addPage(agentId: string): Promise<Response> {
+  async addPage(agentId: string, options: { pressOnOpen?: boolean } = {}): Promise<Response> {
+    const pressOnOpen = options.pressOnOpen ?? true;
     const agent = await this.knownAgent(agentId);
     if (!agent || !addable(agent)) return notAddablePage(await this.pageLinks());
     const presence = agent.slackPresence!;
     const app = appRecordOf(presence);
     if (!app) {
       if (presence.userGroupId) return addedPage(await this.pageAgent(agent), await this.pageLinks(), 'already');
-      return handoffPage(await this.pageAgent(agent), 'creating');
+      return handoffPage(await this.pageAgent(agent), 'creating', pressOnOpen);
     }
     if (app.state === 'active') return addedPage(await this.pageAgent(agent), await this.pageLinks(agent), 'already');
-    return handoffPage(await this.pageAgent(agent), app.state === 'awaiting_consent' ? 'opening' : 'creating');
+    return handoffPage(await this.pageAgent(agent), app.state === 'awaiting_consent' ? 'opening' : 'creating', pressOnOpen);
   }
 
   /**

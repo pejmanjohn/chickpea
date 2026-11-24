@@ -206,7 +206,10 @@ test("the press is the Owner's: without the Owner hand-off, or from another site
 
   const forged = await f.request(`${ADD}/agent_support`, { method: 'POST', headers: { 'sec-fetch-site': 'cross-site' } });
   assert.equal(forged.status, 200);
-  assert.equal(headline(await forged.text()), 'Adding Support to Slack', 'another site gets the page, whose own press is same-origin');
+  const page = await forged.text();
+  assert.equal(headline(page), 'Adding Support to Slack', 'another site gets the page');
+  assert.doesNotMatch(page, /<script nonce=/, 'which does not press by itself: only Continue does');
+  assert.doesNotMatch(forged.headers.get('content-security-policy') ?? '', /nonce/);
   assert.equal(appsMade(f), 0);
   assert.equal(await recordOf(f), undefined);
   assert.deepEqual(f.audits, []);
@@ -307,6 +310,8 @@ test('Start refuses a handle another Agent in Slack holds, before anything is wr
   assert.equal(headline(html), 'Another Agent uses @support');
   assert.deepEqual(primary(html), { label: 'Rename Support', href: `${ORIGIN}/admin/agents/agent_support` });
   assert.equal(await recordOf(f), undefined, 'no creating record is written');
+  assert.equal((await f.config.getAgent('agent_support')).revision, 1, 'nothing about the Agent is written at all');
+  assert.deepEqual(f.posted, [], 'the page says it; nobody is messaged');
   assert.equal(appsMade(f), 0);
   assert.deepEqual(await f.service.press('agent_support', OWNER, 'admin').then((outcome) => [outcome.kind, 'agent' in outcome && outcome.agent.id]),
     ['handle_taken', 'agent_support'], "Admin's API gets the code and the Agent");

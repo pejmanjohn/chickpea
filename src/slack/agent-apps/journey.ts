@@ -107,10 +107,11 @@ function quietPress(label: string): string {
 /**
  * The hand-off: its own POST goes out as soon as the page loads, and Continue
  * sends it again for a browser that did not. `opening` is for an app that
- * already waits for Allow, so the press goes straight to Slack.
+ * already waits for Allow, so the press goes straight to Slack. Without
+ * `pressOnOpen` only Continue presses.
  */
-export function handoffPage(agent: AgentAppPageAgent, stage: 'creating' | 'opening'): Response {
-  const nonce = crypto.randomUUID().replace(/-/g, '');
+export function handoffPage(agent: AgentAppPageAgent, stage: 'creating' | 'opening', pressOnOpen = true): Response {
+  const nonce = pressOnOpen ? crypto.randomUUID().replace(/-/g, '') : undefined;
   const { name } = agent;
   return card({
     status: 200,
@@ -126,7 +127,7 @@ export function handoffPage(agent: AgentAppPageAgent, stage: 'creating' | 'openi
       : { done: `Created ${name}'s Slack app`, now: "Opening Slack's permission screen…" },
     actions: pressButton('Continue to Slack', true),
     next: "Use this if Slack hasn't opened yet.",
-    pressNonce: nonce,
+    ...(nonce ? { pressNonce: nonce } : {}),
   });
 }
 

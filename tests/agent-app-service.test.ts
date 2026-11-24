@@ -489,6 +489,7 @@ test('each refusal lands in attention with its message, and Try again resumes fr
   let app = await appOf(refused);
   assert.equal(app?.state === 'needs_attention' && app.reason, 'create_refused');
   assert.equal(refused.transport.posted[0]?.text, "Slack didn't finish Support's app. Choose Try again. If it keeps happening, check that your workspace allows new apps.");
+  assert.deepEqual(buttonUrls(refused.transport.posted[0]!), ['https://cloud.test/slack/agent-apps/add/agent_support'], 'Try again is the hand-off link');
   refused.slack.refuseCreate = undefined;
   await refused.service.retry('agent_support', 'UOWNER2');
   app = await appOf(refused);
