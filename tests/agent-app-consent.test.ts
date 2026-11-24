@@ -61,6 +61,8 @@ interface Posted { channelId: string; text: string; idempotencyKey: string | und
 const transport = (posted: Posted[]): AgentAppTransport => ({
   async disableUserGroup(): Promise<never> { throw new Error('not in this unit'); },
   async enableUserGroup(): Promise<never> { throw new Error('not in this unit'); },
+  async listUserGroups(): Promise<never> { throw new Error('not in this unit'); },
+  async updateUserGroup(): Promise<never> { throw new Error('not in this unit'); },
   async lookupChannel(): Promise<never> { throw new Error('not in this unit'); },
   async joinPublicChannel(): Promise<never> { throw new Error('not in this unit'); },
   async channelHasMember(): Promise<never> { throw new Error('not in this unit'); },

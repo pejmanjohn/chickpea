@@ -109,6 +109,8 @@ class FakeMainBot implements AgentAppTransport {
     this.enabled.push(id);
     return { id, name: 'Support', handle: 'support', disabled: false };
   }
+  async listUserGroups() { return []; }
+  async updateUserGroup(): Promise<never> { throw new Error('not in this unit'); }
   async lookupChannel(): Promise<never> { throw new Error('not in this unit'); }
   async joinPublicChannel(): Promise<never> { throw new Error('not in this unit'); }
   async channelHasMember(): Promise<never> { throw new Error('not in this unit'); }

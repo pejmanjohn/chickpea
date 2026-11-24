@@ -27,6 +27,7 @@ import {
   agentUserGroupDescription,
   agentUserGroupName,
   alternativeAgentHandles,
+  bringUserGroupToAgent,
   handlesOtherAgentsHoldInSlack,
   handlesOtherAgentsStore,
   normalizeAgentHandle,
@@ -568,17 +569,9 @@ export class AgentPresenceReconciler {
         throw withHandleSuggestions(error, normalizedHandle, groups, held);
       }
     } else {
-      try {
-        group = await this.updateGroupIfNeeded(
-          group,
-          agent,
-          normalizedHandle,
-          agentUserGroupName(agent.name, groups, group.id),
-        );
-      } catch (error) {
-        throw withHandleSuggestions(error, normalizedHandle, groups, held);
-      }
+      // Slack refuses to update a disabled group, as not found, so it is turned on first.
       if (group.disabled) group = await transport.enableUserGroup(group.id);
+      group = await bringGroupToAgent(transport, group, agent, normalizedHandle, groups, held);
     }
     let current = await config.getAgent(agent.id);
     const currentPresence = userGroupPresence(current);
@@ -782,6 +775,13 @@ export class AgentPresenceReconciler {
     }
     try {
       await enableUserGroup(transport, presence.userGroupId);
+      // Renames made while it was archived never reached the group, which Slack would not update while it was off.
+      const groups = await transport.listUserGroups({ includeDisabled: true });
+      const group = groups.find((candidate) => candidate.id === presence.userGroupId);
+      if (group) {
+        const held = handlesOtherAgentsStore(await config.listAgents(), agent.id);
+        await bringGroupToAgent(transport, group, agent, presence.normalizedHandle, groups, held);
+      }
       return config.updateAgent(
         agent.id,
         {
@@ -833,25 +833,6 @@ export class AgentPresenceReconciler {
       },
       agent.revision,
     );
-  }
-
-  private async updateGroupIfNeeded(
-    group: SlackUserGroup,
-    agent: CustomAgentConfig,
-    normalizedHandle: string,
-    name: string,
-  ): Promise<SlackUserGroup> {
-    const desiredDescription = agentUserGroupDescription(agent);
-    if (
-      group.name === name &&
-      group.handle === normalizedHandle &&
-      group.description === desiredDescription
-    ) return group;
-    return this.dependencies.transport.updateUserGroup(group.id, {
-      name,
-      handle: normalizedHandle,
-      description: desiredDescription,
-    });
   }
 
   private async announceBestEffort(
@@ -944,6 +925,22 @@ function handleIsLive(agent: CustomAgentConfig): boolean {
 /** Free handles: no Slack group's and no other Agent's. */
 function suggestedHandles(handle: string, groups: readonly SlackUserGroup[], held: ReadonlySet<string>): string[] {
   return alternativeAgentHandles(handle, new Set([...groups.map((group) => group.handle), ...held]));
+}
+
+/** Brings an enabled group to its Agent; a refused handle comes back with free ones to offer. */
+async function bringGroupToAgent(
+  transport: SlackTransport,
+  group: SlackUserGroup,
+  agent: CustomAgentConfig,
+  handle: string,
+  groups: readonly SlackUserGroup[],
+  held: ReadonlySet<string>,
+): Promise<SlackUserGroup> {
+  try {
+    return await bringUserGroupToAgent(transport, group, agent, handle, groups);
+  } catch (error) {
+    throw withHandleSuggestions(error, handle, groups, held);
+  }
 }
 
 function withHandleSuggestions(

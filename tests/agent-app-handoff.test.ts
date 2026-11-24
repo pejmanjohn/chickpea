@@ -122,6 +122,8 @@ async function fixture(t: TestContext, options: { token?: boolean; placed?: stri
     transport: {
       disableUserGroup: async (id) => ({ id, name: 'x', handle: 'x', disabled: true }),
       enableUserGroup: async (id) => ({ id, name: 'x', handle: 'x', disabled: false }),
+      listUserGroups: async () => [],
+      updateUserGroup: async () => { throw new Error('not in this unit'); },
       lookupChannel: async () => { throw new Error('no Channels here'); },
       joinPublicChannel: async () => { throw new Error('no Channels here'); },
       channelHasMember: async () => { throw new Error('no Channels here'); },

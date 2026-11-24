@@ -10,7 +10,7 @@ import type {
   ManagementOperation,
 } from '../src/management/types.ts';
 import { AgentPresenceReconciler, type AgentAppPresenceHooks } from '../src/slack/agent-presence/reconciler.ts';
-import type { SlackTransport, SlackUserGroup } from '../src/slack/transport/types.ts';
+import { SlackTransportError, type SlackTransport, type SlackUserGroup } from '../src/slack/transport/types.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 import { confirmThroughService, serviceResult } from './helpers/management-service-result.ts';
 import { CONFIRMATION_LIFETIME_MS } from '../src/management/mcp-v5/changes.ts';
@@ -32,6 +32,8 @@ class UserGroupDirectory implements SlackTransport {
     return { ...group };
   }
   async updateUserGroup(id: string, patch: { name?: string; handle?: string; description?: string }) {
+    // As Slack was seen to answer: a disabled group is not found for an update, and keeps what it had.
+    if (this.group(id).disabled) throw new SlackTransportError('usergroups.update', 'no_such_subteam');
     return { ...Object.assign(this.group(id), patch) };
   }
   async disableUserGroup(id: string) { return { ...Object.assign(this.group(id), { disabled: true }) }; }
