@@ -11403,6 +11403,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             agentEnabled: agent?.enabled ?? false,
             agentLifecycle: agent?.lifecycle ?? null,
             status: grant.status,
+            channelIsPrivate: grant.channelIsPrivate ?? null,
           };
         });
         const readiness = channel.lifecycle === 'archived'

@@ -7339,9 +7339,10 @@
       var handle = agent && agent.slackPresence && agent.slackPresence.normalizedHandle;
       var waits = grant.status !== "active" && agentAwaitsOwnApp(agent);
       var status = grant.status === "active" ? "Active" : waits ? "Not in Slack yet" : "Needs attention";
+      // Slack's live answer wins; the grant's stored privacy stands in when Slack's list was not read.
       return '<div class="channel-agent-hero"><span class="agent-roster-icon variant-' + agentIconVariant(grant.agentId) + '" aria-hidden="true">' + icon("robot") + '</span>' +
         '<div class="channel-agent-copy"><span class="agent-kicker">Agent grant</span><h2>' + esc(name) + '</h2>' +
-        '<p class="channel-agent-intro">' + esc(waits ? joinsOnceInSlackText(agent, "this Channel", channel.isPrivate === true) : handle ? "Mention @" + handle + " to start a thread with this Agent." : "Finish the Agent handle before using it in Slack.") + '</p>' +
+        '<p class="channel-agent-intro">' + esc(waits ? joinsOnceInSlackText(agent, "this Channel", channel.isPrivate === true || (channel.isPrivate == null && grant.channelIsPrivate === true)) : handle ? "Mention @" + handle + " to start a thread with this Agent." : "Finish the Agent handle before using it in Slack.") + '</p>' +
         '<span class="channel-agent-meta">' + esc(status) + ' · managed on the Agent</span></div>' +
         '<div class="channel-agent-actions"><button type="button" class="btn btn-soft btn-sm" data-action="open-profiles" data-agent="' + esc(grant.agentId) + '">View Agent</button></div></div>';
     }).join("");

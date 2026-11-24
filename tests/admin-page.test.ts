@@ -6677,6 +6677,23 @@ test('Channel detail prefers the projected Slack Channel name over a raw Channel
   assert.doesNotMatch(harness.app.innerHTML, /#C0EXR3L9T/);
 });
 
+// Defect caught: a private Channel Slack's list was not read for said a waiting Agent "joins" it; the grant knows.
+test("a private Channel's own page says a waiting Agent answers there through Chickpea, from the grant when Slack's list is unread", async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/channels/T_DESIGN/G_LAB',
+    agents: [{ ...releaseAgent, slackPresence: { ...releaseAgent.slackPresence, errorCode: 'awaiting_own_app' } }],
+    assignments: [],
+    channelIndex: [{
+      workspaceId: 'T_DESIGN', channelId: 'G_LAB', channelName: 'lab', isPrivate: null,
+      grants: [{ agentId: 'agent_release', agentName: 'Release Profile', agentEnabled: true, status: 'pending', channelIsPrivate: true }],
+      readiness: { ready: false, code: 'grant_needs_attention', reasons: [] },
+    }],
+  });
+  await flushAsync();
+  assert.match(harness.app.innerHTML,
+    /Once a workspace Owner adds Release Profile to Slack, it answers in this Channel through Chickpea until someone in the channel adds it\./);
+});
+
 test('Channel detail is a read-only inventory of additive Agent grants', async () => {
   const harness = runAdminPageHarness({ initialPath: '/admin/channels/T_DESIGN/C0EXR3L9T' });
   await flushAsync();
