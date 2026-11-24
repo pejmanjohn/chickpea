@@ -4222,6 +4222,31 @@ test("reads Slack never answers end the check within twelve seconds of the first
   assert.deepEqual(await h.stores.slackState.listPendingTurns!(), [], 'nothing is admitted');
 }, { beforeCall: (method, body) => slowRead?.(method, body) }));
 
+test("a notice Slack does not answer is given up on after five seconds, and the delivery ends", async (t) => withHarness(t, async (h) => {
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  t.mock.method(console, 'error', () => undefined);
+  t.after(() => { shortLimits.length = 0; });
+  // The read is limited past the deadline, so the check gives up at once; the notice's post is then never answered.
+  shortLimits.push({ call: `conversations.history ${AGENT_BOT}`, retryAfter: 13 });
+  const answering = globalThis.fetch;
+  let notices = 0;
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const request = input instanceof Request ? input : new Request(String(input), init);
+    if (!request.url.endsWith('/chat.postMessage')) return answering(input, init);
+    notices += 1;
+    // On the client's own signal, as a real fetch listens: a Request's copy follows it too weakly to keep it alive.
+    const signal = init?.signal ?? request.signal;
+    return new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason)));
+  }) as typeof fetch;
+  const started = performance.now();
+  const response = await h.deliver('events', appDm('1900011170.000100', { text: 'what did we refund?' }), { settle: true });
+  const tookMs = performance.now() - started;
+  assert.equal(response.ok, false, 'the delivery ends as a failure');
+  assert.ok(tookMs >= 4_900 && tookMs < 6_500, `ended after ${Math.round(tookMs)} ms`);
+  assert.equal(notices, 1);
+  assert.deepEqual(notConfirmed(warn).map((line) => (line as { reason: string }).reason), ['ratelimited']);
+}, { rateLimits: shortLimits }));
+
 test("a read Slack answers after two timed out is admitted once, and nobody is asked again", async (t) => withHarness(t, async (h) => {
   const warn = t.mock.method(console, 'warn', () => undefined);
   t.after(() => { slowRead = undefined; });
