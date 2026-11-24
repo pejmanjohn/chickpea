@@ -111,6 +111,7 @@ class FakeMainBot implements AgentAppTransport {
   }
   async lookupChannel(): Promise<never> { throw new Error('not in this unit'); }
   async joinPublicChannel(): Promise<never> { throw new Error('not in this unit'); }
+  async channelHasMember(): Promise<never> { throw new Error('not in this unit'); }
   async openDirectConversation(userId: string) {
     if (this.unreachable.has(userId)) throw new SlackTransportError('conversations.open', 'user_not_found');
     return { id: `D_${userId}`, private: true, member: true, archived: false };
@@ -176,6 +177,7 @@ async function fixture(t: TestContext, options: { follows?: AgentAppFollows | nu
     env: ENV, stores: { config, settings }, host: HOST, transport: main, slack, keyring, now: () => clock.now,
     armSwitch: async (job) => { armed.push(job); await onArm.run?.(job); },
     publicOrigin: async () => 'https://chickpea.test',
+    memberInSlack: async () => { throw new Error('a follow never completes a waiting Channel'); },
   });
   const reconciler = new AgentPresenceReconciler({
     config, transport: {} as SlackTransport, announce: null,

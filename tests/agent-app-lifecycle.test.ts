@@ -194,6 +194,16 @@ test('consent cannot be granted before the Allow message exists', () => {
   assert.deepEqual(result, { refused: 'wrong_state' });
 });
 
+test('what the app was made to match is carried to Allow whether or not a message asks for it', () => {
+  const follows = { manifestFingerprint: 'sha256:f1', avatarRevision: 2 };
+  const iconSet: AgentAppLifecycle = { state: 'icon_set', at: T0, startedBy: 'UOWNER', app: APP, icon: 'agent_avatar', follows };
+  for (const event of [events.allow_dm_posted, events.handed_to_slack]) {
+    const result = transition(iconSet, event);
+    assert.equal(isRefusal(result), false);
+    assert.deepEqual((result as AgentAppLifecycle & { follows?: unknown }).follows, follows, event.type);
+  }
+});
+
 test('a fresh create blocks archive until it settles, a stale one is let go without an app to delete', () => {
   assert.deepEqual(transition(states.creating, events.archive_without_token), { refused: 'create_settling' });
   assert.equal(createIsStale(states.creating, AT), false);
