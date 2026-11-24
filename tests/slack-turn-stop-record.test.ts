@@ -185,6 +185,65 @@ test("a stop bound to an Agent app's bot stops only a run speaking as that bot, 
       db.close();
     }
   }
+
+  // Two runs in one thread: another Agent's, through Chickpea, and the app's own.
+  const appBot = { speaker: { kind: 'own_bot' as const, botUserId: 'U_APP_BOT' } };
+  const finance = (id: string, suffix: string): TurnJob => ({
+    ...job(id, suffix, { speaker: { kind: 'chickpea_as_agent' } }),
+    assignment: assignment({ agentId: 'agent_finance' }),
+  });
+  const press = stop('110', { source: 'button', agentId: 'agent_stop', speakerBotUserId: 'U_APP_BOT' });
+  const cases: Array<[string, (turns: TurnJobStoreLogic) => void]> = [
+    ['an older run going', (turns) => {
+      turns.enqueue(finance('finance', '101'));
+      dispatch(turns, finance('finance', '101'));
+      turns.enqueue(job('app', '102', appBot));
+      dispatch(turns, job('app', '102', appBot));
+      turns.enqueue(finance('finance_unread', '103'));
+    }],
+    ['an older stopped run not yet delivered', (turns) => {
+      turns.enqueue(finance('finance', '101'));
+      dispatch(turns, finance('finance', '101'));
+      assert.equal(turns.steer(stop('102')).outcome, 'stopped');
+      turns.enqueue(job('app', '103', appBot));
+      dispatch(turns, job('app', '103', appBot));
+    }],
+    ["the app's older row not dispatched, another Agent's dispatched", (turns) => {
+      turns.enqueue(job('app', '101', appBot));
+      turns.enqueue(finance('finance', '102'));
+      dispatch(turns, finance('finance', '102'));
+    }],
+  ];
+  for (const [name, arrange] of cases) {
+    const { db, turns } = store();
+    try {
+      arrange(turns);
+      const financeBefore = stopOf(turns, 'finance');
+      const decision = turns.steer(press);
+      assert.equal(decision.outcome, 'stopped', name);
+      assert.equal(decision.outcome === 'stopped' ? decision.stop.headId : undefined, 'app', `${name}: the app's run is stopped`);
+      assert.deepEqual(stopOf(turns, 'finance'), financeBefore, `${name}: the other run is left alone`);
+      if (name === 'an older run going') {
+        assert.equal(stopOf(turns, 'finance_unread'), undefined, "another Agent's unread message is not held");
+      }
+    } finally {
+      db.close();
+    }
+  }
+
+  // A press on Chickpea's own app carries no speaker and chooses as before,
+  // whoever speaks: the running row, holding every unread row before the press.
+  const { db, turns } = store();
+  try {
+    turns.enqueue(job('app', '101', appBot));
+    dispatch(turns, job('app', '101', appBot));
+    turns.enqueue(finance('finance_unread', '102'));
+    const decision = turns.steer(stop('110', { source: 'button' }));
+    assert.equal(decision.outcome === 'stopped' ? decision.stop.headId : undefined, 'app');
+    assert.equal(stopOf(turns, 'finance_unread')?.role, 'held');
+  } finally {
+    db.close();
+  }
 });
 
 test('a second stop for the same run returns the first record and holds nothing more', () => {

@@ -4938,7 +4938,7 @@ async function removeLateMidRunReaction(input: MidRunReaction, name: string): Pr
  * field: `invalid` (an unreadable event), `no_route` (not an Agent thread),
  * `no_running_job` (nothing undelivered to stop), `not_allowed` (someone
  * who may not use the Agent there, and is not told: a guest, say),
- * `not_own_run` (an Agent app's press about a run that is not speaking as
+ * `not_own_run` (an Agent app's press in a thread where no run speaks as
  * that app's bot) or `app_not_live` (a press for an Agent app that is not
  * live, or whose token cannot be read).
  */
@@ -5122,8 +5122,9 @@ async function processSlackStopButton(
     throw err;
   }
   if (!decision) return;
-  // The run is not this app's bot's (another Agent's, or its Agent's through
-  // Chickpea): the press is for nobody, and the app's own indicator is idle.
+  // No run in the thread speaks as this app's bot (another Agent's, or its
+  // Agent's through Chickpea): the press is for nobody, and the app's own
+  // indicator is idle.
   const notOwnRun = decision.outcome === 'other_speaker' || (ownApp !== undefined && decision.outcome === 'other_agent');
   if (!notOwnRun && decision.outcome !== 'enqueue') {
     const settled = await settleSlackSteering({

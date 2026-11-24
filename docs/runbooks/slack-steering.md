@@ -418,7 +418,7 @@ user, channel, or workspace IDs.
 | Signal | Where | Meaning |
 | --- | --- | --- |
 | `[chickpea] steering.admission` | Worker or Node log | A stop or check-in decided at admission. `outcome` is `stopped` (with `created: false` when it joined an existing stop), `check_in`, `stop_refused` (someone without access, told privately), `check_in_refused` (someone without access to the Agent whose run it is, not answered), `ended` (after a handoff, that Agent's run ended while the sender was checked against it; the message went on as with nothing running), or `unsettled` (the run moved on to yet another Agent while it was decided; refused as for someone without access, fail closed). `source: button` marks the Stop button. |
-| `[chickpea] steering.stop_button` | Worker or Node log | A Stop press that stopped nothing. `outcome` is `invalid` (unreadable event), `no_route` (not an Agent thread), `no_running_job`, `not_allowed` (no access and not told, a guest for example), `not_own_run` (an Agent's own app heard a press about a run not speaking as its bot), or `app_not_live` (a press for an Agent's own app that is not live, or whose token cannot be read). |
+| `[chickpea] steering.stop_button` | Worker or Node log | A Stop press that stopped nothing. `outcome` is `invalid` (unreadable event), `no_route` (not an Agent thread), `no_running_job`, `not_allowed` (no access and not told, a guest for example), `not_own_run` (an Agent's own app heard a press in a thread where no run speaks as its bot), or `app_not_live` (a press for an Agent's own app that is not live, or whose token cannot be read). |
 | `turn_latency` with `outcome: stopped` | Runtime event | A stopped run's ending (both lanes). |
 | `thread_runner_alarm` field `dropped` | Runtime event, Cloudflare runners | Turns that stopped runs' endings dropped since the runner's previous record. |
 | `turn_latency` field `folded` | Runtime event | How many follow-ups the turn read with its own message (both lanes); `foldedInformed` counts those that were information only. |
@@ -552,8 +552,9 @@ same step before the button can be tested there.
 An Agent's own Slack app is subscribed when it is made from this release on.
 Slack draws its Stop button wherever its bot answers, so a press is honored in
 its own DM and in Channels and group DMs its bot is in, for a run speaking as
-that bot. A press about any other run in the thread stops nothing and logs
-`not_own_run`. An Agent app made before this release has no Stop button until
+that bot, even while another Agent's run is going in the same thread. The press
+leaves that other run and its unread messages alone. A press in a thread where
+no run speaks as its bot stops nothing and logs `not_own_run`. An Agent app made before this release has no Stop button until
 its manifest is updated; people stop its runs by typing.
 
 ## Live acceptance

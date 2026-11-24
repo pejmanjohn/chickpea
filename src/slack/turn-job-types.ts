@@ -306,9 +306,10 @@ export interface TurnEndedRow {
  * `agentId` binds a stop or check-in to the Agent its sender was checked
  * against (R3): when the thread's run is another Agent's, nothing is recorded
  * and the decision names that Agent (`other_agent`). Absent, as from an older
- * release, any Agent's run is steered. `speakerBotUserId` binds a stop to a
- * run whose stored speaker is that Agent app's own bot (a press on its Stop
- * button): any other run is left alone (`other_speaker`).
+ * release, any Agent's run is steered. `speakerBotUserId` binds a stop to the
+ * rows whose stored speaker is that Agent app's own bot (a press on its Stop
+ * button): the stop chooses its run and holds messages only among them, and
+ * any other run in the thread is left alone.
  */
 export type TurnSteeringRequest =
   | {
@@ -357,8 +358,9 @@ export interface TurnStopResult {
  * the run's facts. `other_agent`: the thread's run belongs to `agentId`, not
  * the Agent the request was bound to; nothing was recorded, held or enqueued,
  * and the request may be decided again bound to `agentId` only once its
- * sender may use that Agent there (R3). `other_speaker`: the run is not
- * speaking as the bot the stop was bound to; nothing was recorded. `enqueue`: the thread has nothing to
+ * sender may use that Agent there (R3). `other_speaker`: the thread has rows
+ * posted before the stop, but none speaks as the bot the stop was bound to;
+ * nothing was recorded. `enqueue`: the thread has nothing to
  * steer, so the message is an ordinary turn (enqueued in the same transaction
  * when one was given); `undelivered` says whether a run is in progress.
  */
