@@ -27,6 +27,7 @@ import {
   agentUserGroupDescription,
   agentUserGroupName,
   alternativeAgentHandles,
+  bringUserGroupToAgent,
   handlesOtherAgentsHoldInSlack,
   handlesOtherAgentsStore,
   normalizeAgentHandle,
@@ -38,8 +39,12 @@ export interface AgentAppPresenceHooks {
   retire(agent: CustomAgentConfig): Promise<CustomAgentConfig>;
   /** Brings a live app's bot into a Channel the Agent was added to; undefined for an Agent without one. */
   bringBotIn(agent: CustomAgentConfig, channel: { id: string; private: boolean }): Promise<AgentAppBot | undefined>;
-  /** Whether the workspace's Slack apps setting is `own_app`: a new Agent then waits for its own app instead of a user group. */
-  ownAppMode(): Promise<boolean>;
+  /**
+   * Whether this Agent, having no user group, waits for its own app instead of
+   * getting one: the workspace's Slack apps setting is `own_app`, and either
+   * Chickpea may create apps or the Agent already waits for one.
+   */
+  ownAppMode(agent: Pick<CustomAgentConfig, 'slackPresence'>): Promise<boolean>;
   /** Arms the job that brings a live app to match its Agent after a saved change; asks nothing of Slack and never throws. */
   follow(agent: CustomAgentConfig): Promise<void>;
 }
@@ -519,7 +524,7 @@ export class AgentPresenceReconciler {
       }
     }
 
-    if (!group && await this.ownAppMode()) return this.awaitOwnApp(agent);
+    if (!group && await this.ownAppMode(agent)) return this.awaitOwnApp(agent);
 
     // Chickpea's own rule, before Slack is asked to give this Agent the
     // handle: another Agent in Slack holds it, whichever kind of Agent it is.
@@ -568,17 +573,9 @@ export class AgentPresenceReconciler {
         throw withHandleSuggestions(error, normalizedHandle, groups, held);
       }
     } else {
-      try {
-        group = await this.updateGroupIfNeeded(
-          group,
-          agent,
-          normalizedHandle,
-          agentUserGroupName(agent.name, groups, group.id),
-        );
-      } catch (error) {
-        throw withHandleSuggestions(error, normalizedHandle, groups, held);
-      }
+      // Slack refuses to update a disabled group, as not found, so it is turned on first.
       if (group.disabled) group = await transport.enableUserGroup(group.id);
+      group = await bringGroupToAgent(transport, group, agent, normalizedHandle, groups, held);
     }
     let current = await config.getAgent(agent.id);
     const currentPresence = userGroupPresence(current);
@@ -778,10 +775,17 @@ export class AgentPresenceReconciler {
     );
     presence = requiredPresence(agent);
     if (!presence.userGroupId) {
-      return presence.kind !== 'agent_app' && await this.ownAppMode() ? this.awaitOwnApp(agent) : agent;
+      return presence.kind !== 'agent_app' && await this.ownAppMode(agent) ? this.awaitOwnApp(agent) : agent;
     }
     try {
       await enableUserGroup(transport, presence.userGroupId);
+      // Renames made while it was archived never reached the group, which Slack would not update while it was off.
+      const groups = await transport.listUserGroups({ includeDisabled: true });
+      const group = groups.find((candidate) => candidate.id === presence.userGroupId);
+      if (group) {
+        const held = handlesOtherAgentsStore(await config.listAgents(), agent.id);
+        await bringGroupToAgent(transport, group, agent, presence.normalizedHandle, groups, held);
+      }
       return config.updateAgent(
         agent.id,
         {
@@ -802,15 +806,15 @@ export class AgentPresenceReconciler {
     }
   }
 
-  private async ownAppMode(): Promise<boolean> {
-    return await this.dependencies.agentApps?.ownAppMode() ?? false;
+  private async ownAppMode(agent: CustomAgentConfig): Promise<boolean> {
+    return await this.dependencies.agentApps?.ownAppMode(agent) ?? false;
   }
 
   /** An Agent with no user group of its own nor its own app, in a workspace where each new Agent is its own app. */
   private async notInSlackYet(agent: CustomAgentConfig): Promise<boolean> {
     const presence = agent.slackPresence;
     if (!presence || presence.kind === 'agent_app' || presence.userGroupId) return false;
-    return this.ownAppMode();
+    return this.ownAppMode(agent);
   }
 
   /**
@@ -833,25 +837,6 @@ export class AgentPresenceReconciler {
       },
       agent.revision,
     );
-  }
-
-  private async updateGroupIfNeeded(
-    group: SlackUserGroup,
-    agent: CustomAgentConfig,
-    normalizedHandle: string,
-    name: string,
-  ): Promise<SlackUserGroup> {
-    const desiredDescription = agentUserGroupDescription(agent);
-    if (
-      group.name === name &&
-      group.handle === normalizedHandle &&
-      group.description === desiredDescription
-    ) return group;
-    return this.dependencies.transport.updateUserGroup(group.id, {
-      name,
-      handle: normalizedHandle,
-      description: desiredDescription,
-    });
   }
 
   private async announceBestEffort(
@@ -882,7 +867,7 @@ export class AgentPresenceReconciler {
     // caller still gets the error. An ambiguous create is recorded, because Slack may have made the group and the next
     // attempt adopts it by that code. Back in `shared` mode it reads as any Agent whose group failed, cause and all.
     if (current.slackPresence?.errorCode === AWAITING_OWN_APP && error.code !== 'user_group_create_ambiguous' &&
-        await this.ownAppMode()) return;
+        await this.ownAppMode(current)) return;
     const presence = withoutPresenceErrors(requiredPresence(current));
     await this.dependencies.config.updateAgent(
       current.id,
@@ -944,6 +929,22 @@ function handleIsLive(agent: CustomAgentConfig): boolean {
 /** Free handles: no Slack group's and no other Agent's. */
 function suggestedHandles(handle: string, groups: readonly SlackUserGroup[], held: ReadonlySet<string>): string[] {
   return alternativeAgentHandles(handle, new Set([...groups.map((group) => group.handle), ...held]));
+}
+
+/** Brings an enabled group to its Agent; a refused handle comes back with free ones to offer. */
+async function bringGroupToAgent(
+  transport: SlackTransport,
+  group: SlackUserGroup,
+  agent: CustomAgentConfig,
+  handle: string,
+  groups: readonly SlackUserGroup[],
+  held: ReadonlySet<string>,
+): Promise<SlackUserGroup> {
+  try {
+    return await bringUserGroupToAgent(transport, group, agent, handle, groups);
+  } catch (error) {
+    throw withHandleSuggestions(error, handle, groups, held);
+  }
 }
 
 function withHandleSuggestions(

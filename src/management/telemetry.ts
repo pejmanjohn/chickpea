@@ -322,6 +322,7 @@ export function emitManagementToolFailure(
 ): void {
   if (observation.type !== 'tool' || !observation.isError || ![
     'manage_scheduled_work', 'propose_workspace_changes', 'confirm_workspace_change',
+    'apply_workspace_changes',
   ].includes(observation.toolName)) return;
   try {
     const error = observation.errorInfo;
@@ -331,6 +332,7 @@ export function emitManagementToolFailure(
       'expectedVersion', 'ownerAgentId', 'idempotencyKey', 'guideVersion',
       'authoringReason', 'operations', 'itemId', 'kind', 'agentId',
       'expectedRevision', 'patch', 'instructions', 'proposalId',
+      'agent', 'clientRef', 'duplicateResolution', 'allowedTools',
     ]);
     const issues = error?.meta?.issues;
     const fields = new Set<string>(Array.isArray(issues) ? issues.flatMap((issue) =>

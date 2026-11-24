@@ -109,6 +109,8 @@ class FakeMainBot implements AgentAppTransport {
     this.enabled.push(id);
     return { id, name: 'Support', handle: 'support', disabled: false };
   }
+  async listUserGroups() { return []; }
+  async updateUserGroup(): Promise<never> { throw new Error('not in this unit'); }
   async lookupChannel(): Promise<never> { throw new Error('not in this unit'); }
   async joinPublicChannel(): Promise<never> { throw new Error('not in this unit'); }
   async channelHasMember(): Promise<never> { throw new Error('not in this unit'); }
@@ -221,7 +223,7 @@ async function save(f: Fixture, patch: { name?: string; handle?: string; avatarR
   await f.reconciler.retry(agent.id);
 }
 
-function run(f: Fixture): Promise<'done' | 'not_live'> {
+function run(f: Fixture): Promise<'done' | 'not_live' | 'paused'> {
   return f.service.continueSwitch('agent_support');
 }
 

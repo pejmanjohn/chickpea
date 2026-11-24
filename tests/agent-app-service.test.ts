@@ -69,6 +69,8 @@ class FakeSlack implements AgentAppSlackApi {
   refuseUpdate: SlackRefused | undefined;
   refuseIcon: SlackRefused | undefined;
   refuseDelete: SlackRefused | undefined;
+  /** Someone deleted the app in Slack: as Slack answered then, a delete of it is `no_permission` and its export `app_not_found`. */
+  deletedInSlack = false;
   ambiguousCreate = false;
   rotations = 0;
   /** Slack sends url_verification to an Events URL as it saves it; the host answers only with the app's stored signing secret. */
@@ -93,7 +95,12 @@ class FakeSlack implements AgentAppSlackApi {
       return created;
     });
   }
-  definedBotScopes() { return this.calls.through('export', async () => [...AGENT_APP_BOT_SCOPES]); }
+  definedBotScopes() {
+    return this.calls.through('export', async () => {
+      if (this.deletedInSlack) throw new SlackRefused('apps.manifest.export', 'app_not_found');
+      return [...AGENT_APP_BOT_SCOPES];
+    });
+  }
   update(_token: string, appId: string, manifest: SlackAppManifest) {
     return this.calls.through('update', async () => {
       refuseLikeSlack('apps.manifest.update', manifest);
@@ -113,6 +120,7 @@ class FakeSlack implements AgentAppSlackApi {
   async botInstalled(): Promise<never> { throw new Error('not in this unit'); }
   delete(_token: string, appId: string) {
     return this.calls.through('delete', async () => {
+      if (this.deletedInSlack) throw new SlackRefused('apps.manifest.delete', 'no_permission');
       if (this.refuseDelete) throw this.refuseDelete;
       this.deleted.push(appId);
       return 'deleted' as const;
@@ -143,6 +151,8 @@ class FakeTransport implements AgentAppTransport {
     this.disabled = this.disabled.filter((candidate) => candidate !== id);
     return { id, name: 'Support', handle: 'support', disabled: false };
   }
+  async listUserGroups(): Promise<SlackUserGroup[]> { return []; }
+  async updateUserGroup(): Promise<never> { throw new Error('not in this unit'); }
   openDirectConversation(userId: string) {
     return this.calls.through('openDirectConversation', async () => ({ id: `D_${userId}`, private: true, member: true, archived: false }));
   }
@@ -575,6 +585,7 @@ test("an older record's release Slack refuses for want of the Owner's permission
 
   f.permission.missing = true;
   const retried = await f.service.retry('agent_support', 'UOWNER2');
+  assert.ok(retried !== 'paused');
   assert.equal(retried.slackPresence?.kind, undefined, 'the start is undone');
   const presence = (await f.config.getAgent('agent_support')).slackPresence;
   assert.deepEqual(
@@ -605,6 +616,7 @@ test("an older record's release Slack refuses as missing_scope or not_allowed, f
     await f.service.advance('agent_support');
     f.permission.missing = true;
     const retried = await f.service.retry('agent_support', OWNER);
+    assert.ok(retried !== 'paused');
     assert.equal(retried.slackPresence?.kind, undefined, `${code}: the start is undone`);
     assert.equal(f.transport.posted[1]?.text, PERMISSION_NEEDED, `${code}: the Owner is sent to Admin's update`);
   }
@@ -675,6 +687,21 @@ test('a configuration token Slack says is revoked asks for a token at Start, and
   assert.equal(cancelled.kind === 'cancelled' && cancelled.app, 'left_for_owner');
   assert.equal(await appOf(cancel), undefined);
   assert.match(cancel.transport.posted.at(-1)?.text ?? '', /^Chickpea couldn't delete the Slack app it made for Support/);
+});
+
+// Defect caught: a Cancel telling the Owner to delete in Your Apps an app someone already deleted in Slack.
+test('a Cancel whose app was already deleted in Slack tells the Owner Chickpea could not find it', async (t) => {
+  const f = await fixture(t);
+  await f.service.start('agent_support', OWNER);
+  assert.equal((await appOf(f))?.state, 'awaiting_consent');
+  f.slack.deletedInSlack = true;
+  captureSlackRefusals(t);
+  const cancelled = await f.service.cancel('agent_support', OWNER);
+  assert.deepEqual(cancelled.kind === 'cancelled' && cancelled.app, 'not_found', 'Admin says the same as the message');
+  assert.equal(await appOf(f), undefined);
+  assert.equal(f.transport.posted.at(-1)?.text, escapeMrkdwn(
+    "Chickpea couldn't find the Slack app it made for Support to delete it. If Support still appears in Your Apps in Slack, you can delete it there. Support keeps answering as it did before.",
+  ));
 });
 
 test('a refused create logs its step, Agent, code and pointers for the operator; the Owner sees only Try again', async (t) => {

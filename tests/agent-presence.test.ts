@@ -999,6 +999,45 @@ test('failed Slack restore stays retryable with an active desired state', async 
   }
 });
 
+// Defects caught: Retry renaming a group Slack has off, which Slack refuses as not found, before turning it on; a
+// handle Slack refuses then leaving the group off, or showing a taken handle with nothing to offer instead.
+test('Retry of a renamed Agent whose group is off turns it on first, then renames it, and a taken handle leaves it on', async () => {
+  const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
+  const transport = new FakeSlackTransport();
+  try {
+    await config.createAgent(agent('agent_support', 'Support', 'support'));
+    const reconciler = new AgentPresenceReconciler({ config, transport, announce: null });
+    await reconciler.publish({
+      workspaceId: 'TACME', agentId: 'agent_support', channelId: 'C_SUPPORT',
+      actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA',
+    });
+    await reconciler.archive('agent_support');
+    transport.enableError = new SlackTransportError('usergroups.enable', 'slack_unreachable', { retryable: true });
+    await assert.rejects(() => reconciler.restore('agent_support'), AgentPresenceError);
+    transport.enableError = undefined;
+    transport.groups.push({ id: 'S9', name: 'Desk team', handle: 'helpdesk', disabled: false });
+    const renamed = async (name: string, handle: string) => {
+      const current = await config.getAgent('agent_support');
+      await config.updateAgent(current.id, {
+        name, slackPresence: { ...current.slackPresence!, requestedHandle: handle, normalizedHandle: handle },
+      }, current.revision);
+    };
+
+    await renamed('Helpdesk', 'helpdesk');
+    await assert.rejects(() => reconciler.retry('agent_support'), { code: 'handle_collision' });
+    assert.deepEqual(transport.groups[0] && [transport.groups[0].handle, transport.groups[0].disabled], ['support', false], 'on, under the handle it has');
+    const refused = (await config.getAgent('agent_support')).slackPresence;
+    assert.deepEqual([refused?.health, refused?.errorCode, refused?.handleSuggestions?.length! > 0], ['needs_attention', 'handle_collision', true]);
+
+    await renamed('Helpdesk', 'helpdesk-2');
+    const fixed = await reconciler.retry('agent_support');
+    assert.deepEqual(transport.groups[0] && [transport.groups[0].name, transport.groups[0].handle, transport.groups[0].disabled], ['Helpdesk', 'helpdesk-2', false]);
+    assert.deepEqual([fixed.slackPresence?.health, fixed.slackPresence?.errorCode], ['healthy', undefined]);
+  } finally {
+    config.close();
+  }
+});
+
 test('Retry never resurrects an archived Agent or its Slack user group', async () => {
   const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const transport = new FakeSlackTransport();
@@ -1629,6 +1668,8 @@ class FakeSlackTransport implements SlackTransport {
     this.updateCalls += 1;
     this.refuseLongDescription('usergroups.update', patch.description);
     const group = this.requiredGroup(id);
+    // As Slack was seen to answer: a disabled group is not found for an update, and keeps what it had.
+    if (group.disabled) throw new SlackTransportError('usergroups.update', 'no_such_subteam');
     if (this.groups.some((other) => other.id !== id && other.handle === patch.handle)) {
       throw new SlackTransportError('usergroups.update', 'handle_already_exists');
     }

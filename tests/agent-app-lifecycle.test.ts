@@ -134,7 +134,15 @@ const allowed: Record<string, AgentAppTransition> = {
   'awaiting_consent_opened -> consent_undone': { ...states.awaiting_consent, at: AT },
   'awaiting_consent_opened -> archive_with_token': { state: 'uninstalling', at: AT, startedBy: 'UOWNER', app: APP, next: 'uninstall' },
   'awaiting_consent_opened -> archive_without_token': { state: 'uninstalling', at: AT, startedBy: 'UOWNER', app: APP, next: 'delete' },
-  // A Cancel is allowed only while the app waits for Allow; from every other state it is refused.
+  // A Cancel is allowed before Allow from any record that holds an app, and removes it; from every other state it is refused.
+  'created -> cancel_with_token': { state: 'uninstalling', at: AT, startedBy: 'UOWNER', app: APP, next: 'uninstall' },
+  'created -> cancel_without_token': { state: 'uninstalling', at: AT, startedBy: 'UOWNER', app: APP, next: 'delete' },
+  'urls_set -> cancel_with_token': { state: 'uninstalling', at: AT, startedBy: 'UOWNER', app: APP, next: 'uninstall' },
+  'urls_set -> cancel_without_token': { state: 'uninstalling', at: AT, startedBy: 'UOWNER', app: APP, next: 'delete' },
+  'icon_set -> cancel_with_token': { state: 'uninstalling', at: AT, startedBy: 'UOWNER', app: APP, next: 'uninstall' },
+  'icon_set -> cancel_without_token': { state: 'uninstalling', at: AT, startedBy: 'UOWNER', app: APP, next: 'delete' },
+  'attention_created -> cancel_with_token': { state: 'uninstalling', at: AT, startedBy: 'UOWNER', app: APP, next: 'uninstall' },
+  'attention_created -> cancel_without_token': { state: 'uninstalling', at: AT, startedBy: 'UOWNER', app: APP, next: 'delete' },
   'awaiting_consent -> cancel_with_token': { state: 'uninstalling', at: AT, startedBy: 'UOWNER', app: APP, next: 'uninstall' },
   'awaiting_consent -> cancel_without_token': { state: 'uninstalling', at: AT, startedBy: 'UOWNER', app: APP, next: 'delete' },
   'awaiting_consent_opened -> cancel_with_token': { state: 'uninstalling', at: AT, startedBy: 'UOWNER', app: APP, next: 'uninstall' },

@@ -160,6 +160,8 @@ export function renderAdminPage(
     workspaceAdminUi?: boolean;
     installationOwner?: boolean;
     agentSlackAppsOffered?: boolean;
+    /** The host does not let Chickpea create Agents' Slack apps now, so onboarding leaves out the Slack apps step. */
+    agentSlackAppsPaused?: boolean;
     browserSetupOffered?: boolean;
     websiteLoginsOffered?: boolean;
     websiteLoginsRemoveOnly?: boolean;
@@ -192,7 +194,7 @@ export function renderAdminPage(
       selfHosted,
       onChickpeaModels,
       githubOffered: options.onboarding.githubConnectPath !== null,
-      slackAppsOffered: options.agentSlackAppsOffered === true,
+      slackAppsOffered: options.agentSlackAppsOffered === true && options.agentSlackAppsPaused !== true,
     }),
     scenes: onboardingScenesHtml(),
   };

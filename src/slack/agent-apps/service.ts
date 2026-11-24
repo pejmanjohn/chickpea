@@ -7,7 +7,7 @@
  */
 import { AgentRevisionConflictError, UnknownAgentError } from '../../config/errors.ts';
 import { canEditAgent } from '../../auth/permissions.ts';
-import { AgentPresenceError } from '../agent-presence/errors.ts';
+import { AgentPresenceError, classifyAgentPresenceError } from '../agent-presence/errors.ts';
 import type { MemberInSlack } from '../agent-presence/place-in-slack.ts';
 import { installationScopeOf } from '../../config/installation-scope.ts';
 import type { EncryptedCredentialStore, SettingsStore } from '../../config/settings-store.ts';
@@ -35,7 +35,12 @@ import {
   generatedAgentAvatarPng,
   readAgentAvatarAsset,
 } from '../agent-presence/avatar-assets.ts';
-import { handlesOtherAgentsHoldInSlack } from '../agent-presence/handles.ts';
+import {
+  alternativeAgentHandles,
+  bringUserGroupToAgent,
+  handlesOtherAgentsHoldInSlack,
+  handlesOtherAgentsStore,
+} from '../agent-presence/handles.ts';
 import {
   AGENT_APP_BOT_EVENTS,
   type AgentAppManifestIntent,
@@ -55,7 +60,7 @@ import { AGENT_APP_BOT_SCOPES } from '../scopes.ts';
 import type { CredentialKeyring } from '../secret-envelope.ts';
 import { createDirectSlackTransport } from '../transport/direct.ts';
 import { SlackTransportError, type SlackChannel, type SlackTransport } from '../transport/types.ts';
-import type { AgentAppRetirement, AgentSlackAppsHost } from './host.ts';
+import { type AgentAppRetirement, type AgentSlackAppsHost, agentSlackAppsMayCreate } from './host.ts';
 import {
   type AgentAppEvent,
   type AgentAppRefusal,
@@ -67,11 +72,13 @@ import {
   agentAppIsLive,
   agentAppMoveJob,
   agentAppRecord,
+  appBeforeAllow,
   attachedAgentApp,
   createIsStale,
   isRefusal,
   nextStep,
   normalizeAgentAppPresence,
+  onlyAllowLeft,
   pendingSwitchStep,
   waitsForOwnApp,
   restorePending,
@@ -83,6 +90,7 @@ import {
   type AgentAppPageAgent,
   type AgentAppPageLinks,
   type ConsentOutcome,
+  addPausedPage,
   addRefusedPage,
   addedPage,
   consentPage,
@@ -103,6 +111,7 @@ import {
   addPressReply,
   agentAppSwitchedMessage,
   archiveRefusedCopy,
+  pausedReply,
   TOKEN_PAGE_PATH,
 } from './pages.ts';
 import {
@@ -138,7 +147,8 @@ import {
 
 export type AgentAppTransport = Pick<
   SlackTransport,
-  'disableUserGroup' | 'enableUserGroup' | 'openDirectConversation' | 'postMessage' | 'lookupChannel' | 'joinPublicChannel' | 'channelHasMember'
+  | 'disableUserGroup' | 'enableUserGroup' | 'listUserGroups' | 'updateUserGroup' | 'openDirectConversation' | 'postMessage'
+  | 'lookupChannel' | 'joinPublicChannel' | 'channelHasMember'
 >;
 
 /** What an Agent app's own bot does at the switch: see a Channel and join a public one. */
@@ -221,6 +231,8 @@ export type AgentAppPressOutcome =
   | { kind: 'permission_needed' }
   | { kind: 'app_limit' }
   | { kind: 'handle_taken'; agent: CustomAgentConfig }
+  /** The host does not let Chickpea create or change apps now: the record is as it was. */
+  | { kind: 'paused'; agent: CustomAgentConfig }
   | { kind: 'not_eligible' };
 
 /**
@@ -239,7 +251,7 @@ interface Advanced {
  * next Cancel or Start finishes.
  */
 export type AgentAppCancelOutcome =
-  | { kind: 'cancelled'; agent: CustomAgentConfig; app: 'deleted' | 'left_for_owner' | 'none' }
+  | { kind: 'cancelled'; agent: CustomAgentConfig; app: 'deleted' | 'left_for_owner' | 'not_found' | 'none' }
   | { kind: 'unfinished'; agent: CustomAgentConfig }
   | { kind: 'not_waiting' }
   | { kind: 'not_eligible' };
@@ -263,6 +275,13 @@ type Performer = (run: Run) => Promise<Outcome>;
 type LiveAgentApp = AgentAppPresence & { app: Extract<AgentAppLifecycle, { state: 'active' }> };
 type RemovedAgentApp = AgentAppPresence & { app: Extract<AgentAppLifecycle, { state: 'needs_attention' }> };
 
+/** A restored group refused the Agent's handle, by Slack or by Chickpea's own rule: the handle it keeps, why, and free handles to offer. */
+interface KeptHandle {
+  handle: string;
+  refusal: AgentPresenceError;
+  suggestions: string[];
+}
+
 /**
  * A switch step's result: the step due next; the group Slack confirmed it
  * turned off; and that the Owner's message was given up.
@@ -274,6 +293,8 @@ interface SwitchStepDone {
 }
 
 const MAX_STEPS_PER_RUN = 12;
+/** The steps toward Allow that turn a group off for a new app, create the app, or change it in Slack. */
+const STEPS_A_PAUSE_HOLDS: ReadonlySet<AgentAppStep> = new Set(['release_handle', 'create', 'set_urls', 'set_icon']);
 /** How long an opened Allow link stays valid. */
 export const CONSENT_TTL_MS = 15 * 60_000;
 /** Agent, nonce and, since the press said where it came from, that; a state without it lands as one from Slack. */
@@ -355,9 +376,10 @@ export class AgentSlackApps {
   private facts: Promise<{ teamId: string; installationId: string }> | undefined;
   /**
    * Agents whose app the delete step left for the Owner: uninstalled with its definition kept (Slack refused, or no
-   * configuration token), or still installed because no record proves the app is theirs.
+   * configuration token), not found by Slack when it refused the delete, or still installed because no record proves
+   * the app is theirs.
    */
-  private readonly leftForOwner = new Map<string, 'uninstalled_left_definition' | 'left_for_owner'>();
+  private readonly leftForOwner = new Map<string, 'uninstalled_left_definition' | 'not_found' | 'left_for_owner'>();
 
   constructor(private readonly deps: AgentSlackAppsDeps) {
     this.now = deps.now ?? Date.now;
@@ -429,6 +451,12 @@ export class AgentSlackApps {
     return isOwner ? addPressReply('link', names, this.deps.host.addUrl(agent.id)) : addPressReply('owner_needed', names);
   }
 
+  /** What an Owner who pressed Finish setting up is told while the host does not let Chickpea create or change apps. */
+  async pausedReply(agentId: string): Promise<string> {
+    const agent = await this.deps.stores.config.getAgent(agentId);
+    return pausedReply(this.names(agent), agentAppIsLive(agent.slackPresence));
+  }
+
   /**
    * Perform the next step, commit by compare-and-set, repeat until the record
    * waits. `appLimit` says the run withdrew the record because Slack would not
@@ -452,6 +480,8 @@ export class AgentSlackApps {
       }
       const step = nextStep(app, now);
       if (!step) return { agent };
+      // Whatever door led here, a pause runs no step that frees a handle for a new app, creates one, or changes one.
+      if (STEPS_A_PAUSE_HOLDS.has(step) && !this.mayCreateApps()) return { agent };
       const outcome = await this.performers[step]({ agent, presence, app, now, wroteCreating, archiving, handOff });
       if (outcome === 'wait') return { agent };
       const committed = await this.commit(agent, outcome.event);
@@ -478,7 +508,7 @@ export class AgentSlackApps {
    * would not bring to match its Agent, has its job armed again, and so does
    * a removed app's group, which Slack may now let Chickpea turn back on.
    */
-  async retry(agentId: string, ownerSlackUserId: string): Promise<CustomAgentConfig> {
+  async retry(agentId: string, ownerSlackUserId: string): Promise<CustomAgentConfig | 'paused'> {
     const { config } = this.deps.stores;
     let agent = await config.getAgent(agentId);
     const presence = agent.slackPresence;
@@ -487,7 +517,13 @@ export class AgentSlackApps {
     if (presence?.kind === 'agent_app' && presence.released?.enableRefused) {
       agent = await config.updateAgent(agentId, { slackPresence: { ...presence, released: unrefused(presence.released) } }, agent.revision);
     }
-    if (app.state === 'active' || restorePending(agent.slackPresence)) return this.followAgain(agent);
+    if (app.state === 'active' || restorePending(agent.slackPresence)) {
+      const followed = await this.followAgain(agent);
+      // A live app's update holds while paused, and the sweep runs it once allowed: the Owner is told it waits.
+      return app.state === 'active' && !pendingSwitchStep(app) && !this.mayCreateApps() ? 'paused' : followed;
+    }
+    // Every other record goes on toward Allow; a Cancel's removal is Cancel's to finish.
+    if (this.pauseHolds(app) && !cancelPending(app)) return 'paused';
     if (app.state !== 'needs_attention') return (await this.advance(agentId)).agent;
     return (await this.tryAgain(agent, app, ownerSlackUserId)).agent;
   }
@@ -533,9 +569,11 @@ export class AgentSlackApps {
     const app = appRecordOf(presence);
     if (!app) {
       if (presence.userGroupId) return addedPage(await this.pageAgent(agent), await this.pageLinks(), 'already');
+      if (!this.mayCreateApps()) return this.pausedPage(agent);
       return handoffPage(await this.pageAgent(agent), 'creating', pressOnOpen);
     }
     if (app.state === 'active') return addedPage(await this.pageAgent(agent), await this.pageLinks(agent), 'already');
+    if (this.pauseHolds(app)) return this.pausedPage(agent);
     // An app Slack already made (waiting for Allow, partway, or removed from the workspace) is not created again.
     return handoffPage(await this.pageAgent(agent), agentAppRecord(app) ? 'opening' : 'creating', pressOnOpen);
   }
@@ -571,6 +609,8 @@ export class AgentSlackApps {
         return refused('cancelling', pressed.agent);
       case 'handle_taken':
         return refused('handle_taken', pressed.agent);
+      case 'paused':
+        return { response: await this.pausedPage(pressed.agent), pressed: pressed.kind };
       case 'token_needed':
       case 'permission_needed':
       case 'app_limit':
@@ -620,6 +660,7 @@ export class AgentSlackApps {
     }
     const record = appRecordOf(agent.slackPresence);
     const attached = agent.slackPresence.kind !== 'agent_app';
+    if (record?.state !== 'active' && this.pauseHolds(record)) return { kind: 'paused', agent };
     // Every press sends the Owner's browser on to Slack's Allow screen, so none posts the message asking them to choose Allow.
     if (!record) {
       const started = await this.start(agentId, ownerSlackUserId, { handOff: true });
@@ -657,9 +698,10 @@ export class AgentSlackApps {
   }
 
   /**
-   * An Owner's Cancel before Allow: the created app is deleted under its own
-   * record, and the Agent goes back to how it answered before the press. The
-   * check that the app still waits for Allow is the `cancel` event itself, so
+   * An Owner's Cancel before Allow: an app Slack made is deleted under its
+   * own record, whether it waits for Allow or its start stopped partway, and
+   * the Agent goes back to how it answered before the press. The check that
+   * the app is still not allowed is the `cancel` event itself, so
    * an Allow that lands first wins and nothing is deleted. A removal an
    * earlier Cancel left unfinished is finished.
    */
@@ -669,8 +711,9 @@ export class AgentSlackApps {
     const app = appRecordOf(agent.slackPresence);
     if (!app || agent.slackPresence?.kind === 'agent_app') return { kind: 'not_waiting' };
     let settled: CustomAgentConfig;
-    if (app.state === 'awaiting_consent') {
-      const stored = await readAppSecrets(this.secrets, app.app.appId).catch(unreadableAsNone);
+    const made = appBeforeAllow(app);
+    if (made) {
+      const stored = await readAppSecrets(this.secrets, made.appId).catch(unreadableAsNone);
       const cancelled = await this.commit(agent, { type: 'cancel', at: this.now(), hasBotToken: Boolean(stored?.secrets.botToken) });
       if (cancelled.outcome === 'refused') return { kind: 'not_waiting' };
       settled = (await this.advance(agentId)).agent;
@@ -694,7 +737,7 @@ export class AgentSlackApps {
     const left = this.leftForOwner.get(agentId);
     this.leftForOwner.delete(agentId);
     if (appRecordOf(settled.slackPresence)) return { kind: 'unfinished', agent: settled };
-    return { kind: 'cancelled', agent: settled, app: left ? 'left_for_owner' : 'deleted' };
+    return { kind: 'cancelled', agent: settled, app: left === 'not_found' ? left : left ? 'left_for_owner' : 'deleted' };
   }
 
   /** Slack's callback, forwarded untouched: exchange the code with the app's own credentials and validate the grant. */
@@ -834,7 +877,8 @@ export class AgentSlackApps {
     if (!after) {
       const left = this.leftForOwner.get(agent.id);
       this.leftForOwner.delete(agent.id);
-      return { agent: settled, outcome: left ?? 'removed' };
+      // An app Slack could not find may still exist where this token cannot see it, so tenant end records it as left.
+      return { agent: settled, outcome: left === 'not_found' ? 'uninstalled_left_definition' : left ?? 'removed' };
     }
     if (agentAppIsLive(presence) && after.state === 'uninstalling' && after.next === 'uninstall') {
       await this.commit(settled, { type: 'uninstall_unanswered', at: this.now(), restore: presence.app });
@@ -876,7 +920,9 @@ export class AgentSlackApps {
   async pasteConfigurationToken(
     refreshToken: string,
     pastedBy: string,
-  ): Promise<'saved' | 'not_refresh_token' | 'rejected' | 'other_workspace'> {
+  ): Promise<'saved' | 'not_refresh_token' | 'rejected' | 'other_workspace' | 'paused'> {
+    // Checking a token with Slack spends it, and it is only ever kept to create and change apps.
+    if (!this.mayCreateApps()) return 'paused';
     const saved = await saveConfigurationToken(this.secrets, (await this.installation()).teamId, refreshToken, pastedBy);
     if (saved === 'saved') await this.unrefuseFollows(['config_token_needed', 'update_failed']);
     return saved;
@@ -910,10 +956,15 @@ export class AgentSlackApps {
     return readAgentSlackAppsSetting(this.deps.stores.settings);
   }
 
-  /** The mode already stored changes nothing, not even who chose it and when. */
-  async setMode(mode: AgentSlackAppsMode, changedBy: string): Promise<{ setting: AgentSlackAppsSetting; changed: boolean }> {
+  /**
+   * The mode already stored changes nothing, not even who chose it and when.
+   * While the host does not let Chickpea create apps, `own_app` cannot be
+   * turned on; turning it off always can.
+   */
+  async setMode(mode: AgentSlackAppsMode, changedBy: string): Promise<{ setting: AgentSlackAppsSetting; changed: boolean } | 'paused'> {
     const current = await this.setting();
     if (current.mode === mode) return { setting: current, changed: false };
+    if (mode === 'own_app' && !this.mayCreateApps()) return 'paused';
     return { setting: await writeAgentSlackAppsSetting(this.deps.stores.settings, { mode, changedBy, changedAt: this.now() }), changed: true };
   }
 
@@ -927,7 +978,7 @@ export class AgentSlackApps {
    * step is not retried. On the job's last try the Owner's message is given
    * up, and the switch still finishes.
    */
-  async continueSwitch(agentId: string, options: { finalAttempt?: boolean; row?: number } = {}): Promise<'done' | 'not_live'> {
+  async continueSwitch(agentId: string, options: { finalAttempt?: boolean; row?: number } = {}): Promise<'done' | 'not_live' | 'paused'> {
     const run: FollowRun = { finalAttempt: options.finalAttempt ?? false, ...(options.row !== undefined ? { row: options.row } : {}) };
     let agent = await this.deps.stores.config.getAgent(agentId);
     for (let guard = 0; guard < MAX_STEPS_PER_RUN; guard += 1) {
@@ -946,6 +997,8 @@ export class AgentSlackApps {
       const follow = await this.followOf(agent, presence.app.app.appId);
       const followStep = agentAppFollowStep(presence.app, follow.target, this.now());
       if (!followStep) return 'done';
+      // Bringing the app to match its Agent changes it in Slack: held, telling no one, and the sweep arms it once allowed.
+      if (!this.mayCreateApps()) return 'paused';
       agent = await this.followSteps[followStep](agent, presence, follow, run);
     }
     throw Object.assign(new Error('The Agent app move did not settle.'), { name: 'agent_app_move_unsettled' });
@@ -1357,21 +1410,27 @@ export class AgentSlackApps {
   }
 
   /**
-   * A removed app's restore: turn the group it released back on, tell the
+   * A removed app's restore: turn the group it released back on, record that
+   * it answers, bring it to the Agent's current name and handle, tell the
    * Owner, then hand the handle back to the group, with the removed record
-   * attached, only once Slack confirmed the group is on. Slack is never
+   * attached, only once Slack confirmed the group is on. The enable comes
+   * first because Slack refuses to update a disabled group, as not found, and
+   * so the Agent is reachable through its group while the rest runs. Slack is never
    * trusted to have left the group as the record says: the enable is always
    * sent, and `already_enabled` is success. A refused enable leaves the Agent
    * answering through Chickpea, the Owner told, and nothing retries it until
    * an Owner asks; a group Slack never confirmed it turned off still answers
    * then, and the record and the message go on saying so. The message goes
    * before the record, under a key a rerun of the same removal and outcome
-   * repeats, so the Owner is told once.
+   * repeats, so the Owner is told once. A group back on under a handle that
+   * is not the Agent's needs attention as any Agent's taken handle does: it
+   * keeps answering, and an Owner gives the Agent another handle in Admin.
    */
   private async restoreGroup(agent: CustomAgentConfig, presence: RemovedAgentApp, finalAttempt: boolean): Promise<CustomAgentConfig> {
     const { released } = presence;
     const appId = presence.app.app?.appId;
     let outcome: 'on' | 'none' | 'refused' | 'permission' = released ? 'on' : 'none';
+    let kept: KeptHandle | undefined;
     if (released) {
       try {
         await this.deps.transport.enableUserGroup(released.userGroupId);
@@ -1383,13 +1442,29 @@ export class AgentSlackApps {
           outcome = PERMISSION_REFUSALS.has(error.code) && await this.userGroupPermissionMissing() ? 'permission' : 'refused';
         }
       }
+      if (outcome === 'on') {
+        if (released.answers !== true) {
+          const answering = normalizeAgentAppPresence({ ...presence, released: { ...released, answers: true } });
+          try {
+            agent = await this.deps.stores.config.updateAgent(agent.id, { slackPresence: answering }, agent.revision);
+          } catch (error) {
+            if (!(error instanceof AgentRevisionConflictError)) throw error;
+            return this.deps.stores.config.getAgent(agent.id);
+          }
+        }
+        kept = await this.renameReleasedGroup(agent, presence, released.userGroupId);
+      }
     }
     const enableRefused = outcome === 'refused' || outcome === 'permission';
     // A refusal changes nothing in Slack, so a group Slack never confirmed it turned off still answers.
     const mentionable = outcome === 'on' || (enableRefused && released?.answers === true);
-    const kind: AgentAppMessageKind = mentionable ? 'app_removed' : outcome === 'permission' ? 'app_removed_permission' : 'app_removed_unreachable';
+    const kind: AgentAppMessageKind = mentionable
+      ? kept ? 'app_removed_handle_kept' : 'app_removed'
+      : outcome === 'permission' ? 'app_removed_permission' : 'app_removed_unreachable';
+    // People mention the group by the handle Slack has; one it refused never answers, so it is never named as one that does.
+    const names = { ...this.names(agent), ...(kept ? { handle: kept.handle, refusedHandle: presence.normalizedHandle } : {}) };
     try {
-      await this.message(kind, agent, presence.app.startedBy, `agent-app-removed:${agent.id}:${appId ?? ''}:${presence.app.at}:${kind}`);
+      await this.message(kind, agent, presence.app.startedBy, `agent-app-removed:${agent.id}:${appId ?? ''}:${presence.app.at}:${kind}`, names);
     } catch (error) {
       const refused = error instanceof SlackTransportError && !error.retryable;
       if (!refused && !finalAttempt) throw error;
@@ -1398,15 +1473,55 @@ export class AgentSlackApps {
         error: error instanceof SlackTransportError ? error.code : error instanceof Error ? error.name : 'unknown',
       });
     }
-    const slackPresence = enableRefused && released
-      ? normalizeAgentAppPresence({ ...presence, released: { ...released, enableRefused: true } })
-      : restoredPresence(presence);
+    const groupBack = !(enableRefused && released);
+    const slackPresence = groupBack
+      ? kept ? handleNeedsAttention(restoredPresence(presence), kept, this.now()) : restoredPresence(presence)
+      : normalizeAgentAppPresence({ ...presence, released: { ...released, enableRefused: true } });
     try {
       return await this.deps.stores.config.updateAgent(agent.id, { slackPresence }, agent.revision);
     } catch (error) {
       // Another writer moved the record after the enable was sent: the driver reads it again and repeats the step.
       if (!(error instanceof AgentRevisionConflictError)) throw error;
       return this.deps.stores.config.getAgent(agent.id);
+    }
+  }
+
+  /**
+   * Renames made while the app held the handle never reached the group it
+   * released, so before the group answers again it takes the Agent's current
+   * name and handle, by the rename a user-group Agent's group gets and under
+   * the same rule: a handle another Agent in Slack holds is refused before
+   * Slack is asked. A refusal leaves the group as it was and returns the
+   * handle it keeps when that is not the Agent's. Slack not answering throws,
+   * so the job retries, as does `no_such_subteam`: the group was just
+   * confirmed on, so Slack has not caught up yet, and that is no taken handle.
+   */
+  private async renameReleasedGroup(agent: CustomAgentConfig, presence: RemovedAgentApp, userGroupId: string): Promise<KeptHandle | undefined> {
+    const handle = presence.normalizedHandle;
+    const refused = (error: unknown) => {
+      if (!(error instanceof SlackTransportError) || error.retryable || error.code === 'no_such_subteam') throw error;
+      logSlackRefusal('restore_handle', { agentId: agent.id, ...(presence.app.app ? { appId: presence.app.app.appId } : {}) }, error);
+    };
+    const groups = await this.deps.transport.listUserGroups({ includeDisabled: true }).catch((error: unknown) => refused(error));
+    const group = groups?.find((candidate) => candidate.id === userGroupId);
+    if (!groups || !group) return undefined;
+    const agents = await this.deps.stores.config.listAgents();
+    const keeps = (refusal: AgentPresenceError): KeptHandle => ({
+      handle: group.handle,
+      refusal,
+      suggestions: refusal.code === 'handle_collision'
+        ? alternativeAgentHandles(handle, new Set([handle, ...groups.map((other) => other.handle), ...handlesOtherAgentsStore(agents, agent.id)]))
+        : [],
+    });
+    if (group.handle !== handle && handleHeldByAnother(agents, agent)) {
+      return keeps(new AgentPresenceError('handle_collision', `@${handle} is already in use.`));
+    }
+    try {
+      await bringUserGroupToAgent(this.deps.transport, group, agent, handle, groups);
+      return undefined;
+    } catch (error) {
+      refused(error);
+      return group.handle === handle ? undefined : keeps(classifyAgentPresenceError(error));
     }
   }
 
@@ -1433,13 +1548,26 @@ export class AgentSlackApps {
   /** Whether a live app does not match its Agent; one that cannot be worked out is left to the sweep, and its move is armed all the same. */
   private async followDue(agent: CustomAgentConfig): Promise<boolean> {
     const presence = agent.slackPresence;
-    if (!agentAppIsLive(presence)) return false;
+    if (!agentAppIsLive(presence) || !this.mayCreateApps()) return false;
     try {
       return agentAppFollowStep(presence.app, (await this.followOf(agent, presence.app.app.appId)).target, this.now()) !== undefined;
     } catch (error) {
       console.warn({ event: 'chickpea.agent_app.follow_not_compared', agentId: agent.id, error: error instanceof Error ? error.name : 'unknown' });
       return false;
     }
+  }
+
+  /** Whether the host lets Chickpea create apps or change them in Slack now; every refusal of a pause asks here. */
+  mayCreateApps(): boolean {
+    return agentSlackAppsMayCreate(this.deps.host);
+  }
+
+  /**
+   * Whether a pause refuses a press that takes `app` on toward Allow: every
+   * one, unless Allow is all that is left, which creates and changes nothing.
+   */
+  private pauseHolds(app: AgentAppLifecycle | undefined): boolean {
+    return !this.mayCreateApps() && !(app && onlyAllowLeft(app));
   }
 
   private async userGroupPermissionMissing(): Promise<boolean> {
@@ -1480,6 +1608,12 @@ export class AgentSlackApps {
       ...(agent ? { add: this.deps.host.addUrl(agent.id), agentPage: `${origin}${ADMIN_PATH}/agents/${encodeURIComponent(agent.id)}` } : {}),
       ...(live ? { openInSlack: slackAppRedirect(live, (await this.installation()).teamId) } : {}),
     };
+  }
+
+  /** Only an Agent waiting for its own app while the setting is on is told how an Owner gives it a user group instead. */
+  private async pausedPage(agent: CustomAgentConfig): Promise<Response> {
+    const waiting = waitsForOwnApp(agent) && (await this.setting()).mode === 'own_app';
+    return addPausedPage(await this.pageAgent(agent), await this.pageLinks(agent), waiting);
   }
 
   private async consentPage(outcome: ConsentOutcome, agent: CustomAgentConfig): Promise<Response> {
@@ -1651,6 +1785,7 @@ export class AgentSlackApps {
       // left for the Owner, and the record, if any, is left as it is. An app that was live was not uninstalled either.
       const stillInstalled = record.kind !== 'own' && Boolean(botUserId);
       let left = record.kind !== 'own';
+      let notFound = false;
       if (record.kind === 'own') {
         const { teamId } = await this.installation();
         try {
@@ -1661,11 +1796,14 @@ export class AgentSlackApps {
           if (error instanceof SlackRefused && error.code === 'ratelimited') return 'wait';
           if (!(error instanceof ConfigTokenNeeded || error instanceof SlackRefused)) throw error;
           left = true;
+          if (error instanceof SlackRefused) notFound = await this.appNotFound(teamId, app.appId);
         }
         await deleteAppSecrets(this.secrets, app.appId, record.revision);
       }
-      if (left) this.leftForOwner.set(run.agent.id, stillInstalled ? 'left_for_owner' : 'uninstalled_left_definition');
-      const message = cancelRemoval(run) ? 'cancel_left' : stillInstalled ? 'archived_installed' : 'archived_left';
+      if (left) this.leftForOwner.set(run.agent.id, stillInstalled ? 'left_for_owner' : notFound ? 'not_found' : 'uninstalled_left_definition');
+      const message = cancelRemoval(run)
+        ? notFound ? 'cancel_not_found' : 'cancel_left'
+        : stillInstalled ? 'archived_installed' : notFound ? 'archived_not_found' : 'archived_left';
       // What happened to the app is already committed: a message Chickpea's bot cannot send (at tenant end it is often
       // gone) changes nothing about it.
       const tell = async () => {
@@ -1681,6 +1819,22 @@ export class AgentSlackApps {
       return { event: { type: 'deleted', at: run.now }, ...(left ? { after: tell } : {}) };
     },
   };
+
+  /**
+   * Whether Slack says the app does not exist. Slack refuses a delete of an
+   * app that no longer exists as it may refuse one of an app it will not let
+   * this token delete, so the export, which names a missing app, tells them
+   * apart. Any other answer is not proof the app is gone.
+   */
+  private async appNotFound(teamId: string, appId: string): Promise<boolean> {
+    try {
+      await withConfigurationToken(this.secrets, teamId, (token) => this.slack.definedBotScopes(token, appId));
+      return false;
+    } catch (error) {
+      if (!(error instanceof SlackRefused || error instanceof SlackUnavailable || error instanceof ConfigTokenNeeded)) throw error;
+      return error instanceof SlackRefused && error.code === 'app_not_found';
+    }
+  }
 
   /** Apply `event` to the Agent's record; a lost compare-and-set re-reads and re-applies when the state still allows it. */
   private async commit(
@@ -1756,10 +1910,11 @@ export class AgentSlackApps {
     agent: CustomAgentConfig,
     slackUserId: string,
     idempotencyKey: string,
+    names: AgentAppNames = this.names(agent),
   ): Promise<{ channelId: string; ts: string }> {
-    const names = this.names(agent);
     const linked: readonly AgentAppMessageKind[] = [
-      'config_token_needed', 'permission_needed', 'app_removed_permission', 'handle_taken', 'update_refused', 'follow_token_needed',
+      'config_token_needed', 'permission_needed', 'app_removed_permission', 'app_removed_handle_kept', 'handle_taken', 'update_refused',
+      'follow_token_needed',
     ];
     const origin = linked.includes(kind)
       ? await this.deps.publicOrigin?.()
@@ -1993,6 +2148,18 @@ function restoredPresence(presence: RemovedAgentApp): UserGroupPresence {
     health: userGroupId ? 'healthy' : 'unpublished',
     ...(userGroupId ? { userGroupId } : {}),
     ...(app ? { app } : {}),
+  };
+}
+
+/** A user group's presence as a refused rename of its Agent leaves it: needing attention, with the handles to offer instead. */
+function handleNeedsAttention(presence: UserGroupPresence, kept: KeptHandle, now: number): UserGroupPresence {
+  return {
+    ...presence,
+    health: 'needs_attention',
+    errorCode: kept.refusal.code,
+    errorDetail: kept.refusal.message,
+    ...(kept.suggestions.length > 0 ? { handleSuggestions: kept.suggestions } : {}),
+    observedAt: now,
   };
 }
 

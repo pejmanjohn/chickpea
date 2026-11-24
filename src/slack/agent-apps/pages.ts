@@ -19,6 +19,8 @@ export const TRY_AGAIN_ACTION = 'agent_app_try_again';
 export interface AgentAppNames {
   name: string;
   handle: string;
+  /** The Agent's handle Slack would not give its user group, which answers to `handle` instead. */
+  refusedHandle?: string;
 }
 
 export interface AgentAppLinks {
@@ -33,10 +35,13 @@ export interface AgentAppLinks {
 export type AgentAppMessageKind =
   | 'allow'
   | 'archived_left'
+  | 'archived_not_found'
   | 'cancel_left'
+  | 'cancel_not_found'
   | 'cancel_unfinished'
   | 'archived_installed'
   | 'permission_needed'
+  | 'app_removed_handle_kept'
   | 'app_removed_unreachable'
   | 'app_removed_permission'
   | 'recreated'
@@ -158,6 +163,12 @@ const DM_COPY = {
       `${name}'s Slack app was removed from this workspace. People can still mention @${handle}, and ${name} answers through Chickpea. Choose Add ${name} to Slack to add the app back.`,
     buttons: (links, names) => add(links, `Add ${names.name} to Slack`),
   },
+  /** Removed, and its user group is back on under the handle it had, refused the Agent's: the Agent needs another handle, or its app back. */
+  app_removed_handle_kept: {
+    text: ({ name, handle, refusedHandle }) =>
+      `${name}'s Slack app was removed from this workspace. Its user group couldn't take the handle @${refusedHandle}, so people can mention @${handle} instead, and ${name} answers through Chickpea. Give ${name} another handle in Chickpea Admin, or choose Add ${name} to Slack to add the app back.`,
+    buttons: (links, names) => [...add(links, `Add ${names.name} to Slack`), ...openAdmin(links.adminUrl)],
+  },
   /** Removed, with no user group to answer @handle: none to turn back on, or Slack refused. */
   app_removed_unreachable: {
     text: (names) => `${removedUnreachable(names)} Choose Add ${names.name} to Slack to add the app back.`,
@@ -179,10 +190,22 @@ const DM_COPY = {
       `${name} is archived and its Slack app is removed from this workspace. Chickpea couldn't delete the app itself, so delete ${name} in Your Apps in Slack.`,
     buttons: () => [yourApps],
   },
+  /** Slack refused the delete and says the app does not exist, as when someone already deleted it in Slack. */
+  archived_not_found: {
+    text: ({ name }) =>
+      `${name} is archived. Chickpea couldn't find its Slack app to delete it. If ${name} still appears in Your Apps in Slack, you can delete it there.`,
+    buttons: () => [yourApps],
+  },
   /** An Owner cancelled before Allow and Chickpea could not delete the app it had created. */
   cancel_left: {
     text: ({ name }) =>
       `Chickpea couldn't delete the Slack app it made for ${name}, so delete ${name} in Your Apps in Slack. ${name} keeps answering as it did before.`,
+    buttons: () => [yourApps],
+  },
+  /** An Owner cancelled before Allow, and Slack refused the delete and says the app it made does not exist. */
+  cancel_not_found: {
+    text: ({ name }) =>
+      `Chickpea couldn't find the Slack app it made for ${name} to delete it. If ${name} still appears in Your Apps in Slack, you can delete it there. ${name} keeps answering as it did before.`,
     buttons: () => [yourApps],
   },
   /** An Owner cancelled before Allow and Slack refused to uninstall the app; the next Cancel or Try again picks it up. */
@@ -214,6 +237,14 @@ export function addPressReply(kind: 'gone' | 'owner_needed' | 'link', names?: Ag
     case 'link':
       return `<${addUrl}|Add ${name} to Slack>`;
   }
+}
+
+/** Finish setting up, or Try again on a live app's update, pressed while the host does not let Chickpea create or change apps. */
+export function pausedReply(names: Pick<AgentAppNames, 'name'>, live = false): string {
+  const name = escapeMrkdwn(names.name);
+  return live
+    ? `Adding Slack apps is paused, so Chickpea can't update ${name}'s Slack app now. ${name} keeps answering.`
+    : `Adding Slack apps is paused, so Chickpea can't finish ${name}'s Slack app now. ${name} keeps answering as it does now.`;
 }
 
 /** Where an Agent's own bot is after the switch, by Channel ID. */

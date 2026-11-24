@@ -2803,6 +2803,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     if (op.kind === 'servingVersion') {
       return { ok: true, value: (servingVersion ?? null) as ThreadRunnerTurnResult<K> };
     }
+    if (op.kind === 'knowsAgentAppsMode') return { ok: true, value: true as ThreadRunnerTurnResult<K> };
     const result = this.call((stores) =>
       applyThreadRunnerTurnOp(stores, op as ThreadRunnerTurnOp, this.env as PlatformEnv) as ThreadRunnerTurnResult<K>);
     // A turn's end renews the hold from it, as the runner's and the Agent

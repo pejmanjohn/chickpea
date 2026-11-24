@@ -73,7 +73,12 @@ class SlackGroups implements SlackTransport {
     this.created.push(input.handle);
     return { ...group };
   }
-  async updateUserGroup(id: string, patch: Partial<SlackUserGroup>) { return Object.assign(this.required(id), patch); }
+  async updateUserGroup(id: string, patch: Partial<SlackUserGroup>) {
+    const group = this.required(id);
+    // As Slack was seen to answer: a disabled group is not found for an update, and keeps what it had.
+    if (group.disabled) throw new SlackTransportError('usergroups.update', 'no_such_subteam');
+    return Object.assign(group, patch);
+  }
   async disableUserGroup(id: string) { const group = this.required(id); group.disabled = true; return { ...group }; }
   async enableUserGroup(id: string) {
     const group = this.required(id);
