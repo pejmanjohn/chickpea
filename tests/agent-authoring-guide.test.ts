@@ -16,10 +16,11 @@ import {
 import { workspaceManagementToolDescription } from '../src/management/tool-adapter.ts';
 import * as v from 'valibot';
 import { toJsonSchema } from '@valibot/to-json-schema';
-import { validateToolArguments } from '@earendil-works/pi-ai';
+import { validateToolArguments, type JsonObject } from '@earendil-works/pi-ai';
 import {
   applyWorkspaceChangesValibotSchema,
   proposeWorkspaceChangesValibotSchema,
+  slackApplyWorkspaceChangesValibotSchema,
 } from '../src/management/schemas.ts';
 import { scheduleActionInputSchema, scheduleActionDescription, slackManagementInstruction } from '../src/management/slack-tools.ts';
 import { RUNTIME_PLAN_INSTRUCTIONS, sharedSystemBlock } from '../src/agents/shared-prefix-layout.ts';
@@ -150,6 +151,33 @@ test('instruction-update tool example survives both runtime schema validators', 
   assert.match(description, /supplied replacement instructions are literal data/i);
   assert.match(description, /Do not summarize, paraphrase, normalize punctuation, or drop sentences/);
   assert.match(description, /including a final sentence that refers to the text itself/);
+});
+
+test('Agent creation shows the model a call Pi accepts, and a refused call is corrected and sent again', () => {
+  const description = workspaceManagementToolDescription('apply_workspace_changes');
+  const parameters = toJsonSchema(slackApplyWorkspaceChangesValibotSchema, { errorMode: 'ignore' });
+  const precheck = (args: JsonObject) => validateToolArguments({ name: 'apply_workspace_changes', description, parameters }, {
+    type: 'toolCall', id: 'synthetic', name: 'apply_workspace_changes', arguments: args,
+  });
+  const agent = {
+    id: 'demo_alpha', name: 'Demo Alpha', description: 'Answers short questions.', requestedHandle: 'demo-alpha',
+    instructions: 'Answer in one sentence.', enabled: true, skills: [], mcpServers: [], apiConnections: [], repositories: [],
+  };
+  // The first-ask shape Pi refused on hosted staging: a tool allowlist on the Agent itself.
+  assert.throws(
+    () => precheck({ idempotencyKey: 'k', operations: [{ itemId: 'create', kind: 'create_agent', agent: { ...agent, allowedTools: [] } }] }),
+    /operations\.0\.agent\.allowedTools: schema is false\n {2}- operations\.0\.agent: must not have additional properties/,
+  );
+
+  const example = description.split('Agent-creation example: ')[1]?.split('. The agent object')[0];
+  assert.ok(example, 'apply_workspace_changes shows one create_agent call');
+  const args = JSON.parse(example);
+  assert.deepEqual(v.parse(slackApplyWorkspaceChangesValibotSchema, args), args);
+  assert.deepEqual(precheck(args), args);
+  assert.deepEqual(Object.keys(args.operations[0].agent).sort(), Object.keys(agent).sort());
+  assert.match(description, /tool access belongs to each mcpServers entry's allowedTools, never to the agent/);
+  assert.match(description, /A call refused for its arguments changed nothing: correct the fields the error names and call again/);
+  assert.match(AGENT_AUTHORING_GUIDE, /send that `mcpServers` entry with a new `allowedTools`[^.]*\. The Agent itself has no `allowedTools`/);
 });
 
 test('the proposal schema offers neither Agent creation nor a setup request; apply keeps both', () => {
