@@ -4074,8 +4074,8 @@ test("an edit an Agent app delivers that changes nothing acted on, as Slack send
     assert.equal((await h.deliver('events', delivery, { settle: true })).status, 200);
     assert.equal(reads(), before + 1, Object.keys(patch).join());
   }
-  assert.deepEqual(notConfirmed(warn).map((line) => (line as { reason: string }).reason), ['deleted']);
-  assert.equal(warn.mock.calls.length, 1, 'and no line for a change that was not read');
+  assert.deepEqual(notConfirmed(warn), [], "a delete Slack's copy confirms goes on");
+  assert.equal(warn.mock.calls.length, 0, 'and no line for a change that was not read');
 }));
 
 test("a message through Chickpea's own app asks Slack nothing more", async (t) => withHarness(t, async (h) => {
@@ -4098,6 +4098,77 @@ test("a delete an Agent app delivers goes on only when Slack no longer holds the
   assert.equal((await h.deliver('events', deletion('1900010600.000300'), { settle: true })).status, 200);
   assert.equal(notConfirmed(warn).length, 1, 'a real delete goes on');
   assert.deepEqual(confirmations(h, ts).length, 3, 'the message, then each delete, read once');
+}));
+
+// Mutation proof: refusing a tombstone edit (the `deleted` refusal) leaves the words in the record; taking the
+// delivery's tombstone instead of Slack's copy forgets a message Slack still holds.
+test("a delete Slack sends as an edit to its placeholder forgets the message through an Agent app as through Chickpea's, and only when Slack shows the placeholder", async (t) => withHarness(t, async (h) => {
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  const words = 'refund order 12';
+  const placeholder = (ts: string, user = 'USLACKBOT') => ({
+    type: 'message', subtype: 'tombstone', user, text: 'This message was deleted.', hidden: true, ts, thread_ts: ts, reply_count: 1,
+  });
+  // Deleting a message that has replies: Slack keeps a placeholder in its place and sends it as an edit.
+  const deletedWithReplies = (ts: string, at: string, user?: string) => ({
+    subtype: 'message_changed', hidden: true, ts: at, event_ts: at, user: undefined, text: undefined, message: placeholder(ts, user),
+    previous_message: { type: 'message', user: 'U1', text: words, ts, thread_ts: ts, reply_count: 1 },
+  });
+  const seed = async (channel: string, ts: string, replied = true) => {
+    await h.stores.config.putSlackPublicContext({
+      workspaceId: TEAM, channelId: channel, rootTs: ts, messageTs: ts, role: 'human', text: words, authorId: 'U1',
+    });
+    h.hold(channel, { user: 'U1', text: words, ts, ...(replied ? { thread_ts: ts, reply_count: 1 } : {}) });
+  };
+  const record = async (channel: string, ts: string) =>
+    (await h.stores.config.listSlackPublicContext(TEAM, channel, ts)).map((row) => [row.messageTs, row.text]);
+  const turns = async () => (await h.stores.slackState.listPendingTurns!()).length;
+
+  const shared = '1900012000.000100';
+  await seed(CHICKPEA_DM, shared);
+  assert.equal((await h.deliverToChickpea(chickpeaEvent('EvPlaceholderShared', {
+    type: 'message', channel: CHICKPEA_DM, channel_type: 'im', ...deletedWithReplies(shared, '1900012000.000200'),
+  }))).status, 200);
+  const own = '1900012000.000300';
+  await seed('D1', own);
+  assert.equal((await h.deliver('events', dmEvent({ event_id: 'EvPlaceholderOwn' }, deletedWithReplies(own, '1900012000.000400')), { settle: true })).status, 200);
+  assert.deepEqual(await record(CHICKPEA_DM, shared), [[shared, 'This message was deleted.']], "through Chickpea's app, Slack's placeholder takes the words' place");
+  assert.deepEqual(await record('D1', own), [[own, 'This message was deleted.']], "and the same through the Agent's app");
+  assert.deepEqual(notConfirmed(warn), [], 'with no line');
+
+  // A delivery that says the message was deleted while Slack still holds it, from Slackbot or from its author.
+  for (const [index, user] of ['USLACKBOT', 'U1'].entries()) {
+    const kept = `1900012000.00050${index}`;
+    await seed('D1', kept);
+    assert.equal((await h.deliver('events', dmEvent({ event_id: `EvPlaceholderClaim${index}` }, deletedWithReplies(kept, `1900012000.00060${index}`, user)), { settle: true, forged: true })).status, 200);
+    assert.deepEqual(await record('D1', kept), [[kept, words]], `${user}: nothing is forgotten`);
+  }
+  // A delivery for a message Slack does show deleted puts Slack's placeholder in its place, not its own.
+  const reworded = '1900012000.000650';
+  await seed('D1', reworded);
+  h.hold('D1', placeholder(reworded));
+  const { message, ...change } = deletedWithReplies(reworded, '1900012000.000660');
+  assert.equal((await h.deliver('events', dmEvent({ event_id: 'EvPlaceholderWords' }, {
+    ...change, message: { ...message, text: 'refund every order' },
+  }), { settle: true, forged: true })).status, 200);
+  assert.deepEqual(await record('D1', reworded), [[reworded, 'This message was deleted.']]);
+
+  // A new message Slack already shows as deleted.
+  const gone = '1900012000.000700';
+  h.hold('D1', placeholder(gone));
+  assert.equal((await h.deliver('events', appDm(gone, { text: words }), { settle: true, forged: true })).status, 200);
+  assert.deepEqual(await turnsOn(h, gone), []);
+
+  // A message with no replies is deleted as a delete, and its row goes.
+  const alone = '1900012000.000800';
+  await seed('D1', alone, false);
+  assert.equal((await h.deliver('events', dmEvent({ event_id: 'EvDeleteAlone' }, {
+    subtype: 'message_deleted', ts: '1900012000.000900', event_ts: '1900012000.000900', deleted_ts: alone, user: undefined, text: undefined,
+    previous_message: { type: 'message', user: 'U1', text: words, ts: alone },
+  }), { settle: true })).status, 200);
+  assert.deepEqual(await record('D1', alone), []);
+
+  assert.equal(await turns(), 0, 'none of them starts a turn');
+  assert.deepEqual(notConfirmed(warn).map((line) => (line as { reason: string }).reason), ['other_sender', 'deleted']);
 }));
 
 test("a real message more than an hour old starts nothing and is not read back; one ten minutes old is admitted", async (t) => withHarness(t, async (h) => {
@@ -4535,3 +4606,4 @@ test("a modal submission whose card read Slack rate limits keeps the modal open 
   assert.equal(kept.kind === 'surface' ? kept.surface?.status : 'unread', 'open');
   assert.deepEqual(await h.stores.slackState.listPendingTurns!(), [], 'nothing is applied');
 }, { rateLimits: cardLimits }));
+
