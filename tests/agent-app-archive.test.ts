@@ -82,7 +82,13 @@ class FakeTransport implements AgentAppTransport {
   async enableUserGroup(id: string) { const g = this.groups.get(id); if (!g) throw new SlackTransportError('usergroups.enable', 'no_such_subteam'); g.disabled = false; this.enabled.push(id); return { ...g }; }
   async lookupUserGroup(id: string) { const g = this.groups.get(id); return g ? { ...g } : undefined; }
   async listUserGroups() { return [...this.groups.values()].map((g) => ({ ...g })); }
-  async updateUserGroup(): Promise<never> { throw new Error('not in this unit'); }
+  async updateUserGroup(id: string, patch: Partial<SlackUserGroup>) {
+    const g = this.groups.get(id);
+    // As Slack was seen to answer: a disabled group is not found for an update, and keeps what it had.
+    if (!g || g.disabled) throw new SlackTransportError('usergroups.update', 'no_such_subteam');
+    Object.assign(g, patch);
+    return { ...g };
+  }
   async lookupChannel(): Promise<never> { throw new Error('not in this unit'); }
   async joinPublicChannel(): Promise<never> { throw new Error('not in this unit'); }
   async openDirectConversation(userId: string) { return { id: `D_${userId}`, private: true, member: true, archived: false }; }
@@ -181,6 +187,23 @@ test('archiving an Agent app uninstalls, deletes with a rotated token, hands the
   assert.equal(restored.lifecycle, 'active');
   assert.deepEqual(f.transport.enabled, ['S1'], '@support is back as its user group');
   assert.equal(restored.slackPresence?.health, 'healthy');
+});
+
+// Defect caught: an Agent renamed while its app held the handle restored with its group turned on under the old
+// handle and name, so the handle its page names finds nothing in Slack.
+test('restoring an Agent renamed while its app held the handle turns its group on, then gives it the current handle and name', async (t) => {
+  const f = await fixture(t);
+  const before = await f.config.getAgent('agent_support');
+  await f.config.updateAgent(before.id, {
+    name: 'Helpdesk', slackPresence: { ...before.slackPresence!, requestedHandle: 'helpdesk', normalizedHandle: 'helpdesk' },
+  }, before.revision);
+  f.clock.now = NOW + 13 * 3_600_000;
+  await f.reconciler.archive('agent_support');
+  assert.deepEqual(f.transport.groups.get('S1'), { id: 'S1', name: 'Support', handle: 'support', disabled: true });
+
+  const restored = await f.reconciler.restore('agent_support');
+  assert.deepEqual(f.transport.groups.get('S1'), { id: 'S1', name: 'Helpdesk', handle: 'helpdesk', description: 'Helpdesk Agent', disabled: false });
+  assert.deepEqual([restored.lifecycle, restored.slackPresence?.normalizedHandle, restored.slackPresence?.health], ['active', 'helpdesk', 'healthy']);
 });
 
 test('a refused uninstall refuses the archive and leaves the Agent unarchived with its app recorded', async (t) => {

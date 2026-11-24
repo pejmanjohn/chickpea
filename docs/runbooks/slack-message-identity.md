@@ -289,9 +289,14 @@ Home.
   `tokens_revoked` naming its bot), only that Agent's app ends: its bot token
   is dropped and the Owner is told, and Allow adds it back. The workspace's
   installation and other Agents are unchanged. The user group the app
-  released is renamed to the Agent's current name and handle before it is
-  turned back on, since a rename made while the app held the handle never
-  reached it. If Slack refuses the handle, or another Agent in Slack holds
+  released is turned back on, recorded as answering, and then renamed to the
+  Agent's current name and handle, since a rename made while the app held the
+  handle never reached it; only then is the Owner told. Slack refuses
+  `usergroups.update` for a disabled group with `no_such_subteam`, so the
+  enable must come first, and unarchiving an Agent and Retry follow the same
+  order. A `no_such_subteam` right after Slack confirmed the enable means
+  Slack has not caught up, so the job tries again; it is never a taken
+  handle. If Slack refuses the handle, or another Agent in Slack holds
   it, the group keeps the one it has and keeps answering, the Owner's message
   names that one, and the Agent needs attention as any Agent with a taken
   handle does until an Owner gives it another handle or adds its app back.

@@ -211,6 +211,8 @@ class FakeTransport implements SlackTransport {
   }
   async updateUserGroup(id: string, patch: Partial<Omit<SlackUserGroup, 'id' | 'disabled'>>): Promise<SlackUserGroup> {
     const index = this.groups.findIndex((group) => group.id === id);
+    // As Slack was seen to answer: a disabled group is not found for an update, and keeps what it had.
+    if (index < 0 || this.groups[index]!.disabled) throw new SlackTransportError('usergroups.update', 'no_such_subteam');
     this.groups[index] = { ...this.groups[index]!, ...patch };
     return this.groups[index]!;
   }

@@ -149,7 +149,12 @@ function slackWorkspace() {
       created.push(input.handle);
       return { ...group };
     },
-    updateUserGroup: async (id: string, patch: Partial<SlackUserGroup>) => ({ ...Object.assign(required(id, 'usergroups.update'), patch) }),
+    updateUserGroup: async (id: string, patch: Partial<SlackUserGroup>) => {
+      const group = required(id, 'usergroups.update');
+      // As Slack was seen to answer: a disabled group is not found for an update, and keeps what it had.
+      if (group.disabled) throw new SlackTransportError('usergroups.update', 'no_such_subteam');
+      return { ...Object.assign(group, patch) };
+    },
     enableUserGroup: async (id: string) => ({ ...Object.assign(required(id, 'usergroups.enable'), { disabled: false }) }),
     disableUserGroup: async (id: string) => ({ ...Object.assign(required(id, 'usergroups.disable'), { disabled: true }) }),
     lookupChannel: async (id: string) => {
