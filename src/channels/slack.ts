@@ -5183,7 +5183,6 @@ async function settleIdleAgentSession(input: {
 }): Promise<void> {
   try {
     const agent = await input.stores.config.getAgent(input.agentId);
-    if (!agent) return;
     const avatarUrl = await resolvedAgentAvatarUrl(agent, input.stores, input.platformEnv);
     const owner = selectSlackPresentationOwner({
       installationHealth: input.installationHealth,
