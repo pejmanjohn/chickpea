@@ -1166,6 +1166,72 @@ test('in onboarding, a token Slack accepted whose setting did not turn on return
   assert.match(page.html(), /Let Agents work on your code/);
 });
 
+const UPDATING = /role="alert">Chickpea is finishing an update, so try again in a minute\.<\/p>/;
+const updating = () => respond({ error: 'updating' }, 503);
+
+test('while Chickpea finishes an update, turning the setting on says so, and the same button tries again', async () => {
+  let held = true;
+  const page = await harness({
+    api: apiState({ setting: { mode: 'shared', changedBy: null, changedAt: null } }),
+    handle: (path) => (path === '/admin/api/slack-apps/mode' && held ? updating() : undefined),
+  });
+  await page.click({ 'data-action': 'slack-apps-turn-on' });
+  assert.match(page.html(), UPDATING);
+  assert.doesNotMatch(page.text(), /couldn(&#39;|')t change this setting/);
+  assert.match(page.html(), /data-action="slack-apps-turn-on">Make each Agent its own Slack app<\/button>/);
+
+  held = false;
+  await page.click({ 'data-action': 'slack-apps-turn-on' });
+  assert.doesNotMatch(page.html(), UPDATING);
+  assert.match(page.text(), /Each new Agent gets its own Slack app\./);
+});
+
+test('a token Slack accepted while Chickpea finishes an update: Destinations says so, never asks for the token again, and Turn it on sends only the setting', async () => {
+  let held = true;
+  const api = apiState({ setting: { mode: 'shared', changedBy: null, changedAt: null }, token: { stored: false } });
+  const page = await harness({
+    api,
+    handle(path, method) {
+      if (path === '/admin/api/slack-apps/token' && method === 'PUT') {
+        api.token = { stored: true, pastedBy: 'UOWNER', pastedAt: 3 };
+        return respond({ token: api.token });
+      }
+      return path === '/admin/api/slack-apps/mode' && held ? updating() : undefined;
+    },
+  });
+  await page.click({ 'data-action': 'slack-apps-turn-on' });
+  await page.paste('xoxe-1-accepted-token-0000');
+  await flush();
+  assert.equal(page.location.pathname, '/admin/destinations/slack/connection');
+  assert.match(page.html(), UPDATING);
+  assert.doesNotMatch(page.text(), /Let Chickpea create Slack apps|couldn(&#39;|')t turn this on yet/);
+  assert.match(page.html(), /data-action="slack-apps-turn-on">Turn it on<\/button>/);
+
+  held = false;
+  await page.click({ 'data-action': 'slack-apps-turn-on' });
+  assert.equal(tokenSends(page.requests).length, 1, 'the retry sends no token');
+  assert.match(page.text(), /Each new Agent gets its own Slack app\./);
+});
+
+test('in onboarding, a token Slack accepted while Chickpea finishes an update returns to the step saying so, and a retry still held says so again', async () => {
+  let held = 2;
+  const page = await onboarding({ fail: (path) => (path === '/admin/api/slack-apps/mode' && held-- > 0 ? updating() : undefined) });
+  await page.click({ 'data-action': 'onboarding-slack-apps-set-up' });
+  await page.paste('xoxe-1-accepted-token-0000');
+  await flush();
+  assert.equal(page.location.pathname, '/admin/onboarding');
+  assert.match(page.html(), UPDATING);
+  assert.match(page.html(), /data-action="onboarding-slack-apps-set-up">Turn it on<\/button>/);
+
+  await page.click({ 'data-action': 'onboarding-slack-apps-set-up' });
+  assert.match(page.html(), UPDATING);
+  assert.doesNotMatch(page.text(), /couldn(&#39;|')t start this|Let Chickpea create Slack apps/);
+
+  await page.click({ 'data-action': 'onboarding-slack-apps-set-up' });
+  assert.equal(tokenSends(page.requests).length, 1, 'no retry sends the token');
+  assert.equal(page.api.setting.mode, 'own_app');
+});
+
 test('with the setting on, a step write that fails is tried once more, then the step shows as done with a quiet retry', async () => {
   let stepWrites = 0;
   let stepDown = 2;

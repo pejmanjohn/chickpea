@@ -4574,7 +4574,7 @@
         '<p class="onboarding-success-badge" role="status">Done. Each new Agent gets its own Slack app.</p>' +
         '<p class="hint">Chickpea couldn&rsquo;t open the next step. <button type="button" class="link-btn" data-action="onboarding-slack-apps-continue"' + (busy ? ' disabled' : '') + '>Try again</button></p></section>';
     }
-    var error = state.onboardingError || (state.slackApps && state.slackApps.turnOnFailed ? SLACK_APPS_SAVED_NOT_ON : "");
+    var error = state.onboardingError || (state.slackApps && state.slackApps.turnOnFailed) || "";
     return '<section class="onboarding-panel"><p class="onboarding-eyebrow">' + onboardingStepEyebrow() + ' &middot; Optional</p>' +
       '<h1 class="onboarding-title">Make each Agent its own Slack app</h1>' +
       '<p class="onboarding-lede">Each Agent shows up in Slack like a teammate. It has its own name and picture, people can message it directly, and you add it to channels the way you add a person. Setup takes about a minute.</p>' +
@@ -4609,9 +4609,9 @@
         apps.turnOnFailed = false;
         settleOnboardingSlackApps(true);
       });
-    }).catch(function () {
+    }).catch(function (error) {
       state.onboardingBusy = false;
-      state.onboardingError = "Chickpea couldn't start this. Try again.";
+      state.onboardingError = slackAppsUpdating(error) ? SLACK_APPS_UPDATING : "Chickpea couldn't start this. Try again.";
       render();
     });
   }
@@ -5313,7 +5313,7 @@
       ? '<div class="callout' + (apps.notice.ok ? " callout-success" : "") + ' slack-apps-callout" role="status"><span>' + esc(apps.notice.text) + '</span></div>'
       : "";
     var results = apps.results.map(slackAppsResultHtml).join("");
-    var errorText = apps.error || (apps.turnOnFailed && !on ? SLACK_APPS_SAVED_NOT_ON : "");
+    var errorText = apps.error || (!on && apps.turnOnFailed) || "";
     var error = errorText ? '<p class="inline-status error" role="alert">' + esc(errorText) + '</p>' : "";
     var lists = slackAppsListsHtml(data.agents || [], on);
     var token = data.token.stored
@@ -5654,20 +5654,26 @@
       var next = document.querySelector('[data-role="slack-apps-token-continue"]');
       if (next && next.focus) next.focus();
     }).catch(function (error) {
-      if (saved) leaveSlackAppsTokenSavedNotOn();
+      if (saved) leaveSlackAppsTokenSavedNotOn(error);
       else refuse(error && error.message);
     });
   }
 
   var SLACK_APPS_SAVED_NOT_ON = "Chickpea saved your Slack token, but couldn't turn this on yet.";
+  var SLACK_APPS_UPDATING = "Chickpea is finishing an update, so try again in a minute.";
+
+  // Admin holds turning the setting on while Chickpea's code for it is still rolling out.
+  function slackAppsUpdating(error) {
+    return !!error && error.message === "updating";
+  }
 
   // Slack accepted the token, which spends it, so the page never asks for it
   // again: the Owner goes back where they came from, and Turn it on there
-  // sends only the setting.
-  function leaveSlackAppsTokenSavedNotOn() {
+  // sends only the setting. `turnOnFailed` holds the sentence that says why.
+  function leaveSlackAppsTokenSavedNotOn(error) {
     var apps = slackAppsState();
     apps.token = { open: false, phase: "empty", error: "", turnOn: false, why: "", connectedMode: "" };
-    apps.turnOnFailed = true;
+    apps.turnOnFailed = slackAppsUpdating(error) ? SLACK_APPS_UPDATING : SLACK_APPS_SAVED_NOT_ON;
     invalidateVisibleResource("slack-apps", "");
     if (state.view === "onboarding") render();
     else openDestination("connection");
@@ -5687,10 +5693,10 @@
       invalidateVisibleResource("slack-apps", "");
       render();
       loadSlackApps();
-    }).catch(function () {
+    }).catch(function (error) {
       apps.busy = "";
       apps.confirm = "";
-      apps.error = "Chickpea couldn't change this setting. Try again.";
+      apps.error = slackAppsUpdating(error) ? SLACK_APPS_UPDATING : "Chickpea couldn't change this setting. Try again.";
       render();
     });
   }
