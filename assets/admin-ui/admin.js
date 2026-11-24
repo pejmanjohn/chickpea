@@ -4922,7 +4922,7 @@
             var agentName = grant.agentName || grant.agentId;
             return '<button type="button" class="channels-index-agent" data-action="open-profiles" data-agent="' + esc(grant.agentId) + '" aria-label="Open Agent: ' + esc(agentName) + '">' +
               '<span class="agent-roster-icon variant-' + agentIconVariant(grant.agentId) + '" aria-hidden="true">' + icon("robot") + '</span>' +
-              '<span class="channels-index-agent-copy"><span class="channels-index-agent-name" title="' + esc(agentName) + '">' + esc(agentName) + '</span><small>' + esc(grant.status === "active" ? "Active" : "Needs attention") + '</small></span></button>';
+              '<span class="channels-index-agent-copy"><span class="channels-index-agent-name" title="' + esc(agentName) + '">' + esc(agentName) + '</span><small>' + esc(grant.status === "active" ? "Active" : agentAwaitsOwnApp(agentById(grant.agentId)) ? "Not in Slack yet" : "Needs attention") + '</small></span></button>';
           }).join("") + '</div>'
         : '<span class="channels-index-agent-empty"><strong>No Agents</strong><span>Publish from an Agent’s Channels tab.</span></span>';
       var readinessReason = channel.readiness && channel.readiness.reasons && channel.readiness.reasons.length
@@ -7316,10 +7316,11 @@
       var agent = agentById(grant.agentId);
       var name = grant.agentName || (agent && agent.name) || grant.agentId;
       var handle = agent && agent.slackPresence && agent.slackPresence.normalizedHandle;
-      var status = grant.status === "active" ? "Active" : "Needs attention";
+      var waits = grant.status !== "active" && agentAwaitsOwnApp(agent);
+      var status = grant.status === "active" ? "Active" : waits ? "Not in Slack yet" : "Needs attention";
       return '<div class="channel-agent-hero"><span class="agent-roster-icon variant-' + agentIconVariant(grant.agentId) + '" aria-hidden="true">' + icon("robot") + '</span>' +
         '<div class="channel-agent-copy"><span class="agent-kicker">Agent grant</span><h2>' + esc(name) + '</h2>' +
-        '<p class="channel-agent-intro">' + esc(handle ? "Mention @" + handle + " to start a thread with this Agent." : "Finish the Agent handle before using it in Slack.") + '</p>' +
+        '<p class="channel-agent-intro">' + esc(waits ? joinsOnceInSlackText(agent, "this Channel") : handle ? "Mention @" + handle + " to start a thread with this Agent." : "Finish the Agent handle before using it in Slack.") + '</p>' +
         '<span class="channel-agent-meta">' + esc(status) + ' · managed on the Agent</span></div>' +
         '<div class="channel-agent-actions"><button type="button" class="btn btn-soft btn-sm" data-action="open-profiles" data-agent="' + esc(grant.agentId) + '">View Agent</button></div></div>';
     }).join("");
@@ -19866,6 +19867,19 @@
     return message || "Could not add the channel.";
   }
 
+  // An Agent not in Slack yet keeps a Channel waiting: it joins once an Owner adds it to Slack.
+  function agentAwaitsOwnApp(agent) {
+    return !!(agent && agent.slackPresence && agent.slackPresence.errorCode === "awaiting_own_app");
+  }
+
+  function channelAddWaits(result) {
+    return !!(result && result.grant && result.grant.status !== "active" && agentAwaitsOwnApp(result.agent));
+  }
+
+  function joinsOnceInSlackText(agent, channel) {
+    return ((agent && agent.name) || "This Agent") + " joins " + channel + " once a workspace Owner adds it to Slack.";
+  }
+
   function channelInviteWarning(channelName) {
     return "#" + channelName + " was added, but the connected Slack app isn't a member of it yet, so it won't hear mentions there. Invite it to #" + channelName + " in Slack — no need to come back here.";
   }
@@ -19910,11 +19924,9 @@
       state.active = { workspaceId: workspaceId, channelId: channelId };
       state.channelScreen = "detail";
       var channelName = normalizeChannelLabel((result && result.grant && result.grant.channelLabel) || label || channelId);
-      // An Agent not in Slack yet keeps the Channel waiting: it joins once an Owner adds it to Slack.
-      state.addChannelWaits = !!(result && result.grant && result.grant.status !== "active" && result.agent &&
-        result.agent.slackPresence && result.agent.slackPresence.errorCode === "awaiting_own_app");
+      state.addChannelWaits = channelAddWaits(result);
       state.addChannelInvite = state.addChannelWaits
-        ? agent.name + " joins #" + channelName + " once a workspace Owner adds it to Slack."
+        ? joinsOnceInSlackText(agent, "#" + channelName)
         : result && result.grant && result.grant.status !== "active"
           ? channelInviteWarning(channelName)
           : result && result.appBot === "left_out" ? appBotLeftOutText(agent, channelName) : "";
@@ -21810,8 +21822,10 @@
       state.attachPicker = false;
       state.attachChannelSelected = "";
       state.attachError = "";
-      state.attachNotice = "Agent added to #" + label + "." +
-        (result && result.appBot === "left_out" ? " " + appBotLeftOutText(draft, label) : "");
+      state.attachNotice = channelAddWaits(result)
+        ? joinsOnceInSlackText(draft, "#" + label)
+        : "Agent added to #" + label + "." +
+          (result && result.appBot === "left_out" ? " " + appBotLeftOutText(draft, label) : "");
       return refreshData().then(function () {
         return loadVisibleAgentDetail(draft.id);
       });

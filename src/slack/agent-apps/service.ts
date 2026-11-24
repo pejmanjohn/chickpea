@@ -983,7 +983,7 @@ export class AgentSlackApps {
         continue;
       }
       const writer = await this.deps.memberSlackUserId(grant.createdByMembershipId);
-      if (!writer || !await this.deps.transport.channelHasMember(grant.channelId, writer)) continue;
+      if (!writer || !await inChannel(this.deps.transport, grant.channelId, writer)) continue;
       if (!channel.private && !channel.member) {
         try {
           await this.deps.transport.joinPublicChannel(grant.channelId);
@@ -1698,6 +1698,16 @@ async function seenBy(bot: AgentAppBotTransport, channelId: string): Promise<Sla
   } catch (error) {
     if (!(error instanceof SlackTransportError) || error.retryable) throw error;
     return undefined;
+  }
+}
+
+/** Whether Slack says the person is in the Channel. A refusal to say is a no: the Channel keeps waiting and the switch goes on. */
+async function inChannel(bot: Pick<AgentAppTransport, 'channelHasMember'>, channelId: string, userId: string): Promise<boolean> {
+  try {
+    return await bot.channelHasMember(channelId, userId);
+  } catch (error) {
+    if (!(error instanceof SlackTransportError) || error.retryable) throw error;
+    return false;
   }
 }
 
