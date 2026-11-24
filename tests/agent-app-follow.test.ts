@@ -695,3 +695,11 @@ test("a live app whose definition cannot be worked out never stops the sweep for
   await armUnfinishedAgentAppMoves({ config: f.config, management }, NOW, ENV);
   assert.deepEqual(rows, [`agent_app_switch:agent_other:${APP2}`]);
 });
+
+// Defect caught: a long name cut inside an emoji, sending Slack half a character as the app's name.
+test("an app's name is cut by character, never inside an emoji", () => {
+  const name = `${'a'.repeat(34)}🙂 and more`;
+  const { manifest } = agentAppFollow({ ...userAgent('agent_long', name, 'long'), description: name.repeat(5) }, APP, HOST, 'inst_a');
+  assert.equal(manifest.display_information.name, 'a'.repeat(34), 'the emoji does not fit whole, so it is left out');
+  assert.equal(manifest.display_information.description?.length, 140);
+});

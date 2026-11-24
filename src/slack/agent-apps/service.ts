@@ -320,16 +320,21 @@ export function agentAppFollow(
   return { manifest, target: { manifestFingerprint: slackManifestFingerprint(manifest), avatarRevision: agent.slackPresence?.avatar.revision ?? 0 } };
 }
 
-/** The first `max` characters, never cutting one in half, as a cut by UTF-16 unit would an emoji. */
-function codePoints(text: string, max: number): string {
-  return Array.from(text).slice(0, max).join('');
+/** The longest start of `text` within `max` UTF-16 units that ends between characters, never inside an emoji. */
+function wholeCharacters(text: string, max: number): string {
+  let kept = '';
+  for (const character of text) {
+    if (kept.length + character.length > max) break;
+    kept += character;
+  }
+  return kept;
 }
 
 function manifestIntent(agent: CustomAgentConfig, host: AgentSlackAppsHost): AgentAppManifestIntent {
   return {
-    appName: codePoints(agent.name, SLACK_APP_NAME_MAX_LENGTH),
+    appName: wholeCharacters(agent.name, SLACK_APP_NAME_MAX_LENGTH),
     botDisplayName: agent.slackPresence?.normalizedHandle ?? agent.id,
-    description: codePoints(agent.description?.trim() || `${agent.name} Agent`, SLACK_APP_DESCRIPTION_MAX_LENGTH),
+    description: wholeCharacters(agent.description?.trim() || `${agent.name} Agent`, SLACK_APP_DESCRIPTION_MAX_LENGTH),
     redirectUri: host.redirectUri,
     scopes: AGENT_APP_BOT_SCOPES,
     events: AGENT_APP_BOT_EVENTS,
