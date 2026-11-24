@@ -598,6 +598,13 @@ button, input, textarea, select { font: inherit; }
 .onboarding-orientation li.active, .onboarding-orientation li.complete { color: #3b3220; }
 .onboarding-step-label, .onboarding-step-note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .onboarding-step-note { color: #6b5c42; font-size: .8125rem; font-weight: 600; }
+.onboarding-orientation:has(> li:nth-child(4)) { grid-auto-columns: auto; }
+.onboarding-orientation:has(> li:nth-child(4)) li { min-width: min-content; }
+.onboarding-orientation:has(> li:nth-child(4)) :is(.onboarding-step-label, .onboarding-step-note) { white-space: normal; }
+@media (max-width: 900px) {
+  .onboarding-orientation:has(> li:nth-child(4)) { gap: 6px; }
+  .onboarding-orientation:has(> li:nth-child(4)) li { font-size: .8125rem; }
+}
 @media (max-width: 720px) {
   .onboarding-scene { --arch: 84px; align-self: stretch; flex-direction: row; gap: 18px; height: auto; justify-content: flex-start; min-height: 0; padding: 70px 24px 24px; position: relative; }
   .onboarding-arch { border-radius: 42px 42px 10px 10px; }
@@ -772,6 +779,34 @@ button, input, textarea, select { font: inherit; }
 .onboarding-model-actions .btn-primary { min-width: 260px; }
 .onboarding-success-badge { align-items: center; background: var(--ok-tint); border-radius: 999px; color: #36592a; display: inline-flex; font-size: .9375rem; font-weight: 700; gap: 9px; margin-bottom: 18px; padding: 7px 14px 7px 8px; }
 .onboarding-success-badge::before { background: var(--ok-solid); border-radius: 50%; color: white; content: "✓"; display: grid; font-size: .75rem; height: 22px; place-items: center; width: 22px; }
+/* Slack apps (optional): a small drawing of Slack beside the step's buttons. */
+.slack-apps-compare { display: grid; gap: 16px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 28px 0 0; }
+.slack-apps-compare figure { margin: 0; min-width: 0; }
+.slack-apps-compare figcaption { color: var(--text); font-size: .875rem; font-weight: 700; margin-top: 9px; text-align: center; }
+.slack-apps-plan-note { background: rgba(221, 160, 51, .16); border-radius: 14px; color: var(--text-2); font-size: .9375rem; line-height: 1.5; margin: 24px 0 0; max-width: 36em; padding: 12px 16px; }
+.slack-apps-plan-note + .onboarding-actions { margin-top: 20px; }
+.slack-apps-after { font-size: .875rem; line-height: 1.5; margin: 16px 0 0; max-width: 34em; }
+.slack-apps-mini { border: 1px solid var(--line-strong); border-radius: 12px; box-shadow: var(--card-shadow); display: grid; font-family: Lato, -apple-system, "Helvetica Neue", Helvetica, sans-serif; grid-template-columns: 38% 62%; height: 172px; overflow: hidden; }
+.slack-apps-mini-side { background: #4a154b; color: rgba(249, 237, 255, .78); font-size: 11px; min-width: 0; padding: 8px 6px; }
+.slack-apps-mini-ws { color: #fff; font-size: 12px; font-weight: 800; margin: 0 4px 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slack-apps-mini-sec { font-size: 10px; font-weight: 700; margin: 6px 4px 2px; opacity: .8; }
+.slack-apps-mini-item { align-items: center; border-radius: 5px; display: flex; gap: 5px; height: 19px; overflow: hidden; padding: 0 5px; white-space: nowrap; }
+.slack-apps-mini-item.on { background: rgba(249, 237, 255, .92); color: #39063a; font-weight: 700; }
+.slack-apps-mini-hash { display: inline-block; flex: none; opacity: .8; text-align: center; width: 12px; }
+.slack-apps-mini-pea, .slack-apps-mini-pea .avatar, .slack-apps-mini-pea .pea { display: block; flex: none; height: 13px; width: 13px; }
+.slack-apps-mini-av-small { border-radius: 3px; flex: none; height: 13px; width: 13px; }
+.slack-apps-mini-head .slack-apps-mini-av-small { border-radius: 4px; height: 16px; width: 16px; }
+.slack-apps-mini-av-large { border-radius: 5px; flex: none; height: 26px; width: 26px; }
+.slack-apps-mini-pane { background: #fff; color: #1d1c1d; display: flex; flex-direction: column; min-width: 0; }
+.slack-apps-mini-head { align-items: center; border-bottom: 1px solid #e8e8e8; display: flex; font-size: 12px; font-weight: 800; gap: 5px; height: 30px; padding: 0 10px; }
+.slack-apps-mini-msg { display: flex; gap: 7px; padding: 10px; }
+.slack-apps-mini-name { align-items: center; display: flex; font-size: 11.5px; font-weight: 800; gap: 4px; }
+.slack-apps-mini-time { color: #616061; font-size: 9.5px; font-weight: 400; }
+.slack-apps-mini-text { font-size: 11px; line-height: 1.4; margin-top: 1px; }
+.slack-apps-mini-badge { background: rgba(29, 28, 29, .13); border-radius: 3px; color: rgba(29, 28, 29, .7); font-size: 8px; font-weight: 700; letter-spacing: .02em; line-height: 1.5; padding: 0 3px; }
+@media (max-width: 960px) {
+  .slack-apps-compare { grid-template-columns: minmax(0, 1fr); }
+}
 .onboarding-status { align-items: center; color: var(--text-2); display: flex; font-size: 1rem; font-weight: 600; gap: 12px; margin: 22px 0 0; min-height: 20px; }
 .onboarding-status::before { animation: onboarding-waiting 1.4s ease-in-out infinite; background: radial-gradient(circle, var(--ember) 4px, transparent 4.5px) 0 50% / 13px 10px repeat-x; content: ""; flex: none; height: 10px; width: 36px; }
 @keyframes onboarding-waiting {

@@ -1,7 +1,8 @@
 import { hostedGithubConnectPath } from '../config/hosted-github.ts';
 import { platformBilling } from '../config/platform-billing.ts';
+import { agentSlackAppsHost } from '../slack/agent-apps/host.ts';
 
-export type OnboardingStepId = 'slack' | 'provider' | 'model' | 'github' | 'try';
+export type OnboardingStepId = 'slack' | 'provider' | 'model' | 'slack_apps' | 'github' | 'try';
 
 export interface OnboardingStep {
   id: OnboardingStepId;
@@ -14,6 +15,8 @@ export function onboardingSteps(input: {
   selfHosted: boolean;
   onChickpeaModels: boolean;
   githubOffered: boolean;
+  /** The host offers each Agent its own Slack app, and the person is the Owner. */
+  slackAppsOffered?: boolean;
 }): OnboardingStep[] {
   return [
     { id: 'slack', label: input.selfHosted ? 'Connect Slack' : 'Add to Slack', note: 'Your workspace' },
@@ -21,13 +24,14 @@ export function onboardingSteps(input: {
       { id: 'provider', label: 'Choose provider' },
       { id: 'model', label: 'Choose model' },
     ] as const),
+    ...(input.slackAppsOffered && !input.selfHosted ? [{ id: 'slack_apps', label: 'Slack apps', note: 'Optional' }] as const : []),
     ...(input.githubOffered && !input.selfHosted ? [{ id: 'github', label: 'Connect GitHub', note: 'Optional' }] as const : []),
     { id: 'try', label: 'Try Chickpea', note: 'Say hi' },
   ];
 }
 
 const STAGE_STEPS: Readonly<Record<string, OnboardingStepId>> = {
-  connect_slack: 'slack', choose_provider: 'provider', choose_model: 'model', connect_github: 'github', try: 'try',
+  connect_slack: 'slack', choose_provider: 'provider', choose_model: 'model', slack_apps: 'slack_apps', connect_github: 'github', try: 'try',
 };
 const CHICKPEA_MODELS_STAGE_STEPS: Readonly<Record<string, OnboardingStepId>> = {
   ...STAGE_STEPS, choose_provider: 'slack', choose_model: 'slack',
@@ -47,5 +51,7 @@ export async function hostedSignUpOnboardingSteps(): Promise<OnboardingStep[]> {
     selfHosted: false,
     onChickpeaModels: platformBilling() !== undefined,
     githubOffered: await hostedGithubConnectPath() !== null,
+    // The person signing up becomes the Owner.
+    slackAppsOffered: agentSlackAppsHost() !== undefined,
   });
 }
