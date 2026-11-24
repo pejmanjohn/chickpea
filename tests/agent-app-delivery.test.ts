@@ -2882,13 +2882,26 @@ test("a group DM message naming two app Agents where only Support's bot is: Supp
   assert.deepEqual(personaOnAnyAppToken(h), []);
 }, { notMemberOf: { [FINANCE_BOT]: ['G1'] } }));
 
-test("a group DM message naming an app Agent no bot there can post for gives it no turn", async (t) => withHarness(t, async (h) => {
+test("a group DM message naming an Agent no bot there can post for gives that Agent no turn, and Support, whose bot is there, still answers once", async (t) => withHarness(t, async (h) => {
   t.mock.method(console, 'info', () => undefined);
-  await giveFinanceApp(h);
-  const ts = '1900005900.000100';
-  assert.equal((await h.deliver('events', messageIn('G2', ts, `<@${AGENT_BOT_USER}> and <@${FINANCE_BOT_USER}> compare refunds`).app, { settle: true })).status, 200);
-  assert.deepEqual((await turnsOn(h, ts)).map(shape).filter(([agentId]) => agentId === 'agent_finance'), [], 'Finance gets no turn');
-  assert.deepEqual(h.calls.filter((call) => call.method === 'chat.postMessage' && call.token !== AGENT_BOT), [], 'nothing posts on a bot not in the group DM');
+  for (const [index, text] of [
+    `<@${AGENT_BOT_USER}> and <!subteam^SFINANCE|@finance> compare refunds`,
+    `<!subteam^SFINANCE|@finance> and <@${AGENT_BOT_USER}> compare refunds`,
+    `<@${AGENT_BOT_USER}> and <@${FINANCE_BOT_USER}> compare refunds`,
+    `<@${FINANCE_BOT_USER}> and <@${AGENT_BOT_USER}> compare refunds`,
+  ].entries()) {
+    if (index === 2) await giveFinanceApp(h);
+    const ts = `1900005900.000${index}00`;
+    const message = messageIn('G2', ts, text).app;
+    assert.equal((await h.deliver('events', message, { settle: true })).status, 200);
+    assert.equal((await h.deliver('events', message, { settle: true })).status, 200);
+    const turns = await turnsOn(h, ts);
+    assert.deepEqual(turns.map(shape), [['agent_support', undefined, SUPPORT_BOT]], `${text}: only Support has a turn, after a redelivery too`);
+    assert.deepEqual(sender(await postAsRun(h, turns[0]!)), OWN_BOT);
+  }
+  assert.deepEqual(h.calls.filter((call) => call.method.startsWith('chat.') && call.token !== AGENT_BOT), [], 'nothing posts on a bot not in the group DM');
+  assert.deepEqual(h.calls.filter((call) => call.method === 'chat.postEphemeral'), [], 'and nobody is told an Agent is not available');
+  assert.deepEqual(personaOnAnyAppToken(h), []);
 }, { notMemberOf: { [MAIN_BOT]: ['G2'], [FINANCE_BOT]: ['G2'] } }));
 
 test("in a user-group workspace a group DM naming two Agents is answered by each through Chickpea, and asks Slack nothing more", async (t) => withHarness(t, async (h) => {

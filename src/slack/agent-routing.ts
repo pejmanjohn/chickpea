@@ -381,7 +381,15 @@ export async function resolveAgentRoute(
   // the message taken. An app's own DM is its Agent's alone: no other bot is
   // in it, so an Agent it names is no turn's.
   const conversation = slackConversationKind(turn);
-  const addressed = agentsNamed(turn.text, agentsByGroupId, agents).slice(0, MAX_ADDRESSED_AGENTS);
+  const named = agentsNamed(turn.text, agentsByGroupId, agents).slice(0, MAX_ADDRESSED_AGENTS);
+  // Nobody can add an Agent to a group DM: one that no bot there can post for
+  // gets no turn, and the others it names answer.
+  const addressed: CustomAgentConfig[] = [];
+  for (const agent of named) {
+    if (!groupDm || named.length === 1 || !input.postingBotInChannel || await input.postingBotInChannel(agent)) {
+      addressed.push(agent);
+    }
+  }
   const severalAgents = addressed.length > 1 && !input.appHomeAgentId &&
     (appAgentId === undefined || conversation !== 'im');
   // Each of them answers as its own bot: its app's, or Chickpea's. An Agent
@@ -390,7 +398,7 @@ export async function resolveAgentRoute(
   // grants it would leave that bot out. Chickpea's bot heard a message in its
   // own DM, so it can answer for each of them there.
   const postingBotAbsent = async (agent: CustomAgentConfig, access: AgentAccess): Promise<boolean> =>
-    severalAgents && conversation !== 'im' && (access === 'allowed' || access === 'not_in_channel') &&
+    severalAgents && surface === 'channel' && (access === 'allowed' || access === 'not_in_channel') &&
     input.postingBotInChannel !== undefined && !await input.postingBotInChannel(agent);
   if (severalAgents) {
     for (const agent of addressed.slice(1)) {
