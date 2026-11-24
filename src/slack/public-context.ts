@@ -524,7 +524,7 @@ function compareSlackTs(left: string, right: string): number {
   return left.localeCompare(right);
 }
 
-function sameFileNames(
+export function sameFileNames(
   left: ReadonlyArray<{ name: string }>,
   right: ReadonlyArray<{ name: string }>,
 ): boolean {

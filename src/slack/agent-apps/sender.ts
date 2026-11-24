@@ -12,6 +12,7 @@
  * Loaded only for an Agent app's delivery.
  */
 import { isTransientSlackApiError, slackMessageAt, type SlackMessageReadResult } from '../credentials.ts';
+import { slackMessageChangeIsEmpty } from '../message-change.ts';
 import { SlackTransportError } from '../transport/types.ts';
 import type { UiSurfaceRecord } from '../ui/surface.ts';
 import type { AgentAppBotCredentials } from './live.ts';
@@ -119,6 +120,9 @@ export async function confirmAgentAppMessage(
     // its ts names.
     return changed ? refused(undefined) : { confirmed: true, event };
   }
+  // Slack sends an edit each time a reply changes its message's thread counts. One whose own two bodies agree on all
+  // that is acted on would start nothing once read, so it is not read: dropping it admits nothing, whoever sent it.
+  if (changed && claimed && previous && slackMessageChangeIsEmpty(claimed, previous)) return refused(undefined);
   const ts = deleted ? (event.deleted_ts ?? previous?.ts) : claimed?.ts;
   if (typeof ts !== 'string') return refused('malformed');
   // An older real message delivered again could outlive its claim and start a second turn. An edit steers only a

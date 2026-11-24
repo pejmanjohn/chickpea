@@ -3970,6 +3970,60 @@ test("an edit an Agent app delivers steers its message's turn only when Slack ho
   assert.deepEqual(notConfirmed(warn).map((line) => (line as { reason: string }).reason), ['other_sender']);
 }));
 
+test("an edit an Agent app delivers that changes nothing acted on, as Slack sends while replies come in, is not read and does nothing", async (t) => withHarness(t, async (h) => {
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  t.mock.method(console, 'info', () => undefined);
+  const ts = '1900010450.000100';
+  assert.equal((await h.deliver('events', appDm(ts, { text: 'refund order 12' }), { settle: true })).status, 200);
+  const original = { type: 'message', user: 'U1', text: 'refund order 12', ts };
+  const counts = (replies: number) => ({
+    thread_ts: ts, reply_count: replies, reply_users_count: 1, latest_reply: `1900010450.00020${replies}`, reply_users: [AGENT_BOT_USER],
+  });
+  const change = (at: string, message: Record<string, unknown>, previous: Record<string, unknown>) => dmEvent({ event_id: `EvChange${at}` }, {
+    subtype: 'message_changed', hidden: true, ts: at, event_ts: at, user: undefined, text: undefined, message, previous_message: previous,
+  });
+  const edited = { ...original, text: 'refund order 13', edited: { user: 'U1', ts: '1900010450.000300' } };
+  const reads = () => confirmations(h, ts).length;
+  const turns = async () => (await turnsOn(h, ts)).map((job) => job.turn.text);
+  let sent = 0;
+  const metadataOnly = async (pairs: Array<[Record<string, unknown>, Record<string, unknown>]>) => {
+    const callsBefore = h.calls.length;
+    for (const [message, previous] of pairs) {
+      const at = `1900010450.0004${sent++}0`;
+      assert.equal((await h.deliver('events', change(at, message, previous), { settle: true })).status, 200);
+    }
+    assert.deepEqual(h.calls.slice(callsBefore), [], 'no read, and nothing routed');
+  };
+  await metadataOnly([[{ ...original, ...counts(1) }, original], [{ ...original, ...counts(2) }, { ...original, ...counts(1) }]]);
+  assert.deepEqual(await turns(), ['refund order 12']);
+
+  // A real edit is read once, and steers its turn as before; the counts that change after it are not read either.
+  assert.equal((await h.deliver('events', change('1900010450.000300', { ...edited, ...counts(2) }, { ...original, ...counts(2) }), { settle: true })).status, 200);
+  assert.equal(reads(), 2);
+  assert.deepEqual(await turns(), ['refund order 12', 'refund order 13']);
+  await metadataOnly([[{ ...edited, ...counts(3) }, { ...edited, ...counts(2) }]]);
+
+  // A change to any one thing an edit, a delete or the thread record acts on is read.
+  const total = [{ text: 'Order 12: $40' }];
+  for (const [index, [patch, earlier]] of ([
+    [{ edited: { user: 'U1', ts: '1900010450.000500' } }],
+    [{ files: [{ id: 'F0ORDER12', name: 'order-12.csv' }] }],
+    [{ attachments: total }],
+    [{ blocks: [{ type: 'rich_text', elements: [{ type: 'rich_text_section', elements: [{ type: 'link', url: 'https://orders.example/12' }] }] }] }],
+    // The words the edit steers with change, while the text the thread record keeps does not.
+    [{ text: 'refund order 13\nOrder 12: $40' }, { attachments: total }],
+    [{ subtype: 'tombstone' }],
+  ] as Array<[Record<string, unknown>, Record<string, unknown>?]>).entries()) {
+    const before = reads();
+    const at = `1900010450.00060${index}`;
+    const delivery = change(at, { ...edited, ...counts(1), ...patch }, { ...edited, ...counts(1), ...earlier });
+    assert.equal((await h.deliver('events', delivery, { settle: true })).status, 200);
+    assert.equal(reads(), before + 1, Object.keys(patch).join());
+  }
+  assert.deepEqual(notConfirmed(warn).map((line) => (line as { reason: string }).reason), ['deleted']);
+  assert.equal(warn.mock.calls.length, 1, 'and no line for a change that was not read');
+}));
+
 test("a message through Chickpea's own app asks Slack nothing more", async (t) => withHarness(t, async (h) => {
   const ts = '1900010500.000100';
   assert.equal((await h.deliverToChickpea(chickpeaDmMessage(ts, ts, 'what did we refund?'))).status, 200);
