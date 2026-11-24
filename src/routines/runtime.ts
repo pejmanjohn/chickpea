@@ -5,6 +5,7 @@ import {
   computeSnapshotHash,
   effectiveSlackConfigFromAssignment,
   type EffectiveSlackConfig,
+  withPlainHandleIdentity,
 } from '../config/effective-config.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import {
@@ -31,7 +32,7 @@ import { slackPendingExternalShare } from '../slack/transport/shared.ts';
 import { resolvePrivateAgentAccess } from '../slack/agent-access.ts';
 import { agentDmPlacementFacts, isAgentAppDm, withAgentAppExecution } from '../slack/agent-apps/index.ts';
 import { agentSlackAppsHost } from '../slack/agent-apps/host.ts';
-import { agentAppIsLive } from '../config/types.ts';
+import { agentAppIsLive, appRecordOf } from '../config/types.ts';
 import type { SlackSpeaker } from '../slack/speaker.ts';
 import type { SlackContextSelf } from '../slack/thread-context.ts';
 import { createDirectSlackTransportFromWebClient } from '../slack/transport/direct.ts';
@@ -82,6 +83,19 @@ export interface RoutineRuntimeAccess {
   channelShared?: boolean;
   /** One-release bridge for v0.1.19 runs whose stored fence used the catalog revision. */
   legacyAccessHashForCatalogRevision?: (catalogRevision: string | undefined) => string;
+  /** Bridge for runs dispatched while the fence covered how Slack writes the Agent's handle. */
+  legacyAccessHashWithHandleForm?: string;
+}
+
+/** Whether the access hash a run stored when it was dispatched still names this access. */
+export function routineAccessMatches(
+  access: RoutineRuntimeAccess,
+  storedAccessHash: string,
+  catalogRevision: string | undefined,
+): boolean {
+  return storedAccessHash === access.accessHash ||
+    storedAccessHash === access.legacyAccessHashWithHandleForm ||
+    storedAccessHash === access.legacyAccessHashForCatalogRevision?.(catalogRevision);
 }
 
 export class RoutineRuntimeError extends Error {
@@ -207,13 +221,15 @@ export async function resolveRoutineRuntimeAccess(
     agentId,
     speaker: { kind: 'own_bot', botUserId: appBotUserId },
   });
-  const appRecord = presence?.kind === 'agent_app' && 'app' in presence.app ? presence.app.app : undefined;
-  const siblings = (speaking: string): Pick<RoutineRuntimeAccess, 'siblingBots'> => presence?.kind === 'agent_app'
+  // A removed app's record still names its app, so its bot's earlier posts stay the Agent's own.
+  const appLifecycle = appRecordOf(presence);
+  const appRecord = appLifecycle && 'app' in appLifecycle ? appLifecycle.app : undefined;
+  const siblings = (speaking: string): Pick<RoutineRuntimeAccess, 'siblingBots'> => appLifecycle
     ? {
         siblingBots: {
           siblingBotUserIds: [
             installationBotUserId,
-            ...('botUserId' in presence.app && presence.app.botUserId ? [presence.app.botUserId] : []),
+            ...('botUserId' in appLifecycle && appLifecycle.botUserId ? [appLifecycle.botUserId] : []),
           ].filter((id) => id !== speaking),
           ...(appRecord ? { siblingAppIds: [appRecord.appId] } : {}),
         },
@@ -338,6 +354,7 @@ export async function resolveRoutineRuntimeAccess(
     return {
       config,
       accessHash,
+      legacyAccessHashWithHandleForm: directAccessHash(routineConfigHashWithHandleForm(config)),
       legacyAccessHashForCatalogRevision: (catalogRevision) => directAccessHash(
         computeSnapshotHash(configWithCatalogRevision(config, catalogRevision)),
       ),
@@ -460,6 +477,7 @@ export async function resolveRoutineRuntimeAccess(
   return {
     config,
     accessHash,
+    legacyAccessHashWithHandleForm: channelAccessHash(routineConfigHashWithHandleForm(config)),
     legacyAccessHashForCatalogRevision: (catalogRevision) => channelAccessHash(
       computeSnapshotHash(configWithCatalogRevision(config, catalogRevision)),
     ),
@@ -497,8 +515,16 @@ function configWithCatalogRevision(
   };
 }
 
-/** Catalog hydration provenance is frozen in the runtime route, not authority. */
+/**
+ * Catalog hydration provenance is frozen in the runtime route, not authority.
+ * A run in flight keeps its access while its Agent's handle moves between its
+ * user group and its own app's bot; any other config change still ends it.
+ */
 function routineConfigHash(config: EffectiveSlackConfig): string {
+  return computeSnapshotHash(withPlainHandleIdentity(configWithCatalogRevision(config, undefined)));
+}
+
+function routineConfigHashWithHandleForm(config: EffectiveSlackConfig): string {
   return computeSnapshotHash(configWithCatalogRevision(config, undefined));
 }
 

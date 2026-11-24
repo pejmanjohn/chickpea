@@ -149,7 +149,7 @@ test('a valid callback activates the app, stores the bot token, arms the switch,
   assert.equal((await readAppSecrets(f.secrets, APP.appId))?.secrets.botToken, 'xoxb-agent');
   assert.equal(app?.state === 'active' && app.switchProgress, 'group_pending', 'the switch is left to its job');
   assert.deepEqual(f.posted, [], 'the callback tells nobody: the switch job does, once it is done');
-  assert.deepEqual(f.armed, [{ agentId: 'agent_support', appId: APP.appId, installedAt: NOW, teamId: TEAM, ownerSlackUserId: OWNER }]);
+  assert.deepEqual(f.armed, [{ agentId: 'agent_support', appId: APP.appId, teamId: TEAM, ownerSlackUserId: OWNER }]);
   const presence = (await f.config.getAgent('agent_support')).slackPresence;
   assert.equal(presence?.health, 'healthy');
   assert.equal(presence?.desiredState, 'active');
@@ -231,6 +231,21 @@ test('a grant missing only channels:join, as from an app made before Chickpea as
   assert.equal(refused.status, 409);
   assert.match(pageText(await refused.text()), /needs every permission it asked for/);
   assert.equal(less.slack.uninstalls, 1);
+});
+
+test("an app made before Agent apps heard the Stop button is granted the scopes it asked for then, and its consent passes", async (t) => {
+  // The scopes an Agent app asked for before it subscribed to agent_session_stopped: the event added none.
+  const before = [
+    'app_mentions:read', 'assistant:write', 'channels:history', 'channels:join', 'channels:read', 'chat:write',
+    'files:read', 'files:write', 'groups:history', 'groups:read', 'im:history', 'im:write', 'mpim:read',
+    'reactions:read', 'reactions:write', 'users:read', 'lists:read', 'lists:write',
+  ];
+  const older = await fixture(t);
+  older.slack.grant = { scopes: before };
+  const response = await older.service.completeConsent(new URLSearchParams({ code: 'c', state: await open(older) }), OWNER);
+  assert.equal(response.status, 303);
+  assert.equal(older.slack.uninstalls, 0, 'the grant stands');
+  assert.equal((await appOf(older.config))?.state, 'active');
 });
 
 test('an undo Slack refuses is logged, and the Owner still gets the page', async (t) => {

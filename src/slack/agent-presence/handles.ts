@@ -1,3 +1,4 @@
+import { appRecordOf, type CustomAgentConfig } from '../../config/types.ts';
 import type { SlackUserGroup } from '../transport/types.ts';
 
 const SLACK_AGENT_HANDLE_MAX_LENGTH = 80;
@@ -16,6 +17,42 @@ export function normalizeAgentHandle(value: string): string {
     .slice(0, SLACK_AGENT_HANDLE_MAX_LENGTH)
     .replace(/-+$/g, '');
   return normalized || 'agent';
+}
+
+type HandleHolder = Pick<CustomAgentConfig, 'id' | 'lifecycle' | 'slackPresence'>;
+
+/** An Agent is in Slack when it has a user group or its own app, live or still being made. */
+export function agentIsInSlack(agent: Pick<CustomAgentConfig, 'slackPresence'>): boolean {
+  return appRecordOf(agent.slackPresence) !== undefined || agent.slackPresence?.userGroupId !== undefined;
+}
+
+/**
+ * Choosing a handle (creating or renaming an Agent): the handles every other
+ * unarchived Agent stores, in Slack or not. Slack keeps user-group handles
+ * unique but not bot names, so this is Chickpea's own rule.
+ */
+export function handlesOtherAgentsStore(agents: readonly HandleHolder[], agentId: string): Set<string> {
+  return otherAgentHandles(agents, agentId, () => true);
+}
+
+/**
+ * Taking a handle in Slack (publish, Retry, turning on, restore): the handles
+ * other unarchived Agents hold there. An Agent not in Slack yet holds none, so
+ * the first of two that store one handle to publish takes it.
+ */
+export function handlesOtherAgentsHoldInSlack(agents: readonly HandleHolder[], agentId: string): Set<string> {
+  return otherAgentHandles(agents, agentId, agentIsInSlack);
+}
+
+function otherAgentHandles(
+  agents: readonly HandleHolder[],
+  agentId: string,
+  counts: (agent: HandleHolder) => boolean,
+): Set<string> {
+  return new Set(agents.flatMap((agent) =>
+    agent.id !== agentId && agent.lifecycle !== 'archived' && agent.slackPresence && counts(agent)
+      ? [agent.slackPresence.normalizedHandle]
+      : []));
 }
 
 export function alternativeAgentHandles(

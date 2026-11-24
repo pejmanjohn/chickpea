@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { type AgentAppMessageKind, agentAppHomeBlocks, agentAppMessage } from '../src/slack/agent-apps/pages.ts';
+import { type AgentAppMessageKind, agentAppHomeBlocks, agentAppMessage, agentAppSwitchedMessage } from '../src/slack/agent-apps/pages.ts';
 
 const HOSTILE = { name: '<!channel> & <@U123> <https://evil.test|click>', handle: 'support' };
 const LINKS = { agentId: 'agent_support', allowUrl: 'https://cloud.test/allow', tokenPageUrl: 'https://core.test/token' };
 const KINDS: AgentAppMessageKind[] = [
   'allow', 'archived_left', 'archived_installed', 'handle_release_failed', 'ambiguous_create', 'create_refused', 'slack_busy',
-  'urls_refused', 'config_token_needed', 'app_removed', 'uninstall_failed',
+  'urls_refused', 'config_token_needed', 'app_removed', 'uninstall_failed', 'app_removed_unreachable', 'app_removed_permission', 'recreated',
 ];
 
 function sectionText(kind: AgentAppMessageKind): string {
@@ -45,4 +45,14 @@ test('a button never carries more text than Slack takes, however long the name o
   assert.ok(allowButton.text.text.length <= 75, `Allow label is ${allowButton.text.text.length} characters`);
   const offer = agentAppHomeBlocks({ kind: 'offer', tokenPageUrl: undefined }, long, 'agent_support')[0] as { elements: Array<{ text: { text: string } }> };
   assert.ok(offer.elements[0]!.text.text.length <= 75, `offer label is ${offer.elements[0]!.text.text.length} characters`);
+});
+
+// Defect caught: an Agent granted many Channels overflowing Slack's 3,000-character section, so Slack refuses the
+// Owner's switch message whole.
+test("the switch message names at most twenty Channels per list and counts the rest", () => {
+  const ids = Array.from({ length: 25 }, (_, index) => `C${String(index).padStart(9, '0')}`);
+  const { text } = agentAppSwitchedMessage(HOSTILE, { joined: ids, throughChickpea: [], groupStillOn: false });
+  assert.equal((text.match(/<#C/g) ?? []).length, 20);
+  assert.ok(text.includes(`<#${ids[19]}> and 5 more.`), text);
+  assert.ok(agentAppSwitchedMessage(HOSTILE, { joined: ids.concat(ids).concat(ids), throughChickpea: ids.concat(ids), groupStillOn: true }).text.length < 3_000);
 });

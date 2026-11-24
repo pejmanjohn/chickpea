@@ -381,11 +381,16 @@ const NOT_OPERATOR_CANCELLED = `recovery_reason IS NOT '${OPERATOR_CANCELLED}'`;
 /** How long a receipt note nothing released outlives its making (noteReceipt). */
 const RECEIPT_NOTE_TTL_MS = 60_000;
 
+const SPEAKER_COLUMNS = `json_extract(turn_json, '$.speaker.kind') AS speaker_kind,
+  json_extract(turn_json, '$.speaker.botUserId') AS speaker_bot`;
+
 interface StopThreadRow {
   id: string;
   messageTs?: string;
   stop?: TurnStopRecordV1;
   dispatched: boolean;
+  /** The Agent app bot the row's run speaks as, when its stored speaker is one. */
+  ownBotUserId?: string;
   enqueuedAt: number;
   order: number;
 }
@@ -751,9 +756,15 @@ export class TurnJobStoreLogic {
       // Idempotent: while the thread's stopped row is undelivered, a later
       // stop (the Stop button after a typed stop) returns that first stop and
       // holds nothing more.
-      const stopped = rows.find((row) => row.stop?.role === 'stopped');
-      const before = rows.filter((row) =>
-        row.messageTs !== undefined && compareSlackTs(row.messageTs, request.cutoffTs) < 0);
+      const postedBefore = (row: StopThreadRow) =>
+        row.messageTs !== undefined && compareSlackTs(row.messageTs, request.cutoffTs) < 0;
+      // A press on an Agent app's Stop acts only on rows speaking as its bot,
+      // so another run going in the same thread neither hides nor loses its own.
+      const own = request.speakerBotUserId === undefined
+        ? rows
+        : rows.filter((row) => row.ownBotUserId === request.speakerBotUserId);
+      const stopped = own.find((row) => row.stop?.role === 'stopped');
+      const before = own.filter(postedBefore);
       const head = stopped ?? before.find((row) => row.dispatched) ?? before[0];
       if (head) {
         return this.otherAgent(request, head.id) ?? {
@@ -761,6 +772,7 @@ export class TurnJobStoreLogic {
           stop: stopped ? this.stopResult(stopped.id, false) : this.recordStop(request, before, head),
         };
       }
+      if (rows.some(postedBefore)) return { outcome: 'other_speaker' };
     } else if (request.kind === 'check_in' && rows.length > 0) {
       const head = rows.find((row) => row.dispatched) ?? rows[0]!;
       return this.otherAgent(request, head.id) ??
@@ -879,19 +891,20 @@ export class TurnJobStoreLogic {
         ...(typeof messageTs === 'string' ? { messageTs } : {}),
         ...(stop ? { stop } : {}),
         dispatched: row.dispatch_started_at !== null && row.dispatch_started_at !== undefined,
+        ...(row.speaker_kind === 'own_bot' && typeof row.speaker_bot === 'string' ? { ownBotUserId: row.speaker_bot } : {}),
         enqueuedAt: Number(row.enqueued_at),
         order: Number(row.row_order),
       });
     };
     for (const row of this.db.all(
-      `SELECT rowid AS row_order, id, message_ts, stop_json, dispatch_started_at, enqueued_at
+      `SELECT rowid AS row_order, id, message_ts, stop_json, dispatch_started_at, enqueued_at, ${SPEAKER_COLUMNS}
        FROM turn_jobs
        WHERE thread_key = ? AND ${PENDING_ROW} AND execution_authority = 'legacy'`,
       threadKey,
     )) read(row, row.message_ts);
     for (const row of this.db.all(
       `SELECT rowid AS row_order, id, turn_json, assignment_json, stop_json,
-         dispatch_started_at, enqueued_at
+         dispatch_started_at, enqueued_at, ${SPEAKER_COLUMNS}
        FROM turn_jobs
        WHERE thread_key IS NULL AND ${PENDING_ROW} AND execution_authority = 'legacy'`,
     )) {
@@ -3301,6 +3314,9 @@ function validateSteeringRequest(request: TurnSteeringRequest, enqueue?: TurnJob
     }
     validateBoundedString(request.stopperUserId, 'stopper user id', 128);
     if (!validSlackTs(request.cutoffTs)) throw new Error('Stop cutoff timestamp is invalid.');
+    if (request.speakerBotUserId !== undefined) {
+      validateBoundedString(request.speakerBotUserId, 'stop speaker bot user id', 128);
+    }
   }
   if (request.kind !== 'message' && request.agentId !== undefined) {
     validateBoundedString(request.agentId, 'steering agent id', 128);

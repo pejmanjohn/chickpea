@@ -587,7 +587,7 @@ export async function drainManagementReceiptOutbox(input: {
       delivered += 1;
     } catch (error) {
       const failureCode = receiptDeliveryFailureCode(error);
-      const terminal = record.attempts >= OUTBOX_MAX_ATTEMPTS ||
+      const terminal = isFinalOutboxAttempt(record) ||
         PERMANENT_DELIVERY_CODES.has(failureCode);
       await input.management.settleOutbox({
         outboxId: record.outboxId,
@@ -887,6 +887,11 @@ function isScheduleActionAcknowledgement(
   receipt: ManagementReceipt,
 ): receipt is ManagementScheduleActionAcknowledgement {
   return 'kind' in receipt && receipt.kind === 'schedule_action';
+}
+
+/** Whether a failure of this claim settles the row for good: its last try. */
+export function isFinalOutboxAttempt(record: Pick<ManagementReceiptOutboxRecord, 'attempts'>): boolean {
+  return record.attempts >= OUTBOX_MAX_ATTEMPTS;
 }
 
 export function isAgentAppSwitchJob(receipt: ManagementReceipt): receipt is ManagementAgentAppSwitchJob {

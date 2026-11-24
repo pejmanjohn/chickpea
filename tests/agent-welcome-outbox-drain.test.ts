@@ -245,7 +245,7 @@ test("an Agent app's switch job put over the state RPC arms the drain at once, a
   context.mock.method(Date, 'now', () => NOW);
   const f = fixture(LATER_SWEEP);
   try {
-    const job = { agentId: 'agent_support', appId: 'A0APP1', installedAt: NOW, teamId: 'T_TEST', ownerSlackUserId: 'U_OWNER' };
+    const job = { agentId: 'agent_support', appId: 'A0APP1', teamId: 'T_TEST', ownerSlackUserId: 'U_OWNER' };
     for (const at of [NOW, NOW + 1]) {
       const put = await f.probe.managementExecute({ kind: 'put_outbox', record: agentAppSwitchOutbox(job, at) });
       assert.equal(put.ok, true);
@@ -263,7 +263,7 @@ test("an Agent app's switch job put over the state RPC arms the drain at once, a
 test("an Agent app's switch job that settled unfinished is armed afresh, and one still waiting is never armed twice", async () => {
   const f = fixture(null);
   try {
-    const job = { agentId: 'agent_support', appId: 'A0APP1', installedAt: NOW, teamId: 'T_TEST', ownerSlackUserId: 'U_OWNER' };
+    const job = { agentId: 'agent_support', appId: 'A0APP1', teamId: 'T_TEST', ownerSlackUserId: 'U_OWNER' };
     const management = { putOutbox: async (record: ManagementReceiptOutboxRecord) => f.management.putOutbox(record) };
     const unsettled = () => f.db.all(
       `SELECT outbox_id FROM management_receipt_outbox WHERE status IN ('pending', 'delivering') ORDER BY outbox_id`,

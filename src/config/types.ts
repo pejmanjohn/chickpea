@@ -307,6 +307,8 @@ export type AgentAppLifecycle =
       installedAt: number;
       installedBy: string;
       switchProgress?: AgentAppSwitchProgress;
+      /** The switch finished without the Owner's result message: Slack refused it, or every try failed. */
+      ownerNotTold?: true;
     }
   | { state: 'uninstalling'; at: number; startedBy: string; app: AgentAppRecord; botUserId?: string; next: 'uninstall' | 'delete' }
   | {
@@ -333,12 +335,15 @@ export interface AgentAppPresence extends AgentPresenceBase {
    * Retire re-enables the group; an undone start restores that state, which
    * older records lack. `answers` is true while the group is still enabled
    * and its ID still routes to this Agent; absent means false.
+   * `enableRefused` marks a removed app whose group Slack refused to turn
+   * back on, the Owner told: nothing turns it on again until an Owner asks.
    */
   released?: {
     userGroupId: string;
     desiredState?: AgentPresenceDesiredState;
     health?: AgentPresenceHealth;
     answers?: boolean;
+    enableRefused?: true;
   };
   userGroupId?: never;
   pendingCreate?: never;
@@ -1073,6 +1078,11 @@ export interface ResolvedAssignment {
    * Agents in that thread.
    */
   teammates?: AgentTeammate[];
+  /**
+   * The turn is in its Agent app's own DM, which no other bot is in: its
+   * teammates are named to it there, never asked.
+   */
+  inAgentAppDm?: true;
   /**
    * The Agents the requester may use, frozen at ingress for the system
    * Agent's root DM turn: the front desk it may hand the request to.
