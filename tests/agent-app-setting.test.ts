@@ -204,6 +204,7 @@ async function adminApp(t: TestContext, options: {
       refuseLikeSlack('apps.manifest.update', manifest);
     },
     setIcon: async () => undefined,
+    botInstalled: async () => { throw new Error('unexpected auth.test'); },
     exchange: async (input) => {
       if (!script.exchange) throw new Error('unexpected exchange');
       return script.exchange(input);

@@ -217,3 +217,15 @@ test('uninstall and delete count an app that is already gone as done', async () 
   await assert.rejects(() => api(() => refused('invalid_auth')).client.delete(TOKEN, 'A0C8APP'), (error: unknown) =>
     error instanceof SlackRefused && error.code === 'invalid_auth');
 });
+
+test("auth.test with an app's own bot token says whether Slack still accepts it, and throws for any other answer", async () => {
+  const { client, seen } = api(() => ok({ user_id: 'UBOT1' }));
+  assert.equal(await client.botInstalled('xoxb-agent'), true);
+  assert.equal(seen[0]?.method, 'auth.test');
+  assert.equal(seen[0]?.authorization, 'Bearer xoxb-agent');
+  for (const code of ['token_revoked', 'account_inactive', 'invalid_auth']) {
+    assert.equal(await api(() => refused(code)).client.botInstalled('xoxb-agent'), false, code);
+  }
+  await assert.rejects(() => api(() => refused('ratelimited', 429)).client.botInstalled('xoxb-agent'), SlackRefused);
+  await assert.rejects(() => api(() => refused('internal_error', 500)).client.botInstalled('xoxb-agent'), SlackUnavailable);
+});

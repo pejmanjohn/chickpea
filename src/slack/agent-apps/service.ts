@@ -1084,10 +1084,13 @@ export class AgentSlackApps {
    * missing token, which is the workspace's, is told once for every app,
    * naming none, to the first Owner who allowed a live app that Slack lets
    * Chickpea message. The Owner is told first, under a key a rerun repeats,
-   * then the refusal is recorded. An app gone at Slack, which passed its own
-   * record's check, is removed at Slack, as its removal event would have
-   * said; app IDs are never reused. The app's own record refusing is the
-   * operator's, logged where it was read.
+   * then the refusal is recorded. An app the configuration token cannot find,
+   * which passed its own record's check, is removed at Slack, as its removal
+   * event would have said, only once Slack refuses the app's own bot token:
+   * the token is one person's, and may not see an app another Owner's token
+   * made. A bot Slack accepts holds the update as one that did not go
+   * through. The app's own record refusing is the operator's, logged where it
+   * was read.
    */
   private async refuseFollow(
     agent: CustomAgentConfig,
@@ -1099,7 +1102,12 @@ export class AgentSlackApps {
     const latest = await this.deps.stores.config.getAgent(agent.id);
     const presence = latest.slackPresence;
     if (!agentAppIsLive(presence) || presence.app.app.appId !== appId) return latest;
-    if (reason === 'app_not_found') return await this.removedAtSlack(latest, appId) ?? this.deps.stores.config.getAgent(agent.id);
+    if (reason === 'app_not_found') {
+      if (!await this.botInstalled(latest, appId, run.finalAttempt)) {
+        return await this.removedAtSlack(latest, appId) ?? this.deps.stores.config.getAgent(agent.id);
+      }
+      return this.refuseFollow(latest, appId, target, 'update_failed', run);
+    }
     const kind = await this.followMessage(presence, reason);
     if (kind) {
       const owners = kind === 'follow_token_needed' ? await this.liveAppOwners(presence.app.installedBy) : [presence.app.installedBy];
@@ -1120,6 +1128,24 @@ export class AgentSlackApps {
       }
     }
     return this.recordFollow(latest, appId, (follows) => ({ ...follows, refused: { ...target, reason, at: this.now() } }), run);
+  }
+
+  /**
+   * Whether Slack still accepts this app's own bot token. Slack not answering,
+   * or no bot token to ask, throws for the job to retry; on its last try the
+   * app counts as installed, so nothing is removed.
+   */
+  private async botInstalled(agent: CustomAgentConfig, appId: string, finalAttempt: boolean): Promise<boolean> {
+    try {
+      const stored = await readOwnAppSecrets(this.secrets, appId, agent.id, 'end');
+      if (stored.kind !== 'own' || !stored.secrets.botToken) {
+        throw Object.assign(new Error('No bot token to ask Slack about.'), { name: 'agent_app_bot_token_unread' });
+      }
+      return await this.slack.botInstalled(stored.secrets.botToken);
+    } catch (error) {
+      if (finalAttempt) return true;
+      throw error;
+    }
   }
 
   /** `first`, then each other Owner who allowed a live app, once each. */

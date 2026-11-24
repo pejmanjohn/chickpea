@@ -102,6 +102,8 @@ export interface AgentAppSlackApi {
   exchange(input: { clientId: string; clientSecret: string; code: string; redirectUri: string }): Promise<AgentAppGrant>;
   uninstall(input: { clientId: string; clientSecret: string; botToken: string }): Promise<'removed' | 'absent'>;
   delete(token: string, appId: string): Promise<'deleted' | 'absent'>;
+  /** auth.test with an app's own bot token: false when Slack refuses it as revoked, inactive or invalid. */
+  botInstalled(botToken: string): Promise<boolean>;
 }
 
 export interface AgentAppSlackApiOptions {
@@ -263,6 +265,13 @@ export function createAgentAppSlackApi(options: AgentAppSlackApiOptions = {}): A
       if (answer.kind === 'refused' && answer.code === 'app_not_found') return 'absent';
       settled('apps.manifest.delete', answer);
       return 'deleted';
+    },
+
+    async botInstalled(botToken) {
+      const answer = await call('auth.test', form({}, botToken));
+      if (answer.kind === 'refused' && BOT_GONE.has(answer.code)) return false;
+      settled('auth.test', answer);
+      return true;
     },
   };
 }

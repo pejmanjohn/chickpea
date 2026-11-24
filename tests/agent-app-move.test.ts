@@ -79,6 +79,7 @@ class FakeSlack implements AgentAppSlackApi {
   definedBotScopes() { return this.calls.through('export', async () => [...AGENT_APP_BOT_SCOPES]); }
   update() { return this.calls.through('update', async () => undefined); }
   setIcon() { return this.calls.through('setIcon', async () => undefined); }
+  async botInstalled(): Promise<never> { throw new Error('not in this unit'); }
   exchange(input: { clientId: string; code: string }) {
     return this.calls.through('exchange', async () => {
       if (this.exchanged.includes(input.code)) throw new SlackRefused('oauth.v2.access', 'invalid_code');

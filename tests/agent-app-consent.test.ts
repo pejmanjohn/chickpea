@@ -53,6 +53,7 @@ class FakeSlack implements AgentAppSlackApi {
     return 'removed' as const;
   }
   async delete(): Promise<never> { throw new Error('not in this unit'); }
+  async botInstalled(): Promise<never> { throw new Error('not in this unit'); }
 }
 
 interface Posted { channelId: string; text: string; idempotencyKey: string | undefined }

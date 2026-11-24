@@ -110,6 +110,7 @@ class FakeSlack implements AgentAppSlackApi {
   }
   async exchange(): Promise<never> { throw new Error('not in this unit'); }
   async uninstall(): Promise<never> { throw new Error('not in this unit'); }
+  async botInstalled(): Promise<never> { throw new Error('not in this unit'); }
   delete(_token: string, appId: string) {
     return this.calls.through('delete', async () => {
       if (this.refuseDelete) throw this.refuseDelete;

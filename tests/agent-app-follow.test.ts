@@ -85,6 +85,16 @@ class FakeSlack implements AgentAppSlackApi {
   async exchange(): Promise<never> { throw new Error('a follow never installs an app'); }
   async uninstall(): Promise<never> { throw new Error('a follow never uninstalls an app'); }
   async delete(): Promise<never> { throw new Error('a follow never deletes an app'); }
+  /** Bot tokens Slack accepts; one of an app deleted or uninstalled at Slack is refused. */
+  readonly bots = new Set(['xoxb-app']);
+  botUnanswered = false;
+  /** The bot tokens auth.test was asked about. */
+  botsAsked: string[] = [];
+  async botInstalled(botToken: string) {
+    this.botsAsked.push(botToken);
+    if (this.botUnanswered) throw new SlackUnavailable('auth.test', 'network_error');
+    return this.bots.has(botToken);
+  }
 }
 
 /** Chickpea's own bot, for the Owner's DMs; Slack drops a second post with the same client_msg_id. */
@@ -551,8 +561,10 @@ test('an app gone at Slack is removed as its removal event would have, so the Ag
   const gone = await fixture(t);
   t.mock.method(console, 'warn', () => undefined);
   gone.slack.definitions.delete(APP);
+  gone.slack.bots.delete('xoxb-app');
   await save(gone, { name: 'Helpdesk' });
   assert.equal(await run(gone), 'not_live');
+  assert.deepEqual(gone.slack.botsAsked, ['xoxb-app'], "the app's own bot was asked first, and Slack refused it");
   const agent = await support(gone);
   assert.equal(agent.slackPresence?.kind, undefined, 'the Agent is back on its user group');
   assert.equal(agent.slackPresence?.userGroupId, 'SSUPPORT');
@@ -573,6 +585,58 @@ test('an app gone at Slack is removed as its removal event would have, so the Ag
   assert.deepEqual(await stateOf(other), { state: 'own_app', attention: 'update_failed' });
   assert.equal(other.main.posted[0]?.text,
     "Chickpea couldn't update Helpdesk's Slack app with its latest name, handle or picture. Helpdesk keeps answering as before. Choose Try again.");
+});
+
+// Defects caught: the configuration token of an Owner who cannot see an app another Owner's token made, read as
+// the app deleted at Slack, so the sweep drops the bot token of an installed, working app and turns its group back on.
+test("an app the configuration token cannot find but whose own bot Slack accepts is kept, held and told once", async (t) => {
+  const f = await fixture(t);
+  configureAgentSlackApps(HOST);
+  t.after(() => configureAgentSlackApps(undefined));
+  f.slack.definitions.delete(APP);
+  await save(f, { name: 'Helpdesk' });
+  assert.equal(await run(f), 'done');
+  assert.deepEqual(f.slack.botsAsked, ['xoxb-app']);
+  assert.deepEqual(await stateOf(f), { state: 'own_app', attention: 'update_failed' }, 'the Agent still speaks as its own bot');
+  assert.equal((await readAppSecrets(f.secrets, APP))?.secrets.botToken, 'xoxb-app', 'its bot token is kept');
+  assert.deepEqual(f.main.enabled, [], 'its user group stays off');
+  assert.deepEqual(f.main.posted.map((message) => message.text), [
+    "Chickpea couldn't update Helpdesk's Slack app with its latest name, handle or picture. Helpdesk keeps answering as before. Choose Try again.",
+  ]);
+
+  f.slack.log.length = 0;
+  await run(f);
+  await f.service.followAgent('agent_support');
+  assert.deepEqual([f.slack.log, f.main.posted.length], [[], 1], 'held: nothing asked again, nobody told again');
+  const rows: string[] = [];
+  const management = { putOutbox: async (row: ManagementReceiptOutboxRecord) => { rows.push(row.outboxId); return row; } };
+  await armUnfinishedAgentAppMoves({ config: f.config, management }, NOW + FOLLOW_FAILED_RETRY_MS, ENV);
+  assert.equal(rows.length, 1, 'and tried again after a day');
+});
+
+// Defects caught: an app removed because Slack did not answer about its own bot, or because no bot token was read.
+test("an app the configuration token cannot find is removed only on its own bot's refusal: no answer, or no bot token, retries", async (t) => {
+  const f = await fixture(t);
+  t.mock.method(console, 'warn', () => undefined);
+  f.slack.definitions.delete(APP);
+  f.slack.botUnanswered = true;
+  await save(f, { name: 'Helpdesk' });
+  const before = await followsOf(f);
+  await assert.rejects(run(f), SlackUnavailable);
+  assert.deepEqual([await followsOf(f), await stateOf(f)], [before, { state: 'own_app' }], 'nothing is removed or held');
+  assert.equal((await readAppSecrets(f.secrets, APP))?.secrets.botToken, 'xoxb-app');
+  assert.deepEqual([f.main.enabled, f.main.posted], [[], []]);
+
+  f.slack.botUnanswered = false;
+  const stored = (await readAppSecrets(f.secrets, APP))!;
+  await writeAppSecrets(f.secrets, APP, 'agent_support', { clientSecret: 'cs', signingSecret: 'ss' }, stored.revision);
+  f.slack.botsAsked.length = 0;
+  await assert.rejects(run(f));
+  assert.deepEqual([f.slack.botsAsked, await stateOf(f), f.main.enabled, f.main.posted], [[], { state: 'own_app' }, [], []],
+    'with no bot token to ask, nothing is asked, removed or told');
+  assert.equal(await f.service.continueSwitch('agent_support', { finalAttempt: true, row: 2 }), 'done');
+  assert.deepEqual([await stateOf(f), f.main.enabled], [{ state: 'own_app', attention: 'update_failed' }, []],
+    "on the job's last try it is held as an update that did not go through, and nothing is removed");
 });
 
 // Defect caught: an Owner told about an app that was replaced, removed or archived while Slack answered.

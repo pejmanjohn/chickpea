@@ -66,6 +66,7 @@ class FakeSlack implements AgentAppSlackApi {
   }
   async uninstall() { return 'removed' as const; }
   async delete() { return 'deleted' as const; }
+  async botInstalled(): Promise<never> { throw new Error('not in this unit'); }
 }
 
 interface Fixture {

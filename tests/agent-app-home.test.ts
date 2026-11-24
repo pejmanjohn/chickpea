@@ -33,7 +33,7 @@ const ENV = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { install
 const refuse = (name: string) => async (): Promise<never> => { throw new Error(`unexpected ${name}`); };
 const slack = {
   async rotate() { return { accessToken: 'xoxe.xoxp-1-a', refreshToken: 'xoxe-1-r', teamId: TEAM, expiresAt: NOW + 3_600_000 }; },
-  create: refuse('create'), definedBotScopes: refuse('definedBotScopes'), update: refuse('update'), setIcon: refuse('setIcon'), exchange: refuse('exchange'), uninstall: refuse('uninstall'), delete: refuse('delete'),
+  create: refuse('create'), definedBotScopes: refuse('definedBotScopes'), update: refuse('update'), setIcon: refuse('setIcon'), exchange: refuse('exchange'), uninstall: refuse('uninstall'), delete: refuse('delete'), botInstalled: refuse('botInstalled'),
 } as AgentAppSlackApi;
 const transport: AgentAppTransport = {
   disableUserGroup: refuse('disableUserGroup'), enableUserGroup: refuse('enableUserGroup'),
