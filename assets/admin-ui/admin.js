@@ -282,6 +282,7 @@
     onboarding: ONBOARDING_PAGE.initial,
     onboardingError: "",
     onboardingBusy: false,
+    onboardingSlackAppsOn: false,
     onboardingPlatformErrorCode: "",
     onboardingModelsError: false,
     onboardingProviderSelected: "",
@@ -4566,14 +4567,22 @@
   function onboardingSlackAppsHtml() {
     if (state.slackApps && state.slackApps.token.open) return '<section class="onboarding-panel">' + slackAppsTokenPageHtml() + '</section>';
     var busy = state.onboardingBusy;
+    if (state.onboardingSlackAppsOn) {
+      return '<section class="onboarding-panel"><p class="onboarding-eyebrow">' + onboardingStepEyebrow() + ' &middot; Optional</p>' +
+        '<h1 class="onboarding-title">Make each Agent its own Slack app</h1>' +
+        '<p class="onboarding-success-badge" role="status">Done. Each new Agent gets its own Slack app.</p>' +
+        '<p class="hint">Chickpea couldn&rsquo;t open the next step. <button type="button" class="link-btn" data-action="onboarding-slack-apps-continue"' + (busy ? ' disabled' : '') + '>Try again</button></p></section>';
+    }
+    var error = state.onboardingError || (state.slackApps && state.slackApps.turnOnFailed ? SLACK_APPS_SAVED_NOT_ON : "");
     return '<section class="onboarding-panel"><p class="onboarding-eyebrow">' + onboardingStepEyebrow() + ' &middot; Optional</p>' +
       '<h1 class="onboarding-title">Make each Agent its own Slack app</h1>' +
       '<p class="onboarding-lede">Each Agent shows up in Slack like a teammate. It has its own name and picture, people can message it directly, and you add it to channels the way you add a person. Setup takes about a minute.</p>' +
       '<div class="slack-apps-compare"><figure>' + onboardingSlackAppsMiniHtml(true) + '<figcaption>Its own Slack app</figcaption></figure>' +
       '<figure>' + onboardingSlackAppsMiniHtml(false) + '<figcaption>Through the Chickpea app</figcaption></figure></div>' +
       (state.onboarding.slackFreePlan === true ? '<p class="slack-apps-plan-note">Your workspace is on Slack&rsquo;s free plan, where this is the only way to give an Agent an @handle people can mention. Slack&rsquo;s free plan also limits how many apps a workspace can have.</p>' : '') +
-      (state.onboardingError ? '<p class="field-error" role="alert">' + esc(state.onboardingError) + '</p>' : '') +
-      '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-slack-apps-set-up"' + (busy ? ' disabled' : '') + '>Set it up</button>' +
+      (error ? '<p class="field-error" role="alert">' + esc(error) + '</p>' : '') +
+      '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-slack-apps-set-up"' + (busy ? ' disabled' : '') + '>' +
+      (state.slackApps && state.slackApps.turnOnFailed ? 'Turn it on' : 'Set it up') + '</button>' +
       '<button type="button" class="btn btn-ghost" data-action="onboarding-slack-apps-skip"' + (busy ? ' disabled' : '') + '>Skip for now</button></div>' +
       '<p class="hint slack-apps-after">If you skip, your Agents answer through the Chickpea app. You can turn this on later under Destinations &rsaquo; Slack.</p></section>';
   }
@@ -4596,7 +4605,8 @@
       }
       return postJson(SLACK_APPS_API + "/mode", "PUT", { mode: "own_app" }).then(function () {
         state.onboardingBusy = false;
-        settleOnboardingSlackApps();
+        apps.turnOnFailed = false;
+        settleOnboardingSlackApps(true);
       });
     }).catch(function () {
       state.onboardingBusy = false;
@@ -4605,21 +4615,26 @@
     });
   }
 
-  // Skip for now, or the setting turned on: the journey moves on. Skipping changes nothing else.
-  function settleOnboardingSlackApps() {
+  // Skip for now, or the setting turned on: the journey moves on. Skipping
+  // changes nothing else. With the setting on, a failed write is tried once
+  // more, then the step shows as done, since it is, with a quiet retry.
+  function settleOnboardingSlackApps(settingOn) {
     if (state.onboardingBusy || !onboardingSlackAppsStep()) return;
     state.onboardingBusy = true;
     state.onboardingError = "";
     render();
-    postJson("/admin/api/onboarding/slack-apps", "POST", {
-      expectedRevision: state.onboarding.revision
-    }).then(function (body) {
+    var write = function () {
+      return postJson("/admin/api/onboarding/slack-apps", "POST", { expectedRevision: state.onboarding.revision });
+    };
+    (settingOn ? write().catch(write) : write()).then(function (body) {
       state.onboarding = body;
       state.onboardingBusy = false;
+      state.onboardingSlackAppsOn = false;
       render();
     }).catch(function (error) {
       state.onboardingBusy = false;
-      state.onboardingError = onboardingMutationErrorText(error, "Could not load setup.");
+      if (settingOn) state.onboardingSlackAppsOn = true;
+      else state.onboardingError = onboardingMutationErrorText(error, "Could not load setup.");
       render();
     });
   }
@@ -5089,7 +5104,7 @@
     if (!state.slackApps) {
       state.slackApps = {
         data: null, loading: false, error: "", busy: "", rowBusy: "", rowNotes: {},
-        results: [], notice: null, confirm: "", people: null, fastUntil: {}, seen: {},
+        results: [], notice: null, confirm: "", people: null, fastUntil: {}, seen: {}, turnOnFailed: false,
         token: { open: false, phase: "empty", error: "", turnOn: false, why: "", connectedMode: "" }
       };
     }
@@ -5288,7 +5303,7 @@
         '<button type="button" class="link-btn" data-action="slack-apps-turn-off"' + (busy ? " disabled" : "") + '>Stop creating Slack apps for new Agents</button></div>'
       : '<div class="section-head"><div>' + title + '<p class="hint">Agents answer through the Chickpea app. People mention them by @handle in channels Chickpea is in.</p></div></div>' +
         '<div class="action-well"><button type="button" class="btn btn-primary btn-sm" data-action="slack-apps-turn-on"' + (busy ? " disabled" : "") + '>' +
-        (apps.busy === "on" ? '<span class="spinner"></span>' : '') + 'Make each Agent its own Slack app</button></div>';
+        (apps.busy === "on" ? '<span class="spinner"></span>' : '') + (apps.turnOnFailed ? 'Turn it on' : 'Make each Agent its own Slack app') + '</button></div>';
     var needsToken = on && !data.token.stored
       ? '<div class="callout slack-apps-callout" role="status"><span>Chickpea has no Slack token, so it can&rsquo;t create Slack apps for new Agents.</span>' +
         '<button type="button" class="btn btn-soft btn-sm" data-action="slack-apps-token-open">Add a token</button></div>'
@@ -5297,7 +5312,8 @@
       ? '<div class="callout' + (apps.notice.ok ? " callout-success" : "") + ' slack-apps-callout" role="status"><span>' + esc(apps.notice.text) + '</span></div>'
       : "";
     var results = apps.results.map(slackAppsResultHtml).join("");
-    var error = apps.error ? '<p class="inline-status error" role="alert">' + esc(apps.error) + '</p>' : "";
+    var errorText = apps.error || (apps.turnOnFailed && !on ? SLACK_APPS_SAVED_NOT_ON : "");
+    var error = errorText ? '<p class="inline-status error" role="alert">' + esc(errorText) + '</p>' : "";
     var lists = slackAppsListsHtml(data.agents || [], on);
     var token = data.token.stored
       ? '<div class="action-well slack-apps-token-row"><span class="hint">' + esc(slackAppsTokenLine(data.token)) + '</span>' +
@@ -5524,6 +5540,7 @@
     // Only an Owner turning the setting on for the first time is told it happens once.
     var firstTime = !!turnOn && !(apps.data && apps.data.setting && apps.data.setting.changedAt);
     apps.token = { open: true, phase: "empty", error: "", turnOn: !!turnOn, firstTime: firstTime, why: why || "", connectedMode: "" };
+    apps.turnOnFailed = false;
     render();
     focusSlackAppsTokenField();
     if (!onboarding) revalidateCurrentVisibleResources({ navigation: true });
@@ -5552,7 +5569,7 @@
     apps.token = { open: false, phase: "empty", error: "", turnOn: false, why: "", connectedMode: "" };
     // Opened from onboarding's Slack apps step: back to the step, or past it once a token was accepted.
     if (state.view === "onboarding") {
-      if (connected) settleOnboardingSlackApps();
+      if (connected) settleOnboardingSlackApps(true);
       else render();
       return;
     }
@@ -5596,7 +5613,10 @@
     apps.token.phase = "checking";
     apps.token.error = "";
     render();
-    postJson(SLACK_APPS_API + "/token", "PUT", { refreshToken: pasted }).then(function () {
+    var saved = false;
+    postJson(SLACK_APPS_API + "/token", "PUT", { refreshToken: pasted }).then(function (body) {
+      saved = true;
+      if (apps.data) apps.data.token = (body && body.token) || { stored: true };
       var mode = apps.data && apps.data.setting ? apps.data.setting.mode : "shared";
       if (!apps.token.turnOn || mode === "own_app") return mode;
       return postJson(SLACK_APPS_API + "/mode", "PUT", { mode: "own_app" }).then(function (body) {
@@ -5610,8 +5630,23 @@
       var next = document.querySelector('[data-role="slack-apps-token-continue"]');
       if (next && next.focus) next.focus();
     }).catch(function (error) {
-      refuse(error && error.message);
+      if (saved) leaveSlackAppsTokenSavedNotOn();
+      else refuse(error && error.message);
     });
+  }
+
+  var SLACK_APPS_SAVED_NOT_ON = "Chickpea saved your Slack token, but couldn't turn this on yet.";
+
+  // Slack accepted the token, which spends it, so the page never asks for it
+  // again: the Owner goes back where they came from, and Turn it on there
+  // sends only the setting.
+  function leaveSlackAppsTokenSavedNotOn() {
+    var apps = slackAppsState();
+    apps.token = { open: false, phase: "empty", error: "", turnOn: false, why: "", connectedMode: "" };
+    apps.turnOnFailed = true;
+    invalidateVisibleResource("slack-apps", "");
+    if (state.view === "onboarding") render();
+    else openDestination("connection");
   }
 
   function setSlackAppsMode(mode) {
@@ -5623,6 +5658,7 @@
     postJson(SLACK_APPS_API + "/mode", "PUT", { mode: mode }).then(function (body) {
       apps.busy = "";
       apps.confirm = "";
+      apps.turnOnFailed = false;
       if (apps.data && body && body.setting) apps.data.setting = body.setting;
       invalidateVisibleResource("slack-apps", "");
       render();
@@ -5662,6 +5698,7 @@
       apps.busy = "";
       apps.confirm = "";
       if (apps.data) apps.data.token = { stored: false };
+      apps.turnOnFailed = false;
       var removed = body && body.removed;
       apps.notice = Object.prototype.hasOwnProperty.call(SLACK_TOKEN_REMOVED, removed) ? SLACK_TOKEN_REMOVED[removed] : SLACK_TOKEN_REMOVED.unconfirmed;
       invalidateVisibleResource("slack-apps", "");
@@ -17559,6 +17596,7 @@
     if (action === "onboarding-model-continue") { selectOnboardingModel(); }
     if (action === "onboarding-slack-apps-set-up") { setUpOnboardingSlackApps(); }
     if (action === "onboarding-slack-apps-skip") { settleOnboardingSlackApps(); }
+    if (action === "onboarding-slack-apps-continue") { settleOnboardingSlackApps(true); }
     if (action === "onboarding-github-skip" || action === "onboarding-github-next") { settleOnboardingGithub(); }
     if (action === "onboarding-proceed-dashboard") { proceedFromOnboardingTry(); }
     if (action === "onboarding-open-dashboard") { enterProfiles(null); }
