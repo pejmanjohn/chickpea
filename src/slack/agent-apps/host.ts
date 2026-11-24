@@ -73,6 +73,11 @@ export function endAgentSlackApp(
   return endAgentSlackAppLive(env, appId, payload);
 }
 
+/**
+ * A host acknowledges an Agent app's event delivery to Slack before Core
+ * serves it, so Slack never sends that event again: Core never counts on a
+ * redelivery, and a delivery Core fails is not served again.
+ */
 export type AgentSlackAppHandoff =
   | { readonly kind: 'delivery'; readonly agentId: string; readonly appId: string; readonly signingSecret: string }
   | { readonly kind: 'owner'; readonly slackUserId: string };

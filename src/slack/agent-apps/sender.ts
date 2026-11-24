@@ -14,6 +14,7 @@
 import { isTransientSlackApiError, slackMessageAt, type SlackMessageReadResult } from '../credentials.ts';
 import { slackMessageChangeIsEmpty } from '../message-change.ts';
 import { SlackTransportError } from '../transport/types.ts';
+import { createSlackWebClient } from '../web-client.ts';
 import type { UiSurfaceRecord } from '../ui/surface.ts';
 import type { AgentAppBotCredentials } from './live.ts';
 
@@ -32,10 +33,15 @@ const STALE_AFTER_MS = 60 * 60_000;
 const JUST_SENT_MS = 10_000;
 const REREAD_AFTER_MS = 500;
 /**
- * All a message's check may pause, for a rate limit waited out and a re-read together: Slack sends a delivery again
- * after three seconds without its acknowledgement, and the pauses alone stay well inside that.
+ * All a message's check may pause, for reads Slack did not answer and a re-read together. The host has already
+ * acknowledged the delivery, so Slack never sends it again: this is how long Chickpea keeps trying before it tells
+ * the person, long enough for a usual Retry-After and a short outage, short enough that they are told within seconds.
  */
-const PAUSE_BUDGET_MS = 1_500;
+const PAUSE_BUDGET_MS = 10_000;
+/** The first pause after a read Slack did not answer and named no wait; each later one doubles. */
+const FIRST_BACKOFF_MS = 250;
+/** What the Agent's bot says in a person's thread when Slack would not let it read their message. */
+export const UNREAD_MESSAGE_NOTICE = "I couldn't read your message just now, so please send it again.";
 /** A press is acknowledged, and a modal opened from it, within Slack's three seconds: its read waits for no more. */
 const CARD_READ_TIMEOUT_MS = 2_000;
 
@@ -46,8 +52,8 @@ const refused = (reason: string | undefined): AgentAppMessageCheck => ({ confirm
  * app's secrets can name anyone: it goes on only once Slack shows that
  * message from that person, and as Slack's copy of it. Undefined for one it
  * stops, with one line and no content (none for an edit of the app's own
- * bot); a read Slack does not answer is logged and thrown, so the delivery is
- * retried.
+ * bot); a read Slack still does not answer once the check's pauses are spent
+ * is logged and thrown, and the delivery ends as a failure.
  */
 export async function agentAppMessageConfirmed(
   event: unknown,
@@ -95,8 +101,10 @@ export async function agentAppCardRefused(
  * Whether Slack holds what a `message` or `app_mention` event delivered
  * through an Agent's app says it holds. Its app subscribes to messages in its
  * own DM and to mentions of its bot, so anything else it delivers is refused
- * unread. A read Slack does not answer (an outage, a rate limit) throws a
- * retryable `SlackTransportError`: the delivery is retried, never trusted.
+ * unread. A read Slack does not answer (an outage, a rate limit) is made again
+ * while the check's pauses last, then throws a `SlackTransportError`: nothing
+ * is trusted, and for a new message or mention the Agent's bot first asks the
+ * person, in its thread, to send it again.
  */
 export async function confirmAgentAppMessage(
   delivered: unknown,
@@ -146,6 +154,9 @@ export async function confirmAgentAppMessage(
   if (!read.ok) {
     const code = read.error ?? 'invalid_response';
     if (isTransientSlackApiError(code)) {
+      // The notice goes where the delivery says, unconfirmed: it carries none of the delivery, names nobody, and is
+      // posted with the app's own token, which whoever could forge the delivery already holds.
+      if (!deleted && !changed) await postUnreadNotice(bot.botToken, place);
       throw new SlackTransportError('message confirmation', code, {
         retryable: true, effectOutcome: 'failed', ...(read.retryAfterMs === undefined ? {} : { retryAfterMs: read.retryAfterMs }),
       });
@@ -196,15 +207,28 @@ async function agentAppCardRefusal(
   return read.message.user === bot.botUserId || read.message.app_id === appId ? undefined : 'other_poster';
 }
 
-/** A read whose rate limit fits in what is left of the check's pauses is waited out, and made once more. */
+/**
+ * A read Slack did not answer is made again after Slack's Retry-After or a backoff, whichever is longer, while that
+ * pause fits in what is left of the check's pauses. A refusal that is not transient is never read again.
+ */
 async function readMessage(
   botToken: string,
   place: MessagePlace,
   pauseWithin: (ms: number) => Promise<boolean>,
 ): Promise<SlackMessageReadResult> {
-  const read = await slackMessageAt(botToken, place);
-  if (read.ok || read.error !== 'ratelimited' || read.retryAfterMs === undefined || !await pauseWithin(read.retryAfterMs)) return read;
-  return slackMessageAt(botToken, place);
+  let read = await slackMessageAt(botToken, place);
+  for (let backoff = FIRST_BACKOFF_MS; !read.ok && isTransientSlackApiError(read.error); backoff *= 2) {
+    if (!await pauseWithin(Math.max(read.retryAfterMs ?? 0, backoff))) break;
+    read = await slackMessageAt(botToken, place);
+  }
+  return read;
+}
+
+/** Posted once, in the message's thread; a notice Slack does not take is left at that. */
+async function postUnreadNotice(botToken: string, place: MessagePlace): Promise<void> {
+  await createSlackWebClient(botToken, { rejectRateLimitedCalls: true }).chat.postMessage({
+    channel: place.channelId, thread_ts: place.threadTs ?? place.ts, text: UNREAD_MESSAGE_NOTICE,
+  }).catch(() => undefined);
 }
 
 function pause(ms: number): Promise<void> {
