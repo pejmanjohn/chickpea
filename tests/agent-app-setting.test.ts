@@ -16,7 +16,7 @@ import {
 import type { IdentityStore, RecordIdentityAuthAuditInput } from '../src/identity/types.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { type AgentSlackAppsHost, configureAgentSlackApps } from '../src/slack/agent-apps/host.ts';
-import { configurationTokenKey, saveConfigurationToken, type SecretDeps } from '../src/slack/agent-apps/secrets.ts';
+import { configurationTokenKey, readAppSecrets, saveConfigurationToken, type SecretDeps, writeAppSecrets } from '../src/slack/agent-apps/secrets.ts';
 import { AgentSlackApps } from '../src/slack/agent-apps/service.ts';
 import { FINISH_APP_ACTION } from '../src/slack/agent-apps/pages.ts';
 import { AGENT_SLACK_APPS_SETTING_KEY, readAgentSlackAppsSetting } from '../src/slack/agent-apps/setting.ts';
@@ -92,6 +92,7 @@ interface SlackScript {
   created: number;
   update?: 'unanswered' | undefined;
   delete?: 'unanswered' | 'refused' | undefined;
+  uninstall?: 'refused' | 'answered' | undefined;
   exchange?: AgentAppSlackApi['exchange'] | undefined;
   now: number;
   auditFails: boolean;
@@ -201,7 +202,11 @@ async function adminApp(t: TestContext, options: {
       if (!script.exchange) throw new Error('unexpected exchange');
       return script.exchange(input);
     },
-    uninstall: async () => { throw new Error('unexpected uninstall'); },
+    uninstall: async () => {
+      if (script.uninstall === undefined) throw new Error('unexpected uninstall');
+      if (script.uninstall === 'refused') throw new SlackRefused('apps.uninstall', 'invalid_auth');
+      return 'removed';
+    },
     delete: async (_token, appId) => {
       if (script.delete === 'unanswered') throw new SlackUnavailable('apps.manifest.delete', 'network_error');
       if (script.delete === 'refused') throw new SlackRefused('apps.manifest.delete', 'app_not_found');
@@ -213,8 +218,10 @@ async function adminApp(t: TestContext, options: {
   const texts: string[] = [];
   const audits: RecordIdentityAuthAuditInput[] = [];
   const identity = people(audits, () => script.auditFails);
+  const keyring = generateCredentialKeyring('k1');
+  const secrets: SecretDeps = { credentials: settings, keyring, slack, now: () => script.now };
   const service: AgentSlackApps = new AgentSlackApps({
-    env: HOSTED, stores: { config, settings }, host: HOST, slack, keyring: generateCredentialKeyring('k1'), armSwitch: async () => undefined,
+    env: HOSTED, stores: { config, settings }, host: HOST, slack, keyring, armSwitch: async () => undefined,
     now: () => script.now,
     transport: {
       disableUserGroup: async (id) => { calls.push(`disable:${id}`); return { id, name: 'x', handle: 'x', disabled: true }; },
@@ -256,7 +263,7 @@ async function adminApp(t: TestContext, options: {
     method: 'POST', body: new URLSearchParams(fields).toString(), headers: { 'content-type': 'application/x-www-form-urlencoded' },
   });
   const ours = () => audits.filter((audit) => audit.action.startsWith('agent_apps.'));
-  return { request, json, form, service, calls, texts, audits: ours, config, settings, script, presence };
+  return { request, json, form, service, calls, texts, audits: ours, config, settings, script, presence, secrets };
 }
 
 /** Every console line written while `run` runs, so a test can show a secret never reaches one. */
@@ -481,10 +488,21 @@ test("the old token page's removal says what each removal did, and claims nothin
   ]);
 });
 
-test('a token pasted over a stored one retires the stored one at Slack before the new one is kept', async (t) => {
+// Defects caught: Slack asked to retire the stored pair before the pasted one is kept, so a request that ends there
+// leaves the pasted token spent and nothing new stored.
+test('a token pasted over a stored one keeps the new pair first, then retires the stored one at Slack', async (t) => {
   const owner = await adminApp(t);
   assert.equal((await owner.request(`${API}/token`, owner.json('PUT', { refreshToken: PASTED }))).status, 200);
+  const key = configurationTokenKey(TEAM);
+  const first = (await owner.settings.getEncryptedCredentialRevision(key))?.revision;
+  let storedWhenRetired: string | undefined;
+  owner.script.rotate = async (refreshToken) => {
+    if (refreshToken === 'xoxe-1-rotated-1-0000') storedWhenRetired = (await owner.settings.getEncryptedCredentialRevision(key))?.revision;
+    return { accessToken: 'xoxe.xoxp-1-access-2', refreshToken: `xoxe-1-rotated-${owner.script.spent.length + 1}-0000`, teamId: TEAM, expiresAt: NOW + 12 * 3_600_000 };
+  };
   assert.equal((await owner.request(`${API}/token`, owner.json('PUT', { refreshToken: PASTED_AGAIN }))).status, 200);
+  owner.script.rotate = undefined;
+  assert.ok(storedWhenRetired && storedWhenRetired !== first, 'the new pair was already kept when the old one was retired');
   assert.deepEqual(owner.script.spent, [PASTED, PASTED_AGAIN, 'xoxe-1-rotated-1-0000'], 'the earlier pair is spent, its result dropped');
   assert.equal((await owner.request(`${API}/agents/agent_support/start`, owner.json('POST', {}))).status, 200, 'the new pair works');
 
@@ -712,8 +730,7 @@ test('after Allow, a private creator Channel is granted and named as answering t
   assert.equal((await grantOf(f.owner, 'CSALES'))?.status, 'active');
   assert.equal(await grantOf(f.owner, 'COLD'), undefined, "an archived Channel's wait is dropped");
   assert.deepEqual([f.slack.joined, [...f.slack.appBotIn]], [[], []], 'nobody joins a private Channel by themselves');
-  assert.match(f.owner.texts.at(-1)!, /<#CSALES>/);
-  assert.match(f.owner.texts.at(-1)!, /answering through Chickpea|through Chickpea/);
+  assert.match(f.owner.texts.at(-1)!, /In <#CSALES> it keeps answering through Chickpea until someone there adds it\./);
   assert.equal(f.owner.texts.at(-1)!.includes('COLD'), false);
 });
 
@@ -789,6 +806,40 @@ test('a Cancel that finishes after the workspace went back to shared gives the A
   assert.ok(after?.userGroupId, 'the Cancel ends with the Agent in Slack through its group');
   assert.equal(after?.app, undefined);
   assert.equal((await grantOf(f.owner, 'CSALES'))?.status, 'active');
+});
+
+// Defects caught: Admin's Channel add for an Agent not in Slack yet answered with a Retry that cannot work, or writing
+// a pending grant; Admin's restore of an Agent with no group archiving it again, or answering a restore that happened
+// as a failure.
+test("Admin refuses a Channel add for an Agent not in Slack yet with nothing to retry, and a restore leaves one not in Slack yet", async (t) => {
+  const f = await ownAppWorkspace(t);
+  f.slack.channel('CSALES', { members: [OWNER] });
+  await f.owner.config.createAgent({ ...agent('agent_new', 'Newbie', notInSlack('newbie')), model: 'local-stub/newbie' });
+  const added = await f.owner.request('/admin/api/agents/agent_new/channels', f.owner.json('POST', { workspaceId: TEAM, channelId: 'CSALES' }));
+  assert.equal(added.status, 409);
+  const body = await added.json() as { error: string; message: string; recovery: Record<string, unknown> };
+  assert.equal(body.error, 'not_in_slack_yet');
+  assert.equal(body.message, "Newbie isn't in Slack yet. A workspace Owner needs to add it first.");
+  assert.deepEqual(body.recovery, {
+    title: "Newbie isn't in Slack yet",
+    explanation: "Newbie isn't in Slack yet. A workspace Owner needs to add it first.",
+    steps: ['Ask a workspace Owner to add it to Slack, then add it to the Channel.'],
+    actionKind: 'none',
+  });
+  assert.deepEqual(await f.owner.config.listAgentChannelGrants(), []);
+
+  // Its handle is taken in Slack meanwhile: a restore that asked Slack for a group would fail on it.
+  f.slack.groups.push({ id: 'S_TAKEN', name: 'Taken', handle: 'taken', disabled: false });
+  const old = await f.owner.config.createAgent({
+    ...agent('agent_old', 'Taken', { requestedHandle: 'taken', normalizedHandle: 'taken', desiredState: 'disabled', health: 'unpublished', avatar: AVATAR }),
+    model: 'local-stub/old',
+  });
+  const archived = await f.owner.config.archiveAgent(old.id, { expectedRevision: old.revision, expectedCredentialIncarnation: old.credentialIncarnation! });
+  const restored = await f.owner.request('/admin/api/agents/agent_old/restore', f.owner.json('POST', { expectedRevision: archived.revision }));
+  assert.equal(restored.status, 200, await restored.clone().text());
+  const back = await f.owner.config.getAgent('agent_old');
+  assert.equal(back.lifecycle, 'active', 'the restore stands, and is not archived again');
+  assert.deepEqual([back.slackPresence?.errorCode, back.slackPresence?.desiredState], [AWAITING_OWN_APP, 'active'], 'it is not in Slack yet');
 });
 
 /** Start for agent_support with a stored token, up to Allow. */
@@ -936,6 +987,37 @@ test("Cancel says when the app was left for the Owner to delete; a Cancel finish
   const told = later.texts.at(-1)!;
   assert.match(told, /keeps answering as it did before/);
   assert.equal(/archived/.test(told), false, 'the Agent is not archived, and the message never says so');
+});
+
+// Defects caught: a Cancel whose uninstall Slack refused sent the archive message, its next Cancel answered not_waiting,
+// and a Start that finished it answered that an app was being created.
+test('a Cancel whose uninstall Slack refuses stays a Cancel: never "archived", picked up by the next Cancel, and Start answers cancelling', async (t) => {
+  const owner = await adminApp(t);
+  await waitingForAllow(owner);
+  // An Allow stored the app's bot token and did not commit: removing the app now starts with its uninstall.
+  const stored = await readAppSecrets(owner.secrets, 'A0APP1');
+  await writeAppSecrets(owner.secrets, 'A0APP1', 'agent_support', { ...stored!.secrets, botToken: 'xoxb-half-allowed' }, stored!.revision);
+  owner.script.uninstall = 'refused';
+  owner.script.delete = undefined;
+
+  const cancelled = await owner.request(`${API}/agents/agent_support/cancel`, owner.json('POST', {}));
+  assert.equal(cancelled.status, 503);
+  const listed = async () => (await (await owner.request(API)).json() as { agents: Array<{ id: string; slack: unknown }> })
+    .agents.find((row) => row.id === 'agent_support')?.slack;
+  assert.deepEqual(await listed(), { state: 'cancelling' });
+  assert.match(owner.texts.at(-1)!, /^Chickpea couldn(&#39;|')t finish removing the Slack app it made for Support\. Choose Try again in a minute\. Support keeps answering as it did before\.$/);
+
+  const started = await owner.request(`${API}/agents/agent_support/start`, owner.json('POST', {}));
+  assert.equal(started.status, 409);
+  assert.equal((await started.json() as { error: string }).error, 'cancelling');
+  assert.equal(owner.script.created, 1, 'nothing new is created');
+
+  owner.script.uninstall = 'answered';
+  const again = await owner.request(`${API}/agents/agent_support/cancel`, owner.json('POST', {}));
+  assert.equal(again.status, 200, 'the next Cancel picks the removal up');
+  assert.deepEqual(owner.script.deleted, ['A0APP1']);
+  assert.equal((await owner.config.getAgent('agent_support')).slackPresence?.app, undefined);
+  assert.equal(owner.texts.some((text) => /archived/.test(text)), false, 'no message says archived');
 });
 
 test("the Home tab's row for an unfinished Cancel says removing stopped partway, with a button that finishes it", async (t) => {

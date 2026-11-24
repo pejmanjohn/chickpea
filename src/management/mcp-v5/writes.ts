@@ -181,7 +181,7 @@ export async function createAgent(
     ...(version ? { version } : {}),
     summary: `${result.summary} It joins ${added} Channel${added === 1 ? '' : 's'}.`,
     ...(notAdded.length ? { warnings: [...result.warnings ?? [], ...notAdded] } : {}),
-  }));
+  }, added < input.channels.length));
 }
 
 /**
@@ -193,12 +193,16 @@ async function notInSlackYet(
   deps: FiveZeroDeps,
   context: ManagementActorContext,
   agentId: string,
-): Promise<(result: ChangeResult) => ChangeResult> {
+): Promise<(result: ChangeResult, channelsLeft?: boolean) => ChangeResult> {
   const { agent } = await deps.service.agentReader(context, agentId).catch(() => ({ agent: undefined }));
   if (agent?.slackPresence?.errorCode !== AWAITING_OWN_APP) return (result) => result;
-  return (result) => ({
+  return (result, channelsLeft = false) => ({
     ...result,
     summary: `${result.summary} ${agent.name} isn't in Slack yet: a workspace Owner adds it to Slack in Chickpea Admin.`,
+    // From Slack the same request keeps the Channels waiting for the Owner; here they are not kept, so say so.
+    ...(channelsLeft
+      ? { warnings: [...result.warnings ?? [], `Ask to add ${agent.name} to its Channels again once a workspace Owner has added it to Slack.`] }
+      : {}),
   });
 }
 

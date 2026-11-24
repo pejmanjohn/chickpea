@@ -22,7 +22,10 @@ const NOW = 1_800_000_000_000;
 const TEAM = 'TACME';
 const AVATAR = { kind: 'generated' as const, revision: 1, seed: 'seed' };
 
-/** Refuses what Slack refuses: a second group with a taken handle or name, and an unknown group. */
+/**
+ * Refuses what Slack refuses: a second group with a taken handle or name, an unknown group, and a private Channel
+ * Chickpea's bot is not in (`channel_not_found`); a member check is answered from who is in the Channel.
+ */
 class SlackGroups implements SlackTransport {
   readonly mode = 'direct';
   groups: SlackUserGroup[] = [];
@@ -30,12 +33,21 @@ class SlackGroups implements SlackTransport {
   joined: string[] = [];
   lookedUp: string[] = [];
   channel: SlackChannel = { id: 'C_SALES', name: 'sales', private: false, member: false, archived: false };
+  /** People in the Channel, by Slack user ID. */
+  members = new Set(['UADA']);
 
   async lookupMember(): Promise<never> { throw new Error('unused'); }
-  async lookupChannel(channelId: string) { this.lookedUp.push(channelId); return { ...this.channel, id: channelId }; }
+  async lookupChannel(channelId: string) {
+    this.lookedUp.push(channelId);
+    if (this.channel.private && !this.channel.member) throw new SlackTransportError('conversations.info', 'channel_not_found');
+    return { ...this.channel, id: channelId };
+  }
   async listChannels() { return { channels: [{ ...this.channel }], truncated: false }; }
   async listMemberChannels(): Promise<ReadonlySet<string>> { return new Set([this.channel.id]); }
-  async channelHasMember() { return true; }
+  async channelHasMember(_channelId: string, userId: string) {
+    if (this.channel.private && !this.channel.member) throw new SlackTransportError('conversations.members', 'channel_not_found');
+    return this.members.has(userId);
+  }
   async openDirectConversation(userId: string) { return { id: `D_${userId}`, private: true, member: true, archived: false }; }
   async joinPublicChannel(channelId: string) { this.joined.push(channelId); return { ...this.channel, id: channelId, member: true }; }
   async lookupUserGroup(id: string) { return this.groups.find((group) => group.id === id); }
@@ -176,7 +188,8 @@ test('a private Channel Chickpea is not in writes no pending grant for an Agent 
   f.slack.channel = { ...f.slack.channel, private: true, member: false };
   await f.config.createAgent(newAgent('agent_support', 'Support'));
 
-  await assert.rejects(f.reconciler.publish({ ...publishInput, keepPendingUntilInSlack: true }), { code: 'private_channel_invite_required' });
+  // As in Slack, the bot cannot even see a private Channel it is not in.
+  await assert.rejects(f.reconciler.publish({ ...publishInput, keepPendingUntilInSlack: true }), AgentPresenceError);
 
   assert.deepEqual(await f.config.listAgentChannelGrants(), [], 'nothing the switch could later turn on without a membership check');
 });
@@ -306,6 +319,50 @@ test('an Owner who creates an Agent not in Slack yet is welcomed by it, with no 
   assert.match(text, /I’m not in Slack yet, so people can’t mention me\. Choose Add to Slack to give me my own Slack app\./);
   const queued = await f.management.claimDueOutbox(NOW * 2, 25, NOW * 2 + 1);
   assert.deepEqual(queued.map(({ receipt }) => 'kind' in receipt && receipt.kind), ['agent_created_welcome'], 'no Owner is asked: the creator is one');
+
+  // Delivered, the welcome carries the button under its words, posted as the Agent.
+  const posted: Array<Record<string, unknown>> = [];
+  const client = {
+    conversations: { open: async () => ({ ok: true, channel: { id: 'D_OWNER' } }) },
+    chat: { postMessage: async (message: Record<string, unknown>) => { posted.push(message); return { ok: true, ts: '1.0' }; } },
+  };
+  await deliverManagementReceiptToSlack(queued[0]!, {
+    identity: f.identity,
+    resolveInstallation: async (workspaceId) => ({ workspaceId, transportMode: 'direct', sharedAppReads: false, botUserId: 'UBOT', client: client as never }),
+  });
+  assert.equal(posted[0]?.username, 'Support');
+  assert.deepEqual((posted[0]?.blocks as unknown[]).at(-1), {
+    type: 'actions', elements: [{ type: 'button', style: 'primary', action_id: 'agent_app_start', value: 'agent_support', text: { type: 'plain_text', text: 'Add to Slack' } }],
+  });
+  assert.equal((posted[0]?.blocks as Array<{ text?: { text: string } }>).slice(0, -1).map((block) => block.text?.text).join('\n\n'), posted[0]?.text);
+});
+
+// Defects caught: the welcome saying Owners were asked when asking failed or found nobody to ask.
+test('a creator who is not an Owner is never told the Owners were asked when none could be', async (t) => {
+  const f = await waitingCreation('own-app-nobody');
+  t.after(() => f.close());
+  const put = f.management.putOutbox.bind(f.management);
+  f.management.putOutbox = async (record) => {
+    if (record.outboxId.startsWith('agent_app_add:')) throw new Error('outbox unavailable');
+    return put(record);
+  };
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  const admin: ManagementActorContext = {
+    userId: f.admin.user.id, membershipId: f.admin.membership.id, organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'adapter-test' },
+  };
+  const applied = await f.service.applyWorkspaceChanges({ context: admin, idempotencyKey: 'own-app-nobody', operations: [creation('agent_support')] });
+  if (!('operationId' in applied)) assert.fail('expected an applied creation');
+
+  const welcome = welcomeOf(await f.management.getOutboxForOperation(applied.operationId));
+  assert.equal(welcome.notInSlackYet, 'owner_needed');
+  const text = formatManagementSetupReceipt(welcome);
+  assert.match(text, /I’m not in Slack yet\. A workspace Owner needs to add me to Slack before people can mention me\./);
+  assert.equal(text.includes('asked'), false);
+  const fallback = formatManagementSetupReceipt({ ...welcome, publication: { status: 'partial', incomplete: ['slack_presence'] } });
+  assert.match(fallback, /^I created \*Support\*\. A workspace Owner needs to add it to Slack before people can mention it\.\n/);
+  assert.equal(fallback.includes('asked'), false);
+  assert.ok(warn.mock.calls.length > 0, 'the operator sees that the Owners were not asked');
 });
 
 test('a creator who is not an Owner is told an Owner adds it, and each Owner gets the button with the creator named', async (t) => {

@@ -683,9 +683,10 @@ export interface ManagementAgentCreatedWelcome {
   firstAsk?: string;
   /**
    * The Agent is not in Slack yet, waiting for its own Slack app: an Owner
-   * creator adds it from the welcome's button; anyone else's Owners are asked.
+   * creator adds it from the welcome's button; anyone else's Owners are
+   * asked, or `owner_needed` when no Owner could be asked.
    */
-  notInSlackYet?: 'creator_adds' | 'owners_asked';
+  notInSlackYet?: 'creator_adds' | 'owners_asked' | 'owner_needed';
   /** Compatibility fields for proposal-created welcomes. */
   setupUrl?: string;
   suggestedConnector?: string;

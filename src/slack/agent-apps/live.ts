@@ -341,7 +341,9 @@ export async function agentAppHomeRows(input: {
 export async function handleAgentAppHomeAction(input: {
   env: PlatformEnv | undefined;
   payload: { type?: unknown; user?: { id?: unknown }; actions?: unknown };
-  viewer: () => Promise<{ role?: string | undefined; republish: () => Promise<void> } | undefined>;
+  viewer: () => Promise<AgentAppPresser | undefined>;
+  /** Runs the press after Slack has its answer, as the neighbouring actions do. */
+  detach: (work: Promise<void>) => void;
 }): Promise<boolean> {
   const host = agentSlackAppsHost();
   if (!host || input.payload.type !== 'block_actions' || !Array.isArray(input.payload.actions)) return false;
@@ -352,13 +354,28 @@ export async function handleAgentAppHomeAction(input: {
   if (!action) return false;
   const slackUserId = input.payload.user?.id;
   if (typeof slackUserId !== 'string') return true;
-  const viewer = await input.viewer();
-  if (viewer?.role !== 'owner') return true;
-  const service = await liveAgentSlackApps(input.env, host);
-  if (action.action_id === START_APP_ACTION) await service.startFromSlack(action.value, slackUserId);
-  else await service.retry(action.value, slackUserId);
-  await viewer.republish();
+  input.detach((async () => {
+    const viewer = await input.viewer();
+    if (!viewer) return;
+    const owner = viewer.role === 'owner';
+    if (action.action_id === START_APP_ACTION) {
+      // Add to Slack also reaches people who are not Owners: it sits in a creation thread anyone there can see.
+      const reply = await (await liveAgentSlackApps(input.env, host)).addFromSlack(action.value, slackUserId, owner);
+      if (reply) await viewer.tell(reply);
+    } else {
+      if (!owner) return;
+      await (await liveAgentSlackApps(input.env, host)).retry(action.value, slackUserId);
+    }
+    if (owner) await viewer.republish();
+  })());
   return true;
+}
+
+/** Who pressed, as Chickpea's bot sees them: their role, their Home tab, and a private reply where they pressed. */
+export interface AgentAppPresser {
+  role?: string | undefined;
+  republish: () => Promise<void>;
+  tell: (text: string) => Promise<void>;
 }
 
 const AGENT_APP_ACTIONS = new Set([START_APP_ACTION, FINISH_APP_ACTION, TRY_AGAIN_ACTION]);

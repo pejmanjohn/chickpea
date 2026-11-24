@@ -303,8 +303,12 @@ export async function saveConfigurationToken(
   };
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const current = await d.credentials.getEncryptedCredentialRevision(configurationTokenKey(teamId));
-    if (current) await spendRefreshToken(d, teamId, current);
-    if (await writePair(d, teamId, pair, current?.revision ?? null)) return 'saved';
+    const replaced = current ? await openPair(d, teamId, current).catch(unopenedAsNone) : undefined;
+    // The new pair is kept before Slack is asked anything, so a request that ends here loses nothing pasted.
+    if (!(await writePair(d, teamId, pair, current?.revision ?? null))) continue;
+    // Then the pair it replaced is retired at Slack, best effort, so nobody holds a working copy of it.
+    if (replaced) await retireRefreshToken(d, replaced.refreshToken);
+    return 'saved';
   }
   throw new LostRevision(configurationTokenKey(teamId));
 }
@@ -356,15 +360,19 @@ async function spendRefreshToken(
   teamId: string,
   record: { revision: string; envelope: Parameters<typeof decryptSlackSecretEnvelope>[2] },
 ): Promise<boolean> {
-  let pair;
+  const pair = await openPair(d, teamId, record).catch(unopenedAsNone);
+  return pair ? retireRefreshToken(d, pair.refreshToken) : false;
+}
+
+function unopenedAsNone(error: unknown): undefined {
+  if (error instanceof ConfigTokenNeeded) return undefined;
+  throw error;
+}
+
+/** One rotation whose result is dropped; false when Slack did not rotate it. */
+async function retireRefreshToken(d: SecretDeps, refreshToken: string): Promise<boolean> {
   try {
-    pair = await openPair(d, teamId, record);
-  } catch (error) {
-    if (error instanceof ConfigTokenNeeded) return false;
-    throw error;
-  }
-  try {
-    await d.slack.rotate(pair.refreshToken);
+    await d.slack.rotate(refreshToken);
     return true;
   } catch (error) {
     if (error instanceof SlackRefused) logSlackRefusal('rotate', {}, error);

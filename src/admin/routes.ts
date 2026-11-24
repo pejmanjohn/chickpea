@@ -10531,20 +10531,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const workspaceId = parsed.output.workspaceId ?? actor.slackTeamId;
       if (workspaceId !== actor.slackTeamId) throw new AuthorizationError();
       const agentApps = agentAppPresenceHooks(c.env as PlatformEnv | undefined, settings(c));
-      let updated = current.slackPresence?.userGroupId
+      // The reconciler's restore turns the presence back on; with no group where each new Agent is its own app, the
+      // Agent is not in Slack yet. A store-only restore would leave the presence marked for archiving.
+      const updated = current.slackPresence?.userGroupId || (agentApps && await agentApps.ownAppMode())
         ? await new AgentPresenceReconciler({
             config: store(c),
             transport: await agentSlackTransport(c, workspaceId),
             announce: null,
+            ...(agentApps ? { agentApps } : {}),
           }).restore(agentId)
         : await store(c).restoreAgent(agentId, current.revision);
-      // Restored with no group where each new Agent is its own app: it is not in Slack yet.
-      if (agentApps && !updated.slackPresence?.userGroupId && updated.slackPresence?.kind !== 'agent_app' &&
-          await agentApps.ownAppMode()) {
-        updated = await new AgentPresenceReconciler({
-          config: store(c), transport: await agentSlackTransport(c, workspaceId), announce: null, agentApps,
-        }).retry(agentId);
-      }
       return c.json({ agent: await agentAdminProjectionForRequest(c, updated) });
     } catch (error) {
       if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);

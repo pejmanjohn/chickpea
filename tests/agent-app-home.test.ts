@@ -10,7 +10,7 @@ import type { AgentAppLifecycle, AgentSlackPresence, CustomAgentConfig } from '.
 import { type AgentSlackAppsHost, configureAgentSlackApps } from '../src/slack/agent-apps/host.ts';
 import { handleAgentAppHomeAction } from '../src/slack/agent-apps/index.ts';
 import { AgentSlackApps, type AgentAppTransport } from '../src/slack/agent-apps/service.ts';
-import { START_APP_ACTION } from '../src/slack/agent-apps/pages.ts';
+import { FINISH_APP_ACTION, START_APP_ACTION } from '../src/slack/agent-apps/pages.ts';
 import { saveConfigurationToken } from '../src/slack/agent-apps/secrets.ts';
 import type { AgentAppSlackApi } from '../src/slack/agent-apps/slack-api.ts';
 import { formatManagementSetupReceipt } from '../src/management/receipts.ts';
@@ -121,14 +121,27 @@ test('a click on an Agent app control is an Owner-only control, and other clicks
   configureAgentSlackApps(HOST);
   t.after(() => configureAgentSlackApps(undefined));
   let viewers = 0;
-  const viewer = async () => { viewers += 1; return { role: 'member', republish: async () => {} }; };
-  assert.equal(await handleAgentAppHomeAction({ env: ENV, payload: { type: 'view_submission' }, viewer }), false);
-  assert.equal(await handleAgentAppHomeAction({ env: ENV, payload: { type: 'block_actions', user: { id: 'U1' }, actions: [{ action_id: 'chickpea.agent.start', value: 'agent_support' }] }, viewer }), false, "the Message button is the directory's");
-  assert.equal(viewers, 0);
-  assert.equal(await handleAgentAppHomeAction({ env: ENV, payload: { type: 'block_actions', user: { id: 'U1' }, actions: [{ action_id: START_APP_ACTION, value: 'agent_support' }] }, viewer }), true);
-  assert.equal(viewers, 1, "a Member's click is ours and does nothing");
+  const told: string[] = [];
+  let open!: () => void;
+  const gate = new Promise<void>((resolve) => { open = resolve; });
+  const viewer = async () => {
+    await gate;
+    viewers += 1;
+    return { role: 'member', republish: async () => {}, tell: async (text: string) => { told.push(text); } };
+  };
+  const detached: Promise<void>[] = [];
+  const press = (payload: Parameters<typeof handleAgentAppHomeAction>[0]['payload']) =>
+    handleAgentAppHomeAction({ env: ENV, payload, viewer, detach: (work) => { detached.push(work); } });
+  assert.equal(await press({ type: 'view_submission' }), false);
+  assert.equal(await press({ type: 'block_actions', user: { id: 'U1' }, actions: [{ action_id: 'chickpea.agent.start', value: 'agent_support' }] }), false, "the Message button is the directory's");
+  assert.equal(viewers + detached.length, 0);
+  assert.equal(await press({ type: 'block_actions', user: { id: 'U1' }, actions: [{ action_id: FINISH_APP_ACTION, value: 'agent_support' }] }), true);
+  assert.deepEqual([viewers, detached.length], [0, 1], 'the press is answered while its work still waits: Slack gets its answer first');
+  open();
+  await Promise.all(detached);
+  assert.deepEqual([viewers, told], [1, []], "a Member's Finish setting up is ours and does nothing");
   configureAgentSlackApps(undefined);
-  assert.equal(await handleAgentAppHomeAction({ env: ENV, payload: { type: 'block_actions', user: { id: 'U1' }, actions: [{ action_id: START_APP_ACTION, value: 'agent_support' }] }, viewer }), false, 'without the port the control does not exist');
+  assert.equal(await press({ type: 'block_actions', user: { id: 'U1' }, actions: [{ action_id: START_APP_ACTION, value: 'agent_support' }] }), false, 'without the port the control does not exist');
 });
 
 test("the directory's Message opens a live app Agent's own DM only when given the team; every other Agent starts a thread", () => {

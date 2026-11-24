@@ -166,8 +166,9 @@ interface AgentPresenceRecovery {
   title: string;
   explanation: string;
   steps: string[];
-  actionLabel: 'Retry' | 'Reconnect Slack';
-  actionKind?: 'retry' | 'reconnect';
+  /** Absent where nothing here can fix it, so no button is offered. */
+  actionLabel?: 'Retry' | 'Reconnect Slack';
+  actionKind?: 'retry' | 'reconnect' | 'none';
   adminUrl?: string;
   note?: string;
   suggestions?: string[];
@@ -275,7 +276,8 @@ export function agentPresenceRecovery(
       title: `${agent.name} isn't in Slack yet`,
       explanation: error.message,
       steps: ['Ask a workspace Owner to add it to Slack, then add it to the Channel.'],
-      actionLabel: 'Retry',
+      // Retry cannot succeed until an Owner adds it.
+      actionKind: 'none',
     };
   }
   if (error.code === 'private_channel_invite_required') {

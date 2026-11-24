@@ -16,6 +16,7 @@ import {
 } from './helpers/management-adapter-fixture.ts';
 import { serviceResult } from './helpers/management-service-result.ts';
 import { asUserGroup } from './helpers/user-group-presence.ts';
+import { notInSlackYetError } from '../src/slack/agent-presence/errors.ts';
 import { withPersonApproval } from './helpers/slack-person-approval.ts';
 
 const NOW = 1_800_000_000_000;
@@ -509,6 +510,25 @@ test('add_agent_to_channel refuses an off Agent and says to turn it on first; tu
   assert.equal((await f.config.getAgent('agent_research')).enabled, true);
 });
 
+// Defects caught: an Agent not in Slack yet added to a Channel over MCP, or refused with words that hide why.
+test('add_agent_to_channel refuses an Agent not in Slack yet with the reason, and writes no grant', async (t) => {
+  let fixture!: ManagementAdapterFixture;
+  const { f, call, teamId } = await harness(t, 'waiting-channel', {
+    overrides: {
+      // As the reconciler refuses it, before anything is written.
+      publishAgentChannel: async ({ agentId }) => { throw notInSlackYetError(await fixture.config.getAgent(agentId)); },
+    },
+  });
+  fixture = f;
+  await createFixtureAgent(f, 'agent_research');
+  await f.config.putChannel({ workspaceId: teamId, channelId: 'C_SUPPORT', label: 'support', lifecycle: 'active' });
+  const refused = errorOf(await call('add_agent_to_channel', {
+    agentId: 'agent_research', channelId: 'C_SUPPORT', idempotencyKey: 'add-waiting',
+  }), 'invalid_input');
+  assert.deepEqual(refused, { code: 'invalid_input', message: "Research isn't in Slack yet. A workspace Owner needs to add it first.", retryable: false });
+  assert.deepEqual(await f.config.listAgentChannelGrants(teamId, 'C_SUPPORT'), []);
+});
+
 test('a change saved to an Agent that is off says not to suggest trying it; one that is on says nothing of the kind', async (t) => {
   const { f, call } = await harness(t, 'off-save');
   await createFixtureAgent(f, 'agent_research', { enabled: false });
@@ -792,4 +812,34 @@ test('create_agent where each new Agent is its own Slack app says the Agent is n
   assert.equal(created.summary,
     "Created Support Desk. Support Desk isn't in Slack yet: a workspace Owner adds it to Slack in Chickpea Admin.");
   assert.doesNotMatch(JSON.stringify(created), /xoxe|authorize|oauth/i, 'no token and no app link');
+});
+
+// Defects caught: Channels asked for at creation over MCP silently dropped for an Agent not in Slack yet, while the same
+// request from Slack keeps them waiting, so the creator never asks again.
+test('create_agent with Channels where each new Agent is its own Slack app says to ask for them again once it is added', async (t) => {
+  let fixture!: ManagementAdapterFixture;
+  const { f, teamId, call } = await harness(t, 'create-own-app-channels', {
+    overrides: {
+      publishAgentPresence: async ({ agentId }) => {
+        const current = await fixture.config.getAgent(agentId);
+        return {
+          agent: await fixture.config.updateAgent(agentId, {
+            lifecycle: 'active',
+            slackPresence: { ...asUserGroup(current.slackPresence), desiredState: 'active', health: 'unpublished', errorCode: 'awaiting_own_app' },
+          }, current.revision),
+        };
+      },
+      // As the reconciler refuses a Channel add for an Agent not in Slack yet.
+      publishAgentChannel: async ({ agentId }) => { throw notInSlackYetError(await fixture.config.getAgent(agentId)); },
+    },
+  });
+  fixture = f;
+  await f.config.putChannel({ workspaceId: teamId, channelId: 'C_SUPPORT', label: 'support', lifecycle: 'active' });
+  const created = structured(await call('create_agent', {
+    name: 'Support Desk', instructions: 'Answer support questions.', channels: ['C_SUPPORT'], idempotencyKey: 'create',
+  }));
+  assert.equal(created.status, 'done');
+  assert.match(created.summary, /It joins 0 Channels\. Support Desk isn't in Slack yet/);
+  assert.ok(created.warnings.includes('Ask to add Support Desk to its Channels again once a workspace Owner has added it to Slack.'),
+    JSON.stringify(created.warnings));
 });

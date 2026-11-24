@@ -10472,7 +10472,8 @@
       (steps ? '<ol style="margin:12px 0 0; padding-left:20px;">' + steps + '</ol>' : '') +
       (handles ? '<p class="hint" style="margin-top:12px;">Suggested handles</p><div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:6px;">' + handles + '</div>' : '') +
       (recovery.note ? '<p class="hint" style="margin-top:10px;">' + esc(recovery.note) + '</p>' : '') +
-      '<div style="display:flex; gap:8px; margin-top:12px;"><button type="button" class="btn btn-soft btn-sm" data-action="' + (recovery.actionKind === "reconnect" ? "slack-gateway-refresh" : "agent-presence-retry") + '"' + disabled + '>' + esc(recovery.actionLabel || "Retry") + '</button>' +
+      '<div style="display:flex; gap:8px; margin-top:12px;">' +
+      (recovery.actionKind === "none" ? '' : '<button type="button" class="btn btn-soft btn-sm" data-action="' + (recovery.actionKind === "reconnect" ? "slack-gateway-refresh" : "agent-presence-retry") + '"' + disabled + '>' + esc(recovery.actionLabel || "Retry") + '</button>') +
       (recovery.adminUrl ? '<a class="btn btn-ghost btn-sm" href="' + esc(recovery.adminUrl) + '" target="_blank" rel="noopener noreferrer">Open Slack admin</a>' : '') +
       '</div></div></div>';
   }

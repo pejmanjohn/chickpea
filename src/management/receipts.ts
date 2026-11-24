@@ -745,8 +745,6 @@ export async function deliverManagementReceiptToSlack(
   const baseMessage = {
     channel,
     ...(threadTs ? { thread_ts: threadTs } : {}),
-    text,
-    ...addToSlackBlocks(record.receipt, text),
     client_msg_id: record.outboxId,
     ...(agentReceipt
       ? {
@@ -758,7 +756,11 @@ export async function deliverManagementReceiptToSlack(
           unfurl_media: false,
         }
       : {}),
-  } as Parameters<typeof execution.client.chat.postMessage>[0];
+  };
+  /** One post of the receipt's final words, with the Add to Slack button where the receipt asks for it. */
+  const post = (words: string, via = client, extra: Record<string, unknown> = {}) => via.chat.postMessage({
+    ...baseMessage, text: words, ...addToSlackBlocks(record.receipt, words), ...extra,
+  } as Parameters<typeof execution.client.chat.postMessage>[0]);
   let response;
   let deliveredText = text;
   let persona: 'agent' | 'chickpea' = agentReceipt ? 'agent' : 'chickpea';
@@ -768,34 +770,25 @@ export async function deliverManagementReceiptToSlack(
     ) ?? false;
     if (slackPresenceIncomplete) {
       deliveredText = formatAgentWelcomeFallback(record.receipt, groupDm);
-      response = await execution.client.chat.postMessage({
-        ...baseMessage,
-        text: deliveredText,
-        ...addToSlackBlocks(record.receipt, deliveredText),
-      });
+      response = await post(deliveredText, execution.client);
     } else {
       try {
-        response = await execution.client.chat.postMessage({
-          ...baseMessage,
+        response = await post(text, execution.client, {
           username: record.receipt.persona.name,
           ...(record.receipt.persona.avatarUrl
             ? { icon_url: record.receipt.persona.avatarUrl }
             : {}),
-        } as Parameters<typeof execution.client.chat.postMessage>[0]);
+        });
         persona = 'agent';
       } catch (error) {
         const code = slackPlatformErrorCode(error);
         if (!code || !PERSONA_FALLBACK_CODES.has(code)) throw error;
         deliveredText = formatAgentWelcomeFallback(record.receipt, groupDm);
-        response = await execution.client.chat.postMessage({
-          ...baseMessage,
-          text: deliveredText,
-          ...addToSlackBlocks(record.receipt, deliveredText),
-        });
+        response = await post(deliveredText, execution.client);
       }
     }
   } else {
-    response = await client.chat.postMessage(baseMessage);
+    response = await post(text);
   }
   if (!response.ok || !response.ts) throw new Error('Slack did not acknowledge the receipt.');
   try {
@@ -965,8 +958,10 @@ function formatAgentWelcomeFallback(receipt: ManagementAgentCreatedWelcome, grou
   const viewAgentUrl = viewAgentLinkUrl(receipt);
   const openViewAgent = (purpose: string) => viewAgentUrl ? ` Open View Agent to ${purpose}.` : '';
   const created = `I created *${name}*`;
-  const lead = receipt.notInSlackYet === 'owners_asked'
-    ? `${created}. A workspace Owner needs to add it to Slack before people can mention it. I’ve asked them.`
+  const lead = receipt.notInSlackYet === 'owners_asked' || receipt.notInSlackYet === 'owner_needed'
+    ? `${created}. A workspace Owner needs to add it to Slack before people can mention it.${
+      receipt.notInSlackYet === 'owners_asked' ? ' I’ve asked them.' : ''
+    }`
     : receipt.notInSlackYet === 'creator_adds'
     ? `${created}. It isn’t in Slack yet, so people can’t mention it. Choose Add to Slack to give it its own Slack app.`
     : handleMissing && channelMissing
@@ -999,6 +994,7 @@ function formatAgentWelcomeFallback(receipt: ManagementAgentCreatedWelcome, grou
 const NOT_IN_SLACK_YET_LINES = {
   creator_adds: 'I’m not in Slack yet, so people can’t mention me. Choose Add to Slack to give me my own Slack app.',
   owners_asked: 'I’m not in Slack yet. A workspace Owner needs to add me to Slack before people can mention me. I’ve asked them.',
+  owner_needed: 'I’m not in Slack yet. A workspace Owner needs to add me to Slack before people can mention me.',
 } satisfies Record<NonNullable<ManagementAgentCreatedWelcome['notInSlackYet']>, string>;
 
 function isAgentAppAddRequest(receipt: ManagementReceipt): receipt is ManagementAgentAppAddRequest {

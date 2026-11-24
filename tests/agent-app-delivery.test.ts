@@ -43,6 +43,7 @@ import {
   createAgentSlackAppRoutes,
   withAgentAppExecution,
 } from '../src/slack/agent-apps/index.ts';
+import { START_APP_ACTION } from '../src/slack/agent-apps/pages.ts';
 import { clearAdmissionMembershipsForTests } from '../src/slack/agent-apps/place.ts';
 import { readAppSecrets, saveConfigurationToken, writeAppSecrets } from '../src/slack/agent-apps/secrets.ts';
 import { createAgentAppSlackApi } from '../src/slack/agent-apps/slack-api.ts';
@@ -311,6 +312,8 @@ async function withHarness(
             : channel.startsWith('G')
               ? { id: channel, name: 'mpdm-owner--teammate-1', is_mpim: true, is_private: true, is_member: true, is_archived: false }
               : { id: channel, is_im: true, user: 'U1' } }
+          : method === 'apps.manifest.create'
+            ? { ok: true, app_id: 'A0NEWAPP', credentials: { client_id: '7.client', client_secret: 'cs-new', signing_secret: 'ss-new' } }
           : method === 'conversations.create'
             ? { ok: true, channel: { id: 'C9NEW', name: body.get('name'), is_channel: true, is_private: body.get('is_private') === 'true', is_member: true } }
           : method === 'conversations.join'
@@ -1237,6 +1240,58 @@ test("Admin's archive of an Agent not in Slack yet, with its app attached, retir
     ['apps.manifest.delete', rotated.accessToken],
   ], 'the app is uninstalled and its definition deleted in Slack');
   assert.equal(await readAppSecrets(h.secrets(), AGENT_APP), undefined, "and the app's secrets are gone");
+}));
+
+/** Someone presses Add to Slack on a message in a #C1 thread, as Chickpea's app hears it. */
+function addToSlackPress(user: string, agentId = 'agent_support') {
+  return {
+    type: 'block_actions', api_app_id: MAIN_APP.appId, team: { id: TEAM }, user: { id: user }, trigger_id: 'trigger-add',
+    channel: { id: 'C1' }, container: { type: 'message', channel_id: 'C1', message_ts: '1900004000.000200', thread_ts: '1900004000.000100' },
+    actions: [{ action_id: START_APP_ACTION, value: agentId, action_ts: '1900004000.000300' }],
+  };
+}
+
+// Defects caught: a press by someone who is not an Owner, or an Owner's for an Agent already being added, already in
+// Slack, or archived, answered with silence; an old button starting a move for an Agent with a user group.
+test("Add to Slack in a message: only an Owner's press adds a waiting Agent, and every other press is answered privately", async (t) => withHarness(t, async (h) => {
+  const support = await h.stores.config.getAgent('agent_support');
+  await h.stores.config.updateAgent(support.id, {
+    slackPresence: {
+      requestedHandle: 'support', normalizedHandle: 'support', desiredState: 'active', health: 'unpublished',
+      errorCode: AWAITING_OWN_APP, avatar: support.slackPresence!.avatar,
+    },
+  }, support.revision);
+  await h.stores.config.createAgent({ ...support, id: 'agent_gone', name: 'Gone', lifecycle: 'archived', slackPresence: {
+    requestedHandle: 'gone', normalizedHandle: 'gone', desiredState: 'disabled', health: 'unpublished', avatar: support.slackPresence!.avatar,
+  } });
+  const creates = () => h.calls.filter((call) => call.method === 'apps.manifest.create').length;
+  const replies = () => slackPosts(h, 'chat.postEphemeral').map((body) => [body.get('channel'), body.get('user'), body.get('thread_ts'), body.get('text')]);
+  const dms = () => slackPosts(h, 'chat.postMessage').map((body) => body.get('text'));
+
+  assert.equal((await h.deliverToChickpea(addToSlackPress('U2'), 'interactions')).status, 200);
+  assert.equal((await h.deliverToChickpea(addToSlackPress('U1'), 'interactions')).status, 200);
+  assert.equal(creates(), 0, 'nothing is created without a token');
+  assert.match(dms().at(-1) ?? '', /Chickpea needs a Slack refresh token to add Support to Slack\./, 'asked for a token, not a new one');
+
+  const rotated = { accessToken: 'xoxe.xoxp-1-config-access', refreshToken: 'xoxe-1-config-refresh', teamId: TEAM, expiresAt: Date.now() + 12 * 3_600_000 };
+  assert.equal(await saveConfigurationToken({ ...h.secrets(), slack: { rotate: async () => rotated } }, TEAM, 'xoxe-1-pasted-token-0000'), 'saved');
+  assert.equal((await h.deliverToChickpea(addToSlackPress('U1'), 'interactions')).status, 200);
+  assert.equal(creates(), 1, "the Owner's press creates the app");
+  assert.equal(appRecordOf((await h.stores.config.getAgent('agent_support')).slackPresence)?.state, 'awaiting_consent');
+  assert.match(dms().at(-1) ?? '', /Support's Slack app is ready\. Choose Allow/);
+
+  assert.equal((await h.deliverToChickpea(addToSlackPress('U1'), 'interactions')).status, 200);
+  assert.equal((await h.deliverToChickpea(addToSlackPress('U1', 'agent_finance'), 'interactions')).status, 200);
+  assert.equal((await h.deliverToChickpea(addToSlackPress('U1', 'agent_gone'), 'interactions')).status, 200);
+  assert.equal(creates(), 1, 'a second press, or a press for an Agent with a user group, creates nothing');
+  assert.equal(appRecordOf((await h.stores.config.getAgent('agent_finance')).slackPresence), undefined, 'and starts no move');
+  const thread = '1900004000.000100';
+  assert.deepEqual(replies(), [
+    ['C1', 'U2', thread, 'A workspace Owner needs to add Support to Slack.'],
+    ['C1', 'U1', thread, "Chickpea is already adding Support to Slack. Its latest message to you says what's next."],
+    ['C1', 'U1', thread, 'Finance is already in Slack.'],
+    ['C1', 'U1', thread, "Gone is archived, so it can't be added to Slack."],
+  ]);
 }));
 
 const SUPPORT_READY = '@support is ready in this channel. Mention @support to start a conversation.';

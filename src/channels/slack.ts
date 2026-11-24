@@ -769,9 +769,15 @@ async function serveAgentAppHomeAction(
   const workspaceId = payload.team?.id;
   const userId = payload.user?.id;
   if (!workspaceId || !userId) return false;
+  const pressed = payload as { channel?: { id?: unknown }; container?: { thread_ts?: unknown }; message?: { thread_ts?: unknown } };
+  const channelId = typeof pressed.channel?.id === 'string' ? pressed.channel.id : undefined;
+  const threadTs = [pressed.container?.thread_ts, pressed.message?.thread_ts].find((ts): ts is string => typeof ts === 'string');
   return handleAgentAppHomeAction({
     env: platformEnv,
     payload,
+    detach: (work) => detach(c, work.catch((error) => {
+      console.error('[chickpea] Agent app press failed:', sanitizeError(error));
+    })),
     viewer: async () => {
       const stores = resolveStores(platformEnv);
       const installation = await stores.config.getWorkspaceInstallation(workspaceId);
@@ -785,6 +791,17 @@ async function serveAgentAppHomeAction(
       return {
         role: actor.principal?.role,
         republish: () => publishAgentAppHome({ workspaceId, userId, stores, transport, botUserId, actor, platformEnv }),
+        // Where the button was, only the presser sees it; a Home tab press is answered in their DM with Chickpea.
+        tell: async (text) => {
+          if (channelId) {
+            await createSlackWebClient(credentials.botToken ?? '').chat.postEphemeral({
+              channel: channelId, user: userId, text, ...(threadTs ? { thread_ts: threadTs } : {}),
+            });
+            return;
+          }
+          const dm = await transport.openDirectConversation(userId);
+          await transport.postMessage({ channelId: dm.id, text });
+        },
       };
     },
   });

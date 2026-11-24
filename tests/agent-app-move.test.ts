@@ -978,7 +978,7 @@ test("Slack's app limit leaves the Agent as it was, with the message that says w
     assert.equal(appRecordOf(await presenceOf(f)), undefined, 'no app record is left');
     assert.deepEqual(f.slack.created, []);
     assert.deepEqual(f.main.posted.map((message) => [message.channelId, message.text]), [[`D_${OWNER}`, escapeMrkdwn(
-      "Slack's free plan allows 10 apps, and this workspace has reached that. Remove an app or upgrade Slack, then add Support.",
+      "Slack wouldn't create another app for this workspace, which may have reached Slack's limit on apps. Deleting an app you no longer need in Slack and adding Support again may help.",
     )]]);
     f.slack.createRefusal = undefined;
     assert.equal((await f.service.start('agent_support', OWNER)).kind, 'started', 'a later press starts afresh');
@@ -991,10 +991,10 @@ test('an Owner\'s press in Slack with no token asks that Owner for one and start
   await discardConfigurationToken(f.secrets, TEAM);
   const before = f.main.posted.length;
 
-  assert.deepEqual(await f.service.startFromSlack('agent_support', OWNER), { kind: 'token_needed' });
+  assert.equal(await f.service.addFromSlack('agent_support', OWNER, true), undefined, 'the answer is the message');
 
   assert.equal(appRecordOf(await presenceOf(f)), undefined);
   assert.deepEqual(f.main.posted.slice(before).map((message) => [message.channelId, message.text]), [[`D_${OWNER}`, escapeMrkdwn(
-    "Chickpea needs a new Slack refresh token to finish Support's app.",
-  )]]);
+    "Chickpea needs a Slack refresh token to add Support to Slack.",
+  )]], 'no token was ever kept, so none is called new');
 });

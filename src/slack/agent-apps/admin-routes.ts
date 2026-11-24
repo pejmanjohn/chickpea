@@ -70,7 +70,8 @@ const ERRORS: Record<Exclude<TokenPageError, 'already_started'>, string> = {
   rejected: "Slack didn't accept that token. Generate a new one and paste its Refresh Token.",
   other_workspace: 'That token is for a different Slack workspace. Generate one for this workspace.',
   slack_down: "Slack didn't answer. Try again in a minute.",
-  app_limit: "Slack's free plan allows 10 apps, and this workspace has reached that. Remove an app or upgrade Slack, then try again.",
+  app_limit:
+    "Slack wouldn't create another app for this workspace, which may have reached Slack's limit on apps. Deleting an app you no longer need in Slack and trying again may help.",
 };
 
 function errorText(error: TokenPageError, name: string): string {
