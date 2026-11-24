@@ -150,7 +150,7 @@ export function classifySlackSystemText(text: string | undefined): SlackSystemTe
  * external-action boundary, and the teammates it may ask.
  */
 export function slackTenantInstructions(
-  assignment: Pick<ResolvedAssignment, 'workspaceId' | 'channelId' | 'agent' | 'teammates' | 'threadGuest'>,
+  assignment: Pick<ResolvedAssignment, 'workspaceId' | 'channelId' | 'agent' | 'teammates' | 'inAgentAppDm' | 'threadGuest'>,
 ): string {
   const teammates = agentTeammateInstructions(assignment);
   return [

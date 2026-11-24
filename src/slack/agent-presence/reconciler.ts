@@ -23,11 +23,14 @@ import {
   agentOffError,
   classifyAgentPresenceError,
   notInSlackYetError,
+  restoreHandleRefusal,
 } from './errors.ts';
 import {
   agentUserGroupDescription,
   agentUserGroupName,
   alternativeAgentHandles,
+  handlesOtherAgentsHoldInSlack,
+  handlesOtherAgentsStore,
   normalizeAgentHandle,
 } from './handles.ts';
 
@@ -507,6 +510,9 @@ export class AgentPresenceReconciler {
     );
 
     const groups = await transport.listUserGroups({ includeDisabled: true });
+    const agents = await config.listAgents();
+    // Suggestions skip every handle another Agent stores; only one held in Slack refuses.
+    const held = handlesOtherAgentsStore(agents, agent.id);
     let group = groups.find((candidate) => candidate.id === presence.userGroupId);
     if (!group) {
       const handleMatch = groups.find((candidate) => candidate.handle === normalizedHandle);
@@ -518,7 +524,7 @@ export class AgentPresenceReconciler {
           throw new AgentPresenceError(
             'handle_collision',
             `@${normalizedHandle} is already in use.`,
-            { suggestions: suggestedHandles(normalizedHandle, groups) },
+            { suggestions: suggestedHandles(normalizedHandle, groups, held) },
           );
         }
         if (!hasAmbiguousCreateOwnershipProof({ slackPresence: presence }, handleMatch)) {
@@ -532,6 +538,18 @@ export class AgentPresenceReconciler {
     }
 
     if (!group && await this.ownAppMode()) return this.awaitOwnApp(agent);
+
+    // Chickpea's own rule, before Slack is asked to give this Agent the
+    // handle: another Agent in Slack holds it, whichever kind of Agent it is.
+    // This Agent's own group already carrying it is never refused.
+    if ((!group || group.handle !== normalizedHandle) &&
+        handlesOtherAgentsHoldInSlack(agents, agent.id).has(normalizedHandle)) {
+      throw new AgentPresenceError(
+        'handle_collision',
+        `@${normalizedHandle} is already in use.`,
+        { suggestions: suggestedHandles(normalizedHandle, groups, held) },
+      );
+    }
     if (!group) {
       const pendingCreate = {
         name: agentUserGroupName(agent.name, groups),
@@ -565,7 +583,7 @@ export class AgentPresenceReconciler {
             { retryable: true },
           );
         }
-        throw withHandleSuggestions(error, normalizedHandle, groups);
+        throw withHandleSuggestions(error, normalizedHandle, groups, held);
       }
     } else {
       try {
@@ -576,7 +594,7 @@ export class AgentPresenceReconciler {
           agentUserGroupName(agent.name, groups, group.id),
         );
       } catch (error) {
-        throw withHandleSuggestions(error, normalizedHandle, groups);
+        throw withHandleSuggestions(error, normalizedHandle, groups, held);
       }
       if (group.disabled) group = await transport.enableUserGroup(group.id);
     }
@@ -787,6 +805,11 @@ export class AgentPresenceReconciler {
         'The Agent identity changed before restore. Review the change again.',
       );
     }
+    // An Agent that will wait for its own app takes no handle, so it is not refused for one.
+    if (!await this.notInSlackYet(agent)) {
+      const refused = restoreHandleRefusal(await config.listAgents(), agent);
+      if (refused) throw refused;
+    }
     agent = await config.restoreAgent(agent.id, agent.revision, credentialIncarnation);
     let presence = requiredPresence(agent);
     agent = await config.updateAgent(
@@ -965,20 +988,22 @@ function handleIsLive(agent: CustomAgentConfig): boolean {
   return agent.slackPresence?.health === 'healthy' && agentSlackHandle(agent) !== undefined;
 }
 
-function suggestedHandles(handle: string, groups: readonly SlackUserGroup[]): string[] {
-  return alternativeAgentHandles(handle, new Set(groups.map((group) => group.handle)));
+/** Free handles: no Slack group's and no other Agent's. */
+function suggestedHandles(handle: string, groups: readonly SlackUserGroup[], held: ReadonlySet<string>): string[] {
+  return alternativeAgentHandles(handle, new Set([...groups.map((group) => group.handle), ...held]));
 }
 
 function withHandleSuggestions(
   error: unknown,
   handle: string,
   groups: readonly SlackUserGroup[],
+  held: ReadonlySet<string>,
 ): unknown {
   const classified = classifyAgentPresenceError(error);
   if (classified.code !== 'handle_collision') return error;
   return new AgentPresenceError(classified.code, classified.message, {
     ...classified.options,
-    suggestions: suggestedHandles(handle, groups),
+    suggestions: suggestedHandles(handle, groups, held),
   });
 }
 

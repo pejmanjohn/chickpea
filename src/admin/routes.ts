@@ -1,9 +1,8 @@
 import { planDependencies, planStatus, preparePlanConnection, pollPlanHandoff, completePlanHandoff, confirmPlanConnection, cancelPlanConnection, disconnectPlan, resolvePlanSession } from '../chatgpt-plan/connection.ts';
-import { agentAppPresenceHooks, agentDmPlacementFacts } from '../slack/agent-apps/index.ts';
+import { agentAppPresenceHooks, agentDmPlacementFacts, agentSlackAppsHost } from '../slack/agent-apps/index.ts';
 import {
   type AgentSlackAppAdminDeps,
   createAgentSlackAppAdminRoutes,
-  isAgentSlackAppTokenApiPath,
 } from '../slack/agent-apps/admin-routes.ts';
 import { ChannelDirectoryCache } from '../slack/channel-directory-cache.ts';
 import { apiOAuthLifecycleDependencies } from '../connections/api-oauth-lifecycle.ts';
@@ -674,8 +673,9 @@ import {
   AgentPresenceError,
   agentPresenceRecovery,
   classifyAgentPresenceError,
+  restoreHandleRefusal,
 } from '../slack/agent-presence/errors.ts';
-import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
+import { handlesOtherAgentsStore, normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import { agentStillInSlackRefusal } from '../slack/agent-presence/left-slack.ts';
 import { reservedAgentIdentityField } from '../config/agent-id.ts';
 import {
@@ -6684,6 +6684,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return c.html(renderAdminPage({
       usageAdminUi: usageAdminUi(c),
       installationOwner: isOwnerSession(principal),
+      agentSlackAppsOffered: agentSlackAppsHost() !== undefined && isOwnerSession(principal),
       browserSetupOffered: standalone,
       websiteLoginsOffered: standalone || hostedWebsiteLoginsOffered(),
       websiteLoginsRemoveOnly: !standalone && hostedBrowserConfigured() && !hostedWebsiteLoginsOffered(),
@@ -8526,6 +8527,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
     try {
       const configStore = store(c);
+      const handle = agent.slackPresence!.normalizedHandle;
+      if (handlesOtherAgentsStore(await configStore.listAgents(), agent.id).has(handle)) {
+        return invalidRequest(c, `@${handle} is already in use.`);
+      }
       const existingGeneratedSeeds = (await configStore.listUserAgents()).flatMap((existing) => {
         const avatar = existing.slackPresence?.avatar;
         return avatar?.kind === 'generated' ? [avatar.seed ?? existing.id] : [];
@@ -10220,10 +10225,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         const requestedHandle = parsed.output.handle;
         const presence = current.slackPresence;
         if (!presence) throw new Error(`Agent ${agentId} has no Slack presence`);
+        const handle = normalizeAgentHandle(requestedHandle);
+        if (handle !== presence.normalizedHandle &&
+            handlesOtherAgentsStore(await configStore.listAgents(), agentId).has(handle)) {
+          return invalidRequest(c, `@${handle} is already in use.`);
+        }
         patch.slackPresence = {
           ...presence,
           requestedHandle,
-          normalizedHandle: normalizeAgentHandle(requestedHandle),
+          normalizedHandle: handle,
           health: presence.desiredState === 'active' ? 'pending' : presence.health,
         };
       }
@@ -10533,7 +10543,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const agentApps = agentAppPresenceHooks(c.env as PlatformEnv | undefined, settings(c));
       // The reconciler's restore turns the presence back on; with no group where each new Agent is its own app, the
       // Agent is not in Slack yet. A store-only restore would leave the presence marked for archiving.
-      const updated = current.slackPresence?.userGroupId || (agentApps && await agentApps.ownAppMode())
+      const ownApp = !current.slackPresence?.userGroupId && Boolean(agentApps && await agentApps.ownAppMode());
+      // An Agent that will wait for its own app takes no handle, so it is not refused for one.
+      if (!ownApp || current.slackPresence?.kind === 'agent_app') {
+        const refused = restoreHandleRefusal(await store(c).listAgents(), current);
+        if (refused) throw refused;
+      }
+      const updated = current.slackPresence?.userGroupId || ownApp
         ? await new AgentPresenceReconciler({
             config: store(c),
             transport: await agentSlackTransport(c, workspaceId),
@@ -11878,14 +11894,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.route('/', createAgentSlackAppAdminRoutes({
     actor: agentActor,
     identity,
-    getAgent: async (c, agentId) => {
-      try {
-        return await store(c).getAgent(agentId);
-      } catch (error) {
-        if (error instanceof UnknownAgentError) return undefined;
-        throw error;
-      }
-    },
     placeInSlack: async (c, agentIds) => {
       const actor = await agentActor(c);
       const transport = await agentSlackTransport(c, actor.slackTeamId);
@@ -13043,7 +13051,7 @@ function machinePrincipalAllowed(c: Context): boolean {
 }
 
 function isHumanAuthFormMutation(c: Context): boolean {
-  return c.req.method === 'POST' && (c.req.path === '/admin/logout' || isAgentSlackAppTokenApiPath(c.req.path));
+  return c.req.method === 'POST' && c.req.path === '/admin/logout';
 }
 
 async function inspectionWithinSignal(

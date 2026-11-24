@@ -159,7 +159,7 @@ test('an Agent pins its effort with its model and follows the default\'s otherwi
     assert.equal(unsupported.body.error, 'effort_not_supported');
 
     await request('/admin/api/workspace-model-default', 'PUT', { modelId: GPT, effort: 'low', expectedRevision: 1 });
-    const following = await request('/admin/api/agents', 'POST', agent({ id: 'agent_following' }));
+    const following = await request('/admin/api/agents', 'POST', agent({ id: 'agent_following', name: 'Following' }));
     const followingPolicy = (following.body.agent as Record<string, Record<string, unknown>>).modelPolicy!;
     assert.equal(followingPolicy.effort, 'low', 'an inheriting Agent shows the default\'s effort');
     assert.deepEqual(followingPolicy.efforts, ['low', 'medium', 'high', 'xhigh']);

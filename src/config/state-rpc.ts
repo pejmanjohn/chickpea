@@ -114,6 +114,7 @@ import type {
 } from '../slack/claim-store.ts';
 import type { SlackMessageEdit } from '../slack/edits.ts';
 import type { AgentAppBot } from '../slack/agent-app-bots.ts';
+import type { SlackRunSpeaker } from '../slack/installation-execution.ts';
 import type {
   FlueDispatchEnvelopeV1,
   FlueDispatchReceiptV1,
@@ -610,6 +611,13 @@ export interface TagStateRpc {
   ): Promise<StateRpcResult<FlueDispatchEnvelopeV1>>;
   /** The settings envelope frozen with a turn's dispatch; the Agent reads it once per turn. */
   slackTurnEnvelopeGet(id: string): Promise<StateRpcResult<TurnEnvelopeV1 | null>>;
+  /**
+   * A retained turn's run when its stored speaker is its Agent app's own bot,
+   * so a thread runner's repair edits with that bot; null for any other turn.
+   * Added after the runner's repair: a store on older code lacks it
+   * (CfSlackStateStore.ownBotRun).
+   */
+  slackOwnBotRun(id: string): Promise<StateRpcResult<SlackRunSpeaker | null>>;
   /**
    * Record a coding workspace's Sandbox or coding worker in the object
    * inventory before its opener addresses it. Idempotent; a store serving

@@ -2,6 +2,7 @@ import { defineTool, useDelivery, useInstruction, useTool } from '@flue/runtime'
 import * as v from 'valibot';
 import type { RuntimePlanV2 } from '../../agents/runtime-plan.ts';
 import type { ConfigStore } from '../../config/store.ts';
+import type { CustomAgentConfig } from '../../config/types.ts';
 import type { IdentityStore } from '../../identity/types.ts';
 import { CHICKPEA_AGENT_ID } from '../../config/agent-id.ts';
 import { deploymentTenancy } from '../../config/installation-scope.ts';
@@ -136,7 +137,7 @@ export async function assertSlackListsAccess(
   signal: SlackManagementSignal,
   config: Pick<ConfigStore, 'getAgent' | 'listAgentChannelGrants'>,
   identity: IdentityStore,
-): Promise<void> {
+): Promise<CustomAgentConfig> {
   const actor = await resolveSlackManagementActor(signal, identity);
   if (actor.membershipId !== plan.actorMembershipId || !await isActiveConnectionActor({ identity, workspaceId: signal.workspaceId, actorMembershipId: actor.membershipId })) {
     throw new SlackListError('actor_unavailable', 'The requester no longer has active Chickpea access.');
@@ -147,4 +148,5 @@ export async function assertSlackListsAccess(
     const grants = await config.listAgentChannelGrants(signal.workspaceId, signal.channelId);
     if (!grants.some(grant => grant.agentId === plan.agentId && grant.status === 'active')) throw new SlackListError('agent_unavailable', 'This Agent no longer has access to this channel.');
   }
+  return agent;
 }

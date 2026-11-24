@@ -8,6 +8,7 @@ import {
 } from './agent-view-presentation.ts';
 import {
   presentationHasTerminalOutcome,
+  type SlackPresentationOwner,
   type SlackRunPresentationV3,
 } from './run-presentations.ts';
 import { slackClientMessageId } from './transport/message-id.ts';
@@ -16,8 +17,8 @@ import { WebClientPresenter } from './web-client-presenter.ts';
 interface SlackPresentationRepairDrainOptions {
   presentations: readonly SlackRunPresentationV3[];
   state: SlackPresentationStatePort;
-  /** The client that edits a run's messages: the bot its turn's stored speaker names. */
-  resolveClient(workspaceId: string, turnJobId: string): Promise<WebClient>;
+  /** The client that edits a run's messages: the bot its turn's stored speaker names. `owner` is who the run posted as. */
+  resolveClient(workspaceId: string, turnJobId: string, owner: SlackPresentationOwner): Promise<WebClient>;
   now?: () => number;
   onFailure?(presentation: SlackRunPresentationV3, error: unknown): void;
 }
@@ -240,7 +241,7 @@ export async function drainSlackPresentationRepairs(
         options.state,
         scheduledRetryAt,
       );
-      const client = await options.resolveClient(presentation.root.workspaceId, presentation.turnJobId);
+      const client = await options.resolveClient(presentation.root.workspaceId, presentation.turnJobId, presentation.owner);
       const repaired = await repairTerminalSlackPresentation(
         scheduled,
         options.state,

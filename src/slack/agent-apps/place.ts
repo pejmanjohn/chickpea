@@ -1,3 +1,5 @@
+import type { WebClient } from '@slack/web-api';
+
 import { getSlackStateStore, type PlatformEnv } from '../../config/state-backend.ts';
 import {
   type ActiveAgentApp,
@@ -6,6 +8,7 @@ import {
   type CustomAgentConfig,
 } from '../../config/types.ts';
 import { isTransientSlackApiError, slackConversationsInfo, slackConversationsOpen } from '../credentials.ts';
+import { slackPlatformErrorCode } from '../errors.ts';
 import { ADMISSION_MEMBERSHIP_TTL_MS } from '../installation-execution.ts';
 import { type SlackSpeaker, speakerFor } from '../speaker.ts';
 import { slackConversationKind } from '../thread-key.ts';
@@ -19,7 +22,7 @@ export interface SlackTurnHearing {
   botUserId: string;
   /** An Agent's own app heard it; Chickpea's bot otherwise. */
   agentApp: boolean;
-  /** Chickpea built the turn (an ask, a setup's wake, a hand-off), so no bot's hearing says which DM it is in. */
+  /** Chickpea built the turn (a setup's wake, a hand-off) and does not know which DM it is in, and no bot's hearing says. */
   byHost?: boolean;
   /** Slack said the bot that heard it is not in the Channel. */
   notInChannel?: boolean;
@@ -121,9 +124,9 @@ export async function agentAppAnswersIn(
  * group DM the bot that heard the turn counts as a member unless Slack said
  * it is not, and the run's access check verifies it; the other bot is asked
  * once with a cached `conversations.info`, and a failed read counts as not a
- * member. When the answering bot is not the one that heard the turn, the
- * turn carries its membership instead, so the run's access check reuses it
- * within the same TTL.
+ * member, whichever bot heard the turn. In a Channel, when the answering bot
+ * is not the one that heard the turn, the turn carries its membership
+ * instead, so the run's access check reuses it within the same TTL.
  */
 export async function admissionSpeaker(input: {
   turn: NormalizedSlackTurn;
@@ -149,14 +152,6 @@ export async function admissionSpeaker(input: {
     return speakerFor(presence, { kind: 'agent_dm' });
   }
   const heardMember = !hearing.notInChannel;
-  if (conversation === 'mpim') {
-    const appBotIsMember = !app
-      ? false
-      : hearing.agentApp
-        ? app.botUserId === hearing.botUserId
-        : Boolean(hearing.byHost) && (await appBotIn(app)).member;
-    return speakerFor(presence, { kind: 'group_dm', appBotIsMember, chickpeaBotIsMember: !hearing.agentApp && heardMember });
-  }
   const appFact = app && app.botUserId !== hearing.botUserId ? await appBotIn(app) : undefined;
   const appBotIsMember = !app ? false : appFact ? appFact.member : heardMember;
   const chickpea = hearing.installationBot;
@@ -166,10 +161,12 @@ export async function admissionSpeaker(input: {
       (await chickpea.transport.lookupChannel(turn.channelId)).member === true).catch(notVerified)
     : undefined;
   const speaker = speakerFor(presence, {
-    kind: 'channel',
+    kind: conversation === 'mpim' ? 'group_dm' : 'channel',
     appBotIsMember,
     chickpeaBotIsMember: hearing.agentApp ? chickpeaFact?.member ?? false : heardMember,
   });
+  // A group DM has no membership for the run's access check to reuse.
+  if (conversation === 'mpim') return speaker;
   const answering = speaker.kind === 'own_bot'
     ? appFact && { botUserId: speaker.botUserId, fact: appFact }
     : speaker.kind === 'chickpea_as_agent' && chickpea && chickpeaFact
@@ -185,7 +182,8 @@ export async function admissionSpeaker(input: {
  * The speaker of a post Chickpea makes for an Agent outside its runs, such as
  * a notice in one of its threads. A DM is the Agent app's own only when Slack
  * names it as the app's DM with the person `userId` (isAgentAppDm); with no
- * person to ask about, it is placed as Chickpea's DM. In a Channel or group
+ * person to ask about, or when Slack refuses the app's token for a reason a
+ * retry will not change, it is placed as Chickpea's DM. In a Channel or group
  * DM the app's bot answers when it is a member, and Chickpea's bot is taken
  * to be one, as for a turn Chickpea builds there. The caller asks only with
  * the port on.
@@ -202,6 +200,11 @@ export async function hostPostSpeaker(input: {
   if (input.channelId.startsWith('D')) {
     const own = app && input.userId
       ? await isAgentAppDm(input.env, { agentId: input.agentId, appId: app.app.appId, userId: input.userId, channelId: input.channelId })
+        .catch((error: unknown) => {
+          // A token Slack refuses for good opens no DM, so Chickpea's bot tries; Slack refuses it in the app's own DM.
+          if (error instanceof SlackTransportError && !error.retryable) return false;
+          throw error;
+        })
       : false;
     return speakerFor(presence, { kind: own ? 'agent_dm' : 'chickpea_dm' });
   }
@@ -210,6 +213,22 @@ export async function hostPostSpeaker(input: {
       agentBotIsIn(input.env, input.agentId, app.app.appId, input.channelId)).catch(notVerified)).member
     : false;
   return speakerFor(presence, { kind: 'channel', appBotIsMember, chickpeaBotIsMember: true });
+}
+
+/**
+ * Whether Chickpea's bot is in a Channel or group DM, asked on its own
+ * client. Slack answers a bot outside a private Channel or group DM
+ * `channel_not_found`. Any other failure throws: the caller must not guess.
+ */
+export async function installationBotIsIn(client: WebClient, channelId: string): Promise<boolean> {
+  try {
+    const info = await client.conversations.info({ channel: channelId });
+    return info.channel?.is_member === true || info.channel?.is_mpim === true;
+  } catch (error) {
+    const code = slackPlatformErrorCode(error);
+    if (code === 'channel_not_found' || code === 'not_in_channel') return false;
+    throw error;
+  }
 }
 
 /**

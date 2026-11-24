@@ -13,7 +13,7 @@ import {
   type PlatformEnv,
 } from '../../config/state-backend.ts';
 import { parseSlackManagementSignal, type SlackManagementSignal } from '../../management/slack-tools.ts';
-import { type AgentAppBot, listAgentAppBots } from '../agent-app-bots.ts';
+import { type AgentAppBot, agentAppSiblings, listAgentAppBots } from '../agent-app-bots.ts';
 import { storedRunSpeaker, withAgentAppExecution } from '../agent-apps/index.ts';
 import {
   resolveSlackInstallationExecutionContext,
@@ -145,7 +145,8 @@ export async function slackReadingService(
     throw new SlackReadError('unavailable', SLACK_READ_MESSAGES.unavailable);
   }
   const client = reader.client;
-  const siblingBotUserIds = [workspace.botUserId, ...appBots.map((bot) => bot.botUserId)]
+  const apps = agentAppSiblings(appBots);
+  const siblingBotUserIds = [workspace.botUserId, ...apps.siblingBotUserIds]
     .filter((id): id is string => id !== undefined && id !== reader.botUserId);
   const authority = turnSlackReadAuthority(plan, signal, config, identity, client, reader !== workspace);
   return new SlackReadingService({
@@ -156,7 +157,11 @@ export async function slackReadingService(
       gated: reader.sharedAppReads,
     }),
     authority,
-    self: { botUserId: reader.botUserId, ...(siblingBotUserIds.length ? { siblingBotUserIds } : {}) },
+    self: {
+      botUserId: reader.botUserId,
+      ...(siblingBotUserIds.length ? { siblingBotUserIds } : {}),
+      ...(apps.siblingAppIds.length ? { siblingAppIds: apps.siblingAppIds } : {}),
+    },
     record: config,
     readThrough: async () => getSlackStateStore(env).turnReadThrough?.(signal.turnJobId),
   });

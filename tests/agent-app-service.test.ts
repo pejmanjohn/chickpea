@@ -640,7 +640,7 @@ test('a spent configuration token stops the sequence and sends the Owner to the 
   const app = await appOf(f);
   assert.equal(app?.state === 'needs_attention' && app.reason, 'config_token_needed');
   assert.equal(f.transport.posted[0]?.text, 'Chickpea needs a new Slack refresh token to finish Support\'s app.');
-  assert.deepEqual(buttonUrls(f.transport.posted[0]!), ['https://core.test/admin/agents/agent_support/slack-app']);
+  assert.deepEqual(buttonUrls(f.transport.posted[0]!), ['https://core.test/admin/destinations/slack/connection/token']);
   assert.deepEqual(f.slack.manifests, []);
 });
 

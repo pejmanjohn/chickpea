@@ -7,13 +7,8 @@ export const YOUR_APPS_URL = 'https://api.slack.com/apps';
 /** Slack refuses a button whose text is longer, and with it the whole message or view. */
 const BUTTON_TEXT_MAX = 75;
 
-export function tokenPagePath(agentId: string): string {
-  return `/admin/agents/${encodeURIComponent(agentId)}/slack-app`;
-}
-
-export function tokenApiPath(agentId: string): string {
-  return `/admin/api/agents/${encodeURIComponent(agentId)}/slack-app/token`;
-}
+/** Admin's page where an Owner pastes the workspace's configuration token. */
+export const TOKEN_PAGE_PATH = '/admin/destinations/slack/connection/token';
 
 /** Where Admin shows its Slack permissions bar with Update in Slack; the bar is on every Admin page. */
 export const ADMIN_PATH = '/admin';

@@ -11,6 +11,8 @@
   var USAGE_ADMIN_UI = CONFIG.usageAdminUi === true;
   var WORKSPACE_ADMIN_UI = CONFIG.workspaceAdminUi !== false;
   var INSTALLATION_OWNER = CONFIG.installationOwner === true;
+  // An Owner signed in as themselves, where the host offers each Agent its own Slack app.
+  var AGENT_SLACK_APPS_OFFERED = CONFIG.agentSlackAppsOffered === true;
   // Settings › Browser connects the operator's own Browserbase project, so a
   // deployment serving many installations, whose host runs the browser, has
   // none. Its Agents' Websites tab is offered while that browser is on. While
@@ -1031,6 +1033,7 @@
       return "/admin/agents";
     }
     if (state.channelScreen === "detail" && state.active) return "/admin/channels/" + encodeURIComponent(state.active.workspaceId) + "/" + encodeURIComponent(state.active.channelId);
+    if (state.destinationTab === "connection" && state.slackApps && state.slackApps.token.open) return SLACK_APPS_TOKEN_PATH;
     if (state.destinationTab === "connection") return "/admin/destinations/slack/connection";
     if (state.destinationTab === "channels") return "/admin/destinations/slack/channels";
     return "/admin/destinations/slack";
@@ -1129,6 +1132,10 @@
       openChannels();
       return;
     }
+    if (parts[1] === "destinations" && parts[3] === "connection" && parts[4] === "token" && AGENT_SLACK_APPS_OFFERED) {
+      openSlackAppsToken(false);
+      return;
+    }
     if (parts[1] === "destinations") {
       openDestination(parts[3] === "connection" ? "connection" : parts[3] === "channels" ? "channels" : "overview");
       return;
@@ -1164,7 +1171,9 @@
     // ones the person opened when a background render redraws the page; a
     // render from their own click still closes menus as that action intends.
     var openDetails = renderingForUserEvent() ? null : captureOpenDetails(app);
-    var overlays = chatgptPlanDialogHtml() + installationDialogHtml() + teamConfirmModalHtml() + composioSetupModalHtml() + managedAuthorizationModalHtml() + connectorSettingsConfirmModalHtml() + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + sandboxConfirmModalHtml() + agentScheduleDeleteModalHtml() + websiteLoginDialogHtml() + scheduledRoutineSummaryModalHtml() + scheduledDeleteModalHtml();
+    var tokenField = document.getElementById && document.getElementById("slack-apps-token");
+    var tokenDraft = tokenField && tokenField.value ? tokenField.value : "";
+    var overlays = chatgptPlanDialogHtml() + installationDialogHtml() + teamConfirmModalHtml() + composioSetupModalHtml() + managedAuthorizationModalHtml() + connectorSettingsConfirmModalHtml() + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + slackAppsConfirmModalHtml() + githubDisconnectModalHtml() + sandboxConfirmModalHtml() + agentScheduleDeleteModalHtml() + websiteLoginDialogHtml() + scheduledRoutineSummaryModalHtml() + scheduledDeleteModalHtml();
     if (state.view === "onboarding") {
       app.className = "frame onboarding-frame";
       app.innerHTML = onboardingShellHtml() + overlays;
@@ -1187,6 +1196,10 @@
       app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + withSlackPermissionsBar(mainHtml()) + "</div>" + overlays;
     }
     restoreOpenDetails(app, openDetails);
+    if (tokenDraft) {
+      var redrawnTokenField = document.getElementById("slack-apps-token");
+      if (redrawnTokenField && !redrawnTokenField.disabled) redrawnTokenField.value = tokenDraft;
+    }
     if (state.chatgptPlan.dialog) {
       [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
         if (!region) return;
@@ -1240,6 +1253,15 @@
       if (state.slackDisconnectBusy) focusSlackDisconnectDialog();
       else if (state.slackDisconnectError) focusSlackLiveRegion("slack-disconnect-error");
       else focusAction("slack-disconnect-cancel");
+    }
+    if (state.slackApps && state.slackApps.confirm) {
+      [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
+        if (!region) return;
+        region.inert = true;
+        if (region.setAttribute) region.setAttribute("aria-hidden", "true");
+      });
+      if (state.slackApps.busy) focusSlackLiveRegion("slack-apps-dialog");
+      else focusAction("slack-apps-confirm-cancel");
     }
     if (state.githubDisconnectConfirm) {
       [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
@@ -4869,6 +4891,7 @@
   }
 
   function slackOverviewHtml() {
+    if (AGENT_SLACK_APPS_OFFERED && state.destinationTab === "connection" && state.slackApps && state.slackApps.token.open) return slackAppsTokenPageHtml();
     var body = !state.slack
       ? destinationOverviewHtml()
       : state.destinationTab === "connection"
@@ -4937,7 +4960,7 @@
       (!mutable ? '<span class="hint">This connection is managed by the environment and is read-only here.</span>' : "") +
       (state.slackDisconnectError ? '<span class="inline-status error">' + esc(state.slackDisconnectError) + '</span>' : "") + '</div>' +
       '<button type="button" class="btn btn-danger" data-action="slack-disconnect-open"' + (mutable && !connectionBusy ? "" : " disabled") + '>Disconnect</button></div>') + '</section>';
-    return workspace + connection;
+    return workspace + slackAppsSectionHtml() + connection;
   }
 
   function slackDisconnectModalHtml() {
@@ -4950,6 +4973,715 @@
       '<p class="modal-body">Chickpea will stop answering in Slack. Agents and Channel mappings stay saved. The Slack app itself remains installed until you remove it in Slack.</p>' +
       (state.slackDisconnectError ? '<p class="error" style="margin-top:10px;" role="alert" aria-live="assertive" tabindex="-1" data-role="slack-disconnect-error">' + esc(state.slackDisconnectError) + '</p>' : "") +
       '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="slack-disconnect-cancel"' + (state.slackDisconnectBusy ? " disabled" : "") + '>Keep connected</button><span class="spacer"></span>' + button + '</div></div></div>';
+  }
+
+  // ---- Agents in Slack (Owner only) ----------------------------------------
+  // Each Agent can be its own Slack app. The section lives on Slack's
+  // Connection tab; the token page is its own screen under that tab.
+
+  var SLACK_APPS_API = "/admin/api/slack-apps";
+  var SLACK_APPS_TOKEN_PATH = "/admin/destinations/slack/connection/token";
+  var SLACK_YOUR_APPS_URL = "https://api.slack.com/apps";
+  var SLACK_AUTHORIZE_ORIGIN = "https://slack.com";
+  // A press that left for Slack's Allow page; the section tells its result once on return.
+  var SLACK_APPS_PENDING_KEY = "chickpea.slackApps.pendingMoves";
+  var SLACK_APPS_PENDING_MS = 24 * 60 * 60 * 1000;
+  // After a press, or once an Agent is seen being created or moved, the
+  // section reads every few seconds for this long; after that only a return to
+  // the window reads again.
+  var SLACK_APPS_FAST_POLL_MS = 2 * 60 * 1000;
+  var SLACK_APPS_POLL_MS = 4000;
+  var slackAppsPollTimer = 0;
+
+  function slackAppsState() {
+    if (!state.slackApps) {
+      state.slackApps = {
+        data: null, loading: false, error: "", busy: "", rowBusy: "", rowNotes: {},
+        results: [], notice: null, confirm: "", people: null, fastUntil: {}, seen: {},
+        token: { open: false, phase: "empty", error: "", turnOn: false, why: "", connectedMode: "" }
+      };
+    }
+    return state.slackApps;
+  }
+
+  function slackAppsWorkspaceName() {
+    return (state.slackChannels && state.slackChannels.teamName) || (state.slack && state.slack.teamName) || "your workspace";
+  }
+
+  function slackAppsPending() {
+    try {
+      var parsed = JSON.parse(window.localStorage.getItem(SLACK_APPS_PENDING_KEY) || "{}");
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch (error) {
+      return {};
+    }
+  }
+
+  function writeSlackAppsPending(pending) {
+    try {
+      if (Object.keys(pending).length) window.localStorage.setItem(SLACK_APPS_PENDING_KEY, JSON.stringify(pending));
+      else window.localStorage.removeItem(SLACK_APPS_PENDING_KEY);
+    } catch (error) {
+      // Without storage the result simply isn't shown on return.
+    }
+  }
+
+  // When the press was made, and how the Agent answered then: through its
+  // user group (a move) or not at all (an add). An entry written before the
+  // second was kept is a bare time, and says neither.
+  function slackAppsPendingEntry(entry) {
+    if (entry && typeof entry === "object") {
+      return { at: Number(entry.at), from: entry.from === "user_group" || entry.from === "not_in_slack" ? entry.from : "" };
+    }
+    return { at: Number(entry), from: "" };
+  }
+
+  function slackAppsPrivateChannelNames(row) {
+    return (row.channels || []).filter(function (channel) {
+      return channel.name && channel.status === "active" && channel.private;
+    }).map(function (channel) { return "#" + channel.name; });
+  }
+
+  function listedNames(names) {
+    if (names.length <= 1) return names[0] || "";
+    return names.slice(0, -1).join(", ") + " and " + names[names.length - 1];
+  }
+
+  // A press that went to Slack and came back: each Agent that is now its own
+  // app gets the one result message; one that went back to how it answered
+  // before, or that is too old, is forgotten without a word.
+  function settleSlackAppsPending(apps) {
+    var pending = slackAppsPending();
+    var changed = false;
+    Object.keys(pending).forEach(function (agentId) {
+      var entry = slackAppsPendingEntry(pending[agentId]);
+      var row = (apps.data.agents || []).find(function (agent) { return agent.id === agentId; });
+      var stateName = row && row.slack && row.slack.state;
+      var expired = !(entry.at > Date.now() - SLACK_APPS_PENDING_MS);
+      if (stateName === "own_app") {
+        apps.results = apps.results.filter(function (result) { return result.agentId !== agentId; }).concat([
+          { agentId: agentId, name: row.name, handle: row.handle, from: entry.from, privateChannels: slackAppsPrivateChannelNames(row) }
+        ]);
+      } else if (!expired && (stateName === "waiting_for_allow" || stateName === "switching" || stateName === "creating")) {
+        return;
+      }
+      delete pending[agentId];
+      changed = true;
+    });
+    if (changed) writeSlackAppsPending(pending);
+  }
+
+  function slackAppsWatch(apps, agentId) {
+    apps.fastUntil[agentId] = Date.now() + SLACK_APPS_FAST_POLL_MS;
+  }
+
+  // An Agent this page sees start being created or moved is watched for a
+  // while, as if pressed here: the press may have come from Slack.
+  function slackAppsSee(apps, row) {
+    var stateName = row.slack && row.slack.state;
+    if ((stateName === "creating" || stateName === "switching") && apps.seen[row.id] !== stateName) slackAppsWatch(apps, row.id);
+    apps.seen[row.id] = stateName;
+  }
+
+  function slackAppsWatchedUntil(apps, agentId) {
+    var entry = slackAppsPending()[agentId];
+    var pressed = entry === undefined ? 0 : slackAppsPendingEntry(entry).at + SLACK_APPS_FAST_POLL_MS;
+    return Math.max(apps.fastUntil[agentId] || 0, pressed || 0);
+  }
+
+  function slackAppsWatched(apps, agentId) {
+    return Date.now() < slackAppsWatchedUntil(apps, agentId);
+  }
+
+  function slackAppsPolling(apps) {
+    return !!(apps.data && (apps.data.agents || []).some(function (agent) {
+      var stateName = agent.slack && agent.slack.state;
+      return (stateName === "creating" || stateName === "switching" || stateName === "waiting_for_allow") && slackAppsWatched(apps, agent.id);
+    }));
+  }
+
+  function slackAppsVisible() {
+    return AGENT_SLACK_APPS_OFFERED && state.view === "channels" && state.channelScreen === "overview" &&
+      state.destinationTab === "connection";
+  }
+
+  function scheduleSlackAppsPoll() {
+    if (slackAppsPollTimer || typeof window === "undefined" || typeof window.setTimeout !== "function") return;
+    slackAppsPollTimer = window.setTimeout(function () {
+      slackAppsPollTimer = 0;
+      var apps = slackAppsState();
+      if (!slackAppsVisible() || apps.token.open) return;
+      // The window closed: a row still being created now offers Try again.
+      if (!slackAppsPolling(apps)) { render(); return; }
+      if (document.visibilityState && document.visibilityState !== "visible") { scheduleSlackAppsPoll(); return; }
+      loadSlackApps();
+    }, SLACK_APPS_POLL_MS);
+  }
+
+  function loadSlackApps() {
+    if (!AGENT_SLACK_APPS_OFFERED) return Promise.resolve();
+    var apps = slackAppsState();
+    var ticket = beginVisibleResourceLoad("slack-apps", "", false);
+    if (!ticket) return coalescedVisibleResourcePromise("slack-apps", "");
+    apps.loading = true;
+    if (!apps.people) loadSlackAppsPeople();
+    return trackVisibleResourcePromise(ticket, api(SLACK_APPS_API).then(function (body) {
+      if (!visibleResourceLoadIsCurrent(ticket)) return;
+      apps.loading = false;
+      apps.error = "";
+      apps.data = body;
+      (body.agents || []).forEach(function (row) { slackAppsSee(apps, row); });
+      settleSlackAppsPending(apps);
+      render();
+      if (slackAppsPolling(apps)) scheduleSlackAppsPoll();
+      var namesUpdate = (body.agents || []).some(function (row) { return row.slack && row.slack.reason === "handle_release_failed"; });
+      if (namesUpdate) showSlackPermissionsBar();
+    }).catch(function () {
+      if (!visibleResourceLoadIsCurrent(ticket)) return;
+      apps.loading = false;
+      apps.error = apps.data ? "" : "Agents in Slack couldn't load. Try again.";
+      render();
+    }));
+  }
+
+  // Two sentences send the Owner to Update in Slack at the top of the page.
+  // That bar shows from Slack's status, which may be older than the sentence.
+  function showSlackPermissionsBar() {
+    var permissions = state.slack && state.slack.slackPermissions;
+    if (permissions && permissions.status === "update_needed") return;
+    loadVisibleSlackStatus();
+  }
+
+  // Only to name who pasted the token; any failure leaves it unnamed.
+  function loadSlackAppsPeople() {
+    var apps = slackAppsState();
+    apps.people = { viewer: "", names: {} };
+    api("/admin/api/team").then(function (body) {
+      var names = {};
+      var viewer = "";
+      (body && body.members || []).forEach(function (member) {
+        if (!member.slackUserId) return;
+        var label = member.realName || member.displayName;
+        if (label) names[member.slackUserId] = label;
+        if (body.viewer && member.id === body.viewer.membershipId) viewer = member.slackUserId;
+      });
+      apps.people = { viewer: viewer, names: names };
+      if (slackAppsVisible()) render();
+    }).catch(function () {});
+  }
+
+  function slackAppsTokenLine(token) {
+    var people = slackAppsState().people || { viewer: "", names: {} };
+    var who = token.pastedBy && token.pastedBy === people.viewer ? "You" : (token.pastedBy && people.names[token.pastedBy]) || "An Owner";
+    var when = Number.isFinite(token.pastedAt) ? new Date(token.pastedAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "";
+    return who + " added Chickpea's Slack token" + (when ? " on " + when : "") + ".";
+  }
+
+  function slackAppsSectionHtml() {
+    if (!AGENT_SLACK_APPS_OFFERED) return "";
+    var apps = slackAppsState();
+    var title = '<h2 class="section-title">Agents in Slack</h2>';
+    if (!apps.data) {
+      var waiting = apps.error
+        ? '<p class="hint" role="alert">' + esc(apps.error) + '</p><button type="button" class="btn btn-soft btn-sm" data-action="slack-apps-reload">Try again</button>'
+        : '<p class="hint">Loading&hellip;</p>';
+      return '<section class="section slack-apps-section"><div class="section-head"><div>' + title + '</div></div>' + waiting + '</section>';
+    }
+    var data = apps.data;
+    var on = data.setting && data.setting.mode === "own_app";
+    var busy = !!apps.busy;
+    var head = on
+      ? '<div class="section-head"><div>' + title + '<p class="hint">Each new Agent gets its own Slack app.</p></div>' +
+        '<button type="button" class="link-btn" data-action="slack-apps-turn-off"' + (busy ? " disabled" : "") + '>Stop creating Slack apps for new Agents</button></div>'
+      : '<div class="section-head"><div>' + title + '<p class="hint">Agents answer through the Chickpea app. People mention them by @handle in channels Chickpea is in.</p></div></div>' +
+        '<div class="action-well"><button type="button" class="btn btn-primary btn-sm" data-action="slack-apps-turn-on"' + (busy ? " disabled" : "") + '>' +
+        (apps.busy === "on" ? '<span class="spinner"></span>' : '') + 'Make each Agent its own Slack app</button></div>';
+    var needsToken = on && !data.token.stored
+      ? '<div class="callout slack-apps-callout" role="status"><span>Chickpea has no Slack token, so it can&rsquo;t create Slack apps for new Agents.</span>' +
+        '<button type="button" class="btn btn-soft btn-sm" data-action="slack-apps-token-open">Add a token</button></div>'
+      : "";
+    var notice = apps.notice
+      ? '<div class="callout' + (apps.notice.ok ? " callout-success" : "") + ' slack-apps-callout" role="status"><span>' + esc(apps.notice.text) + '</span></div>'
+      : "";
+    var results = apps.results.map(slackAppsResultHtml).join("");
+    var error = apps.error ? '<p class="inline-status error" role="alert">' + esc(apps.error) + '</p>' : "";
+    var lists = slackAppsListsHtml(data.agents || [], on);
+    var token = data.token.stored
+      ? '<div class="action-well slack-apps-token-row"><span class="hint">' + esc(slackAppsTokenLine(data.token)) + '</span>' +
+        '<button type="button" class="btn btn-ghost btn-sm" data-action="slack-apps-token-remove"' + (busy ? " disabled" : "") + '>Remove token</button></div>'
+      : "";
+    return '<section class="section slack-apps-section">' + head + error + needsToken + notice + results + lists + token + '</section>';
+  }
+
+  // Which Channels the bot joined is in the Owner's message in Slack; the
+  // page names only the private ones, where Chickpea never brings the bot.
+  function slackAppsResultHtml(result) {
+    var added = result.from === "not_in_slack";
+    var rest = [];
+    if (result.from === "user_group") rest.push("People keep using @" + result.handle + ".");
+    if (added) rest.push("People can message it and mention @" + result.handle + ".");
+    if (result.privateChannels.length) rest.push("In " + listedNames(result.privateChannels) + " it keeps answering through Chickpea until someone there adds it.");
+    return '<div class="callout callout-success slack-apps-callout" role="status"><span class="g">' + icon("check") + '</span><span><strong>' +
+      esc(result.name + (added ? " is now in Slack as its own app." : " is now its own Slack app.")) + '</strong>' + (rest.length ? " " + esc(rest.join(" ")) : "") + '</span></div>';
+  }
+
+  // Not in Slack yet, still answering through Chickpea (with any move in
+  // progress), and moved, each under its own heading. Off, only Agents with a
+  // move under way or done are listed, so an Owner can finish or see them.
+  function slackAppsListsHtml(agents, on) {
+    var groups = { chickpea: [], notInSlack: [], own: [] };
+    agents.forEach(function (agent) {
+      var stateName = agent.slack && agent.slack.state;
+      if (stateName === "own_app") groups.own.push(agent);
+      else if (stateName === "not_in_slack") groups.notInSlack.push(agent);
+      else if (on || stateName !== "user_group") groups.chickpea.push(agent);
+    });
+    var list = function (titleText, rows) {
+      if (!rows.length) return "";
+      return '<div class="slack-apps-list"><h3 class="slack-apps-list-title">' + esc(titleText) + '</h3>' + rows.map(slackAppsRowHtml).join("") + '</div>';
+    };
+    return list("Not in Slack yet", groups.notInSlack) +
+      list("Still answering through the Chickpea app", groups.chickpea) +
+      list("With their own Slack app", groups.own);
+  }
+
+  function slackAppsAvatarHtml(agent) {
+    if (agent.avatarUrl) return '<img class="slack-apps-avatar" src="' + esc(agent.avatarUrl) + '" alt="">';
+    return '<span class="slack-apps-avatar agent-roster-icon variant-' + agentIconVariant(agent.id) + '" aria-hidden="true">' + icon("robot") + '</span>';
+  }
+
+  function slackAppsChannelsHtml(agent) {
+    var named = (agent.channels || []).filter(function (channel) { return !!channel.name; });
+    if (!named.length) return "";
+    return '<div class="slack-apps-channels">' + named.map(function (channel) {
+      return '<span class="slack-apps-channel">' + (channel.private ? icon("lock-closed") + esc(channel.name) : "#" + esc(channel.name)) + '</span>';
+    }).join("") + '</div>';
+  }
+
+  var SLACK_APPS_YOUR_APPS_BUTTON = { label: "Open Your Apps in Slack", url: SLACK_YOUR_APPS_URL };
+
+  // Each attention reason as one plain sentence and the action that fixes it.
+  function slackAppsAttention(agent) {
+    var name = agent.name;
+    var reason = agent.slack && agent.slack.reason;
+    var tryAgain = { label: "Try again", action: "slack-apps-start" };
+    switch (reason) {
+      case "config_token_needed":
+        return { text: "Chickpea needs a new Slack token to finish " + name + "'s app.", actions: [{ label: "Add a token", action: "slack-apps-token-open" }] };
+      case "handle_release_failed":
+        return { text: "Chickpea couldn't free the name @" + agent.handle + " in Slack. Choose Update in Slack at the top of this page, then choose Try again.", actions: [tryAgain] };
+      case "ambiguous_create":
+        return { text: "Slack may have created an app for " + name + ", but Chickpea didn't hear back. Delete any " + name + " app you don't recognize in Your Apps in Slack, then choose Try again.", actions: [SLACK_APPS_YOUR_APPS_BUTTON, tryAgain] };
+      case "create_refused":
+        return { text: "Slack didn't finish " + name + "'s app. Choose Try again. If it keeps happening, check that your workspace allows new apps.", actions: [tryAgain] };
+      case "urls_refused":
+        return { text: "Slack didn't finish connecting " + name + "'s app to Chickpea. Wait a minute, then choose Try again.", actions: [tryAgain] };
+      case "slack_busy":
+        return { text: "Slack is limiting how fast apps are set up. Wait a minute, then choose Try again.", actions: [tryAgain] };
+      case "app_removed":
+        return { text: name + "'s Slack app was removed from this workspace. Open your messages with Chickpea and choose Allow to add it back.", actions: [] };
+      case "uninstall_failed":
+        return { text: "Removing " + name + "'s Slack app didn't finish. Choose Try again.", actions: [tryAgain] };
+      default:
+        return { text: name + "'s Slack app needs your attention. Open your messages with Chickpea for details.", actions: [] };
+    }
+  }
+
+  // A row's buttons repeat on every row, so each one's name says which Agent.
+  function slackAppsButtonHtml(agent, button, primary) {
+    var apps = slackAppsState();
+    var busy = apps.rowBusy === agent.id;
+    var named = button.label.indexOf(agent.name) >= 0 ? "" : ' aria-label="' + esc(button.label + ", " + agent.name) + '"';
+    if (button.url) {
+      return '<a class="btn btn-soft btn-sm" href="' + esc(button.url) + '" target="_blank" rel="noopener"' + named + '>' + esc(button.label) + '</a>';
+    }
+    var className = button.link ? "link-btn" : "btn " + (primary ? "btn-primary" : "btn-soft") + " btn-sm";
+    return '<button type="button" class="' + className + '" data-action="' + button.action + '" data-agent="' + esc(agent.id) + '"' + named +
+      (apps.rowBusy || apps.busy ? " disabled" : "") + '>' + (busy && !button.link ? '<span class="spinner"></span>' : '') + esc(button.label) + '</button>';
+  }
+
+  function slackAppsRowHtml(agent) {
+    var apps = slackAppsState();
+    var name = agent.name;
+    var stateName = agent.slack && agent.slack.state;
+    var sub = "";
+    var actions = "";
+    var rowClass = "";
+    var tryAgain = { label: "Try again", action: "slack-apps-start" };
+    if (stateName === "user_group") {
+      actions = slackAppsButtonHtml(agent, { label: "Move to its own app", action: "slack-apps-start" });
+    } else if (stateName === "not_in_slack") {
+      actions = slackAppsButtonHtml(agent, { label: "Add " + name + " to Slack", action: "slack-apps-start" });
+    } else if (stateName === "creating" && slackAppsWatched(apps, agent.id)) {
+      actions = '<span class="slack-apps-status"><span class="spinner"></span>Creating ' + esc(name) + '&rsquo;s Slack app&hellip;</span>';
+    } else if (stateName === "creating") {
+      // Nothing says a create stalled; after the watch, Start picks it up where it stopped.
+      rowClass = " needs-attention";
+      sub = '<p class="slack-apps-row-note">' + esc("Creating " + name + "'s Slack app hasn't finished. Choose Try again.") + '</p>';
+      actions = slackAppsButtonHtml(agent, tryAgain);
+    } else if (stateName === "waiting_for_allow") {
+      rowClass = " is-ready";
+      sub = '<p class="slack-apps-row-note">' + esc("Ready. Add " + name + " to Slack to finish.") + '</p>' +
+        '<p class="slack-apps-row-keep">' + esc(name + " keeps answering as it does now until you finish.") + '</p>';
+      actions = slackAppsButtonHtml(agent, { label: "Add " + name + " to Slack", action: "slack-apps-start" }, true) +
+        slackAppsButtonHtml(agent, { label: "Cancel", action: "slack-apps-cancel", link: true });
+    } else if (stateName === "cancelling") {
+      rowClass = " needs-attention";
+      sub = '<p class="slack-apps-row-note">' + esc("Removing the Slack app Chickpea made for " + name + " didn't finish. " + name + " keeps answering as it did before.") + '</p>';
+      actions = slackAppsButtonHtml(agent, { label: "Finish removing", action: "slack-apps-cancel" });
+    } else if (stateName === "switching") {
+      actions = '<span class="slack-apps-status"><span class="spinner"></span>Moving ' + esc(name) + '&hellip;</span>';
+    } else if (stateName === "needs_attention") {
+      rowClass = " needs-attention";
+      var attention = slackAppsAttention(agent);
+      sub = '<p class="slack-apps-row-note">' + esc(attention.text) + '</p>';
+      actions = attention.actions.map(function (button) { return slackAppsButtonHtml(agent, button); }).join("");
+    } else if (stateName === "own_app") {
+      actions = '<span class="slack-apps-own"><span class="dot"></span>Its own Slack app</span>';
+    }
+    var note = apps.rowNotes[agent.id];
+    if (note) {
+      var yourApps = note.yourApps ? ' <a class="hint-link" href="' + SLACK_YOUR_APPS_URL + '" target="_blank" rel="noopener">Open Your Apps in Slack &nearr;</a>' : "";
+      sub += note.error
+        ? '<p class="inline-status error" role="alert">' + esc(note.text) + yourApps + '</p>'
+        : '<p class="slack-apps-row-note is-notice" role="status">' + esc(note.text) + yourApps + '</p>';
+    }
+    var handle = stateName === "not_in_slack" ? "" : '<span class="mono">@' + esc(agent.handle) + '</span>';
+    return '<div class="slack-apps-row' + rowClass + '">' + slackAppsAvatarHtml(agent) +
+      '<div class="slack-apps-row-copy"><div class="slack-apps-row-name"><strong>' + esc(name) + '</strong>' + handle + '</div>' +
+      slackAppsChannelsHtml(agent) + sub + '</div><div class="slack-apps-row-action">' + actions + '</div></div>';
+  }
+
+  function slackAppsConfirmModalHtml() {
+    var apps = state.slackApps;
+    if (!apps || !apps.confirm) return "";
+    var busy = !!apps.busy;
+    var off = apps.confirm === "off";
+    var title = off ? "Stop creating Slack apps for new Agents?" : "Remove the Slack token?";
+    var body = off
+      ? "New Agents will answer through the Chickpea app. Agents that already have their own Slack app keep it."
+      : "Chickpea deletes its copy and asks Slack to stop accepting the token. Agents that already have their own Slack app keep it. Chickpea can't create Slack apps for new Agents until an Owner adds a new token.";
+    var confirmLabel = off ? "Stop creating Slack apps" : "Remove token";
+    return '<div class="modal-backdrop"><div class="modal-card" role="dialog" aria-modal="true" aria-label="' + esc(title) + '" tabindex="-1" data-role="slack-apps-dialog">' +
+      '<h2 class="modal-title">' + esc(title) + '</h2><p class="modal-body">' + esc(body) + '</p>' +
+      '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="slack-apps-confirm-cancel"' + (busy ? " disabled" : "") + '>Cancel</button><span class="spacer"></span>' +
+      '<button type="button" class="btn btn-danger" data-action="slack-apps-confirm-apply"' + (busy ? " disabled" : "") + '>' + (busy ? '<span class="spinner"></span>' : '') + esc(confirmLabel) + '</button></div></div></div>';
+  }
+
+  function dismissSlackAppsConfirm() {
+    var opener = state.slackApps.confirm === "off" ? "slack-apps-turn-off" : "slack-apps-token-remove";
+    state.slackApps.confirm = "";
+    render();
+    focusAction(opener);
+  }
+
+  function slackAppsTokenIllustrationHtml() {
+    var dots = new Array(23).join("&bull;");
+    var workspace = slackAppsWorkspaceName();
+    return '<div class="slack-token-illustration" aria-hidden="true"><div class="slack-token-browser"><span></span><span></span><span></span><em>api.slack.com/apps</em></div>' +
+      '<div class="slack-token-card"><div class="slack-token-head"><strong>Your App Configuration Tokens</strong><span class="slack-token-generate">Generate Token</span></div>' +
+      '<div class="slack-token-workspace"><span class="slack-token-workspace-icon">' + esc(workspace.charAt(0).toUpperCase()) + '</span>' + esc(workspace) + '</div>' +
+      '<div class="slack-token-row"><span class="slack-token-label">Access Token</span><span class="slack-token-value">' + dots + '</span><span class="slack-token-copy">Copy</span></div>' +
+      '<div class="slack-token-row highlighted"><span class="slack-token-label">Refresh Token</span><span class="slack-token-value">' + dots + '</span><span class="slack-token-copy">Copy</span></div></div></div>';
+  }
+
+  function slackAppsTokenPageHtml() {
+    var token = slackAppsState().token;
+    var workspace = slackAppsWorkspaceName();
+    var back = '<button type="button" class="link-btn agent-roster-back slack-token-back" data-action="slack-apps-token-back">&larr; Slack</button>';
+    var title = '<h1 class="page-title slack-token-title">Let Chickpea create Slack apps for your Agents</h1>';
+    if (token.phase === "success") {
+      var connected = token.connectedMode === "own_app" ? "Connected. From now on, each new Agent gets its own Slack app." : "Connected.";
+      return '<div class="slack-token-page">' + back + title +
+        '<p class="onboarding-success-badge slack-token-success" role="status">' + esc(connected) + '</p>' +
+        '<div><button type="button" class="btn btn-primary" data-action="slack-apps-token-back" data-role="slack-apps-token-continue">Continue</button></div></div>';
+    }
+    var checking = token.phase === "checking";
+    var fieldStatus = token.error
+      ? '<p class="field-error" id="slack-apps-token-status" role="alert">' + esc(token.error) + '</p>'
+      : '<p class="hint" id="slack-apps-token-status">Starts with xoxe-</p>';
+    var intro = token.firstTime
+      ? "Slack needs one token from you. You only do this once for " + workspace + "."
+      : "Slack needs one token from you for " + workspace + ".";
+    return '<div class="slack-token-page">' + back + title +
+      (token.why ? '<p class="callout slack-token-why" role="status"><span>' + esc(token.why) + '</span></p>' : '') +
+      '<p class="slack-token-intro">' + esc(intro) + '</p>' +
+      '<ol class="slack-token-steps">' +
+      '<li><span class="slack-token-step">1</span><div><p>Open Slack&rsquo;s app settings.</p><a class="btn btn-soft btn-sm slack-token-open" href="' + SLACK_YOUR_APPS_URL + '" target="_blank" rel="noopener">Open Slack app settings <span aria-hidden="true">&nearr;</span></a></div></li>' +
+      '<li><span class="slack-token-step">2</span><div><p>Under <strong>Your App Configuration Tokens</strong>, choose <strong>Generate Token</strong> and pick <strong>' + esc(workspace) + '</strong>.</p></div></li>' +
+      '<li><span class="slack-token-step">3</span><div><p>Copy the <strong>Refresh Token</strong> and paste it here.</p>' + slackAppsTokenIllustrationHtml() + '</div></li></ol>' +
+      '<form class="slack-token-form" data-action="slack-apps-token-form" autocomplete="off"><label class="field-label" for="slack-apps-token">Refresh token</label>' +
+      '<div class="slack-token-field"><input id="slack-apps-token" class="input mono' + (token.error ? " input-error" : "") + '" type="password" maxlength="512" autocomplete="off" spellcheck="false" placeholder="xoxe-&hellip;" aria-describedby="slack-apps-token-status"' + (checking ? " disabled" : "") + '>' +
+      '<button type="submit" class="btn btn-primary"' + (checking ? " disabled" : "") + '>Connect</button></div>' + fieldStatus +
+      (checking ? '<p class="slack-token-checking" role="status"><span class="spinner"></span>Checking with Slack&hellip;</p>' : '') + '</form>' +
+      '<p class="hint slack-token-note">' + esc("Slack lets this token manage the Slack apps you created in " + workspace + ". Chickpea only changes the apps it creates for your Agents. It's stored encrypted, and you can remove it any time.") + '</p>' +
+      '<p class="hint slack-token-note">These apps belong to you in Slack. Like any Slack app you own, you can see what its bot can see: messages people send that Agent, and the channels it&rsquo;s in.</p></div>';
+  }
+
+  // `why` is the one sentence a press that needed a token lands with.
+  function openSlackAppsToken(turnOn, why) {
+    var apps = slackAppsState();
+    state.view = "channels";
+    state.channelScreen = "overview";
+    state.destinationTab = "connection";
+    state.profileScreen = "list";
+    // Only an Owner turning the setting on for the first time is told it happens once.
+    var firstTime = !!turnOn && !(apps.data && apps.data.setting && apps.data.setting.changedAt);
+    apps.token = { open: true, phase: "empty", error: "", turnOn: !!turnOn, firstTime: firstTime, why: why || "", connectedMode: "" };
+    render();
+    focusSlackAppsTokenField();
+    revalidateCurrentVisibleResources({ navigation: true });
+  }
+
+  // The page's one job is a paste: the field holds focus whenever the page
+  // shows and nothing else is being typed into.
+  function focusSlackAppsTokenField() {
+    var apps = state.slackApps;
+    if (!apps || !apps.token.open || apps.token.phase === "checking" || apps.token.phase === "success") return;
+    var field = document.getElementById("slack-apps-token");
+    if (!field || field.value || !field.focus) return;
+    var active = document.activeElement;
+    if (active && active !== field && isTypingTarget(active)) return;
+    field.focus();
+  }
+
+  function isTypingTarget(element) {
+    var tag = String(element.tagName || "").toUpperCase();
+    return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || element.isContentEditable === true;
+  }
+
+  function closeSlackAppsToken() {
+    var apps = slackAppsState();
+    apps.token = { open: false, phase: "empty", error: "", turnOn: false, why: "", connectedMode: "" };
+    openDestination("connection");
+  }
+
+  var SLACK_TOKEN_ERRORS = {
+    rejected: "Slack didn't accept that token. Generate a new one and paste its Refresh Token.",
+    slack_down: "Slack didn't answer. Try again in a minute."
+  };
+
+  function slackAppsTokenError(code, accessTokenShape) {
+    if (code === "not_refresh_token" || code === "invalid_request") {
+      return accessTokenShape
+        ? "That's the Access Token. Copy the Refresh Token next to it."
+        : "That isn't a refresh token. Copy the Refresh Token, which starts with xoxe-.";
+    }
+    if (code === "other_workspace") return "That token is for a different Slack workspace. Generate one for " + slackAppsWorkspaceName() + ".";
+    return SLACK_TOKEN_ERRORS[code] || "Chickpea couldn't save the token. Try again.";
+  }
+
+  // The token goes to Chickpea once and is never kept here: the field is
+  // emptied before the request leaves, and nothing renders it back. A paste
+  // anywhere on the page lands here, so text that is not a refresh token is
+  // answered on the page and never sent.
+  function submitSlackAppsToken(value) {
+    var apps = slackAppsState();
+    var field = document.getElementById("slack-apps-token");
+    if (field) field.value = "";
+    var pasted = String(value || "").trim();
+    if (!pasted || apps.token.phase === "checking") return;
+    var accessTokenShape = /^xoxe\.xox/.test(pasted);
+    var refuse = function (code) {
+      apps.token.phase = "error";
+      apps.token.error = slackAppsTokenError(code, accessTokenShape);
+      render();
+      var retry = document.getElementById("slack-apps-token");
+      if (retry && retry.focus) retry.focus();
+    };
+    if (!/^xoxe-/.test(pasted)) { refuse("not_refresh_token"); return; }
+    apps.token.phase = "checking";
+    apps.token.error = "";
+    render();
+    postJson(SLACK_APPS_API + "/token", "PUT", { refreshToken: pasted }).then(function () {
+      var mode = apps.data && apps.data.setting ? apps.data.setting.mode : "shared";
+      if (!apps.token.turnOn || mode === "own_app") return mode;
+      return postJson(SLACK_APPS_API + "/mode", "PUT", { mode: "own_app" }).then(function (body) {
+        return body && body.setting ? body.setting.mode : "own_app";
+      });
+    }).then(function (mode) {
+      apps.token.phase = "success";
+      apps.token.connectedMode = mode;
+      invalidateVisibleResource("slack-apps", "");
+      render();
+      var next = document.querySelector('[data-role="slack-apps-token-continue"]');
+      if (next && next.focus) next.focus();
+    }).catch(function (error) {
+      refuse(error && error.message);
+    });
+  }
+
+  function setSlackAppsMode(mode) {
+    var apps = slackAppsState();
+    if (apps.busy) return;
+    apps.busy = mode === "own_app" ? "on" : "off";
+    apps.error = "";
+    render();
+    postJson(SLACK_APPS_API + "/mode", "PUT", { mode: mode }).then(function (body) {
+      apps.busy = "";
+      apps.confirm = "";
+      if (apps.data && body && body.setting) apps.data.setting = body.setting;
+      invalidateVisibleResource("slack-apps", "");
+      render();
+      loadSlackApps();
+    }).catch(function () {
+      apps.busy = "";
+      apps.confirm = "";
+      apps.error = "Chickpea couldn't change this setting. Try again.";
+      render();
+    });
+  }
+
+  function turnOnSlackApps() {
+    var apps = slackAppsState();
+    if (!apps.data) return;
+    apps.results = [];
+    apps.notice = null;
+    if (!apps.data.token.stored) { openSlackAppsToken(true); return; }
+    setSlackAppsMode("own_app");
+  }
+
+  // What each removal did. `none` held no token and says nothing about Slack;
+  // an answer the page doesn't know claims no more than `unconfirmed`.
+  var SLACK_TOKEN_REMOVED = {
+    discarded: { ok: true, text: "Chickpea deleted its copy of your configuration token and retired that token at Slack." },
+    unconfirmed: { ok: false, text: "Chickpea deleted its copy of your configuration token, but Slack didn't confirm the token stopped working, so Slack may still accept it." },
+    none: { ok: false, text: "Chickpea holds no configuration token for this workspace." }
+  };
+
+  function removeSlackAppsToken() {
+    var apps = slackAppsState();
+    if (apps.busy) return;
+    apps.busy = "remove";
+    apps.error = "";
+    render();
+    api(SLACK_APPS_API + "/token", { method: "DELETE" }).then(function (body) {
+      apps.busy = "";
+      apps.confirm = "";
+      if (apps.data) apps.data.token = { stored: false };
+      var removed = body && body.removed;
+      apps.notice = Object.prototype.hasOwnProperty.call(SLACK_TOKEN_REMOVED, removed) ? SLACK_TOKEN_REMOVED[removed] : SLACK_TOKEN_REMOVED.unconfirmed;
+      invalidateVisibleResource("slack-apps", "");
+      render();
+      loadSlackApps();
+    }).catch(function () {
+      apps.busy = "";
+      apps.confirm = "";
+      apps.error = "Chickpea couldn't remove the token. Try again.";
+      render();
+    });
+  }
+
+  function replaceSlackAppsRow(row) {
+    var apps = slackAppsState();
+    if (!row || !apps.data) return;
+    slackAppsSee(apps, row);
+    apps.data.agents = (apps.data.agents || []).map(function (agent) { return agent.id === row.id ? row : agent; });
+  }
+
+  function slackAppsRow(agentId) {
+    var row = state.slackApps && state.slackApps.data && (state.slackApps.data.agents || []).find(function (agent) { return agent.id === agentId; });
+    return row || { name: "This Agent", handle: "", slack: {} };
+  }
+
+  // Start's refusals, as the note on the Agent's row. A refusal that carries
+  // the row says it there, so it needs no note.
+  function slackAppsStartRefusal(code, agent) {
+    switch (code) {
+      case "needs_attention":
+      case "already_own_app":
+      case "cancelling":
+        return null;
+      case "permission_needed":
+        return { error: true, text: "Chickpea needs one more Slack permission to give @" + agent.handle + " its own Slack app. Choose Update in Slack at the top of this page, then try again." };
+      case "app_limit":
+        return { error: true, yourApps: true, text: slackAppsWorkspaceName() + " has reached Slack's limit on apps, so " + agent.name + " stays as it is. Delete an app you no longer need in Your Apps in Slack, then try again." };
+      case "not_found":
+        return { error: true, text: "Chickpea couldn't find this Agent. Reload the page." };
+      default:
+        return { error: true, text: "Chickpea couldn't reach Slack. Try again in a minute." };
+    }
+  }
+
+  // The press: Chickpea creates the app if it has to, then the browser goes
+  // to Slack's Allow page. Returning lands back here with the result. A
+  // record left partway is picked up where it stopped.
+  function startSlackApp(agentId) {
+    var apps = slackAppsState();
+    if (!agentId || apps.rowBusy || apps.busy) return;
+    var from = slackAppsRow(agentId).slack.state;
+    apps.rowBusy = agentId;
+    apps.rowNotes = {};
+    apps.results = [];
+    apps.notice = null;
+    render();
+    postJson(SLACK_APPS_API + "/agents/" + encodeURIComponent(agentId) + "/start", "POST", {}).then(function (body) {
+      if (body && body.next === "authorize") {
+        var url;
+        try { url = new URL(String(body.authorizeUrl || "")); } catch (error) { url = null; }
+        if (!url || url.origin !== SLACK_AUTHORIZE_ORIGIN) throw new Error("authorize_url_invalid");
+        var pending = slackAppsPending();
+        var earlier = pending[agentId] === undefined ? "" : slackAppsPendingEntry(pending[agentId]).from;
+        pending[agentId] = { at: Date.now(), from: from === "user_group" || from === "not_in_slack" ? from : earlier };
+        writeSlackAppsPending(pending);
+        location.assign(url.href);
+        return;
+      }
+      apps.rowBusy = "";
+      invalidateVisibleResource("slack-apps", "");
+      replaceSlackAppsRow(body && body.agent);
+      slackAppsWatch(apps, agentId);
+      render();
+      scheduleSlackAppsPoll();
+    }).catch(function (error) {
+      apps.rowBusy = "";
+      var code = error && error.message;
+      var payload = error && error.payload;
+      if (payload && payload.agent) {
+        invalidateVisibleResource("slack-apps", "");
+        replaceSlackAppsRow(payload.agent);
+      }
+      var agent = slackAppsRow(agentId);
+      if (code === "token_needed") {
+        openSlackAppsToken(false, "Chickpea needs a Slack token before it can create " + agent.name + "'s Slack app.");
+        return;
+      }
+      var note = slackAppsStartRefusal(code, agent);
+      if (note) apps.rowNotes[agentId] = note;
+      render();
+      if (code === "permission_needed") showSlackPermissionsBar();
+      if (code === "not_found") loadSlackApps();
+    });
+  }
+
+  // Cancel, or finishing a Cancel Slack didn't answer: either way the Agent
+  // goes back to answering as it did before the press.
+  function cancelSlackApp(agentId) {
+    var apps = slackAppsState();
+    if (!agentId || apps.rowBusy || apps.busy) return;
+    apps.rowBusy = agentId;
+    apps.rowNotes = {};
+    render();
+    postJson(SLACK_APPS_API + "/agents/" + encodeURIComponent(agentId) + "/cancel", "POST", {}).then(function (body) {
+      apps.rowBusy = "";
+      var pending = slackAppsPending();
+      delete pending[agentId];
+      writeSlackAppsPending(pending);
+      invalidateVisibleResource("slack-apps", "");
+      replaceSlackAppsRow(body && body.agent);
+      if (body && body.app === "left_for_owner") {
+        var name = slackAppsRow(agentId).name;
+        apps.rowNotes[agentId] = { yourApps: true, text: "Chickpea couldn't delete the Slack app it made for " + name + ", so delete " + name + " in Your Apps in Slack. " + name + " keeps answering as it did before." };
+      }
+      render();
+    }).catch(function (error) {
+      apps.rowBusy = "";
+      var code = error && error.message;
+      apps.rowNotes[agentId] = { error: true, text: code === "slack_unavailable" ? "Slack didn't answer. Try again in a minute." : "Chickpea couldn't cancel this. Reload the page and try again." };
+      render();
+      // A Cancel Slack didn't answer stopped partway; the read shows that row and its control.
+      if (code === "not_waiting" || code === "slack_unavailable") loadSlackApps();
+    });
   }
 
   function githubDisconnectModalHtml() {
@@ -16416,6 +17148,28 @@
       return;
     }
 
+    if (state.slackApps && state.slackApps.confirm) {
+      if (action === "slack-apps-confirm-cancel" && !state.slackApps.busy) {
+        dismissSlackAppsConfirm();
+      } else if (action === "slack-apps-confirm-apply") {
+        if (state.slackApps.confirm === "off") setSlackAppsMode("shared");
+        else removeSlackAppsToken();
+      }
+      return;
+    }
+    if (AGENT_SLACK_APPS_OFFERED && action.indexOf("slack-apps-") === 0) {
+      var slackAppsAgent = target.getAttribute("data-agent") || "";
+      if (action === "slack-apps-reload") loadSlackApps();
+      if (action === "slack-apps-turn-on") turnOnSlackApps();
+      if (action === "slack-apps-turn-off") { slackAppsState().confirm = "off"; slackAppsState().notice = null; render(); }
+      if (action === "slack-apps-token-remove") { slackAppsState().confirm = "remove-token"; slackAppsState().notice = null; render(); }
+      if (action === "slack-apps-token-open") openSlackAppsToken(false);
+      if (action === "slack-apps-token-back") closeSlackAppsToken();
+      if (action === "slack-apps-start") startSlackApp(slackAppsAgent);
+      if (action === "slack-apps-cancel") cancelSlackApp(slackAppsAgent);
+      return;
+    }
+
     // While the Slack disconnect dialog is open, its two buttons are the only
     // actionable controls. The background is inert too, but this guard keeps
     // synthetic/programmatic clicks from bypassing the modal contract.
@@ -18219,6 +18973,22 @@
     event.preventDefault();
     if (action === "add-channel-form") addChannel(new FormData(form));
     if (action === "github-manifest-form") submitGithubManifest(new FormData(form));
+    if (action === "slack-apps-token-form") {
+      var tokenInput = document.getElementById("slack-apps-token");
+      submitSlackAppsToken(tokenInput ? tokenInput.value : "");
+    }
+  });
+
+  // Pasting the refresh token sends it at once; it never sits in the field.
+  // On the token page a paste outside any field is meant for it too.
+  document.addEventListener("paste", function (event) {
+    if (!event.target || !event.clipboardData) return;
+    var onTokenPage = state.slackApps && state.slackApps.token.open && document.getElementById("slack-apps-token");
+    if (event.target.id !== "slack-apps-token" && !(onTokenPage && !isTypingTarget(event.target))) return;
+    var pastedToken = event.clipboardData.getData("text");
+    if (!pastedToken || !pastedToken.trim()) return;
+    event.preventDefault();
+    submitSlackAppsToken(pastedToken);
   });
 
   // Escape dismisses the open Model combobox (F6) without picking a model.
@@ -18268,6 +19038,14 @@
   }
 
   document.addEventListener("keydown", function (event) {
+    if (state.slackApps && state.slackApps.confirm) {
+      if (trapModalTab(event, '[data-role="slack-apps-dialog"]')) return;
+      if ((event.key === "Escape" || event.key === "Esc") && !state.slackApps.busy) {
+        event.preventDefault();
+        dismissSlackAppsConfirm();
+      }
+      return;
+    }
     if (state.chatgptPlan.dialog) {
       if (trapModalTab(event, '[data-role="chatgpt-plan-dialog"]')) return;
       if (event.key === "Escape" || event.key === "Esc") { event.preventDefault(); closeChatgptPlanDialog(); }
@@ -18515,6 +19293,14 @@
       syncOnboardingActivity();
     });
     window.addEventListener("focus", revalidateAfterFocusReturn);
+    // Back from Slack's Allow page can restore this page from memory, with
+    // the pressed row still waiting on a navigation that already happened.
+    window.addEventListener("pageshow", function (event) {
+      if (!event.persisted || !state.slackApps || !state.slackApps.rowBusy) return;
+      state.slackApps.rowBusy = "";
+      render();
+      if (slackAppsVisible()) loadSlackApps();
+    });
     window.addEventListener("beforeunload", function (event) {
       if (
         (state.profileScreen === "edit" && state.profileDirty) ||
@@ -18624,6 +19410,10 @@
     state.destinationTab = ["overview", "connection", "channels"].includes(tab) ? tab : "overview";
     state.profileScreen = "list";
     state.disableConfirm = false;
+    if (state.slackApps) {
+      state.slackApps.token.open = false;
+      state.slackApps.confirm = "";
+    }
     state.addChannelOpen = false;
     state.slackDisconnectConfirm = false;
     if (isSlackConnected() && !state.slackChannels && !state.slackChannelsLoading) {
@@ -18682,10 +19472,11 @@
   // is left for render() to restore. One task later, focus has settled.
   function revalidateAfterFocusReturn() {
     if (typeof window !== "undefined" && typeof window.setTimeout === "function") {
-      window.setTimeout(function () { revalidateCurrentVisibleResources(); }, 0);
+      window.setTimeout(function () { revalidateCurrentVisibleResources(); focusSlackAppsTokenField(); }, 0);
       return;
     }
     revalidateCurrentVisibleResources();
+    focusSlackAppsTokenField();
   }
 
   // `options.navigation` marks an in-app route change (opening an Agent,
@@ -18713,6 +19504,7 @@
       loads.push(loadFirstAgentInventory());
     } else if (state.view === "channels") {
       loads.push(loadVisibleSlackStatus());
+      if (slackAppsVisible()) loads.push(loadSlackApps());
     } else if (state.view === "settings" && state.settingsSection === "slack") {
       loads.push(loadVisibleSlackStatus());
     } else if (state.view === "audit" && state.auditDomain === "scheduled-work") {

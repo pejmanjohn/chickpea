@@ -3161,6 +3161,26 @@
           ],
           "returns": "#HostSlackManagementApprovalResult"
         },
+        "slackOwnBotRun": {
+          "params": [
+            {
+              "name": "id",
+              "type": "string"
+            }
+          ],
+          "returns": {
+            "ref": "#StateRpcResult",
+            "args": [
+              {
+                "union": [
+                  "#SlackRunSpeaker",
+                  "null"
+                ]
+              }
+            ]
+          },
+          "fallback": true
+        },
         "slackPresentationAppendCooldown": {
           "params": [
             {
@@ -4546,10 +4566,22 @@
       ]
     },
     "AgentAppBot": {
-      "object": {
-        "agentId": "string",
-        "botUserId": "string"
-      }
+      "union": [
+        {
+          "object": {
+            "agentId": "string",
+            "appId": "string",
+            "botUserId?": "undefined"
+          }
+        },
+        {
+          "object": {
+            "agentId": "string",
+            "appId?": "string",
+            "botUserId": "string"
+          }
+        }
+      ]
     },
     "AgentAppConsent": {
       "object": {
@@ -5136,6 +5168,7 @@
             }
           }
         },
+        "inAgentAppDm?": "true",
         "instructions": "string",
         "interactionMode?": "\"workspace_management\"",
         "model": "string",
@@ -5189,6 +5222,7 @@
             }
           }
         },
+        "inAgentAppDm?": "true",
         "instructions": "string",
         "interactionMode?": "\"workspace_management\"",
         "model": "string",
@@ -14758,6 +14792,7 @@
             }
           }
         },
+        "inAgentAppDm?": "true",
         "interactionMode?": "\"workspace_management\"",
         "model?": "string",
         "modelAttribution?": "#AgentModelAttribution",
@@ -18104,6 +18139,7 @@
                 "cutoffTs": "string",
                 "kind": "\"stop\"",
                 "source": "#TurnStopSource",
+                "speakerBotUserId?": "string",
                 "stopperUserId": "string",
                 "threadKey": "string"
               }
@@ -20488,6 +20524,37 @@
         "workBindingGeneration": "number"
       }
     },
+    "SlackRunSpeaker": {
+      "object": {
+        "agentId": "string",
+        "speaker?": {
+          "union": [
+            {
+              "object": {
+                "botUserId": "string",
+                "kind": "\"own_bot\""
+              }
+            },
+            {
+              "object": {
+                "kind": "\"chickpea_as_agent\""
+              }
+            },
+            {
+              "object": {
+                "kind": "\"unavailable\"",
+                "reason": {
+                  "union": [
+                    "\"app_removed\"",
+                    "\"no_bot_can_post\""
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
     "SlackScheduleActionOutcome": {
       "union": [
         {
@@ -22344,6 +22411,11 @@
         },
         {
           "object": {
+            "outcome": "\"other_speaker\""
+          }
+        },
+        {
+          "object": {
             "outcome": "\"stopped\"",
             "stop": "#TurnStopResult"
           }
@@ -22366,6 +22438,11 @@
         },
         {
           "object": {
+            "outcome": "\"other_speaker\""
+          }
+        },
+        {
+          "object": {
             "outcome": "\"stopped\"",
             "stop": "#TurnStopResult"
           }
@@ -22380,6 +22457,7 @@
             "cutoffTs": "string",
             "kind": "\"stop\"",
             "source": "#TurnStopSource",
+            "speakerBotUserId?": "string",
             "stopperUserId": "string",
             "threadKey": "string"
           }

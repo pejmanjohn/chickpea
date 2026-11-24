@@ -113,6 +113,15 @@ only through Chickpea's thread-owner routing, so only when Chickpea's bot is in
 that Channel. The app's bot answers it when that bot is in the Channel too, and
 Chickpea's bot answers as the Agent otherwise.
 
+The app subscribes to `agent_session_stopped`, so its runs have Slack's Stop
+button wherever its bot answers: its own DM, and Channels and group DMs its bot
+is in. A press there stops the run when that run's stored speaker is the app's
+own bot and the person may use the Agent there; a press about any other run
+(another Agent's, or this Agent's through Chickpea's bot) stops nothing, and
+the app's indicator is settled with its token and no `username` or
+`icon_url`. An app created before this subscription has no Stop button until
+its manifest is updated; people stop its runs by typing.
+
 ### Channels
 
 - Slack's own Add people or agents puts the app's bot in a Channel, and the
@@ -222,14 +231,16 @@ the port on its staging deployment only, behind its own staging-only switch.
 
 ### What the Owner does
 
-1. On the Agent's row in Chickpea's App Home, the Owner chooses **Give @handle
-   its own Slack app**. Only Owners see the row.
-2. The first time in a workspace, the button opens the Owner-only page
-   `/admin/agents/<agentId>/slack-app`. In Slack, the Owner opens Your Apps,
-   chooses Generate Token under Your App Configuration Tokens, picks the
-   workspace, and pastes the Refresh Token. Chickpea rotates it once, refuses an
-   access token or another workspace's token, and stores the new pair
-   encrypted. Later Agents need only the click.
+1. In Admin, under Destinations › Slack › Connection, the **Agents in Slack**
+   section lists each Agent with **Move to its own app**, or **Add <name> to
+   Slack** for an Agent not in Slack yet. Only Owners see the section.
+2. The first time in a workspace, Admin asks for a token on the Owner-only page
+   `/admin/destinations/slack/connection/token`; the older
+   `/admin/agents/<agentId>/slack-app` redirects there. In Slack, the Owner
+   opens Your Apps, chooses Generate Token under Your App Configuration Tokens,
+   picks the workspace, and pastes the Refresh Token, which is sent at once.
+   Chickpea rotates it once, refuses an access token or another workspace's
+   token, and stores the new pair encrypted. Later Agents need only the click.
 3. Chickpea disables the Agent's user group so the handle is free and creates
    the app, with the Agent's handle as its bot's name. The create carries no
    event subscriptions or interactivity: Slack refuses either without a

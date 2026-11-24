@@ -189,6 +189,7 @@ import type {
   SlackStateStore,
 } from '../slack/claim-store.ts';
 import type { SlackMessageEdit } from '../slack/edits.ts';
+import type { SlackRunSpeaker } from '../slack/installation-execution.ts';
 import {
   SlackPresentationStateError,
   type SlackPresentationStateErrorCode,
@@ -377,7 +378,7 @@ const REPLAY_SAFE_STATE_METHODS = new Set([
   'settingGetMany', 'slackAgentBindingGet', 'slackFlueObservationMatch',
   'slackInstallationPendingDeliveryCount', 'slackPresentationGet',
   'slackPresentationLatestThreadGeneration', 'slackPresentationRepairList', 'slackPresentationSummary',
-  'slackProposalApprovalTurns', 'slackLatestAgentTurn', 'slackTypedMessage', 'slackTurnEnvelopeGet', 'slackTurnRecoveryList', 'snapshotGet',
+  'slackProposalApprovalTurns', 'slackLatestAgentTurn', 'slackOwnBotRun', 'slackTypedMessage', 'slackTurnEnvelopeGet', 'slackTurnRecoveryList', 'snapshotGet',
   'snapshotListLiveRootsByAgent', 'threadActiveWorkGet', 'threadHas',
   // Idempotent writes: a keyed set or delete, first-write-wins, or version-gated.
   'threadActiveWorkSet', // the flag for one generation, set to a value
@@ -2198,6 +2199,15 @@ export class CfSlackStateStore implements SlackStateStore {
     return orUndefined(await rpcVia(this.stub,'slackTurnEnvelopeGet', (stub) => stub.slackTurnEnvelopeGet(id)));
   }
 
+  /** A store on code from before slackOwnBotRun names no run: the installation's bot repairs it, as before. */
+  async ownBotRun(id: string) {
+    return orUndefined(await rpcVia(this.stub, 'slackOwnBotRun', (stub) => withStoreFallback<StateRpcResult<SlackRunSpeaker | null>>(
+      'slackOwnBotRun',
+      () => stub.slackOwnBotRun(id),
+      async () => ({ ok: true, value: null }),
+    )));
+  }
+
   async recordWorkspaceObject(object: InstallationWorkspaceObject) {
     await rpcVia(this.stub, 'slackWorkspaceObjectRecord', (stub) => stub.slackWorkspaceObjectRecord(object));
   }
@@ -2485,6 +2495,11 @@ export class CfTurnJobsForRunner implements RunnerTurnJobsPort {
 
   async recordAttempt(id: string, attempts: number) {
     await this.op({ kind: 'recordAttempt', id, attempts });
+  }
+
+  /** A retained turn's run when its Agent app's own bot spoke it, so the runner's repair edits with that bot. */
+  ownBotRun(id: string) {
+    return this.slack((store) => store.ownBotRun(id));
   }
 
   markRecoveryRequired(id: string, reason: string) {
