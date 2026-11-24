@@ -106,6 +106,7 @@ import {
 } from '../slack/artifact-receipts.ts';
 import {
   resolveRoutineRuntimeAccess,
+  routineAccessMatches,
   RoutineAgentAppUnavailableError,
   RoutineRuntimeError,
   type RoutineRuntimeAccess,
@@ -794,16 +795,12 @@ function assertRoutineReattachmentAttribution(
 ): void {
   const runtimePlan = executionInitialData(envelope).runtimePlan;
   const admittedAgentId = runtimePlan.agentId;
-  const legacyAccessHash = access.legacyAccessHashForCatalogRevision?.(
-    runtimePlan.modelAttribution?.catalogRevision,
-  );
   if (
     !run.resolvedAgentId ||
     !run.resolvedAccessHash ||
     run.resolvedAgentId !== admittedAgentId ||
     access.config.agentId !== admittedAgentId ||
-    access.accessHash !== run.resolvedAccessHash &&
-    legacyAccessHash !== run.resolvedAccessHash
+    !routineAccessMatches(access, run.resolvedAccessHash, runtimePlan.modelAttribution?.catalogRevision)
   ) {
     throw new RoutineRuntimeError(
       'access_denied',
