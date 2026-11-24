@@ -914,6 +914,21 @@ test('two Agents that store one handle and are not in Slack do not block each ot
       return true;
     });
     assert.equal(transport.createCalls, 1, 'the second is refused before Slack');
+
+    // An Agent whose own app is being made holds its handle from the start, with no user group yet.
+    const making = await config.createAgent(agent('agent_billing', 'Billing', 'billing'));
+    await config.updateAgent(making.id, {
+      slackPresence: {
+        ...making.slackPresence!,
+        app: { state: 'creating', at: NOW, startedBy: 'UADA', manifestFingerprint: 'f1' },
+      },
+    }, making.revision);
+    await config.createAgent(agent('agent_billing_two', 'Billing two', 'billing'));
+    await assert.rejects(
+      () => reconciler.reconcile('agent_billing_two'),
+      (error: unknown) => error instanceof AgentPresenceError && error.code === 'handle_collision',
+    );
+    assert.equal(transport.createCalls, 1, 'refused before Slack');
   } finally {
     config.close();
   }

@@ -1,4 +1,4 @@
-import type { CustomAgentConfig } from '../../config/types.ts';
+import { appRecordOf, type CustomAgentConfig } from '../../config/types.ts';
 import type { SlackUserGroup } from '../transport/types.ts';
 
 const SLACK_AGENT_HANDLE_MAX_LENGTH = 80;
@@ -21,10 +21,9 @@ export function normalizeAgentHandle(value: string): string {
 
 type HandleHolder = Pick<CustomAgentConfig, 'id' | 'lifecycle' | 'slackPresence'>;
 
-/** An Agent is in Slack when it has a user group or its own app. */
+/** An Agent is in Slack when it has a user group or its own app, live or still being made. */
 export function agentIsInSlack(agent: Pick<CustomAgentConfig, 'slackPresence'>): boolean {
-  const presence = agent.slackPresence;
-  return presence?.kind === 'agent_app' || presence?.userGroupId !== undefined;
+  return appRecordOf(agent.slackPresence) !== undefined || agent.slackPresence?.userGroupId !== undefined;
 }
 
 /**
