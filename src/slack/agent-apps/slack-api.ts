@@ -201,7 +201,8 @@ export function createAgentAppSlackApi(options: AgentAppSlackApiOptions = {}): A
     async definedBotScopes(token, appId) {
       const payload = settled('apps.manifest.export', await call('apps.manifest.export', form({ app_id: appId }, token)));
       const scopes = asRecord(asRecord(asRecord(payload.manifest).oauth_config).scopes).bot;
-      if (!Array.isArray(scopes) || !scopes.every((scope) => typeof scope === 'string')) {
+      // An Agent app always holds bot scopes: an empty list is no answer, and sending it back would drop them all.
+      if (!Array.isArray(scopes) || scopes.length === 0 || !scopes.every((scope) => typeof scope === 'string' && scope.trim() !== '')) {
         throw new SlackUnavailable('apps.manifest.export', 'invalid_slack_response');
       }
       return scopes;

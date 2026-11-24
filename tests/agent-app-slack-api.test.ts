@@ -148,6 +148,26 @@ test('update names the app and the manifest, and a refusal is a refusal', async 
     error instanceof SlackRefused && error.code === 'invalid_manifest');
 });
 
+// Defect caught: an export with no usable bot scopes read as "no permissions", so the update that follows it sends an
+// empty list and drops every permission the app's definition holds.
+test("the export answers the app's bot scopes, and an answer without any is no answer", async () => {
+  const { client, seen } = api(() => ok({ manifest: { oauth_config: { scopes: { bot: ['chat:write', 'im:history'] } } } }));
+  assert.deepEqual(await client.definedBotScopes(TOKEN, 'A0C8APP'), ['chat:write', 'im:history']);
+  assert.deepEqual(seen.map(({ method, authorization, body }) => [method, authorization, body]), [
+    ['apps.manifest.export', `Bearer ${TOKEN}`, { app_id: 'A0C8APP' }],
+  ]);
+  for (const manifest of [
+    undefined, {}, { oauth_config: {} }, { oauth_config: { scopes: {} } }, { oauth_config: { scopes: { bot: [] } } },
+    { oauth_config: { scopes: { bot: 'chat:write' } } }, { oauth_config: { scopes: { bot: ['chat:write', 7] } } },
+    { oauth_config: { scopes: { bot: [''] } } },
+  ]) {
+    await assert.rejects(() => api(() => ok({ manifest })).client.definedBotScopes(TOKEN, 'A0C8APP'), (error: unknown) =>
+      error instanceof SlackUnavailable && error.reason === 'invalid_slack_response', JSON.stringify(manifest));
+  }
+  await assert.rejects(() => api(() => refused('app_not_found')).client.definedBotScopes(TOKEN, 'A0C8APP'), (error: unknown) =>
+    error instanceof SlackRefused && error.method === 'apps.manifest.export' && error.code === 'app_not_found');
+});
+
 test('the icon upload is multipart, and a refusal is told from an outage', async () => {
   const png = new Uint8Array([137, 80, 78, 71]);
   const { client, seen } = api(() => ok({}));
