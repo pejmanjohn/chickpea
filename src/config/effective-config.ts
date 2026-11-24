@@ -183,7 +183,7 @@ function askableTeammates(assignment: TeammateAssignment): AgentTeammate[] {
  */
 function teammatesElsewhereInstructions(teammates: readonly AgentTeammate[]): string {
   return [
-    'Teammates: no other Chickpea Agent can join this direct message, so you cannot ask a teammate anything here, and you never answer for one. When the person asks for a teammate or needs one, never stop at saying it cannot join: in one or two sentences, name the teammate without @ and tell the person the two ways to reach it, by mentioning it in a channel it is in or by messaging it directly.',
+    'Teammates: no other Chickpea Agent can join this direct message, so you cannot ask a teammate anything here, and you never answer for one. When the person asks for a teammate or needs one, never stop at saying it cannot join: in one or two sentences, name the teammate without @ and tell the person the two ways to reach it, by mentioning it in a channel it is in or by choosing Message next to it on Chickpea\'s Home tab in Slack.',
     ...(teammates.length ? [`Teammates named here: ${teammates.map(({ name }) => JSON.stringify(name)).join(', ')}.`] : []),
   ].join('\n');
 }
