@@ -323,7 +323,7 @@ export function createLiveWorkspaceManagementService(
         };
       }
     },
-    publishAgentChannel: async ({ actor, workspaceId, channelId, agentId, createdInCall }) => {
+    publishAgentChannel: async ({ actor, workspaceId, channelId, agentId }) => {
       const user = await actorSlackUser(actor, workspaceId);
       return (await presenceReconciler(workspaceId)).publish({
         workspaceId,
@@ -331,7 +331,6 @@ export function createLiveWorkspaceManagementService(
         agentId,
         actorMembershipId: actor.membershipId,
         actorSlackUserId: user.slackUserId,
-        ...(createdInCall ? { keepPendingUntilInSlack: true as const } : {}),
       });
     },
     publishGeneratedAgentAvatar: async ({ workspaceId, agentId, revision, seed }) => {

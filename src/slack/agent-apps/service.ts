@@ -62,7 +62,7 @@ import {
   nextStep,
   normalizeAgentAppPresence,
   pendingSwitchStep,
-  placedNowhere,
+  waitsForOwnApp,
   restorePending,
   transition,
 } from './lifecycle.ts';
@@ -807,7 +807,7 @@ export class AgentSlackApps {
     },
 
     bring_in_pending: async (agent, presence) => {
-      if (!presence.released) await this.grantCreatorChannels(agent);
+      if (!presence.released) await this.grantWaitingChannels(agent);
       const bot = await this.switchBot(agent, presence);
       if (bot) {
         for (const channelId of await this.grantedChannels(agent.id)) {
@@ -838,7 +838,7 @@ export class AgentSlackApps {
           (channel?.member ? joined : throughChickpea).push(channelId);
         }
         const message = agentAppSwitchedMessage(this.names(agent), {
-          joined, throughChickpea, groupStillOn: answeringUserGroupId(presence) !== undefined,
+          joined, throughChickpea, groupStillOn: answeringUserGroupId(presence) !== undefined, added: !presence.released,
         });
         const dm = await this.deps.transport.openDirectConversation(installedBy);
         await this.deps.transport.postMessage({
@@ -867,17 +867,17 @@ export class AgentSlackApps {
   }
 
   /**
-   * An Agent that was not in Slack yet, so released no group: the Channels its
-   * creator asked for when creating it waited as pending grants, and end as
-   * an add to them would. Chickpea's bot joins a public one it is not in, so
-   * replies in the Agent's threads there need no mention; a private one is
-   * granted where Chickpea's bot already is; an archived one's grant is
-   * dropped. Any other pending add is left as it is.
+   * An Agent that was not in Slack yet, so released no group: each Channel it
+   * was added to meanwhile waited as a pending grant, written after its
+   * writer's membership check, and ends as an add to it would. Chickpea's bot
+   * joins a public one it is not in, so replies in the Agent's threads there
+   * need no mention; a private one is granted where Chickpea's bot already
+   * is; an archived one's grant is dropped.
    */
-  private async grantCreatorChannels(agent: CustomAgentConfig): Promise<void> {
+  private async grantWaitingChannels(agent: CustomAgentConfig): Promise<void> {
     const { config } = this.deps.stores;
     for (const grant of await config.listAgentChannelGrants()) {
-      if (grant.agentId !== agent.id || grant.status !== 'pending' || grant.createdByMembershipId !== agent.creatorMembershipId) continue;
+      if (grant.agentId !== agent.id || grant.status !== 'pending') continue;
       const channel = await seenBy(this.deps.transport, grant.channelId);
       // Slack no longer shows Chickpea's bot the Channel (a private one it has left, or one deleted): the wait stays.
       if (!channel) continue;
@@ -911,7 +911,7 @@ export class AgentSlackApps {
    * next `shared` press repairs it.
    */
   private async placeIfShared(agent: CustomAgentConfig): Promise<void> {
-    if (!this.deps.placeInSlack || agent.lifecycle === 'archived' || !placedNowhere(agent.slackPresence)) return;
+    if (!this.deps.placeInSlack || !waitsForOwnApp(agent)) return;
     if ((await this.setting()).mode !== 'shared') return;
     try {
       await this.deps.placeInSlack(agent.id);
@@ -1377,6 +1377,7 @@ function homeRowFor(
               joined: [],
               throughChickpea: privateGrants.filter((grant) => grant.agentId === agent.id).map((grant) => grant.channelId),
               groupStillOn: answeringUserGroupId(presence) !== undefined,
+              added: presence?.kind === 'agent_app' && !presence.released,
             },
           }
         : { kind: 'active' };

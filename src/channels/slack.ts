@@ -3052,6 +3052,7 @@ async function addRequestedAgentToChannel(
         actorMembershipId: principal.membershipId,
         actorSlackUserId: request.userId,
       });
+      if (published.grant.status !== 'active') return 'waiting';
       return published.appBot === 'left_out' ? 'bot_left_out' : 'added';
     },
     adminUrl: async () => {

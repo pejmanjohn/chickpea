@@ -3,6 +3,8 @@ import { test } from 'node:test';
 
 import type { WebClient } from '@slack/web-api';
 import { createGatewaySlackWebClient } from '../src/slack/gateway/web-client.ts';
+import { completeAgentWelcomeDelivery } from '../src/management/receipts.ts';
+import type { ManagementReceiptOutboxRecord } from '../src/management/types.ts';
 
 import type { SlackPresentationStatePort } from '../src/slack/agent-view-presentation.ts';
 import {
@@ -839,6 +841,70 @@ test("the Node relay repairs a run stored with its app's own bot with that bot, 
       },
     });
     assert.deepEqual(asked, [[own.root.workspaceId, ownRun], [other.root.workspaceId, undefined]]);
+  } finally {
+    db.close();
+  }
+});
+
+// Defects caught: the welcome of an Agent not in Slack yet (no handle, an Add to Slack button) leaving its creation
+// turn's presentation unsettled, or its routing and public context unwritten, once Slack has the post.
+test("an Agent not in Slack yet: its welcome settles its creation turn's presentation like any Agent's welcome", async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new SlackRunPresentationStoreLogic(db, () => BASE_NOW);
+    const runId = 'run_waiting_agent_welcome';
+    const presentationRoot = root('WAITING_WELCOME');
+    let current = createV3(store, runId, presentationRoot, 100);
+    current = advance(store, current, { kind: 'select_activity_projection', surface: 'assistant_status' });
+    current = advance(store, current, { kind: 'record_activity_receipt', operationId: `activity_${runId}_1`, certainty: 'acknowledged' });
+    const contexts: unknown[] = [];
+    const record: ManagementReceiptOutboxRecord = {
+      outboxId: 'agent_welcome_management_waiting',
+      operationId: 'op_waiting',
+      destination: { kind: 'thread', workspaceId: presentationRoot.workspaceId, channelId: presentationRoot.channelId, threadTs: presentationRoot.threadTs },
+      receipt: {
+        kind: 'agent_created_welcome',
+        presentationRunId: runId,
+        agentId: 'agent_support',
+        agentName: 'Support',
+        requesterMembershipId: 'membership_owner',
+        surface: 'direct',
+        persona: { name: 'Support' },
+        publication: { status: 'complete', incomplete: [] },
+        notInSlackYet: 'creator_adds',
+      },
+      status: 'delivering',
+      attempts: 1,
+      nextAttemptAt: BASE_NOW,
+      createdAt: BASE_NOW,
+      updatedAt: BASE_NOW,
+    };
+    const calls: string[] = [];
+    await completeAgentWelcomeDelivery(record, {
+      workspaceId: presentationRoot.workspaceId,
+      channelId: presentationRoot.channelId,
+      threadTs: presentationRoot.threadTs,
+      messageTs: '1788000000.000500',
+      text: "Hi — I'm Support. I'm not in Slack yet, so people can't mention me.",
+      persona: 'agent',
+      client: repairClient({ calls }),
+    }, {
+      getWorkspaceInstallation: async () => undefined,
+      getAgent: async () => { throw new Error('the welcome settles without reading the Agent'); },
+      listAgentChannelGrants: async () => [],
+      putSlackPublicContext: async (context: unknown) => { contexts.push(context); },
+    } as unknown as Parameters<typeof completeAgentWelcomeDelivery>[2], {
+      state: statePort(store),
+      resolveClient: async () => repairClient({ calls }),
+    });
+
+    const settled = store.get(runId);
+    assert.equal(settled?.schemaVersion, 3);
+    if (settled?.schemaVersion !== 3) assert.fail('expected V3 presentation');
+    assert.equal(settled.lifecyclePhase, 'settled');
+    assert.equal(settled.repairRequired, false);
+    assert.equal(settled.activityProjection.state, 'cleared');
+    assert.equal(contexts.length, 1, 'the welcome is the Agent’s public context in that thread');
   } finally {
     db.close();
   }

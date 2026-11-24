@@ -150,42 +150,44 @@ test('a handle another group already holds is still refused when the setting is 
   assert.deepEqual(f.slack.created, []);
 });
 
-test('adding an Agent that is not in Slack yet to a Channel is refused before any grant is written', async (t) => {
+// Defects caught: a Channel offered to a waiting Agent after its creation (a separate proposal, Admin, MCP) refused and
+// lost; Chickpea joining or a group made for an Agent not in Slack yet.
+test('adding an Agent that is not in Slack yet to a Channel keeps the Channel waiting as a pending grant', async (t) => {
   const f = await fixture(t, 'own_app');
   await f.config.createAgent(newAgent('agent_support', 'Support'));
   await f.reconciler.retry('agent_support');
 
-  await assert.rejects(f.reconciler.publish(publishInput), (error: unknown) =>
-    error instanceof AgentPresenceError && error.code === 'not_in_slack_yet' &&
-    error.message === "Support isn't in Slack yet. A workspace Owner needs to add it first.");
-
-  assert.deepEqual(await f.config.listAgentChannelGrants(), [], 'no pending grant');
-  assert.equal(await f.config.getChannel(TEAM, 'C_SALES'), undefined, 'the Channel is not imported');
-  assert.deepEqual([f.slack.lookedUp, f.slack.joined, f.slack.created], [[], [], []], 'Slack is not asked');
-  assert.equal((await f.config.getAgent('agent_support')).slackPresence?.errorCode, AWAITING_OWN_APP, 'still not in Slack yet');
-});
-
-test('adding an unpublished Agent to a Channel with the setting on leaves it not in Slack yet, and refused', async (t) => {
-  const f = await fixture(t, 'own_app');
-  await f.config.createAgent(newAgent('agent_support', 'Support'));
-
-  await assert.rejects(f.reconciler.publish(publishInput), { code: 'not_in_slack_yet' });
-
-  assert.deepEqual(f.slack.created, []);
-  assert.deepEqual(await f.config.listAgentChannelGrants(), []);
-  assert.equal((await f.config.getAgent('agent_support')).slackPresence?.errorCode, AWAITING_OWN_APP);
-});
-
-test('the Channel asked for at creation waits as a pending grant', async (t) => {
-  const f = await fixture(t, 'own_app');
-  await f.config.createAgent(newAgent('agent_support', 'Support'));
-
-  const published = await f.reconciler.publish({ ...publishInput, keepPendingUntilInSlack: true });
+  const published = await f.reconciler.publish(publishInput);
 
   assert.equal(published.grant.status, 'pending');
   assert.equal(published.grant.createdByMembershipId, 'membership_ada');
-  assert.equal(published.agent.slackPresence?.errorCode, AWAITING_OWN_APP);
+  assert.equal(published.grant.channelLabel, 'sales');
+  assert.equal(published.agent.slackPresence?.errorCode, AWAITING_OWN_APP, 'still not in Slack yet');
+  assert.equal((await f.config.getChannel(TEAM, 'C_SALES'))?.lifecycle, 'active', 'the Channel is imported');
   assert.deepEqual([f.slack.joined, f.slack.created], [[], []], 'Chickpea neither joins nor makes a group');
+});
+
+test('adding an unpublished Agent to a Channel with the setting on leaves it not in Slack yet, with the Channel waiting', async (t) => {
+  const f = await fixture(t, 'own_app');
+  await f.config.createAgent(newAgent('agent_support', 'Support'));
+
+  const published = await f.reconciler.publish(publishInput);
+
+  assert.deepEqual(f.slack.created, []);
+  assert.deepEqual((await f.config.listAgentChannelGrants()).map(({ channelId, status }) => [channelId, status]), [['C_SALES', 'pending']]);
+  assert.equal(published.agent.slackPresence?.errorCode, AWAITING_OWN_APP);
+});
+
+test("a waiting Agent's Channel is written only after the membership check", async (t) => {
+  const f = await fixture(t, 'own_app');
+  await f.config.createAgent(newAgent('agent_support', 'Support'));
+  await f.reconciler.retry('agent_support');
+  f.slack.members = new Set();
+
+  await assert.rejects(f.reconciler.publish(publishInput), { code: 'channel_membership_required' });
+
+  assert.deepEqual(await f.config.listAgentChannelGrants(), [], 'nothing the switch could later turn on for someone not in it');
+  assert.equal((await f.config.getAgent('agent_support')).slackPresence?.errorCode, AWAITING_OWN_APP, 'still waiting, not needing attention');
 });
 
 test('a private Channel Chickpea is not in writes no pending grant for an Agent not in Slack yet', async (t) => {
@@ -194,7 +196,7 @@ test('a private Channel Chickpea is not in writes no pending grant for an Agent 
   await f.config.createAgent(newAgent('agent_support', 'Support'));
 
   // As in Slack, the bot cannot even see a private Channel it is not in.
-  await assert.rejects(f.reconciler.publish({ ...publishInput, keepPendingUntilInSlack: true }), AgentPresenceError);
+  await assert.rejects(f.reconciler.publish(publishInput), AgentPresenceError);
 
   assert.deepEqual(await f.config.listAgentChannelGrants(), [], 'nothing the switch could later turn on without a membership check');
 });

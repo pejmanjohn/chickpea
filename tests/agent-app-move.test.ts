@@ -937,9 +937,9 @@ function escapeRegExp(text: string): string {
 }
 
 
-// Defects caught: the Channel a creator asked for staying pending after Allow, so the new app never answers there;
-// a pending add someone else made becoming active without its own checks.
-test('an Agent born as its own app gets the Channel its creator asked for once Allow switches it, and nothing else pending', async (t) => {
+// Defects caught: a Channel an Agent not in Slack yet was added to staying pending after Allow, so the new app never
+// answers there; only the creator's adds completed, so a Channel an Owner or editor added later was lost.
+test('an Agent born as its own app gets every Channel it was added to while waiting once Allow switches it', async (t) => {
   const f = await fixture(t, { userGroupId: undefined, grants: [] });
   const created = await f.config.getAgent('agent_support');
   await f.config.updateAgent(created.id, {
@@ -959,12 +959,12 @@ test('an Agent born as its own app gets the Channel its creator asked for once A
   await f.service.continueSwitch('agent_support');
 
   const grants = Object.fromEntries((await f.config.listAgentChannelGrants()).map((grant) => [grant.channelId, grant.status]));
-  assert.deepEqual(grants, { CDEALS: 'pending', CSALES: 'active' });
-  assert.deepEqual(f.bot.joined, ['CSALES'], 'the bot joins the creator\'s Channel');
-  assert.match(ownerMessages(f).join('\n'), /It joined <#CSALES>\./);
+  assert.deepEqual(grants, { CDEALS: 'active', CSALES: 'active' }, "each waited as its writer's add, checked when written");
+  assert.deepEqual(f.bot.joined.sort(), ['CDEALS', 'CSALES'], 'the bot joins each');
+  assert.match(ownerMessages(f).join('\n'), /It joined <#CSALES> and <#CDEALS>\.|It joined <#CDEALS> and <#CSALES>\./);
   assert.equal((await presenceOf(f))?.errorCode, undefined, 'in Slack now');
   await f.service.continueSwitch('agent_support');
-  assert.deepEqual(f.bot.joined, ['CSALES'], 'a rerun repeats nothing');
+  assert.deepEqual(f.bot.joined.sort(), ['CDEALS', 'CSALES'], 'a rerun repeats nothing');
 });
 
 // Defects caught: an app-limit refusal shown as a broken app that needs attention, or the Agent left with a record.

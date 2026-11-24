@@ -940,7 +940,7 @@ test('a managed removal that fails before Composio is asked leaves the connectio
     for (const door of DOORS) {
       const removed = await removeOver(door, f, service, agent, hubspot.id);
       assert.deepEqual(removed, door === 'Slack'
-        ? { done: false, message: 'I couldn’t apply the approved changes (invalid_request). Nothing was changed.' }
+        ? { done: false, message: 'I couldn’t apply the approved changes. Nothing was changed.' }
         : {
             done: false,
             message: 'Restore the composio provider credentials before disconnecting this managed account so its remote account can also be removed.',

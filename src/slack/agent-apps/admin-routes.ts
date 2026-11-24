@@ -18,7 +18,7 @@ import type { IdentityStore } from '../../identity/types.ts';
 import { requestOrigin } from '../../http/request-origin.ts';
 import { agentAvatarInstallation, agentAvatarUrlForPresentation } from '../agent-presence/avatar-assets.ts';
 import { agentSlackAppsHost, type AgentSlackAppsHost } from './host.ts';
-import { type AgentSlackState, agentSlackState, placedNowhere } from './lifecycle.ts';
+import { type AgentSlackState, agentSlackState, waitsForOwnApp } from './lifecycle.ts';
 import { liveAgentSlackApps } from './live.ts';
 import { TOKEN_PAGE_PATH } from './pages.ts';
 import type { AgentSlackApps } from './service.ts';
@@ -163,8 +163,8 @@ export function createAgentSlackAppAdminRoutes(deps: AgentSlackAppAdminDeps): Ho
     const { setting, changed } = await gated.apps.setMode(parsed.output.mode, gated.slackUserId);
     if (changed) await audit(c, gated.principal, 'agent_apps.mode_changed', setting.mode);
     if (setting.mode !== 'shared') return c.json({ setting: settingJson(setting) });
-    // Shared: each Agent in Slack nowhere gets a user group. Agents with an app, or one on its way, keep it.
-    const unplaced = async () => (await gated.apps.userAgents()).filter((agent) => placedNowhere(agent.slackPresence));
+    // Shared: each Agent waiting for its own app gets a user group. Agents with an app, or one on its way, keep it.
+    const unplaced = async () => (await gated.apps.userAgents()).filter(waitsForOwnApp);
     const before = await unplaced();
     if (before.length > 0) await deps.placeInSlack(c, before.map((agent) => agent.id));
     const grants = await gated.apps.agentChannelGrants();

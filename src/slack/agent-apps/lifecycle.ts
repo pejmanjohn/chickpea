@@ -12,6 +12,7 @@ import {
   type AgentPresenceDesiredState,
   type AgentPresenceHealth,
   type AttachedAgentApp,
+  type CustomAgentConfig,
   appRecordOf,
 } from '../../config/types.ts';
 
@@ -165,8 +166,20 @@ export function agentSlackState(presence: AgentSlackPresence): AgentSlackState {
  * app of its own, and no app record on its way. Told from what the presence
  * holds, never from a marker a failure could have overwritten.
  */
-export function placedNowhere(presence: AgentSlackPresence | undefined): boolean {
+function placedNowhere(presence: AgentSlackPresence | undefined): boolean {
   return presence !== undefined && presence.kind !== 'agent_app' && !presence.userGroupId && !presence.app;
+}
+
+/**
+ * An Agent waiting for its own Slack app: on, neither a draft nor archived,
+ * its presence asks to be in Slack, and it is in Slack nowhere. Only these
+ * are placed when the workspace goes back to one user group per Agent; a
+ * draft, an Agent never published, one turned off, or one archived is never
+ * touched by the setting.
+ */
+export function waitsForOwnApp(agent: Pick<CustomAgentConfig, 'enabled' | 'lifecycle' | 'slackPresence'>): boolean {
+  return agent.enabled && agent.lifecycle !== 'draft' && agent.lifecycle !== 'archived' &&
+    agent.slackPresence?.desiredState === 'active' && placedNowhere(agent.slackPresence);
 }
 
 /** A `creating` record Slack never answered within the settle window; nothing creates again until Try again. */
