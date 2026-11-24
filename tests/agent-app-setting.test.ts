@@ -22,7 +22,8 @@ import { FINISH_APP_ACTION } from '../src/slack/agent-apps/pages.ts';
 import { AGENT_SLACK_APPS_SETTING_KEY, readAgentSlackAppsSetting } from '../src/slack/agent-apps/setting.ts';
 import { type AgentAppSlackApi, SlackRefused, SlackUnavailable } from '../src/slack/agent-apps/slack-api.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
-import { AgentPresenceReconciler, memberInSlack } from '../src/slack/agent-presence/reconciler.ts';
+import { memberInSlack, placeInSlack } from '../src/slack/agent-presence/place-in-slack.ts';
+import { AgentPresenceReconciler } from '../src/slack/agent-presence/reconciler.ts';
 import { AGENT_APP_BOT_SCOPES } from '../src/slack/scopes.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 import { refuseLikeSlack } from './helpers/slack-manifest-rules.ts';
@@ -243,7 +244,7 @@ async function adminApp(t: TestContext, options: {
     userGroupPermissionMissing: async () => options.permissionMissing ?? false,
     placeInSlack: async (agentId) => {
       if (!options.slack) return;
-      await presence().placeInSlack(agentId, (membershipId) => memberInSlack(identity, membershipId));
+      await placeInSlack({ reconciler: presence(), config, identity }, agentId);
     },
     memberInSlack: async (membershipId) => memberInSlack(identity, membershipId),
   });

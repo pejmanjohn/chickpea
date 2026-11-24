@@ -8,7 +8,7 @@
 import { AgentRevisionConflictError, UnknownAgentError } from '../../config/errors.ts';
 import { canEditAgent } from '../../auth/permissions.ts';
 import { AgentPresenceError } from '../agent-presence/errors.ts';
-import type { MemberInSlack } from '../agent-presence/reconciler.ts';
+import type { MemberInSlack } from '../agent-presence/place-in-slack.ts';
 import { installationScopeOf } from '../../config/installation-scope.ts';
 import type { EncryptedCredentialStore, SettingsStore } from '../../config/settings-store.ts';
 import type { PlatformEnv } from '../../config/state-backend.ts';
