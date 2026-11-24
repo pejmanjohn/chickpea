@@ -345,6 +345,34 @@ test('an approved Channel for an Agent not in Slack yet is kept, and the person 
   }
 });
 
+// Defect caught: for a private Channel the reply said the waiting Agent "joins" it, though its bot is never brought in.
+test('an approved private Channel for an Agent not in Slack yet tells the person it answers there through Chickpea', async () => {
+  const { f, workspaceId, chickpea, desk, turn, signal, tool, hostApproves } = await setup('approval-waiting-private-channel', ({ config }) => ({
+    publishAgentChannel: async ({ actor, workspaceId: team, channelId, agentId }) => {
+      const current = await config.getAgent(agentId);
+      const { userGroupId: _none, ...presence } = asUserGroup(current.slackPresence);
+      const agent = await config.updateAgent(agentId, {
+        slackPresence: { ...presence, desiredState: 'active', health: 'unpublished', errorCode: AWAITING_OWN_APP },
+      }, current.revision);
+      const grant = await config.putAgentChannelGrant({
+        workspaceId: team, channelId, agentId, status: 'pending', createdByMembershipId: actor.membershipId, channelLabel: 'desk-lab', channelIsPrivate: true,
+      }, 0);
+      return { agent, grant };
+    },
+  }));
+  try {
+    const result = await tool(signal(CHICKPEA_AGENT_ID, turn('Add Desk to #desk-lab.')), 'apply_workspace_changes', {
+      idempotencyKey: 'waiting-private-channel',
+      operations: [{ itemId: 'channel', kind: 'grant_agent_channel', workspaceId, channelId: 'C_DESK_LAB', agentId: desk.id, expectedRevision: 0 }],
+    });
+    const approval = await hostApproves(chickpea, turn('approve'), heldProposalId(result));
+    assert.equal(approval.kind === 'message' ? approval.text : '',
+      'Applied the approved changes.\n\nOnce a workspace Owner adds Desk to Slack, it answers in #desk-lab through Chickpea until someone in the channel adds it.');
+  } finally {
+    f.close();
+  }
+});
+
 test('an approved Channel add Slack refuses tells the person why in words, never with its code', async () => {
   const { f, workspaceId, chickpea, desk, turn, signal, tool, hostApproves } = await setup('approval-presence-words', () => ({
     publishAgentChannel: async () => { throw new AgentPresenceError('channel_membership_required', 'Join the Slack Channel before adding this Agent.'); },

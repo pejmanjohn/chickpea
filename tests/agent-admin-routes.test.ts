@@ -2295,7 +2295,10 @@ test("Admin refuses to create an Agent, or rename one, onto a handle another Age
     });
     const renamed = await rename('support', triage.revision);
     assert.equal(renamed.status, 400);
-    assert.deepEqual(await renamed.json(), { error: 'invalid_request', message: '@support is already in use.' });
+    // Free handles to choose from, as the management MCP offers for the same refusal.
+    assert.deepEqual(await renamed.json(), {
+      error: 'invalid_request', message: '@support is already in use.', suggestions: ['support-team', 'support-2', 'support-3'],
+    });
     assert.equal((await fixture.store.getAgent(triage.id)).slackPresence?.normalizedHandle, triage.slackPresence?.normalizedHandle);
 
     await fixture.store.updateAgent(holder.id, { lifecycle: 'archived' }, holder.revision);

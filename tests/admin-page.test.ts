@@ -612,6 +612,7 @@ function runAdminPageHarness(
       status: number;
       error: string;
       message?: string;
+      suggestions?: string[];
     };
     agentArchiveConflicts?: number;
     slackGatewayRefreshResult?: { authorizationUrl: string };
@@ -2215,6 +2216,7 @@ function runAdminPageHarness(
           channelId: assignment.channelId,
           channelName: assignment.channelLabel ?? assignment.channelId,
           source: 'granted',
+          isPrivate: harnessOptions.slackChannels?.channels.find(({ id }) => id === assignment.channelId)?.isPrivate ?? null,
           grants: [{
             agentId: assignment.agentId,
             agentName: projectedAgent?.name ?? assignment.agentId,
@@ -2241,6 +2243,7 @@ function runAdminPageHarness(
             {
               error: agentWriteError.error,
               ...(agentWriteError.message ? { message: agentWriteError.message } : {}),
+              ...(agentWriteError.suggestions ? { suggestions: agentWriteError.suggestions } : {}),
             },
             agentWriteError.status,
           ),
@@ -2594,6 +2597,7 @@ function runAdminPageHarness(
         channelId: body.channelId,
         channelName: channel?.name ?? body.channelId,
         status: channelAddWaits ? 'pending' : 'active',
+        channelIsPrivate: channel?.isPrivate === true,
       };
       assignments = assignments.filter((assignment) => !(
         assignment.agentId === agentId
@@ -2643,6 +2647,7 @@ function runAdminPageHarness(
             {
               error: agentWriteError.error,
               ...(agentWriteError.message ? { message: agentWriteError.message } : {}),
+              ...(agentWriteError.suggestions ? { suggestions: agentWriteError.suggestions } : {}),
             },
             agentWriteError.status,
           ),
@@ -2676,6 +2681,7 @@ function runAdminPageHarness(
             {
               error: agentWriteError.error,
               ...(agentWriteError.message ? { message: agentWriteError.message } : {}),
+              ...(agentWriteError.suggestions ? { suggestions: agentWriteError.suggestions } : {}),
             },
             agentWriteError.status,
           ),
@@ -5427,6 +5433,95 @@ test("Add to channels on an Agent's page says an Agent not in Slack yet joins th
   assert.deepEqual(harness.agentChannelPosts, [{ agentId: 'agent_release', body: { workspaceId: 'T_DESIGN', channelId: 'C_NEW' } }]);
   assert.match(harness.app.innerHTML, /Release Profile joins #new-channel once a workspace Owner adds it to Slack\./);
   assert.doesNotMatch(harness.app.innerHTML, /Agent added to #new-channel/);
+});
+
+// Defect caught: in a private Channel Admin said a waiting Agent "joins" it, though its bot is never brought in there.
+test('Add channel says an Agent not in Slack yet answers in a private Channel through Chickpea once an Owner adds it', async () => {
+  const harness = runAdminPageHarness({
+    slackConnection: connectedSlackFixture(),
+    slackChannels: channelsFixture([{ id: 'C_LAB', name: 'lab', isPrivate: true, isMember: true }], true),
+    channelAddWaits: true,
+  });
+  const click = await openReleaseAttachPicker(harness);
+  click({ target: actionTarget({ 'data-action': 'attach-new-channel', 'data-agent': 'agent_release' }) });
+  harness.listeners.submit!({
+    target: submitTarget({ 'data-action': 'add-channel-form' }, { channelSelect: 'C_LAB' }),
+    preventDefault() {},
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML,
+    /Once a workspace Owner adds Release Profile to Slack, it answers in #lab through Chickpea until someone in the channel adds it\./);
+  assert.match(harness.app.innerHTML,
+    /Once a workspace Owner adds Release Profile to Slack, it answers in this Channel through Chickpea until someone in the channel adds it\./,
+    "and the Channel's own page says the same");
+  assert.doesNotMatch(harness.app.innerHTML, /joins #lab|joins this Channel/);
+});
+
+test("Add to channels on an Agent's page says the same for a private Channel", async () => {
+  const harness = runAdminPageHarness({
+    slackConnection: connectedSlackFixture(),
+    slackChannels: channelsFixture([{ id: 'C_LAB', name: 'lab', isPrivate: true, isMember: true }], true),
+    attachSelectionValue: 'C_LAB',
+    channelAddWaits: true,
+  });
+  const click = await openReleaseAttachPicker(harness);
+  click({ target: actionTarget({ 'data-action': 'attach-channel-confirm' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML,
+    /Once a workspace Owner adds Release Profile to Slack, it answers in #lab through Chickpea until someone in the channel adds it\./);
+});
+
+// Defect caught: the Agent's page listed a Channel waiting for it as an ordinary row, while the Channel's own page and
+// the Channels list said it was not in Slack yet.
+test("an Agent's page marks a Channel waiting for it as not in Slack yet, and an active one as nothing", async () => {
+  const waitingHarness = runAdminPageHarness({
+    slackConnection: connectedSlackFixture(),
+    slackChannels: channelsFixture([{ id: 'C_NEW', name: 'new-channel' }], true),
+    attachSelectionValue: 'C_NEW',
+    channelAddWaits: true,
+  });
+  const click = await openReleaseAttachPicker(waitingHarness);
+  click({ target: actionTarget({ 'data-action': 'attach-channel-confirm' }) });
+  await flushAsync();
+  assert.match(waitingHarness.app.innerHTML,
+    /<span class="where-channel-name">new-channel<\/span><small class="where-channel-status">Not in Slack yet<\/small>/);
+
+  const activeHarness = runAdminPageHarness({
+    slackConnection: connectedSlackFixture(),
+    slackChannels: channelsFixture([{ id: 'C_NEW', name: 'new-channel' }], true),
+    attachSelectionValue: 'C_NEW',
+  });
+  const activeClick = await openReleaseAttachPicker(activeHarness);
+  activeClick({ target: actionTarget({ 'data-action': 'attach-channel-confirm' }) });
+  await flushAsync();
+  assert.match(activeHarness.app.innerHTML, /<span class="where-channel-name">new-channel<\/span><\/span>/);
+  assert.doesNotMatch(activeHarness.app.innerHTML, /where-channel-status/);
+});
+
+// Defect caught: a handle another Agent holds was refused in Admin with the refusal alone, though the server offers
+// free handles for it, as the management MCP does.
+test('a handle another Agent holds is refused with free handles to choose, and choosing one puts it in the draft', async () => {
+  const harness = runAdminPageHarness({
+    agentWriteError: { status: 400, error: 'invalid_request', message: '@support is already in use.', suggestions: ['support-team', 'support-2'] },
+  });
+  await flushAsync();
+  const { click, input } = harness.listeners;
+  assert.ok(click && input);
+  click({ target: actionTarget({ 'data-action': 'open-profiles' }) });
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
+  input({ target: inputTarget({ 'data-action': 'profile-handle' }, 'support') });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /@support is already in use\. Try one of these: <button[^>]*data-action="profile-handle-suggestion" data-handle="support-team">@support-team<\/button> <button[^>]*data-handle="support-2">@support-2<\/button>/);
+  click({ target: actionTarget({ 'data-action': 'profile-handle-suggestion', 'data-handle': 'support-2' }) });
+  assert.match(harness.app.innerHTML, /id="p-handle" type="text" maxlength="80" value="support-2"/);
+  assert.doesNotMatch(harness.app.innerHTML, /already in use/);
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(harness.agentPatchBodies.at(-1)?.body.handle, 'support-2');
 });
 
 test('profile capability tabs switch the visible panel on click', async () => {

@@ -676,7 +676,7 @@ import {
   classifyAgentPresenceError,
   restoreHandleRefusal,
 } from '../slack/agent-presence/errors.ts';
-import { handlesOtherAgentsStore, normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
+import { alternativeAgentHandles, handlesOtherAgentsStore, normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import { agentStillInSlackRefusal } from '../slack/agent-presence/left-slack.ts';
 import { reservedAgentIdentityField } from '../config/agent-id.ts';
 import {
@@ -10225,9 +10225,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         const presence = current.slackPresence;
         if (!presence) throw new Error(`Agent ${agentId} has no Slack presence`);
         const handle = normalizeAgentHandle(requestedHandle);
-        if (handle !== presence.normalizedHandle &&
-            handlesOtherAgentsStore(await configStore.listAgents(), agentId).has(handle)) {
-          return invalidRequest(c, `@${handle} is already in use.`);
+        const held = handle === presence.normalizedHandle
+          ? undefined
+          : handlesOtherAgentsStore(await configStore.listAgents(), agentId);
+        if (held?.has(handle)) {
+          // The same free handles the management MCP offers for this refusal.
+          return c.json({
+            error: 'invalid_request',
+            message: `@${handle} is already in use.`,
+            suggestions: alternativeAgentHandles(handle, new Set([handle, ...held])),
+          }, 400);
         }
         patch.slackPresence = {
           ...presence,

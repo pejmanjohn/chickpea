@@ -124,9 +124,9 @@ export interface AgentChannelAddDependencies {
   identity: OfferIdentity;
   /**
    * Adds the Agent to the Channel exactly as Admin's Add to channels does; `bot_left_out` when its own app's bot is not
-   * there, `waiting` when the Agent is not in Slack yet and the Channel waits for it.
+   * there, `waiting` or `waiting_private` when the Agent is not in Slack yet and the Channel waits for it.
    */
-  publish(agent: CustomAgentConfig, principal: AuthPrincipal): Promise<'added' | 'bot_left_out' | 'waiting'>;
+  publish(agent: CustomAgentConfig, principal: AuthPrincipal): Promise<'added' | 'bot_left_out' | 'waiting' | 'waiting_private'>;
   adminUrl(): Promise<string | undefined>;
   client: EphemeralClient;
 }
@@ -153,8 +153,8 @@ export async function addAgentToChannel(
   } else {
     try {
       const placed = await deps.publish(agent, actor.principal);
-      text = placed === 'waiting'
-        ? joinsOnceInSlackMessage(agent, 'this channel')
+      text = placed === 'waiting' || placed === 'waiting_private'
+        ? joinsOnceInSlackMessage(agent, 'this channel', placed === 'waiting_private')
         : placed === 'bot_left_out'
           ? `To let ${named} answer here, add it from the channel's Add people or agents.`
           : `${named} is ready in this channel. Mention ${named} to start a conversation.`;
