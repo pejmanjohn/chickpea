@@ -11956,7 +11956,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const actor = await agentActor(c);
       const transport = await agentSlackTransport(c, actor.slackTeamId);
       const reconciler = presenceReconciler(c, transport, presenceAnnouncements(c, transport));
-      // Each Agent's own failure is recorded on it, for its Retry; the rest go on.
+      // The mode is already `shared`, so each Agent's failure is recorded on it, for its Retry; the rest go on.
       for (const agentId of agentIds) {
         const creator = await agentCreatorInSlack(identity(c), await store(c).getAgent(agentId)).catch(() => undefined);
         await reconciler.placeInSlack(agentId, creator).catch(() => undefined);

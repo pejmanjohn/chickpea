@@ -649,7 +649,7 @@ test('the requester must keep access, the Agent must still be added where it was
     await grant('C0ELSEWHERE');
     assert.equal(await refusalCode(standing()), 'agent_unavailable', 'not added to the Channel it was asked in');
     assert.equal(await refusalCode(standing({ signal: { ...signal, channelId: 'D0DANA', conversationKind: 'im' } })), 'allowed', 'a DM needs no grant');
-    configureAgentSlackApps({ requestUrls: () => ({ events: '', interactions: '' }), redirectUri: '', allowUrl: () => '' });
+    configureAgentSlackApps({ requestUrls: () => ({ events: '', interactions: '' }), redirectUri: '', allowUrl: () => '', addUrl: () => '' });
     try {
       const appAgent = { ...agent, slackPresence: { kind: 'agent_app' } } as unknown as CustomAgentConfig;
       assert.equal(await refusalCode(standing({ agent: appAgent, signal: { ...signal, conversationKind: 'im' } })), 'allowed',

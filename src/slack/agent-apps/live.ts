@@ -358,17 +358,15 @@ export async function handleAgentAppHomeAction(input: {
     const viewer = await input.viewer();
     if (!viewer) return;
     const owner = viewer.role === 'owner';
+    const apps = await liveAgentSlackApps(input.env, host);
     if (action.action_id === START_APP_ACTION) {
-      // Add to Slack also reaches people who are not Owners: it sits in a creation thread anyone there can see.
-      const { reply, started } = await (await liveAgentSlackApps(input.env, host)).addFromSlack(action.value, slackUserId, owner);
-      // The same change as Admin's Start, through another door, recorded the same way.
-      if (started) await viewer.audit('agent_apps.started', started);
-      if (reply) await viewer.tell(reply);
-    } else {
-      if (!owner) return;
-      await (await liveAgentSlackApps(input.env, host)).retry(action.value, slackUserId);
+      // A message from before Add to Slack was a link. Anyone in its thread can press it; nothing starts here.
+      await viewer.tell(await apps.addLinkReply(action.value, owner));
+      return;
     }
-    if (owner) await viewer.republish();
+    if (!owner) return;
+    await apps.retry(action.value, slackUserId);
+    await viewer.republish();
   })());
   return true;
 }
@@ -378,8 +376,6 @@ export interface AgentAppPresser {
   role?: string | undefined;
   republish: () => Promise<void>;
   tell: (text: string) => Promise<void>;
-  /** Records a change as an audit event, as Admin does; a failed record is logged and never fails the press. */
-  audit: (action: 'agent_apps.started', reasonCode: string) => Promise<void>;
 }
 
 const AGENT_APP_ACTIONS = new Set([START_APP_ACTION, FINISH_APP_ACTION, TRY_AGAIN_ACTION]);

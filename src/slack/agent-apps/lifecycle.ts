@@ -39,6 +39,8 @@ export type AgentAppEvent =
   | { type: 'create_ambiguous'; at: number }
   /** Slack refused the create because the workspace has all the apps its plan allows: nothing was made. */
   | { type: 'app_limit_reached'; at: number }
+  /** Another Agent in Slack holds this Agent's handle, so nothing is created. */
+  | { type: 'handle_taken'; at: number }
   /** The recorded app has no record, so it is left for the Owner; create again. */
   | { type: 'recreate'; at: number; manifestFingerprint: string }
   | { type: 'urls_set'; at: number }
@@ -52,7 +54,10 @@ export type AgentAppEvent =
   | { type: 'consent_undone'; at: number; owner: string }
   | { type: 'app_removed'; at: number }
   | { type: 'archive'; at: number; hasBotToken: boolean }
-  /** An Owner's Cancel before Allow: allowed only while the app waits for Allow, so a record that went live is never cancelled. */
+  /**
+   * An Owner's Cancel before Allow: allowed while the app waits for Allow, or when a start stopped before Slack
+   * made an app, so a record that went live is never cancelled.
+   */
   | { type: 'cancel'; at: number; hasBotToken: boolean }
   | { type: 'uninstalled'; at: number }
   | { type: 'uninstall_refused'; at: number }
@@ -223,6 +228,7 @@ export function transition(app: AgentAppLifecycle, event: AgentAppEvent): AgentA
     case 'create_ambiguous':
       return app.state === 'creating' ? attention(app.startedBy, at, 'ambiguous_create', 'creating') : WRONG_STATE;
     case 'app_limit_reached':
+    case 'handle_taken':
       return app.state === 'creating' ? WITHDRAWN : WRONG_STATE;
     case 'recreate':
       return app.state === 'created'
@@ -302,6 +308,8 @@ export function transition(app: AgentAppLifecycle, event: AgentAppEvent): AgentA
       };
     }
     case 'cancel':
+      // A record that stopped before any app was made has nothing to remove in Slack.
+      if (app.state === 'needs_attention' && app.resume === 'creating' && !app.app) return WITHDRAWN;
       return app.state === 'awaiting_consent'
         ? {
             state: 'uninstalling',

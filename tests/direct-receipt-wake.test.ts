@@ -558,6 +558,7 @@ test("the Worker's direct path reads the Agent apps' bots without loading any Ag
       requestUrls: () => ({ events: 'https://cloud.test/e', interactions: 'https://cloud.test/i' }),
       redirectUri: 'https://cloud.test/slack/agent-apps/callback',
       allowUrl: (agentId) => `https://cloud.test/slack/agent-apps/allow/${agentId}`,
+      addUrl: (agentId) => `https://cloud.test/slack/agent-apps/add/${agentId}`,
     } : undefined);
     let log: string[] = [];
     try {

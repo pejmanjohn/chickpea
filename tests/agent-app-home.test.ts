@@ -26,6 +26,7 @@ const HOST: AgentSlackAppsHost = {
   requestUrls: () => ({ events: 'https://cloud.test/e', interactions: 'https://cloud.test/i' }),
   redirectUri: 'https://cloud.test/slack/agent-apps/callback',
   allowUrl: (agentId) => `https://cloud.test/slack/agent-apps/allow/${agentId}`,
+  addUrl: (agentId) => `https://cloud.test/slack/agent-apps/add/${agentId}`,
 };
 const ENV = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_a' });
 
@@ -98,8 +99,13 @@ test('each state reads as its own line, and a sequence stopped for two minutes o
   const stalled = await rows({ state: 'created', at: NOW - 3 * 60_000, startedBy: 'U1', app: APP });
   assert.equal(text(stalled), escapeMrkdwn("Setting up @support's Slack app stopped partway."));
   assert.equal(button(stalled, 1).text.text, 'Finish setting up');
-  assert.equal(text(await rows({ state: 'awaiting_consent', at: NOW, startedBy: 'U1', app: APP, icon: 'agent_avatar', allowDm: { channelId: 'D1', ts: '1.0' } })),
-    escapeMrkdwn("@support's Slack app is ready to add. Open your messages with Chickpea to allow it."));
+  assert.equal(button(stalled, 1).url, 'https://cloud.test/slack/agent-apps/add/agent_support', "an add that stopped is finished on the hand-off page");
+  assert.equal(button(stalled, 1).value, undefined, 'a link, not an action');
+  const waiting = await rows({ state: 'awaiting_consent', at: NOW, startedBy: 'U1', app: APP, icon: 'agent_avatar', allowDm: { channelId: 'D1', ts: '1.0' } });
+  assert.equal(text(waiting), escapeMrkdwn("@support's Slack app is ready to add. Choose Allow in Slack to finish."));
+  assert.deepEqual([button(waiting, 1).text.text, button(waiting, 1).url], ['Allow in Slack', 'https://cloud.test/slack/agent-apps/add/agent_support']);
+  const switching = await rows({ state: 'active', at: NOW - 3 * 60_000, app: APP, icon: 'agent_avatar', botUserId: 'UBOT', installedAt: NOW, installedBy: 'U1', switchProgress: 'bring_in_pending' });
+  assert.deepEqual([button(switching, 1).action_id, button(switching, 1).url], [FINISH_APP_ACTION, undefined], 'a switch after Allow keeps its action');
   assert.equal(text(await rows({ state: 'active', at: NOW, app: APP, icon: 'agent_avatar', botUserId: 'UBOT', installedAt: NOW, installedBy: 'U1' })),
     escapeMrkdwn('@support has its own Slack app. People can message @support directly.'));
   assert.equal(text(await rows({ state: 'needs_attention', at: NOW, startedBy: 'U1', reason: 'create_refused', resume: 'creating' })),
@@ -127,7 +133,7 @@ test('a click on an Agent app control is an Owner-only control, and other clicks
   const viewer = async () => {
     await gate;
     viewers += 1;
-    return { role: 'member', republish: async () => {}, tell: async (text: string) => { told.push(text); }, audit: async () => {} };
+    return { role: 'member', republish: async () => {}, tell: async (text: string) => { told.push(text); } };
   };
   const detached: Promise<void>[] = [];
   const press = (payload: Parameters<typeof handleAgentAppHomeAction>[0]['payload']) =>

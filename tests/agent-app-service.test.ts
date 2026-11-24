@@ -37,6 +37,7 @@ const HOST: AgentSlackAppsHost = {
   }),
   redirectUri: 'https://cloud.test/slack/agent-apps/callback',
   allowUrl: (agentId) => `https://cloud.test/slack/agent-apps/allow/${agentId}`,
+  addUrl: (agentId) => `https://cloud.test/slack/agent-apps/add/${agentId}`,
 };
 const ENV = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_a' });
 
@@ -508,7 +509,8 @@ test('each refusal lands in attention with its message, and Try again resumes fr
   await ambiguous.service.start('agent_support', OWNER);
   app = await appOf(ambiguous);
   assert.equal(app?.state === 'needs_attention' && app.reason, 'ambiguous_create');
-  assert.deepEqual(buttonUrls(ambiguous.transport.posted[0]!), ['https://api.slack.com/apps']);
+  assert.deepEqual(buttonUrls(ambiguous.transport.posted[0]!), ['https://api.slack.com/apps', 'https://cloud.test/slack/agent-apps/add/agent_support'],
+    'Try again is the hand-off link, which picks the add up where it stopped');
   ambiguous.slack.ambiguousCreate = false;
   await ambiguous.service.advance('agent_support');
   assert.equal(ambiguous.slack.manifests.length, 1, 'ambiguity never retries by itself');
@@ -533,7 +535,7 @@ test("a refused URL update tells the Owner the app isn't connected yet, with no 
   const app = await appOf(f);
   assert.equal(app?.state === 'needs_attention' && app.reason, 'urls_refused');
   assert.equal(f.transport.posted[0]?.text, "Slack didn't finish connecting Support's app to Chickpea. Wait a minute, then choose Try again.");
-  assert.deepEqual(buttons(f.transport.posted[0]!), [['Try again', 'agent_app_try_again']]);
+  assert.deepEqual(buttonUrls(f.transport.posted[0]!), ['https://cloud.test/slack/agent-apps/add/agent_support'], 'Try again is the hand-off link');
 });
 
 test("without the Owner's user-group permission nothing starts, and the Owner is sent to Admin's update with no Try again", async (t) => {
@@ -639,8 +641,10 @@ test('a spent configuration token stops the sequence and sends the Owner to the 
   await f.service.start('agent_support', OWNER);
   const app = await appOf(f);
   assert.equal(app?.state === 'needs_attention' && app.reason, 'config_token_needed');
-  assert.equal(f.transport.posted[0]?.text, 'Chickpea needs a new Slack refresh token to finish Support\'s app.');
-  assert.deepEqual(buttonUrls(f.transport.posted[0]!), ['https://core.test/admin/destinations/slack/connection/token']);
+  assert.equal(f.transport.posted[0]?.text, 'Chickpea needs a new Slack refresh token to finish Support\'s app. Paste one, then choose Continue.');
+  assert.deepEqual(buttonUrls(f.transport.posted[0]!), [
+    'https://core.test/admin/destinations/slack/connection/token', 'https://cloud.test/slack/agent-apps/add/agent_support',
+  ], 'Continue is the hand-off link, which goes on once the token is pasted');
   assert.deepEqual(f.slack.manifests, []);
 });
 

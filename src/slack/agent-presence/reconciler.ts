@@ -927,9 +927,11 @@ export class AgentPresenceReconciler {
     error: AgentPresenceError,
   ): Promise<void> {
     const current = await this.dependencies.config.getAgent(agent.id);
-    // A failure gives an Agent not in Slack yet no handle, so it stays waiting; the caller still gets the error. Only an
-    // ambiguous create is recorded, because Slack may have made the group and the next attempt adopts it by that code.
-    if (current.slackPresence?.errorCode === AWAITING_OWN_APP && error.code !== 'user_group_create_ambiguous') return;
+    // While each new Agent is its own app, a failure gives an Agent not in Slack yet no handle, so it stays waiting; the
+    // caller still gets the error. An ambiguous create is recorded, because Slack may have made the group and the next
+    // attempt adopts it by that code. Back in `shared` mode it reads as any Agent whose group failed, cause and all.
+    if (current.slackPresence?.errorCode === AWAITING_OWN_APP && error.code !== 'user_group_create_ambiguous' &&
+        await this.ownAppMode()) return;
     const presence = withoutPresenceErrors(requiredPresence(current));
     await this.dependencies.config.updateAgent(
       current.id,

@@ -37,6 +37,7 @@ const HOST: AgentSlackAppsHost = {
   requestUrls: () => ({ events: 'https://cloud.test/e', interactions: 'https://cloud.test/i' }),
   redirectUri: 'https://cloud.test/slack/agent-apps/callback',
   allowUrl: (agentId) => `https://cloud.test/slack/agent-apps/allow/${agentId}`,
+  addUrl: (agentId) => `https://cloud.test/slack/agent-apps/add/${agentId}`,
 };
 const HOSTED_APP = { appId: 'AHOSTED1', signingSecret: 'hosted-app-signing-secret' };
 const ADMIN_TOKEN = 'admin-token';

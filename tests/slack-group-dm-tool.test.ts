@@ -372,7 +372,7 @@ test('an Agent that answers as its own Slack app may start a group DM, with or w
     await grant('C0PROJECT');
     const appAgent = { ...agent, slackPresence: { kind: 'agent_app' } } as unknown as CustomAgentConfig;
     assert.equal(await refusalCode(standing({ agent: appAgent })), 'allowed', 'no host: it posts as Chickpea\'s bot');
-    configureAgentSlackApps({ requestUrls: () => ({ events: '', interactions: '' }), redirectUri: '', allowUrl: () => '' });
+    configureAgentSlackApps({ requestUrls: () => ({ events: '', interactions: '' }), redirectUri: '', allowUrl: () => '', addUrl: () => '' });
     try {
       assert.equal(await refusalCode(standing({ agent: appAgent })), 'allowed', "Chickpea's bot starts it, as for a user-group Agent");
     } finally { configureAgentSlackApps(undefined); }

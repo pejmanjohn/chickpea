@@ -78,7 +78,7 @@ test('hosted offers Slack apps (optional) after the model and before Connect Git
     ['Your workspace', 'Optional', 'Say hi']);
   assert.deepEqual(ids(onboardingSteps({ selfHosted: true, onChickpeaModels: false, githubOffered: true, slackAppsOffered: true })), ['slack', 'provider', 'model', 'try']);
   host(t, { billing: false, app: () => APP });
-  configureAgentSlackApps({ requestUrls: () => ({ events: 'https://h/e', interactions: 'https://h/i' }), redirectUri: 'https://h/cb', allowUrl: () => 'https://h/allow' });
+  configureAgentSlackApps({ requestUrls: () => ({ events: 'https://h/e', interactions: 'https://h/i' }), redirectUri: 'https://h/cb', allowUrl: () => 'https://h/allow', addUrl: () => 'https://h/add' });
   t.after(() => configureAgentSlackApps(undefined));
   assert.deepEqual(labels(await hostedSignUpOnboardingSteps()),
     ['Add to Slack', 'Choose provider', 'Choose model', 'Slack apps', 'Connect GitHub', 'Try Chickpea'], 'the person signing up is the Owner');

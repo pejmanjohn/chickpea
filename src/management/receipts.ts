@@ -9,7 +9,7 @@ import {
   resolveSlackInstallationExecutionContext,
   type SlackInstallationExecutionResolver,
 } from '../slack/installation-execution.ts';
-import { START_APP_ACTION, agentSlackAppsHost, hostPostSpeaker, ownBotClient } from '../slack/agent-apps/index.ts';
+import { ADD_LINK_ACTION, agentSlackAppsHost, hostPostSpeaker, ownBotClient } from '../slack/agent-apps/index.ts';
 import type { AgentAppBot } from '../slack/agent-app-bots.ts';
 import { renderSlackActionLink } from '../slack/message-format.ts';
 import type { SlackPresentationStatePort } from '../slack/agent-view-presentation.ts';
@@ -1051,20 +1051,22 @@ function formatAgentAppAddRequest(receipt: ManagementAgentAppAddRequest): string
 
 /**
  * The Add to Slack button, for a message that asks an Owner to add an Agent:
- * the text as sections, then the button. Only an Owner's click acts on it.
+ * the text as sections, then a link to the host's hand-off page, which only
+ * an Owner gets past.
  */
 function addToSlackBlocks(receipt: ManagementReceipt, text: string): { blocks?: unknown[] } {
   const target = isAgentAppAddRequest(receipt) || (isAgentCreatedWelcome(receipt) && receipt.notInSlackYet === 'creator_adds')
     ? receipt
     : undefined;
-  if (!target) return {};
+  const host = agentSlackAppsHost();
+  if (!target || !host) return {};
   return {
     blocks: [
       ...text.split('\n\n').map((paragraph) => ({ type: 'section', text: { type: 'mrkdwn', text: paragraph.slice(0, 3_000) } })),
       {
         type: 'actions',
         elements: [{
-          type: 'button', style: 'primary', action_id: START_APP_ACTION, value: target.agentId,
+          type: 'button', style: 'primary', action_id: ADD_LINK_ACTION, url: host.addUrl(target.agentId),
           text: { type: 'plain_text', text: 'Add to Slack' },
         }],
       },

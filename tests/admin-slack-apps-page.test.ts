@@ -558,7 +558,7 @@ const attentionRows: Array<[string, RegExp, string[]]> = [
   ['create_refused', /Slack didn&#39;t finish Ops&#39;s app\. Choose Try again\. If it keeps happening, check that your workspace allows new apps\./, ['Try again']],
   ['urls_refused', /Slack didn&#39;t finish connecting Ops&#39;s app to Chickpea\. Wait a minute, then choose Try again\./, ['Try again']],
   ['slack_busy', /Slack is limiting how fast apps are set up\. Wait a minute, then choose Try again\./, ['Try again']],
-  ['app_removed', /Ops&#39;s Slack app was removed from this workspace\. Open your messages with Chickpea and choose Allow to add it back\./, []],
+  ['app_removed', /Ops&#39;s Slack app was removed from this workspace\. Open your messages with Chickpea and choose Add Ops to Slack to add it back\./, []],
   ['uninstall_failed', /Removing Ops&#39;s Slack app didn&#39;t finish\. Choose Try again\./, ['Try again']],
   ['something_new', /Ops&#39;s Slack app needs your attention\. Open your messages with Chickpea for details\./, []],
 ];
@@ -616,6 +616,10 @@ test("Start's other answers: the row it carries, the limit on apps in words, and
   assert.match(limit.text(), /Acme has reached Slack&#39;s limit on apps, so Sales Desk stays as it is\. Delete an app you no longer need in Your Apps in Slack, then try again\. Open Your Apps in Slack/);
   assert.match(limit.html(), /<a class="hint-link" href="https:\/\/api\.slack\.com\/apps" target="_blank" rel="noopener">Open Your Apps in Slack &nearr;<\/a>/);
   assert.match(limit.html(), /data-agent="agent_sales"[^>]*>Move to its own app</, 'the Agent stays as it was');
+
+  const taken = await harness({ handle: (path) => path.endsWith('/start') ? respond({ error: 'handle_taken', agent: row('agent_sales', 'Sales Desk', 'sales-desk', 'user_group') }, 409) : undefined });
+  await taken.click({ 'data-action': 'slack-apps-start', 'data-agent': 'agent_sales' });
+  assert.match(taken.text(), /Another Agent in Slack already uses @sales-desk\. Rename Sales Desk, then try again\./);
 
   for (const [error, status] of [['something_new', 409], ['', 500]] as const) {
     const odd = await harness({ handle: (path) => path.endsWith('/start') ? respond(error ? { error } : {}, status) : undefined });

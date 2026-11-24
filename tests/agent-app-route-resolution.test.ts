@@ -33,6 +33,7 @@ function serveAgentApps(t: TestContext): void {
     requestUrls: () => ({ events: 'https://host.test/e', interactions: 'https://host.test/i' }),
     redirectUri: 'https://host.test/callback',
     allowUrl: (agentId) => `https://host.test/allow/${agentId}`,
+    addUrl: (agentId) => `https://host.test/add/${agentId}`,
   });
   t.after(() => configureAgentSlackApps(undefined));
 }

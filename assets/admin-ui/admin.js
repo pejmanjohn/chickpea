@@ -5388,7 +5388,7 @@
       case "slack_busy":
         return { text: "Slack is limiting how fast apps are set up. Wait a minute, then choose Try again.", actions: [tryAgain] };
       case "app_removed":
-        return { text: name + "'s Slack app was removed from this workspace. Open your messages with Chickpea and choose Allow to add it back.", actions: [] };
+        return { text: name + "'s Slack app was removed from this workspace. Open your messages with Chickpea and choose Add " + name + " to Slack to add it back.", actions: [] };
       case "uninstall_failed":
         return { text: "Removing " + name + "'s Slack app didn't finish. Choose Try again.", actions: [tryAgain] };
       default:
@@ -5736,6 +5736,8 @@
         return { error: true, text: "Chickpea needs one more Slack permission to give @" + agent.handle + " its own Slack app. Choose Update in Slack at the top of this page, then try again." };
       case "app_limit":
         return { error: true, yourApps: true, text: slackAppsWorkspaceName() + " has reached Slack's limit on apps, so " + agent.name + " stays as it is. Delete an app you no longer need in Your Apps in Slack, then try again." };
+      case "handle_taken":
+        return { error: true, text: "Another Agent in Slack already uses @" + agent.handle + ". Rename " + agent.name + ", then try again." };
       case "not_found":
         return { error: true, text: "Chickpea couldn't find this Agent. Reload the page." };
       default:

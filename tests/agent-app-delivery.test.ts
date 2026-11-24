@@ -114,6 +114,7 @@ const HOST: AgentSlackAppsHost = {
   requestUrls: () => ({ events: 'https://cloud.test/e', interactions: 'https://cloud.test/i' }),
   redirectUri: 'https://cloud.test/slack/agent-apps/callback',
   allowUrl: (agentId) => `https://cloud.test/slack/agent-apps/allow/${agentId}`,
+  addUrl: (agentId) => `https://cloud.test/slack/agent-apps/add/${agentId}`,
 };
 
 interface SlackCall { method: string; token: string | undefined; body: URLSearchParams }
@@ -543,7 +544,7 @@ test('an app_uninstalled ends only that Agent app: the bot token goes, its group
   assert.equal(removedDm.length, 1, 'the Owner is told once');
   assert.equal(removedDm[0]?.token, MAIN_BOT, 'the Owner hears it from Chickpea');
   assert.equal(removedDm[0]?.body.get('text'), escapeMrkdwn(
-    "Support's Slack app was removed from this workspace. People can still mention @support, and Support answers through Chickpea. Choose Allow to add the app back.",
+    "Support's Slack app was removed from this workspace. People can still mention @support, and Support answers through Chickpea. Choose Add Support to Slack to add the app back.",
   ));
   assert.equal(await agentSlackAppIngress(h.base, AGENT_APP) !== undefined, true, 'the app record is still known to the ingress while it waits for Allow');
   assert.deepEqual(await drainMoves(h), [], 'nothing is left to run');
@@ -1293,9 +1294,9 @@ function addToSlackPress(user: string, agentId = 'agent_support') {
   };
 }
 
-// Defects caught: a press by someone who is not an Owner, or an Owner's for an Agent already being added, already in
-// Slack, or archived, answered with silence; an old button starting a move for an Agent with a user group.
-test("Add to Slack in a message: only an Owner's press adds a waiting Agent, and every other press is answered privately", async (t) => withHarness(t, async (h) => {
+// Defects caught: a message posted while Add to Slack was an action going unanswered once the action is gone, or
+// still starting an app from a bare press now that the press is the hand-off page's own POST.
+test("Add to Slack on a message from before it was a link answers with the link, privately, and starts nothing", async (t) => withHarness(t, async (h) => {
   const support = await h.stores.config.getAgent('agent_support');
   await h.stores.config.updateAgent(support.id, {
     slackPresence: {
@@ -1303,48 +1304,23 @@ test("Add to Slack in a message: only an Owner's press adds a waiting Agent, and
       errorCode: AWAITING_OWN_APP, avatar: support.slackPresence!.avatar,
     },
   }, support.revision);
-  await h.stores.config.createAgent({ ...support, id: 'agent_gone', name: 'Gone', lifecycle: 'archived', slackPresence: {
-    requestedHandle: 'gone', normalizedHandle: 'gone', desiredState: 'disabled', health: 'unpublished', avatar: support.slackPresence!.avatar,
-  } });
-  const creates = () => h.calls.filter((call) => call.method === 'apps.manifest.create').length;
-  const audits: Array<[string, string | null | undefined, string | null | undefined]> = [];
-  const record = h.stores.identity.recordAuthAudit.bind(h.stores.identity);
-  t.mock.method(h.stores.identity, 'recordAuthAudit', async (input: Parameters<typeof record>[0]) => {
-    audits.push([input.action, input.reasonCode, input.membershipId]);
-    return record(input);
-  });
+  const rotated = { accessToken: 'xoxe.xoxp-1-config-access', refreshToken: 'xoxe-1-config-refresh', teamId: TEAM, expiresAt: Date.now() + 12 * 3_600_000 };
+  assert.equal(await saveConfigurationToken({ ...h.secrets(), slack: { rotate: async () => rotated } }, TEAM, 'xoxe-1-pasted-token-0000'), 'saved');
   const replies = () => slackPosts(h, 'chat.postEphemeral').map((body) => [body.get('channel'), body.get('user'), body.get('thread_ts'), body.get('text')]);
-  const dms = () => slackPosts(h, 'chat.postMessage').map((body) => body.get('text'));
 
   assert.equal((await h.deliverToChickpea(addToSlackPress('U2'), 'interactions')).status, 200);
   assert.equal((await h.deliverToChickpea(addToSlackPress('U1'), 'interactions')).status, 200);
-  assert.equal(creates(), 0, 'nothing is created without a token');
-  assert.match(dms().at(-1) ?? '', /Chickpea needs a Slack refresh token to add Support to Slack\./, 'asked for a token, not a new one');
+  assert.equal((await h.deliverToChickpea(addToSlackPress('U1', 'agent_nobody'), 'interactions')).status, 200);
 
-  const rotated = { accessToken: 'xoxe.xoxp-1-config-access', refreshToken: 'xoxe-1-config-refresh', teamId: TEAM, expiresAt: Date.now() + 12 * 3_600_000 };
-  assert.equal(await saveConfigurationToken({ ...h.secrets(), slack: { rotate: async () => rotated } }, TEAM, 'xoxe-1-pasted-token-0000'), 'saved');
-  assert.equal((await h.deliverToChickpea(addToSlackPress('U1'), 'interactions')).status, 200);
-  assert.equal(creates(), 1, "the Owner's press creates the app");
-  assert.equal(appRecordOf((await h.stores.config.getAgent('agent_support')).slackPresence)?.state, 'awaiting_consent');
-  assert.match(dms().at(-1) ?? '', /Support's Slack app is ready\. Choose Allow/);
-
-  assert.equal((await h.deliverToChickpea(addToSlackPress('U1'), 'interactions')).status, 200);
-  assert.equal((await h.deliverToChickpea(addToSlackPress('U1', 'agent_finance'), 'interactions')).status, 200);
-  assert.equal((await h.deliverToChickpea(addToSlackPress('U1', 'agent_gone'), 'interactions')).status, 200);
-  assert.equal(creates(), 1, 'a second press, or a press for an Agent with a user group, creates nothing');
-  assert.equal(appRecordOf((await h.stores.config.getAgent('agent_finance')).slackPresence), undefined, 'and starts no move');
+  assert.equal(h.calls.filter((call) => call.method.startsWith('apps.manifest.')).length, 0, 'no press creates anything');
+  assert.equal(appRecordOf((await h.stores.config.getAgent('agent_support')).slackPresence), undefined);
   const thread = '1900004000.000100';
   assert.deepEqual(replies(), [
     ['C1', 'U2', thread, 'A workspace Owner needs to add Support to Slack.'],
-    ['C1', 'U1', thread, "Chickpea is already adding Support to Slack. Its latest message to you says what's next."],
-    ['C1', 'U1', thread, 'Finance is already in Slack.'],
-    ['C1', 'U1', thread, "Gone is archived, so it can't be added to Slack."],
+    ['C1', 'U1', thread, '<https://cloud.test/slack/agent-apps/add/agent_support|Add Support to Slack>'],
+    ['C1', 'U1', thread, 'That Agent no longer exists.'],
   ]);
-  assert.deepEqual(audits.filter(([action]) => action.startsWith('agent_apps.')), [
-    ['agent_apps.started', 'token_needed', h.ownerMembershipId],
-    ['agent_apps.started', 'started', h.ownerMembershipId],
-    ['agent_apps.started', 'already_started', h.ownerMembershipId],
-  ], "each Owner's Start is recorded as Admin's is; a press that starts nothing is not");
+  assert.deepEqual(slackPosts(h, 'chat.postMessage'), [], 'nobody is messaged');
 }));
 
 const SUPPORT_READY = '@support is ready in this channel. Mention @support to start a conversation.';

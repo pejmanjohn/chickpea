@@ -21,6 +21,15 @@ import { asUserGroup } from './helpers/user-group-presence.ts';
 const NOW = 1_800_000_000_000;
 const TEAM = 'TACME';
 const AVATAR = { kind: 'generated' as const, revision: 1, seed: 'seed' };
+const ADD_URL = 'https://cloud.test/slack/agent-apps/add/agent_support';
+/** The host's routes; Add to Slack links to its hand-off page. */
+function withHost(t: TestContext): void {
+  configureAgentSlackApps({
+    requestUrls: () => ({ events: 'e', interactions: 'i' }), redirectUri: 'r', allowUrl: () => 'a',
+    addUrl: (agentId) => `https://cloud.test/slack/agent-apps/add/${agentId}`,
+  });
+  t.after(() => configureAgentSlackApps(undefined));
+}
 
 /**
  * Refuses what Slack refuses: a second group with a taken handle or name, an unknown group, and a private Channel
@@ -289,7 +298,7 @@ test('an Agent not in Slack yet is told its name and no handle', () => {
 test('a workspace where no Agent has an app record reads no app bots on a Slack event or turn', async (t) => {
   const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   t.after(() => { config.close(); configureAgentSlackApps(undefined); });
-  configureAgentSlackApps({ requestUrls: () => ({ events: 'e', interactions: 'i' }), redirectUri: 'r', allowUrl: () => 'a' });
+  configureAgentSlackApps({ requestUrls: () => ({ events: 'e', interactions: 'i' }), redirectUri: 'r', allowUrl: () => 'a', addUrl: (agentId) => `https://cloud.test/slack/agent-apps/add/${agentId}` });
   const support = await config.createAgent({ ...newAgent('agent_support', 'Support'), lifecycle: 'active' });
   await config.ensureWorkspaceInstallation({ workspaceId: TEAM, transportMode: 'direct', defaultAgentId: support.id });
   let reads = 0;
@@ -345,6 +354,7 @@ const welcomeOf = (record: ManagementReceiptOutboxRecord | undefined) => {
 };
 
 test('an Owner who creates an Agent not in Slack yet is welcomed by it, with no handle and the button to add it', async (t) => {
+  withHost(t);
   const f = await waitingCreation('own-app-owner');
   t.after(() => f.close());
   const applied = await f.service.applyWorkspaceChanges({ context: ownerMcpContext(f), idempotencyKey: 'own-app-owner', operations: [creation('agent_support')] });
@@ -372,7 +382,7 @@ test('an Owner who creates an Agent not in Slack yet is welcomed by it, with no 
   });
   assert.equal(posted[0]?.username, 'Support');
   assert.deepEqual((posted[0]?.blocks as unknown[]).at(-1), {
-    type: 'actions', elements: [{ type: 'button', style: 'primary', action_id: 'agent_app_start', value: 'agent_support', text: { type: 'plain_text', text: 'Add to Slack' } }],
+    type: 'actions', elements: [{ type: 'button', style: 'primary', action_id: 'agent_app_add_link', url: ADD_URL, text: { type: 'plain_text', text: 'Add to Slack' } }],
   });
   assert.equal((posted[0]?.blocks as Array<{ text?: { text: string } }>).slice(0, -1).map((block) => block.text?.text).join('\n\n'), posted[0]?.text);
 });
@@ -406,6 +416,7 @@ test('a creator who is not an Owner is never told the Owners were asked when non
 });
 
 test('a creator who is not an Owner is told an Owner adds it, and each Owner gets the button with the creator named', async (t) => {
+  withHost(t);
   const f = await waitingCreation('own-app-admin');
   t.after(() => f.close());
   const admin: ManagementActorContext = {
@@ -443,6 +454,6 @@ test('a creator who is not an Owner is told an Owner adds it, and each Owner get
   });
   assert.deepEqual(posted[0]?.blocks, [
     { type: 'section', text: { type: 'mrkdwn', text: formatManagementSetupReceipt(asked!.receipt) } },
-    { type: 'actions', elements: [{ type: 'button', style: 'primary', action_id: 'agent_app_start', value: 'agent_support', text: { type: 'plain_text', text: 'Add to Slack' } }] },
+    { type: 'actions', elements: [{ type: 'button', style: 'primary', action_id: 'agent_app_add_link', url: ADD_URL, text: { type: 'plain_text', text: 'Add to Slack' } }] },
   ]);
 });
