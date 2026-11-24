@@ -12,7 +12,7 @@ import {
   encryptSlackSecretEnvelope,
   workspaceCredentialContext,
 } from '../secret-envelope.ts';
-import { type AgentAppSlackApi, type AgentAppSlackStep, SlackRefused, logSlackRefusal } from './slack-api.ts';
+import { type AgentAppSlackApi, type AgentAppSlackStep, SlackRefused, SlackUnavailable, logSlackRefusal } from './slack-api.ts';
 
 export interface AgentAppSecrets {
   clientSecret: string;
@@ -33,6 +33,8 @@ export const ACCESS_TOKEN_MARGIN_MS = 5 * 60_000;
 /** A rotation claim older than this is taken over. */
 export const ROTATION_CLAIM_MS = 60_000;
 const LOST_CLAIM_REREADS = 3;
+/** Slack's answer to a rotation whose refresh token is spent or revoked: the only one that ends the stored pair. */
+const DEAD_REFRESH_TOKEN = 'invalid_refresh_token';
 const LOST_CLAIM_WAIT_MS = 1_000;
 const REFRESH_TOKEN = /^xoxe-1-[A-Za-z0-9._-]{8,}$/;
 
@@ -381,7 +383,10 @@ async function retireRefreshToken(d: SecretDeps, refreshToken: string): Promise<
   }
 }
 
-/** Runs `use` with a fresh access token; the rotation is claimed by compare-and-set first. Throws ConfigTokenNeeded. */
+/**
+ * Runs `use` with a fresh access token; the rotation is claimed by compare-and-set first. Throws ConfigTokenNeeded when
+ * no usable token is stored, and SlackUnavailable when a rotation cannot happen now.
+ */
 export async function withConfigurationToken<T>(
   d: SecretDeps,
   teamId: string,
@@ -405,13 +410,19 @@ async function freshAccessToken(d: SecretDeps, teamId: string): Promise<string> 
       const claim = await writePair(d, teamId, { ...current.pair, rotatingSince: now }, current.revision);
       if (claim) return rotateHolding(d, teamId, current.pair, claim, now);
     }
-    if (attempt >= LOST_CLAIM_REREADS) throw new ConfigTokenNeeded(teamId);
+    // Another caller still holds the rotation: the token is not known to be bad, so this is Slack not answering yet.
+    if (attempt >= LOST_CLAIM_REREADS) throw new SlackUnavailable('tooling.tokens.rotate', 'rotation_claimed');
     await (d.sleep ?? sleep)(LOST_CLAIM_WAIT_MS);
     current = await readPair(d, teamId);
   }
 }
 
-/** The claim holder rotates; a spent refresh token means another rotator won, or the pair is dead. */
+/**
+ * The claim holder rotates; a spent refresh token means another rotator won,
+ * or the pair is dead. Only Slack saying the refresh token is no longer valid
+ * deletes the pair: any other refusal, a rate limit among them, leaves it, and
+ * is Slack not answering, so the caller retries once the claim lapses.
+ */
 async function rotateHolding(
   d: SecretDeps,
   teamId: string,
@@ -425,6 +436,7 @@ async function rotateHolding(
   } catch (error) {
     if (!(error instanceof SlackRefused)) throw error;
     logSlackRefusal('rotate', {}, error);
+    if (error.code !== DEAD_REFRESH_TOKEN) throw new SlackUnavailable('tooling.tokens.rotate', error.code);
     const latest = await readPair(d, teamId);
     if (latest && latest.pair.refreshToken !== pair.refreshToken && usable(latest.pair, now)) {
       return latest.pair.accessToken;
