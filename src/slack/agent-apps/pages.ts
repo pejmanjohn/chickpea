@@ -163,11 +163,11 @@ const DM_COPY = {
       `${name}'s Slack app was removed from this workspace. People can still mention @${handle}, and ${name} answers through Chickpea. Choose Add ${name} to Slack to add the app back.`,
     buttons: (links, names) => add(links, `Add ${names.name} to Slack`),
   },
-  /** Removed, and its user group is back on under the handle it had, because Slack refused it the Agent's. */
+  /** Removed, and its user group is back on under the handle it had, refused the Agent's: the Agent needs another handle, or its app back. */
   app_removed_handle_kept: {
     text: ({ name, handle, refusedHandle }) =>
-      `${name}'s Slack app was removed from this workspace. Slack wouldn't give its user group the handle @${refusedHandle}, so people can mention @${handle} instead, and ${name} answers through Chickpea. Choose Add ${name} to Slack to add the app back.`,
-    buttons: (links, names) => add(links, `Add ${names.name} to Slack`),
+      `${name}'s Slack app was removed from this workspace. Its user group couldn't take the handle @${refusedHandle}, so people can mention @${handle} instead, and ${name} answers through Chickpea. Give ${name} another handle in Chickpea Admin, or choose Add ${name} to Slack to add the app back.`,
+    buttons: (links, names) => [...add(links, `Add ${names.name} to Slack`), ...openAdmin(links.adminUrl)],
   },
   /** Removed, with no user group to answer @handle: none to turn back on, or Slack refused. */
   app_removed_unreachable: {

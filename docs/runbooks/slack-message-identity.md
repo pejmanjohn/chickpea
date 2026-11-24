@@ -291,8 +291,12 @@ Home.
   installation and other Agents are unchanged. The user group the app
   released is renamed to the Agent's current name and handle before it is
   turned back on, since a rename made while the app held the handle never
-  reached it. If Slack refuses the handle, the group keeps the one it has, and
-  the Owner's message names that one.
+  reached it. If Slack refuses the handle, or another Agent in Slack holds
+  it, the group keeps the one it has and keeps answering, the Owner's message
+  names that one, and the Agent needs attention as any Agent with a taken
+  handle does until an Owner gives it another handle or adds its app back.
+  Until then its replies through the group come from Chickpea, without the
+  Agent's name and picture.
 - When a tenant ends, the host retires every Agent app before the workspace's
   own uninstall and records each outcome. Retiring an app needs only that
   app's own credentials and the configuration token, so it goes on when the

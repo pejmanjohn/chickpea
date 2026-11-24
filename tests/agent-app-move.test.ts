@@ -832,9 +832,14 @@ test('a removed app whose Agent was renamed meanwhile gets its group back under 
   assert.deepEqual(presence && [presence.kind, presence.normalizedHandle, answeringUserGroupId(presence)], [undefined, 'helpdesk', 'S1']);
 });
 
+const HANDLE_KEPT = escapeMrkdwn(
+  "Helpdesk's Slack app was removed from this workspace. Its user group couldn't take the handle @helpdesk, so people can mention @support instead, and Helpdesk answers through Chickpea. Give Helpdesk another handle in Chickpea Admin, or choose Add Helpdesk to Slack to add the app back.",
+);
+
 // Defects caught: a handle Slack refused named to the Owner as one people can mention; the Agent's stored handle
-// silently changed to the group's; the refusal stopping the restore, so the group stays off.
-test("a handle Slack refuses the restored group leaves it the handle it has, which is the one the Owner is told, and keeps the Agent's", async (t) => {
+// silently changed to the group's; the refusal stopping the restore, so the group stays off; the Agent shown as
+// healthy under a handle nothing in Slack answers to, with no way offered to fix it.
+test("a handle Slack refuses the restored group leaves it the handle it has, which the Owner is told, and the Agent keeps its own and needs another", async (t) => {
   const f = await fixture(t);
   await switched(f);
   await rename(f, 'Helpdesk', 'helpdesk');
@@ -844,13 +849,67 @@ test("a handle Slack refuses the restored group leaves it the handle it has, whi
   assert.equal(await f.service.continueSwitch('agent_support'), 'not_live');
   assert.deepEqual(f.main.groups.get('S1'), { id: 'S1', name: 'Support', handle: 'support', description: 'Support Agent', disabled: false });
   assert.deepEqual(refusals.map(({ step, code }) => [step, code]), [['restore_handle', 'handle_already_exists']]);
-  assert.equal(ownerMessages(f).at(-1), escapeMrkdwn(
-    "Helpdesk's Slack app was removed from this workspace. Slack wouldn't give its user group the handle @helpdesk, so people can mention @support instead, and Helpdesk answers through Chickpea. Choose Add Helpdesk to Slack to add the app back.",
-  ));
+  assert.equal(ownerMessages(f).at(-1), HANDLE_KEPT);
   assert.equal(ownerMessages(f).length, 2, 'the switch result, then this one, once');
-  const presence = await presenceOf(f);
+  const agent = await f.config.getAgent('agent_support');
+  const presence = agent.slackPresence;
   assert.deepEqual(presence && [presence.kind, presence.requestedHandle, presence.normalizedHandle, answeringUserGroupId(presence)],
-    [undefined, 'helpdesk', 'helpdesk', 'S1']);
+    [undefined, 'helpdesk', 'helpdesk', 'S1'], 'the group answers, and the Agent keeps the handle it stores');
+  assert.deepEqual([agent.lifecycle, presence?.desiredState, presence?.health, presence?.errorCode, presence?.handleSuggestions],
+    ['needs_attention', 'active', 'needs_attention', 'handle_collision', ['helpdesk-team', 'helpdesk-2', 'helpdesk-3']]);
+  assert.deepEqual(appRecordOf(presence)?.state, 'needs_attention', 'the removed app stays attached, for Add to Slack');
+
+  // The job is safe to repeat: nothing is renamed, turned on or told again, and the group is never turned off.
+  f.calls.log.length = 0;
+  assert.equal(await f.service.continueSwitch('agent_support'), 'not_live');
+  assert.deepEqual(f.calls.log, []);
+  assert.equal(f.main.groups.get('S1')?.disabled, false);
+});
+
+// Defects caught: Admin's Retry for the taken handle turning the answering group off; another handle chosen in Admin
+// not reaching the group, or leaving the Agent needing attention.
+test('an Agent whose restored group kept its handle is fixed in Admin: Retry leaves the group answering, and another handle renames it', async (t) => {
+  const f = await fixture(t);
+  await switched(f);
+  await rename(f, 'Helpdesk', 'helpdesk');
+  await f.service.end('A0APP1', UNINSTALLED);
+  f.main.handlesTaken.add('helpdesk');
+  captureSlackRefusals(t);
+  assert.equal(await f.service.continueSwitch('agent_support'), 'not_live');
+
+  await assert.rejects(f.reconciler.retry('agent_support'), { code: 'handle_collision' });
+  assert.deepEqual(f.main.groups.get('S1'), { id: 'S1', name: 'Support', handle: 'support', description: 'Support Agent', disabled: false });
+  assert.equal(answeringUserGroupId(await presenceOf(f)), 'S1');
+
+  await rename(f, 'Helpdesk', 'helpdesk-2');
+  const fixed = await f.reconciler.retry('agent_support');
+  assert.deepEqual(f.main.groups.get('S1'), { id: 'S1', name: 'Helpdesk', handle: 'helpdesk-2', description: 'Helpdesk Agent', disabled: false });
+  const presence = fixed.slackPresence;
+  assert.deepEqual([fixed.lifecycle, presence?.health, presence?.errorCode, presence?.handleSuggestions, answeringUserGroupId(presence)],
+    ['active', 'healthy', undefined, undefined, 'S1']);
+  assert.equal(appRecordOf(presence)?.state, 'needs_attention', 'the removed app stays attached, for Add to Slack');
+});
+
+// Defect caught: the restored group renamed onto a handle another Agent in Slack holds, which Slack allows when that
+// Agent is its own app, so two Agents answer to one handle.
+test('a restored group never takes a handle another Agent in Slack holds, though Slack would allow it', async (t) => {
+  const f = await fixture(t);
+  await switched(f);
+  await rename(f, 'Helpdesk', 'helpdesk');
+  const other = await f.config.getAgent('agent_default');
+  await f.config.updateAgent(other.id, {
+    slackPresence: {
+      requestedHandle: 'helpdesk', normalizedHandle: 'helpdesk', avatar: other.slackPresence!.avatar, userGroupId: 'S9', desiredState: 'active', health: 'healthy',
+    },
+  }, other.revision);
+  await f.service.end('A0APP1', UNINSTALLED);
+  f.calls.log.length = 0;
+  assert.equal(await f.service.continueSwitch('agent_support'), 'not_live');
+  assert.equal(f.calls.log.includes('updateUserGroup'), false, 'Slack is not asked');
+  assert.deepEqual(f.main.groups.get('S1'), { id: 'S1', name: 'Support', handle: 'support', description: 'Support Agent', disabled: false });
+  assert.equal(ownerMessages(f).at(-1), HANDLE_KEPT);
+  const presence = await presenceOf(f);
+  assert.deepEqual([presence?.normalizedHandle, presence?.health, presence?.errorCode], ['helpdesk', 'needs_attention', 'handle_collision']);
 });
 
 // Defects caught: a refused re-enable retried forever or told on every try; the Owner left without the button or the

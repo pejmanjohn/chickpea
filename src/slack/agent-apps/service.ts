@@ -7,7 +7,7 @@
  */
 import { AgentRevisionConflictError, UnknownAgentError } from '../../config/errors.ts';
 import { canEditAgent } from '../../auth/permissions.ts';
-import { AgentPresenceError } from '../agent-presence/errors.ts';
+import { AgentPresenceError, classifyAgentPresenceError } from '../agent-presence/errors.ts';
 import type { MemberInSlack } from '../agent-presence/place-in-slack.ts';
 import { installationScopeOf } from '../../config/installation-scope.ts';
 import type { EncryptedCredentialStore, SettingsStore } from '../../config/settings-store.ts';
@@ -35,7 +35,12 @@ import {
   generatedAgentAvatarPng,
   readAgentAvatarAsset,
 } from '../agent-presence/avatar-assets.ts';
-import { bringUserGroupToAgent, handlesOtherAgentsHoldInSlack } from '../agent-presence/handles.ts';
+import {
+  alternativeAgentHandles,
+  bringUserGroupToAgent,
+  handlesOtherAgentsHoldInSlack,
+  handlesOtherAgentsStore,
+} from '../agent-presence/handles.ts';
 import {
   AGENT_APP_BOT_EVENTS,
   type AgentAppManifestIntent,
@@ -263,6 +268,13 @@ type Performer = (run: Run) => Promise<Outcome>;
 
 type LiveAgentApp = AgentAppPresence & { app: Extract<AgentAppLifecycle, { state: 'active' }> };
 type RemovedAgentApp = AgentAppPresence & { app: Extract<AgentAppLifecycle, { state: 'needs_attention' }> };
+
+/** A restored group refused the Agent's handle, by Slack or by Chickpea's own rule: the handle it keeps, why, and free handles to offer. */
+interface KeptHandle {
+  handle: string;
+  refusal: AgentPresenceError;
+  suggestions: string[];
+}
 
 /**
  * A switch step's result: the step due next; the group Slack confirmed it
@@ -1367,15 +1379,17 @@ export class AgentSlackApps {
    * an Owner asks; a group Slack never confirmed it turned off still answers
    * then, and the record and the message go on saying so. The message goes
    * before the record, under a key a rerun of the same removal and outcome
-   * repeats, so the Owner is told once.
+   * repeats, so the Owner is told once. A group back on under a handle that
+   * is not the Agent's needs attention as any Agent's taken handle does: it
+   * keeps answering, and an Owner gives the Agent another handle in Admin.
    */
   private async restoreGroup(agent: CustomAgentConfig, presence: RemovedAgentApp, finalAttempt: boolean): Promise<CustomAgentConfig> {
     const { released } = presence;
     const appId = presence.app.app?.appId;
     let outcome: 'on' | 'none' | 'refused' | 'permission' = released ? 'on' : 'none';
-    let keptHandle: string | undefined;
+    let kept: KeptHandle | undefined;
     if (released) {
-      keptHandle = await this.renameReleasedGroup(agent, presence, released.userGroupId);
+      kept = await this.renameReleasedGroup(agent, presence, released.userGroupId);
       try {
         await this.deps.transport.enableUserGroup(released.userGroupId);
       } catch (error) {
@@ -1391,10 +1405,10 @@ export class AgentSlackApps {
     // A refusal changes nothing in Slack, so a group Slack never confirmed it turned off still answers.
     const mentionable = outcome === 'on' || (enableRefused && released?.answers === true);
     const kind: AgentAppMessageKind = mentionable
-      ? keptHandle ? 'app_removed_handle_kept' : 'app_removed'
+      ? kept ? 'app_removed_handle_kept' : 'app_removed'
       : outcome === 'permission' ? 'app_removed_permission' : 'app_removed_unreachable';
     // People mention the group by the handle Slack has; one it refused never answers, so it is never named as one that does.
-    const names = { ...this.names(agent), ...(keptHandle ? { handle: keptHandle, refusedHandle: presence.normalizedHandle } : {}) };
+    const names = { ...this.names(agent), ...(kept ? { handle: kept.handle, refusedHandle: presence.normalizedHandle } : {}) };
     try {
       await this.message(kind, agent, presence.app.startedBy, `agent-app-removed:${agent.id}:${appId ?? ''}:${presence.app.at}:${kind}`, names);
     } catch (error) {
@@ -1405,11 +1419,14 @@ export class AgentSlackApps {
         error: error instanceof SlackTransportError ? error.code : error instanceof Error ? error.name : 'unknown',
       });
     }
-    const slackPresence = enableRefused && released
-      ? normalizeAgentAppPresence({ ...presence, released: { ...released, enableRefused: true } })
-      : restoredPresence(presence);
+    const groupBack = !(enableRefused && released);
+    const slackPresence = groupBack
+      ? kept ? handleNeedsAttention(restoredPresence(presence), kept, this.now()) : restoredPresence(presence)
+      : normalizeAgentAppPresence({ ...presence, released: { ...released, enableRefused: true } });
     try {
-      return await this.deps.stores.config.updateAgent(agent.id, { slackPresence }, agent.revision);
+      return await this.deps.stores.config.updateAgent(
+        agent.id, { slackPresence, ...(groupBack && kept ? { lifecycle: 'needs_attention' as const } : {}) }, agent.revision,
+      );
     } catch (error) {
       // Another writer moved the record after the enable was sent: the driver reads it again and repeats the step.
       if (!(error instanceof AgentRevisionConflictError)) throw error;
@@ -1420,11 +1437,14 @@ export class AgentSlackApps {
   /**
    * Renames made while the app held the handle never reached the group it
    * released, so before the group answers again it takes the Agent's current
-   * name and handle, by the rename a user-group Agent's group gets. A
-   * refusal leaves the group as it was and returns the handle it keeps when
-   * that is not the Agent's; Slack not answering throws, so the job retries.
+   * name and handle, by the rename a user-group Agent's group gets and under
+   * the same rule: a handle another Agent in Slack holds is refused before
+   * Slack is asked. A refusal leaves the group as it was and returns the
+   * handle it keeps when that is not the Agent's; Slack not answering throws,
+   * so the job retries.
    */
-  private async renameReleasedGroup(agent: CustomAgentConfig, presence: RemovedAgentApp, userGroupId: string): Promise<string | undefined> {
+  private async renameReleasedGroup(agent: CustomAgentConfig, presence: RemovedAgentApp, userGroupId: string): Promise<KeptHandle | undefined> {
+    const handle = presence.normalizedHandle;
     const refused = (error: unknown) => {
       if (!(error instanceof SlackTransportError) || error.retryable) throw error;
       logSlackRefusal('restore_handle', { agentId: agent.id, ...(presence.app.app ? { appId: presence.app.app.appId } : {}) }, error);
@@ -1432,12 +1452,23 @@ export class AgentSlackApps {
     const groups = await this.deps.transport.listUserGroups({ includeDisabled: true }).catch((error: unknown) => refused(error));
     const group = groups?.find((candidate) => candidate.id === userGroupId);
     if (!groups || !group) return undefined;
+    const agents = await this.deps.stores.config.listAgents();
+    const keeps = (refusal: AgentPresenceError): KeptHandle => ({
+      handle: group.handle,
+      refusal,
+      suggestions: refusal.code === 'handle_collision'
+        ? alternativeAgentHandles(handle, new Set([handle, ...groups.map((other) => other.handle), ...handlesOtherAgentsStore(agents, agent.id)]))
+        : [],
+    });
+    if (group.handle !== handle && handleHeldByAnother(agents, agent)) {
+      return keeps(new AgentPresenceError('handle_collision', `@${handle} is already in use.`));
+    }
     try {
-      await bringUserGroupToAgent(this.deps.transport, group, agent, presence.normalizedHandle, groups);
+      await bringUserGroupToAgent(this.deps.transport, group, agent, handle, groups);
       return undefined;
     } catch (error) {
       refused(error);
-      return group.handle === presence.normalizedHandle ? undefined : group.handle;
+      return group.handle === handle ? undefined : keeps(classifyAgentPresenceError(error));
     }
   }
 
@@ -1810,7 +1841,8 @@ export class AgentSlackApps {
     names: AgentAppNames = this.names(agent),
   ): Promise<{ channelId: string; ts: string }> {
     const linked: readonly AgentAppMessageKind[] = [
-      'config_token_needed', 'permission_needed', 'app_removed_permission', 'handle_taken', 'update_refused', 'follow_token_needed',
+      'config_token_needed', 'permission_needed', 'app_removed_permission', 'app_removed_handle_kept', 'handle_taken', 'update_refused',
+      'follow_token_needed',
     ];
     const origin = linked.includes(kind)
       ? await this.deps.publicOrigin?.()
@@ -2044,6 +2076,18 @@ function restoredPresence(presence: RemovedAgentApp): UserGroupPresence {
     health: userGroupId ? 'healthy' : 'unpublished',
     ...(userGroupId ? { userGroupId } : {}),
     ...(app ? { app } : {}),
+  };
+}
+
+/** A user group's presence as a refused rename of its Agent leaves it: needing attention, with the handles to offer instead. */
+function handleNeedsAttention(presence: UserGroupPresence, kept: KeptHandle, now: number): UserGroupPresence {
+  return {
+    ...presence,
+    health: 'needs_attention',
+    errorCode: kept.refusal.code,
+    errorDetail: kept.refusal.message,
+    ...(kept.suggestions.length > 0 ? { handleSuggestions: kept.suggestions } : {}),
+    observedAt: now,
   };
 }
 
