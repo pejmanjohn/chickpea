@@ -60,6 +60,7 @@ const transport = (posted: Posted[]): AgentAppTransport => ({
   async enableUserGroup(): Promise<never> { throw new Error('not in this unit'); },
   async lookupChannel(): Promise<never> { throw new Error('not in this unit'); },
   async joinPublicChannel(): Promise<never> { throw new Error('not in this unit'); },
+  async channelHasMember(): Promise<never> { throw new Error('not in this unit'); },
   async openDirectConversation(userId: string) { return { id: `D_${userId}`, private: true, member: true, archived: false }; },
   async postMessage(input: { channelId: string; text: string; idempotencyKey?: string }) {
     posted.push({ channelId: input.channelId, text: input.text, idempotencyKey: input.idempotencyKey });
@@ -97,7 +98,7 @@ async function fixture(t: TestContext, app: AgentAppLifecycle = waiting()) {
   const armed: AgentAppSwitchJob[] = [];
   const service = new AgentSlackApps({
     env: ENV, stores: { config, settings }, host: HOST, transport: transport(posted), slack, keyring, now: () => clock.now,
-    armSwitch: async (job) => { armed.push(job); },
+    armSwitch: async (job) => { armed.push(job); }, memberSlackUserId: async (id) => id,
   });
   return { config, settings, secrets, slack, posted, clock, service, armed };
 }
@@ -286,7 +287,7 @@ test("app secrets that can't be opened answer the callback with the expired page
   const state = await open(f);
   const rekeyed = new AgentSlackApps({
     env: ENV, stores: { config: f.config, settings: f.settings }, host: HOST, transport: transport(f.posted), slack: f.slack,
-    keyring: generateCredentialKeyring('k2'), now: () => f.clock.now, armSwitch: async () => undefined,
+    keyring: generateCredentialKeyring('k2'), now: () => f.clock.now, armSwitch: async () => undefined, memberSlackUserId: async (id) => id,
   });
   const warn = t.mock.method(console, 'warn', () => undefined);
   const response = await rekeyed.completeConsent(new URLSearchParams({ code: 'c', state }), OWNER);

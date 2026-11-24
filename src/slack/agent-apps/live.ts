@@ -427,6 +427,10 @@ export async function liveAgentSlackApps(
       });
       await reconciler.placeInSlack(agentId, (membershipId) => memberInSlack(identity, membershipId));
     },
+    memberSlackUserId: async (membershipId) => {
+      const { memberInSlack } = await import('../agent-presence/reconciler.ts');
+      return (await memberInSlack(identity, membershipId))?.slackUserId;
+    },
   });
 }
 
@@ -544,5 +548,6 @@ function mainBotTransport(
     postMessage: async (input) => (await bot()).postMessage(input),
     lookupChannel: async (channelId) => (await bot()).lookupChannel(channelId),
     joinPublicChannel: async (channelId) => (await bot()).joinPublicChannel(channelId),
+    channelHasMember: async (channelId, userId) => (await bot()).channelHasMember(channelId, userId),
   };
 }

@@ -112,6 +112,13 @@ class FakeMainBot implements AgentAppTransport {
       return { id: channelId, private: channel.private, member: this.in.has(channelId), archived: channel.archived ?? false };
     });
   }
+  /** People who left a Channel, as `channel:user`; everyone else is in each Channel. */
+  readonly left = new Set<string>();
+  async channelHasMember(channelId: string, userId: string) {
+    const channel = CHANNELS.get(channelId);
+    if (!channel || (channel.private && !this.in.has(channelId))) throw new SlackTransportError('conversations.members', 'channel_not_found');
+    return !this.left.has(`${channelId}:${userId}`);
+  }
   joinPublicChannel(channelId: string) {
     return this.calls.through(`main-join:${channelId}`, async (): Promise<SlackChannel> => {
       const channel = CHANNELS.get(channelId);
@@ -258,6 +265,8 @@ async function fixture(
     armSwitch: async (job) => { armed.push(job); },
     userGroupPermissionMissing: async () => permission.missing,
     publicOrigin: async () => 'https://chickpea.test',
+    // Each membership's Slack user, except one no longer active.
+    memberSlackUserId: async (membershipId) => membershipId === 'm_gone' ? undefined : `U_${membershipId}`,
   });
   const reconciler = new AgentPresenceReconciler({
     config, transport: main as unknown as SlackTransport, announce: null, now: () => clock.now,
@@ -938,7 +947,8 @@ function escapeRegExp(text: string): string {
 
 
 // Defects caught: a Channel an Agent not in Slack yet was added to staying pending after Allow, so the new app never
-// answers there; only the creator's adds completed, so a Channel an Owner or editor added later was lost.
+// answers there; only the creator's adds completed, so a Channel an Owner or editor added later was lost; a Channel
+// made active for someone who has since left it, or left the workspace.
 test('an Agent born as its own app gets every Channel it was added to while waiting once Allow switches it', async (t) => {
   const f = await fixture(t, { userGroupId: undefined, grants: [] });
   const created = await f.config.getAgent('agent_support');
@@ -946,12 +956,15 @@ test('an Agent born as its own app gets every Channel it was added to while wait
     creatorMembershipId: 'm_creator',
     slackPresence: { ...created.slackPresence!, desiredState: 'active', errorCode: AWAITING_OWN_APP },
   }, created.revision);
-  for (const [channelId, by] of [['CSALES', 'm_creator'], ['CDEALS', 'm_other']] as const) {
+  for (const [channelId, by] of [['CSALES', 'm_creator'], ['CDEALS', 'm_other'], ['COTHER', 'm_left'], ['GPRIV', 'm_gone']] as const) {
     await f.config.putChannel({ workspaceId: TEAM, channelId, lifecycle: 'active' }, 0);
     await f.config.putAgentChannelGrant({
       workspaceId: TEAM, channelId, agentId: 'agent_support', status: 'pending', createdByMembershipId: by, channelIsPrivate: false,
     }, 0);
   }
+
+  f.main.left.add('COTHER:U_m_left');
+  f.main.in.add('GPRIV');
 
   assert.equal((await f.service.start('agent_support', OWNER)).kind, 'started');
   assert.equal((await presenceOf(f))?.errorCode, AWAITING_OWN_APP, 'not in Slack until Allow');
@@ -959,7 +972,8 @@ test('an Agent born as its own app gets every Channel it was added to while wait
   await f.service.continueSwitch('agent_support');
 
   const grants = Object.fromEntries((await f.config.listAgentChannelGrants()).map((grant) => [grant.channelId, grant.status]));
-  assert.deepEqual(grants, { CDEALS: 'active', CSALES: 'active' }, "each waited as its writer's add, checked when written");
+  assert.deepEqual(grants, { CDEALS: 'active', COTHER: 'pending', CSALES: 'active', GPRIV: 'pending' },
+    'each ends as its writer\'s add, checked again: one who left the Channel, or is no longer a member, leaves it waiting');
   assert.deepEqual(f.bot.joined.sort(), ['CDEALS', 'CSALES'], 'the bot joins each');
   assert.match(ownerMessages(f).join('\n'), /It joined <#CSALES> and <#CDEALS>\.|It joined <#CDEALS> and <#CSALES>\./);
   assert.equal((await presenceOf(f))?.errorCode, undefined, 'in Slack now');

@@ -233,6 +233,7 @@ async function adminApp(t: TestContext, options: {
       postMessage: async (input) => { calls.push(`post:${input.channelId}`); texts.push(input.text); return { channelId: input.channelId, ts: '1.0' }; },
       lookupChannel: async (id) => { if (!options.slack) throw new Error('no Channels here'); return options.slack.transport.lookupChannel(id); },
       joinPublicChannel: async (id) => { if (!options.slack) throw new Error('no Channels here'); return options.slack.transport.joinPublicChannel(id); },
+      channelHasMember: async (id, user) => { if (!options.slack) throw new Error('no Channels here'); return options.slack.transport.channelHasMember(id, user); },
     },
     ...(options.slack ? { appBot: () => options.slack!.appBot } : {}),
     userGroupPermissionMissing: async () => options.permissionMissing ?? false,
@@ -240,6 +241,7 @@ async function adminApp(t: TestContext, options: {
       if (!options.slack) return;
       await presence().placeInSlack(agentId, (membershipId) => memberInSlack(identity, membershipId));
     },
+    memberSlackUserId: async (membershipId) => (await memberInSlack(identity, membershipId))?.slackUserId,
   });
   /** The reconciler as Admin builds it, on the same Slack. */
   const presence = () => new AgentPresenceReconciler({
@@ -707,6 +709,18 @@ test('after Allow, a private creator Channel is granted and named as answering t
   assert.deepEqual([f.slack.joined, [...f.slack.appBotIn]], [[], []], 'nobody joins a private Channel by themselves');
   assert.match(f.owner.texts.at(-1)!, /In <#CSALES> it keeps answering through Chickpea until someone there adds it\./);
   assert.equal(f.owner.texts.at(-1)!.includes('COLD'), false);
+});
+
+// Defects caught: a waiting Channel made active at Allow for someone who has since left it.
+test("after Allow, a waiting Channel whose writer has left it stays waiting and is not named", async (t) => {
+  const f = await ownAppWorkspace(t);
+  await newbieAskingForSales(f);
+  f.slack.channel('CSALES', { members: [] });
+
+  await addToSlack(f.owner, 'agent_new');
+  assert.equal((await grantOf(f.owner, 'CSALES'))?.status, 'pending');
+  assert.deepEqual(f.slack.joined, [], 'nobody joins for someone no longer there');
+  assert.equal(f.owner.texts.at(-1)!.includes('CSALES'), false);
 });
 
 // Defects caught: a wait made active in a private Channel Chickpea's bot has since been removed from, where nothing

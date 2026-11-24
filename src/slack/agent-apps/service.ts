@@ -114,7 +114,7 @@ import {
 
 export type AgentAppTransport = Pick<
   SlackTransport,
-  'disableUserGroup' | 'enableUserGroup' | 'openDirectConversation' | 'postMessage' | 'lookupChannel' | 'joinPublicChannel'
+  'disableUserGroup' | 'enableUserGroup' | 'openDirectConversation' | 'postMessage' | 'lookupChannel' | 'joinPublicChannel' | 'channelHasMember'
 >;
 
 /** What an Agent app's own bot does at the switch: see a Channel and join a public one. */
@@ -158,6 +158,8 @@ export interface AgentSlackAppsDeps {
    * after the workspace went back to `shared`.
    */
   placeInSlack?: (agentId: string) => Promise<void>;
+  /** An active member's Slack user ID, for the check that whoever added a waiting Channel is still in it. */
+  memberSlackUserId: (membershipId: string) => Promise<string | undefined>;
   now?: () => number;
 }
 
@@ -868,11 +870,12 @@ export class AgentSlackApps {
 
   /**
    * An Agent that was not in Slack yet, so released no group: each Channel it
-   * was added to meanwhile waited as a pending grant, written after its
-   * writer's membership check, and ends as an add to it would. Chickpea's bot
-   * joins a public one it is not in, so replies in the Agent's threads there
-   * need no mention; a private one is granted where Chickpea's bot already
-   * is; an archived one's grant is dropped.
+   * was added to meanwhile waited as a pending grant, and ends as an add to it
+   * would, checked again now: whoever added it is still an active member and
+   * still in the Channel, or it stays waiting. Chickpea's bot joins a public
+   * one it is not in, so replies in the Agent's threads there need no
+   * mention; a private one is granted where Chickpea's bot already is; an
+   * archived one's grant is dropped.
    */
   private async grantWaitingChannels(agent: CustomAgentConfig): Promise<void> {
     const { config } = this.deps.stores;
@@ -885,6 +888,8 @@ export class AgentSlackApps {
         await config.deleteAgentChannelGrant(grant.workspaceId, grant.channelId, agent.id);
         continue;
       }
+      const writer = await this.deps.memberSlackUserId(grant.createdByMembershipId);
+      if (!writer || !await this.deps.transport.channelHasMember(grant.channelId, writer)) continue;
       if (!channel.private && !channel.member) {
         try {
           await this.deps.transport.joinPublicChannel(grant.channelId);
