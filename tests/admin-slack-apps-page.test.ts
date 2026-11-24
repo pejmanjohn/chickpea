@@ -764,6 +764,15 @@ test('the token page holds focus for the paste, and a paste on the page outside 
   await flush();
   assert.deepEqual(page.requests.filter((request) => request.path === '/admin/api/slack-apps/token').map((request) => request.body), [{ refreshToken: 'xoxe-1-from-the-page' }]);
 
+  const stray = await harness({ path: '/admin/destinations/slack/connection/token' });
+  for (const text of ['a password copied for something else', 'xoxe.xoxp-1-the-access-token']) {
+    assert.equal(await stray.paste(text, stray.body), true);
+    await flush();
+    assert.match(stray.text(), /Copy the Refresh Token/);
+  }
+  assert.deepEqual(stray.requests.filter((request) => request.method !== 'GET'), [], 'text that is not a refresh token never leaves the page');
+  assert.equal(stray.html().includes('a password copied'), false);
+
   const other = await harness({ path: '/admin/destinations/slack/connection/token' });
   assert.equal(await other.paste('some text', { tagName: 'TEXTAREA' }), false, 'a paste into another field is that field\'s');
   const elsewhere = await harness();
@@ -813,4 +822,42 @@ test("each row button's name says which Agent it is for", async () => {
   assert.match(page.html(), /aria-label="Move to its own app, Sales Desk"[^>]*>Move to its own app</);
   assert.match(page.html(), /aria-label="Cancel, Helpdesk"[^>]*>Cancel</);
   assert.doesNotMatch(page.html(), /aria-label="Add Helpdesk to Slack/, 'a label that names the Agent already says it');
+});
+
+test('coming back to the window during or after the two minutes reads once and never restarts them', async () => {
+  const creating = (id: string, name: string, handle: string) => row(id, name, handle, 'creating');
+  const page = await harness({
+    clock: true,
+    api: apiState({ agents: [row('agent_sales', 'Sales Desk', 'sales-desk', 'user_group'), row('agent_help', 'Helpdesk', 'helpdesk', 'user_group')] }),
+    handle: (path) => {
+      const pressed = /agents\/(agent_\w+)\/start$/.exec(path)?.[1];
+      if (!pressed) return undefined;
+      const made = pressed === 'agent_sales' ? creating('agent_sales', 'Sales Desk', 'sales-desk') : creating('agent_help', 'Helpdesk', 'helpdesk');
+      page.api.agents = page.api.agents.map((agent) => agent.id === pressed ? made : agent);
+      return respond({ next: 'creating', agent: made }, 202);
+    },
+  });
+  const reads = () => page.requests.filter((request) => request.path === '/admin/api/slack-apps' && request.method === 'GET').length;
+  await page.click({ 'data-action': 'slack-apps-start', 'data-agent': 'agent_sales' });
+  await page.advance(100_000);
+  for (let index = 0; index < 3; index += 1) await page.focusWindow();
+  await page.advance(24_000);
+  assert.equal(page.timers.length, 0, 'the window closed two minutes after the press');
+  assert.match(page.html(), /aria-label="Try again, Sales Desk"/);
+
+  const after = reads();
+  await page.focusWindow();
+  assert.equal(reads(), after + 1, 'one read on return');
+  await page.advance(60 * 60_000);
+  assert.equal(reads(), after + 1);
+  assert.equal(page.timers.length, 0);
+
+  // A second Agent pressed later is watched for its own two minutes, and the first is not watched again.
+  await page.click({ 'data-action': 'slack-apps-start', 'data-agent': 'agent_help' });
+  assert.match(page.html(), /aria-label="Try again, Sales Desk"/);
+  assert.match(page.text(), /Creating Helpdesk(’|&rsquo;)s Slack app/);
+  const second = reads();
+  await page.advance(60 * 60_000);
+  assert.ok(reads() - second <= 30, String(reads() - second));
+  assert.equal(page.timers.length, 0);
 });
