@@ -636,3 +636,33 @@ test('a host fact that is neither absent nor true pauses creating apps', async (
   }
   assert.deepEqual(f.slack.calls, [], 'and Slack is asked for nothing');
 });
+
+// Defects caught: a Cancel that lands while another press is partway through the create leaving that run to create the
+// app again, to go on changing an app Cancel deleted, to record it, or to tell the Owner something failed.
+test('a Cancel that lands while a create is partway stops that create: nothing is made again and no record is left', async (t) => {
+  for (const [step, method] of [['update', 'apps.manifest.update'], ['setIcon', 'apps.icon.set']] as const) {
+    const f = await fixture(t, { mayCreateApps: true });
+    let cancelled: Awaited<ReturnType<AgentSlackApps['cancel']>> | undefined;
+    Object.assign(f.slack, {
+      [step]: async () => {
+        f.slack.calls.push(method);
+        if (cancelled) return;
+        cancelled = await f.service.cancel('agent_sales', OWNER);
+        // Slack refuses a change to an app that no longer exists.
+        throw new SlackRefused(method, 'invalid_app_id');
+      },
+    });
+
+    const pressed = await f.service.press('agent_sales', OWNER, 'admin');
+    assert.deepEqual([cancelled?.kind, cancelled?.kind === 'cancelled' && cancelled.app], ['cancelled', 'deleted'], `${step}: the Cancel deletes the app`);
+    assert.equal(pressed.kind, 'creating', `${step}: the press that lost answers as a create under way, and the next read shows the Agent as it is`);
+    assert.equal(f.slack.calls.filter((call) => call === 'apps.manifest.create').length, 1, `${step}: no app is made again`);
+    assert.equal(f.slack.calls.filter((call) => call === 'apps.manifest.delete').length, 1, `${step}: the app is deleted once`);
+    assert.equal(f.slack.calls.at(-1), 'apps.manifest.delete', `${step}: and nothing is asked of Slack after it`);
+    const after = (await f.config.getAgent('agent_sales')).slackPresence;
+    assert.equal(appRecordOf(after), undefined, `${step}: no record is left pointing at the deleted app`);
+    assert.equal(after?.userGroupId, 'S_SALES', `${step}: the Agent answers through its group`);
+    assert.equal(await readAppSecrets(f.secrets, 'A0NEW'), undefined, `${step}: the app's own record is gone`);
+    assert.deepEqual([f.groups.posted, f.groups.disabled], [[], []], `${step}: nobody is told a step failed, and no group is turned off`);
+  }
+});
