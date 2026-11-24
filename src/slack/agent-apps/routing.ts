@@ -39,8 +39,8 @@ function appAgentsByBot(agents: readonly CustomAgentConfig[]): Map<string, Custo
  * Channel or group DM message that names an Agent app's bot is ignored while
  * that app can answer there, so one bot answers whichever delivery arrives
  * first; it is routed here when the app cannot (`appAnswersHere`): its bot is
- * not a member, the app is not live, or its token cannot be read. The same
- * text in Chickpea's DM is Chickpea's.
+ * not a member, the app is not live, or its token cannot be read. No app's bot
+ * is in Chickpea's DM, so the same text there is routed here too.
  */
 export async function agentAppRouteSelection(
   turn: Pick<NormalizedSlackTurn, 'text' | 'source' | 'channelType'>,

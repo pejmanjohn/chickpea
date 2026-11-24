@@ -9,6 +9,7 @@ import { Hono, type ExecutionContext } from 'hono';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import type { RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
+import { slackTenantInstructions } from '../src/agents/shared-prefix-layout.ts';
 import {
   admitSetupWake,
   markSlackInstallationEnded,
@@ -17,6 +18,7 @@ import {
   setupWakeTurnJobId,
   channel as slackChannel,
 } from '../src/channels/slack.ts';
+import { agentTeammateHandles } from '../src/config/effective-config.ts';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import type { EncryptedCredentialStore } from '../src/config/settings-store.ts';
 import { closeNodeStateStores, getSettingsStore, resolveStores, type AppStores, type PlatformEnv } from '../src/config/state-backend.ts';
@@ -50,6 +52,7 @@ import { createSlackChannel } from '../src/slack/channel-creation/runtime.ts';
 import { startSlackGroupDm } from '../src/slack/group-dm/runtime.ts';
 import { AGENT_CHANNEL_ADD_ACTION } from '../src/slack/agent-channel-offer.ts';
 import { invalidateStoredSlackPublicUrl } from '../src/slack/credentials.ts';
+import { canonicalSlackMarkdownText } from '../src/slack/message-format.ts';
 import { configureHostedSlackPermissionsUpdate } from '../src/slack/hosted-permissions.ts';
 import { syncHostedWorkspaceInstallation } from '../src/slack/hosted-installation.ts';
 import { slackInstallationCredentialId, withHostedSlackApp } from '../src/slack/hosted-slack-app.ts';
@@ -2293,6 +2296,12 @@ test("a turn Chickpea builds in a Channel its bot is not in answers as the app's
   assert.deepEqual(sender(await postAsRun(h, own)), OWN_BOT);
 }, { notMemberOf: { [MAIN_BOT]: ['C1'], [AGENT_BOT]: ['C1'] } }));
 
+/** `job` ran, and its Agent's answer is recorded in its thread as its run's delivery records it. */
+async function answered(h: Harness, job: PendingTurnJob, ts: string): Promise<void> {
+  await (h.stores.slackState as unknown as { recordTurnAttempt(id: string, n: number): Promise<void> }).recordTurnAttempt(job.id, 1);
+  await recordDeliveredSlackAgentMessage(h.stores.config, job.turn, { runtimeContract: 'chickpea-v1', agentId: job.assignment.agentId }, { messageTs: ts, text: 'Refunds were 12.' });
+}
+
 /** Support back on its user group with its app's record attached and not live, as while the app waits for Allow. */
 async function attachSupportApp(h: Harness): Promise<void> {
   const support = await h.stores.config.getAgent('agent_support');
@@ -2505,8 +2514,6 @@ test("a connected notice whose DM Slack does not place is not posted on a guesse
   assert.deepEqual(h.calls.filter((call) => call.method.startsWith('chat.')), [], 'nothing posts on either bot');
 }, { rateLimited: [`conversations.open ${AGENT_BOT}`] }));
 
-const FINANCE_NOT_IN_DM = "Finance can't reply in this direct message. Mention Finance in a channel instead.";
-
 /** Hands the host one reply of `asking` that asks Finance, as its run's collector does when Finance is its teammate there. */
 async function askFinanceFrom(h: Harness, asking: PendingTurnJob, ts: string): Promise<void> {
   const collector = createAgentAskCollector({
@@ -2518,26 +2525,10 @@ async function askFinanceFrom(h: Harness, asking: PendingTurnJob, ts: string): P
   await collector.flush('succeeded');
 }
 
-test("a teammate asked inside an app Agent's own DM is not run, and the Agent's bot says once in the thread where to ask instead", async (t) => withHarness(t, async (h) => {
-  assert.equal((await h.deliver('events', dmEvent())).status, 200);
-  const asking = await pendingTurn(h.stores, (job) => job.turn.channelId === 'D1');
-  assert.ok(asking);
-  assert.deepEqual(asking.turn.speaker, { kind: 'own_bot', botUserId: AGENT_BOT_USER });
-  await askFinanceFrom(h, asking, '1900004650.000100');
-  await askFinanceFrom(h, asking, '1900004650.000200');
-  const lines = h.calls.filter((call) => call.method === 'chat.postMessage' && call.body.get('text') === FINANCE_NOT_IN_DM);
-  assert.deepEqual(lines.map((call) => [sender(call), call.body.get('channel'), call.body.get('thread_ts')]),
-    [[OWN_BOT, 'D1', asking.turn.threadTs]], "one line, from Support's own bot, in the thread it asked from");
-  assert.equal(await pendingTurn(h.stores, (job) => job.assignment.agentId === 'agent_finance'), undefined, 'no teammate turn is admitted');
-  assert.ok((await h.stores.config.listSlackPublicContext(TEAM, 'D1', asking.turn.threadTs))
-    .some((row) => row.role === 'agent' && row.text === FINANCE_NOT_IN_DM), 'Support reads the line on its next turn');
-}));
-
-test("the same ask from a Channel admits the teammate and posts no such line", async (t) => withHarness(t, async (h) => {
+test("an ask from a Channel admits the teammate", async (t) => withHarness(t, async (h) => {
   const asking = await admitSupportTurn(h, 'C1', '1900004660.000100', '1900004660.000200');
   await askFinanceFrom(h, asking, '1900004660.000300');
   assert.ok(await pendingTurn(h.stores, (job) => job.assignment.agentId === 'agent_finance'), 'Finance is asked');
-  assert.deepEqual(h.calls.filter((call) => call.body.get('text') === FINANCE_NOT_IN_DM), []);
 }));
 
 /** Asks Finance from `asking` until the exchange reaches its limit, then once more; returns the pause line's post. */
@@ -2634,4 +2625,276 @@ test("an app Agent asked in its own DM to start a group DM has Chickpea's bot op
   const opened = h.calls.find((call) => call.method === 'conversations.open' && call.body.get('users')?.includes(','));
   assert.equal(opened?.token, MAIN_BOT);
   assert.deepEqual(sender(h.calls.find((call) => call.method === 'chat.postMessage' && call.body.get('text') === 'Kicking off Q3 refunds here.')), AS_SUPPORT);
+}));
+
+/** A person's message in their DM with Chickpea's own app, as Chickpea's app hears it: in the thread `root`, or a root of its own. */
+function chickpeaDmMessage(root: string, ts: string, text: string) {
+  const heard = chickpeaDmReply(root, ts);
+  const { thread_ts: _root, ...event } = heard.event;
+  return { ...heard, event: { ...event, text, ...(root === ts ? {} : { thread_ts: root }) } };
+}
+
+/** Every queued turn on one message, first named first. */
+async function turnsOn(h: Harness, ts: string): Promise<PendingTurnJob[]> {
+  return (await h.stores.slackState.listPendingTurns!())
+    .filter((job) => job.turn.messageTs === ts)
+    .sort((left, right) => (left.turn.coAddressed?.position ?? 0) - (right.turn.coAddressed?.position ?? 0));
+}
+
+/** One turn as [its Agent, its place among the Agents the message named, the speaker its admission chose]. */
+const shape = (job: PendingTurnJob) => [job.assignment.agentId, job.turn.coAddressed?.position, job.turn.speaker];
+
+const THROUGH_CHICKPEA = { kind: 'chickpea_as_agent' };
+const SUPPORT_BOT = { kind: 'own_bot', botUserId: AGENT_BOT_USER };
+const FINANCE_OWN_BOT = { kind: 'own_bot', botUserId: FINANCE_BOT_USER };
+const AS_FINANCE = { token: MAIN_BOT, username: 'Finance', picture: true };
+const FINANCE_POSTS_AS_ITS_BOT = { token: FINANCE_BOT, username: null, picture: false };
+
+/** What a run posts for `text` its model wrote: a teammate's handle becomes a live mention of whatever Slack knows it by. */
+const posted = (job: PendingTurnJob, text: string) => canonicalSlackMarkdownText(text, agentTeammateHandles(job.assignment));
+
+/** The host admits the asks in one delivered reply of `asking`; returns the asked Agent's turn. */
+async function askedBy(h: Harness, asking: PendingTurnJob, ts: string, text: string): Promise<PendingTurnJob> {
+  await processSlackAgentAsks({
+    turn: asking.turn, fromAgentId: asking.assignment.agentId,
+    ...(asking.assignment.threadGuest ? {} : { fromThreadOwner: true as const }),
+    deliveries: [{ messageTs: ts, text }],
+  }, withHostedSlackApp(h.base, MAIN_APP), { stores: h.stores });
+  const asked = await pendingTurn(h.stores, (job) => job.turn.messageTs === ts);
+  assert.ok(asked, `the ask in ${ts} is a turn`);
+  assert.equal((await turnsOn(h, ts)).length, 1, 'one answer per Agent asked');
+  return asked;
+}
+
+/** A post or edit on an Agent app's token that carries a name or a picture. */
+function personaOnAnyAppToken(h: Harness): SlackCall[] {
+  return h.calls.filter((call) => (call.token === AGENT_BOT || call.token === FINANCE_BOT) && call.method.startsWith('chat.') &&
+    (call.body.has('username') || call.body.has('icon_url')));
+}
+
+/** Support back on its user group, so every Agent in the workspace is a user-group Agent. */
+async function userGroupsOnly(h: Harness): Promise<void> {
+  const support = await h.stores.config.getAgent('agent_support');
+  await h.stores.config.updateAgent(support.id, { slackPresence: userAgent('agent_support', 'Support', 'support').slackPresence! }, support.revision);
+}
+
+test("in Chickpea's DM a mention of the app Agent's bot addresses it as a handle does: it answers through Chickpea under its own name, and the thread's Agent can ask it", async (t) => withHarness(t, async (h) => {
+  const root = '1900005000.000100';
+  await h.stores.config.putAgentThreadRoute({ workspaceId: TEAM, channelId: CHICKPEA_DM, threadTs: root, agentId: 'agent_finance', agentGeneration: 1 });
+  const ts = '1900005000.000200';
+  assert.equal((await h.deliverToChickpea(chickpeaDmMessage(root, ts, `<!subteam^SFINANCE|@finance> bring in <@${AGENT_BOT_USER}> on the refunds`))).status, 200);
+  const [finance, support] = await turnsOn(h, ts);
+  assert.deepEqual([finance, support].map((job) => job && shape(job)),
+    [['agent_finance', 0, THROUGH_CHICKPEA], ['agent_support', 1, THROUGH_CHICKPEA]], 'each Agent named answers once, in the order named');
+  assert.deepEqual(sender(await postAsRun(h, support!)), AS_SUPPORT);
+  assert.deepEqual(finance!.assignment.teammates, [{ name: 'Support', handle: 'support', botUserId: AGENT_BOT_USER }], 'Support is a teammate of the thread');
+  // As for a user-group Agent named there, it can be asked in the DM thread once it has answered in it.
+  await answered(h, support!, '1900005000.000250');
+
+  const ask = posted(finance!, '@support what did we refund?');
+  assert.equal(ask, `<@${AGENT_BOT_USER}> what did we refund?`);
+  const asked = await askedBy(h, finance!, '1900005000.000300', ask);
+  assert.deepEqual(shape(asked), ['agent_support', undefined, THROUGH_CHICKPEA]);
+  assert.deepEqual(sender(await postAsRun(h, asked)), AS_SUPPORT);
+
+  const alone = '1900005100.000100';
+  assert.equal((await h.deliverToChickpea(chickpeaDmMessage(alone, alone, `<@${AGENT_BOT_USER}> what did we refund?`))).status, 200);
+  assert.deepEqual((await turnsOn(h, alone)).map(shape), [['agent_support', undefined, THROUGH_CHICKPEA]], "the bot's mention alone is Support's");
+  assert.deepEqual(personaOnAnyAppToken(h), []);
+  assert.deepEqual(h.calls.filter((call) => call.token === AGENT_BOT && call.method.startsWith('chat.')), [], "the app's bot is not in Chickpea's DM");
+  assert.deepEqual(h.calls.filter((call) => call.method === 'conversations.members'), [],
+    "Chickpea's bot heard the message in its own DM, so routing asks Slack who is in it for nobody");
+}));
+
+test("without the port a mention of the app Agent's bot in Chickpea's DM is plain text, and in a user-group workspace Chickpea's DM asks Slack nothing more", async (t) => withHarness(t, async (h) => {
+  configureAgentSlackApps(undefined);
+  const root = '1900005200.000100';
+  await h.stores.config.putAgentThreadRoute({ workspaceId: TEAM, channelId: CHICKPEA_DM, threadTs: root, agentId: 'agent_finance', agentGeneration: 1 });
+  assert.equal((await h.deliverToChickpea(chickpeaDmMessage(root, '1900005200.000200', `<!subteam^SFINANCE|@finance> bring in <@${AGENT_BOT_USER}>`))).status, 200);
+  assert.deepEqual((await turnsOn(h, '1900005200.000200')).map(shape), [['agent_finance', undefined, THROUGH_CHICKPEA]]);
+  assert.deepEqual(h.calls.filter((call) => call.token === AGENT_BOT), []);
+
+  configureAgentSlackApps(HOST);
+  await userGroupsOnly(h);
+  h.calls.length = 0;
+  const ts = '1900005200.000300';
+  assert.equal((await h.deliverToChickpea(chickpeaDmMessage(root, ts, '<!subteam^SFINANCE|@finance> and <!subteam^SSUPPORT|@support> compare refunds'))).status, 200);
+  const turns = await turnsOn(h, ts);
+  assert.deepEqual(turns.map(shape), [['agent_finance', 0, THROUGH_CHICKPEA], ['agent_support', 1, THROUGH_CHICKPEA]]);
+  assert.deepEqual(turns[0]!.assignment.teammates, [{ name: 'Support', handle: 'support', userGroupId: 'SSUPPORT' }]);
+  assert.equal(turns[0]!.assignment.inAgentAppDm, undefined);
+  assert.match(slackTenantInstructions(turns[0]!.assignment), /Teammates: you can ask other Chickpea Agents here\./);
+  assert.deepEqual(h.calls.filter((call) => call.token !== MAIN_BOT || ['conversations.open', 'conversations.members'].includes(call.method))
+    .map((call) => `${call.method} ${call.token}`), [], "only Chickpea's own admission reads run");
+}));
+
+test("asks in a Channel thread reach each way between app and user-group Agents: each asked Agent answers once, as its own bot where that bot is, with no persona on an app's token", async (t) => withHarness(t, async (h) => {
+  const finance = await admitChannelTurnOf(h, 'agent_finance', '1900005300.000100', '1900005300.000200');
+  assert.deepEqual(sender(await postAsRun(h, finance)), AS_FINANCE);
+  const toSupport = posted(finance, '@support what did we refund?');
+  assert.equal(toSupport, `<@${AGENT_BOT_USER}> what did we refund?`, "a user-group Agent's ask names Support's bot live");
+  const support = await askedBy(h, finance, '1900005300.000300', toSupport);
+  assert.deepEqual(shape(support), ['agent_support', undefined, SUPPORT_BOT]);
+  assert.deepEqual(sender(await postAsRun(h, support)), OWN_BOT);
+
+  const toFinance = posted(support, '@finance and the totals?');
+  assert.equal(toFinance, '<!subteam^SFINANCE|@finance> and the totals?', "an app Agent's ask names Finance's group live");
+  const back = await askedBy(h, support, '1900005300.000400', toFinance);
+  assert.deepEqual(shape(back), ['agent_finance', undefined, THROUGH_CHICKPEA]);
+  assert.deepEqual(sender(await postAsRun(h, back)), AS_FINANCE);
+
+  await giveFinanceApp(h);
+  const owner = await admitChannelTurnOf(h, 'agent_support', '1900005400.000100', '1900005400.000200');
+  assert.deepEqual(sender(await postAsRun(h, owner)), OWN_BOT);
+  const toFinanceApp = posted(owner, '@finance what was Q3 revenue?');
+  assert.equal(toFinanceApp, `<@${FINANCE_BOT_USER}> what was Q3 revenue?`, "an app Agent's ask names the other app's bot live");
+  const financeApp = await askedBy(h, owner, '1900005400.000300', toFinanceApp);
+  assert.deepEqual(shape(financeApp), ['agent_finance', undefined, FINANCE_OWN_BOT]);
+  assert.deepEqual(sender(await postAsRun(h, financeApp)), FINANCE_POSTS_AS_ITS_BOT);
+  const supportAgain = await askedBy(h, financeApp, '1900005400.000400', posted(financeApp, '@support mention me when you have it'));
+  assert.deepEqual(shape(supportAgain), ['agent_support', undefined, SUPPORT_BOT]);
+  assert.deepEqual(sender(await postAsRun(h, supportAgain)), OWN_BOT);
+  assert.deepEqual(personaOnAnyAppToken(h), []);
+}));
+
+test("asks in a thread in Chickpea's DM reach each way between app and user-group Agents: each asked Agent answers once through Chickpea under its own name", async (t) => withHarness(t, async (h) => {
+  const root = '1900005500.000100';
+  await h.stores.config.putAgentThreadRoute({ workspaceId: TEAM, channelId: CHICKPEA_DM, threadTs: root, agentId: 'agent_finance', agentGeneration: 1 });
+  const ts = '1900005500.000200';
+  assert.equal((await h.deliverToChickpea(chickpeaDmMessage(root, ts, `<!subteam^SFINANCE|@finance> and <@${AGENT_BOT_USER}> compare refunds`))).status, 200);
+  const [finance, guest] = await turnsOn(h, ts);
+  await answered(h, finance!, '1900005500.000240');
+  await answered(h, guest!, '1900005500.000250');
+  const support = await askedBy(h, finance!, '1900005500.000300', posted(finance!, '@support what did we refund?'));
+  assert.deepEqual(shape(support), ['agent_support', undefined, THROUGH_CHICKPEA]);
+  assert.deepEqual(sender(await postAsRun(h, support)), AS_SUPPORT);
+  const toFinance = posted(guest!, '@finance and the totals?');
+  assert.equal(toFinance, '<!subteam^SFINANCE|@finance> and the totals?');
+  const back = await askedBy(h, guest!, '1900005500.000400', toFinance);
+  assert.deepEqual(shape(back), ['agent_finance', undefined, THROUGH_CHICKPEA]);
+  assert.deepEqual(sender(await postAsRun(h, back)), AS_FINANCE);
+
+  await giveFinanceApp(h);
+  const appsTs = '1900005500.000500';
+  assert.equal((await h.deliverToChickpea(chickpeaDmMessage(root, appsTs, `<@${FINANCE_BOT_USER}> and <@${AGENT_BOT_USER}> compare refunds`))).status, 200);
+  const [financeApp, supportApp] = await turnsOn(h, appsTs);
+  assert.deepEqual([financeApp, supportApp].map((job) => job && shape(job)),
+    [['agent_finance', 0, THROUGH_CHICKPEA], ['agent_support', 1, THROUGH_CHICKPEA]]);
+  await answered(h, financeApp!, '1900005500.000540');
+  await answered(h, supportApp!, '1900005500.000550');
+  const toFinanceApp = posted(supportApp!, '@finance what was Q3 revenue?');
+  assert.equal(toFinanceApp, `<@${FINANCE_BOT_USER}> what was Q3 revenue?`);
+  const financeAsked = await askedBy(h, supportApp!, '1900005500.000600', toFinanceApp);
+  assert.deepEqual(shape(financeAsked), ['agent_finance', undefined, THROUGH_CHICKPEA]);
+  assert.deepEqual(sender(await postAsRun(h, financeAsked)), AS_FINANCE);
+  const supportAsked = await askedBy(h, financeApp!, '1900005500.000700', posted(financeApp!, '@support and the refunds?'));
+  assert.deepEqual(shape(supportAsked), ['agent_support', undefined, THROUGH_CHICKPEA]);
+  assert.deepEqual(sender(await postAsRun(h, supportAsked)), AS_SUPPORT);
+  assert.deepEqual(h.calls.filter((call) => (call.token === AGENT_BOT || call.token === FINANCE_BOT) && call.method.startsWith('chat.')), [],
+    "no app's bot is in Chickpea's DM");
+}));
+
+const NO_TEAMMATE_HERE = 'Teammates: no other Chickpea Agent can join this direct message, so you cannot ask a teammate anything here, and you never answer for one. When the person needs a teammate, name it without @ and tell them they can mention it in a channel or message it directly.';
+
+test("in the app Agent's own DM a teammate the person names gets no turn, and Support is told by name that no teammate can join, so its reply asks nobody", async (t) => withHarness(t, async (h) => {
+  for (const [ts, text] of [
+    ['1900005600.000100', '<!subteam^SFINANCE|@finance> what was Q3 revenue?'],
+    ['1900005600.000200', `<@${FINANCE_BOT_USER}> what was Q3 revenue?`],
+  ] as const) {
+    if (text.startsWith('<@')) await giveFinanceApp(h);
+    assert.equal((await h.deliver('events', dmEvent({ event_id: `EvOwn${ts}` }, { text, ts, event_ts: ts }), { settle: true })).status, 200);
+    const [job, ...others] = await turnsOn(h, ts);
+    assert.deepEqual([job && shape(job), others.length], [['agent_support', undefined, SUPPORT_BOT], 0], `${text}: only Support answers`);
+    assert.equal(job!.assignment.inAgentAppDm, true);
+    const instructions = slackTenantInstructions(job!.assignment);
+    assert.ok(instructions.includes(`${NO_TEAMMATE_HERE}\nTeammates named here: "Finance".`), 'it knows the teammate by name');
+    assert.doesNotMatch(instructions, /you can ask other Chickpea Agents|@finance/);
+    const reply = 'Finance can answer that. Mention @finance in a channel, or message Finance directly.';
+    assert.equal(posted(job!, reply), reply, 'the host makes no mention of a teammate in the reply');
+    const handed: unknown[] = [];
+    const collector = createAgentAskCollector({ turn: job!.turn, assignment: job!.assignment, dispatch: async (request) => { handed.push(request); } });
+    collector.note({ messageTs: `${ts.split('.')[0]}.000900`, text: `<@${FINANCE_BOT_USER}> ${reply}` });
+    await collector.flush('succeeded');
+    assert.deepEqual(handed, [], 'and its reply asks nobody');
+  }
+  assert.deepEqual(h.calls.filter((call) => call.token === FINANCE_BOT), [], "Finance's token is never used");
+
+  const env = withHostedSlackApp(h.base, MAIN_APP);
+  const [asked] = await turnsOn(h, '1900005600.000100');
+  assert.equal(await admitSetupWake(setupWake('D1', asked!.turn.threadTs, 'setup_own_dm'), env, { stores: h.stores }), 'queued');
+  const woken = await pendingTurn(h.stores, (job) => job.id === setupWakeTurnJobId('D1', 'setup_own_dm'));
+  assert.equal(woken?.assignment.inAgentAppDm, true, 'a turn Chickpea builds in the app\'s DM is told the same');
+  assert.match(slackTenantInstructions(woken!.assignment), new RegExp(`^${NO_TEAMMATE_HERE.replace(/[.?]/g, '\\$&')}$`, 'm'));
+}));
+
+test("a group DM message naming the app Agent and a user-group Agent is answered once by each, Support as its own bot, in either arrival order and after a redelivery", async (t) => withHarness(t, async (h) => {
+  t.mock.method(console, 'info', () => undefined);
+  for (const [index, text] of MIXED_TEXTS.entries()) {
+    const financeFirst = text.startsWith('<!subteam');
+    for (const first of ['chickpea', 'app'] as const) {
+      const ts = `1900005700.000${index}${first === 'app' ? 2 : 1}0`;
+      const message = messageIn('G1', ts, text);
+      const order = first === 'app' ? ['app', 'chickpea', 'app', 'chickpea'] : ['chickpea', 'app', 'chickpea', 'app'];
+      for (const ingress of order) {
+        const response = ingress === 'app' ? await h.deliver('events', message.app) : await h.deliverToChickpea(message.chickpea);
+        assert.equal(response.status, 200);
+      }
+      const turns = await turnsOn(h, ts);
+      const label = `${financeFirst ? 'Finance' : 'Support'} named first, ${first} heard first`;
+      assert.deepEqual(turns.map(shape), financeFirst
+        ? [['agent_finance', 0, THROUGH_CHICKPEA], ['agent_support', 1, SUPPORT_BOT]]
+        : [['agent_support', 0, SUPPORT_BOT], ['agent_finance', 1, THROUGH_CHICKPEA]], label);
+      assert.deepEqual(turns.map((job) => job.turn.channelMembership), [undefined, undefined], `${label}: a group DM has no Channel membership to keep`);
+      assert.deepEqual(await Promise.all(turns.map(async (job) => sender(await postAsRun(h, job)))),
+        financeFirst ? [AS_FINANCE, OWN_BOT] : [OWN_BOT, AS_FINANCE], label);
+    }
+  }
+  assert.deepEqual(personaOnAnyAppToken(h), []);
+}));
+
+test("a group DM message naming two app Agents where only Support's bot is: Support answers as its bot and Finance through Chickpea, once each, in either arrival order", async (t) => withHarness(t, async (h) => {
+  t.mock.method(console, 'info', () => undefined);
+  await giveFinanceApp(h);
+  for (const [index, text] of [
+    `<@${AGENT_BOT_USER}> and <@${FINANCE_BOT_USER}> compare refunds`,
+    `<@${FINANCE_BOT_USER}> and <@${AGENT_BOT_USER}> compare refunds`,
+  ].entries()) {
+    const financeFirst = index === 1;
+    for (const first of ['chickpea', 'app'] as const) {
+      const ts = `1900005800.000${index}${first === 'app' ? 2 : 1}0`;
+      const message = messageIn('G1', ts, text);
+      const order = first === 'app' ? ['app', 'chickpea', 'app'] : ['chickpea', 'app', 'chickpea'];
+      for (const ingress of order) {
+        const response = ingress === 'app' ? await h.deliver('events', message.app) : await h.deliverToChickpea(message.chickpea);
+        assert.equal(response.status, 200);
+      }
+      const turns = await turnsOn(h, ts);
+      const label = `${financeFirst ? 'Finance' : 'Support'} named first, ${first} heard first`;
+      assert.deepEqual(turns.map(shape), financeFirst
+        ? [['agent_finance', 0, THROUGH_CHICKPEA], ['agent_support', 1, SUPPORT_BOT]]
+        : [['agent_support', 0, SUPPORT_BOT], ['agent_finance', 1, THROUGH_CHICKPEA]], label);
+      assert.deepEqual(await Promise.all(turns.map(async (job) => sender(await postAsRun(h, job)))),
+        financeFirst ? [AS_FINANCE, OWN_BOT] : [OWN_BOT, AS_FINANCE], label);
+    }
+  }
+  assert.deepEqual(h.calls.filter((call) => call.token === FINANCE_BOT && call.method.startsWith('chat.')), [], "Finance's bot is not in the group DM");
+  assert.deepEqual(personaOnAnyAppToken(h), []);
+}, { notMemberOf: { [FINANCE_BOT]: ['G1'] } }));
+
+test("a group DM message naming an app Agent no bot there can post for gives it no turn", async (t) => withHarness(t, async (h) => {
+  t.mock.method(console, 'info', () => undefined);
+  await giveFinanceApp(h);
+  const ts = '1900005900.000100';
+  assert.equal((await h.deliver('events', messageIn('G2', ts, `<@${AGENT_BOT_USER}> and <@${FINANCE_BOT_USER}> compare refunds`).app, { settle: true })).status, 200);
+  assert.deepEqual((await turnsOn(h, ts)).map(shape).filter(([agentId]) => agentId === 'agent_finance'), [], 'Finance gets no turn');
+  assert.deepEqual(h.calls.filter((call) => call.method === 'chat.postMessage' && call.token !== AGENT_BOT), [], 'nothing posts on a bot not in the group DM');
+}, { notMemberOf: { [MAIN_BOT]: ['G2'], [FINANCE_BOT]: ['G2'] } }));
+
+test("in a user-group workspace a group DM naming two Agents is answered by each through Chickpea, and asks Slack nothing more", async (t) => withHarness(t, async (h) => {
+  await userGroupsOnly(h);
+  h.calls.length = 0;
+  const ts = '1900006000.000100';
+  assert.equal((await h.deliverToChickpea(messageIn('G1', ts, '<!subteam^SSUPPORT|@support> and <!subteam^SFINANCE|@finance> compare refunds').chickpea)).status, 200);
+  assert.deepEqual((await turnsOn(h, ts)).map(shape), [['agent_support', 0, THROUGH_CHICKPEA], ['agent_finance', 1, THROUGH_CHICKPEA]]);
+  assert.deepEqual(h.calls.filter((call) => call.token !== MAIN_BOT || call.method === 'conversations.open').map((call) => `${call.method} ${call.token}`), []);
 }));

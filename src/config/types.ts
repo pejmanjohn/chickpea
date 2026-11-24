@@ -1074,6 +1074,11 @@ export interface ResolvedAssignment {
    */
   teammates?: AgentTeammate[];
   /**
+   * The turn is in its Agent app's own DM, which no other bot is in: its
+   * teammates are named to it there, never asked.
+   */
+  inAgentAppDm?: true;
+  /**
    * The Agents the requester may use, frozen at ingress for the system
    * Agent's root DM turn: the front desk it may hand the request to.
    */
