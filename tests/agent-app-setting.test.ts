@@ -238,6 +238,8 @@ async function adminApp(t: TestContext, options: {
     transport: {
       disableUserGroup: async (id) => { calls.push(`disable:${id}`); return { id, name: 'x', handle: 'x', disabled: true }; },
       enableUserGroup: async (id) => { calls.push(`enable:${id}`); return { id, name: 'x', handle: 'x', disabled: false }; },
+      listUserGroups: async () => [],
+      updateUserGroup: async () => { throw new Error('not in this unit'); },
       openDirectConversation: async (user) => { calls.push(`dm:${user}`); return { id: `D_${user}`, private: true, member: true, archived: false }; },
       postMessage: async (input) => { calls.push(`post:${input.channelId}`); texts.push(input.text); return { channelId: input.channelId, ts: '1.0' }; },
       lookupChannel: async (id) => { if (!options.slack) throw new Error('no Channels here'); return options.slack.transport.lookupChannel(id); },

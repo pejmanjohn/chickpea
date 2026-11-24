@@ -25,6 +25,7 @@ import { AGENT_APP_BOT_SCOPES } from '../src/slack/scopes.ts';
 import { SlackTransportError, type SlackChannel, type SlackTransport, type SlackUserGroup } from '../src/slack/transport/types.ts';
 import { speakerFor } from '../src/slack/speaker.ts';
 import { escapeMrkdwn } from '../src/slack/ui/text.ts';
+import { captureSlackRefusals } from './helpers/agent-app-refusals.ts';
 
 const NOW = 1_800_000_000_000;
 const TEAM = 'TACME';
@@ -99,9 +100,14 @@ class FakeSlack implements AgentAppSlackApi {
   }
 }
 
-/** Chickpea's own bot. As in Slack, a user group is turned off or on only with the Owner's user-group permission. */
+/**
+ * Chickpea's own bot. As in Slack, a user group is turned off, on or renamed only with the Owner's user-group
+ * permission, and a handle another group or a member of the workspace has is refused.
+ */
 class FakeMainBot implements AgentAppTransport {
-  groups = new Map<string, SlackUserGroup>([['S1', { id: 'S1', name: 'Support', handle: 'support', disabled: false }]]);
+  groups = new Map<string, SlackUserGroup>([['S1', { id: 'S1', name: 'Support', handle: 'support', description: 'Support Agent', disabled: false }]]);
+  /** Handles Slack holds outside these groups, as a person's. */
+  readonly handlesTaken = new Set<string>();
   ownerPermission = true;
   posted: Array<{ channelId: string; text: string; idempotencyKey: string | undefined }> = [];
   /** Channels Chickpea's bot is in; as for any bot, a private one it is not in is not found. */
@@ -143,6 +149,23 @@ class FakeMainBot implements AgentAppTransport {
     return this.calls.through('enableUserGroup', async () => this.toggle('usergroups.enable', id, false));
   }
   async lookupUserGroup(id: string) { const group = this.groups.get(id); return group ? { ...group } : undefined; }
+  async listUserGroups() { return [...this.groups.values()].map((group) => ({ ...group })); }
+  updateUserGroup(id: string, patch: { name?: string; handle?: string; description?: string }) {
+    return this.calls.through('updateUserGroup', async () => {
+      const group = this.groups.get(id);
+      if (!group) throw new SlackTransportError('usergroups.update', 'no_such_subteam');
+      if (!this.ownerPermission) throw new SlackTransportError('usergroups.update', 'permission_denied');
+      const others = [...this.groups.values()].filter((other) => other.id !== id);
+      if (patch.handle && (this.handlesTaken.has(patch.handle) || others.some((other) => other.handle === patch.handle))) {
+        throw new SlackTransportError('usergroups.update', 'handle_already_exists');
+      }
+      if (patch.name && others.some((other) => other.name.toLowerCase() === patch.name!.toLowerCase())) {
+        throw new SlackTransportError('usergroups.update', 'name_already_exists');
+      }
+      Object.assign(group, patch);
+      return { ...group };
+    });
+  }
   openDirectConversation(userId: string) {
     return this.calls.through('openDirectConversation', async () => ({ id: `D_${userId}`, private: true, member: true, archived: false }));
   }
@@ -766,6 +789,7 @@ test('Remove App turns the released group back on, then hands the handle back to
   const app = appRecordOf(presence);
   assert.deepEqual(app?.state === 'needs_attention' && [app.reason, app.app?.appId], ['app_removed', 'A0APP1'], 'the removed app stays attached');
   assert.deepEqual(ownerMessages(f).slice(1), [REMOVED_BACK], 'the Owner is told once');
+  assert.equal(f.calls.log.includes('updateUserGroup'), false, "a group that has the Agent's name and handle is not renamed");
   assert.equal(speakerFor(presence, { kind: 'chickpea_dm' }).kind, 'chickpea_as_agent');
 
   f.calls.log.length = 0;
@@ -779,6 +803,54 @@ test('Remove App turns the released group back on, then hands the handle back to
   assert.equal(agentAppIsLive(await presenceOf(f)), true);
   assert.deepEqual(f.slack.created, ['A0APP1'], 'no second app');
   assert.equal(f.main.groups.get('S1')?.disabled, true);
+});
+
+/** A rename saved while the app holds the handle: the Agent's name and handle change, and its app follows them. */
+async function rename(f: Fixture, name: string, handle: string): Promise<void> {
+  const agent = await f.config.getAgent('agent_support');
+  const presence = agent.slackPresence!;
+  await f.config.updateAgent(agent.id, { name, slackPresence: { ...presence, requestedHandle: handle, normalizedHandle: handle } }, agent.revision);
+}
+
+// Defects caught: a group turned back on under the handle and name it had before a rename made while the app held the
+// handle, so the handle the Owner is told people can mention finds nothing in Slack; the rename sent after the Owner
+// is told, or after the group already answers under the old handle.
+test('a removed app whose Agent was renamed meanwhile gets its group back under the new handle and name before the Owner is told', async (t) => {
+  const f = await fixture(t);
+  await switched(f);
+  await rename(f, 'Helpdesk', 'helpdesk');
+  await f.service.end('A0APP1', UNINSTALLED);
+  f.calls.log.length = 0;
+  assert.equal(await f.service.continueSwitch('agent_support'), 'not_live');
+  assert.deepEqual(f.main.groups.get('S1'), { id: 'S1', name: 'Helpdesk', handle: 'helpdesk', description: 'Helpdesk Agent', disabled: false });
+  assert.deepEqual(f.calls.log.filter((call) => ['updateUserGroup', 'enableUserGroup', 'postMessage'].includes(call)),
+    ['updateUserGroup', 'enableUserGroup', 'postMessage']);
+  assert.equal(ownerMessages(f).at(-1), escapeMrkdwn(
+    "Helpdesk's Slack app was removed from this workspace. People can still mention @helpdesk, and Helpdesk answers through Chickpea. Choose Add Helpdesk to Slack to add the app back.",
+  ));
+  const presence = await presenceOf(f);
+  assert.deepEqual(presence && [presence.kind, presence.normalizedHandle, answeringUserGroupId(presence)], [undefined, 'helpdesk', 'S1']);
+});
+
+// Defects caught: a handle Slack refused named to the Owner as one people can mention; the Agent's stored handle
+// silently changed to the group's; the refusal stopping the restore, so the group stays off.
+test("a handle Slack refuses the restored group leaves it the handle it has, which is the one the Owner is told, and keeps the Agent's", async (t) => {
+  const f = await fixture(t);
+  await switched(f);
+  await rename(f, 'Helpdesk', 'helpdesk');
+  await f.service.end('A0APP1', UNINSTALLED);
+  f.main.handlesTaken.add('helpdesk');
+  const refusals = captureSlackRefusals(t);
+  assert.equal(await f.service.continueSwitch('agent_support'), 'not_live');
+  assert.deepEqual(f.main.groups.get('S1'), { id: 'S1', name: 'Support', handle: 'support', description: 'Support Agent', disabled: false });
+  assert.deepEqual(refusals.map(({ step, code }) => [step, code]), [['restore_handle', 'handle_already_exists']]);
+  assert.equal(ownerMessages(f).at(-1), escapeMrkdwn(
+    "Helpdesk's Slack app was removed from this workspace. Slack wouldn't give its user group the handle @helpdesk, so people can mention @support instead, and Helpdesk answers through Chickpea. Choose Add Helpdesk to Slack to add the app back.",
+  ));
+  assert.equal(ownerMessages(f).length, 2, 'the switch result, then this one, once');
+  const presence = await presenceOf(f);
+  assert.deepEqual(presence && [presence.kind, presence.requestedHandle, presence.normalizedHandle, answeringUserGroupId(presence)],
+    [undefined, 'helpdesk', 'helpdesk', 'S1']);
 });
 
 // Defects caught: a refused re-enable retried forever or told on every try; the Owner left without the button or the

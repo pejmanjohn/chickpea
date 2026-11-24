@@ -143,6 +143,8 @@ class FakeTransport implements AgentAppTransport {
     this.disabled = this.disabled.filter((candidate) => candidate !== id);
     return { id, name: 'Support', handle: 'support', disabled: false };
   }
+  async listUserGroups(): Promise<SlackUserGroup[]> { return []; }
+  async updateUserGroup(): Promise<never> { throw new Error('not in this unit'); }
   openDirectConversation(userId: string) {
     return this.calls.through('openDirectConversation', async () => ({ id: `D_${userId}`, private: true, member: true, archived: false }));
   }

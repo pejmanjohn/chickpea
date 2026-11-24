@@ -19,6 +19,8 @@ export const TRY_AGAIN_ACTION = 'agent_app_try_again';
 export interface AgentAppNames {
   name: string;
   handle: string;
+  /** The Agent's handle Slack would not give its user group, which answers to `handle` instead. */
+  refusedHandle?: string;
 }
 
 export interface AgentAppLinks {
@@ -37,6 +39,7 @@ export type AgentAppMessageKind =
   | 'cancel_unfinished'
   | 'archived_installed'
   | 'permission_needed'
+  | 'app_removed_handle_kept'
   | 'app_removed_unreachable'
   | 'app_removed_permission'
   | 'recreated'
@@ -156,6 +159,12 @@ const DM_COPY = {
   app_removed: {
     text: ({ name, handle }) =>
       `${name}'s Slack app was removed from this workspace. People can still mention @${handle}, and ${name} answers through Chickpea. Choose Add ${name} to Slack to add the app back.`,
+    buttons: (links, names) => add(links, `Add ${names.name} to Slack`),
+  },
+  /** Removed, and its user group is back on under the handle it had, because Slack refused it the Agent's. */
+  app_removed_handle_kept: {
+    text: ({ name, handle, refusedHandle }) =>
+      `${name}'s Slack app was removed from this workspace. Slack wouldn't give its user group the handle @${refusedHandle}, so people can mention @${handle} instead, and ${name} answers through Chickpea. Choose Add ${name} to Slack to add the app back.`,
     buttons: (links, names) => add(links, `Add ${names.name} to Slack`),
   },
   /** Removed, with no user group to answer @handle: none to turn back on, or Slack refused. */

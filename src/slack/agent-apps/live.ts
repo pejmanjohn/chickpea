@@ -581,6 +581,8 @@ function mainBotTransport(
   return {
     disableUserGroup: async (id) => (await bot()).disableUserGroup(id),
     enableUserGroup: async (id) => (await bot()).enableUserGroup(id),
+    listUserGroups: async (options) => (await bot()).listUserGroups(options),
+    updateUserGroup: async (id, patch) => (await bot()).updateUserGroup(id, patch),
     openDirectConversation: async (userId) => (await bot()).openDirectConversation(userId),
     postMessage: async (input) => (await bot()).postMessage(input),
     lookupChannel: async (channelId) => (await bot()).lookupChannel(channelId),

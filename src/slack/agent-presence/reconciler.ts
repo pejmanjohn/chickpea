@@ -27,6 +27,7 @@ import {
   agentUserGroupDescription,
   agentUserGroupName,
   alternativeAgentHandles,
+  bringUserGroupToAgent,
   handlesOtherAgentsHoldInSlack,
   handlesOtherAgentsStore,
   normalizeAgentHandle,
@@ -569,12 +570,7 @@ export class AgentPresenceReconciler {
       }
     } else {
       try {
-        group = await this.updateGroupIfNeeded(
-          group,
-          agent,
-          normalizedHandle,
-          agentUserGroupName(agent.name, groups, group.id),
-        );
+        group = await bringUserGroupToAgent(transport, group, agent, normalizedHandle, groups);
       } catch (error) {
         throw withHandleSuggestions(error, normalizedHandle, groups, held);
       }
@@ -833,25 +829,6 @@ export class AgentPresenceReconciler {
       },
       agent.revision,
     );
-  }
-
-  private async updateGroupIfNeeded(
-    group: SlackUserGroup,
-    agent: CustomAgentConfig,
-    normalizedHandle: string,
-    name: string,
-  ): Promise<SlackUserGroup> {
-    const desiredDescription = agentUserGroupDescription(agent);
-    if (
-      group.name === name &&
-      group.handle === normalizedHandle &&
-      group.description === desiredDescription
-    ) return group;
-    return this.dependencies.transport.updateUserGroup(group.id, {
-      name,
-      handle: normalizedHandle,
-      description: desiredDescription,
-    });
   }
 
   private async announceBestEffort(

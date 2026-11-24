@@ -35,7 +35,7 @@ import {
   generatedAgentAvatarPng,
   readAgentAvatarAsset,
 } from '../agent-presence/avatar-assets.ts';
-import { handlesOtherAgentsHoldInSlack } from '../agent-presence/handles.ts';
+import { bringUserGroupToAgent, handlesOtherAgentsHoldInSlack } from '../agent-presence/handles.ts';
 import {
   AGENT_APP_BOT_EVENTS,
   type AgentAppManifestIntent,
@@ -138,7 +138,8 @@ import {
 
 export type AgentAppTransport = Pick<
   SlackTransport,
-  'disableUserGroup' | 'enableUserGroup' | 'openDirectConversation' | 'postMessage' | 'lookupChannel' | 'joinPublicChannel' | 'channelHasMember'
+  | 'disableUserGroup' | 'enableUserGroup' | 'listUserGroups' | 'updateUserGroup' | 'openDirectConversation' | 'postMessage'
+  | 'lookupChannel' | 'joinPublicChannel' | 'channelHasMember'
 >;
 
 /** What an Agent app's own bot does at the switch: see a Channel and join a public one. */
@@ -1356,8 +1357,9 @@ export class AgentSlackApps {
   }
 
   /**
-   * A removed app's restore: turn the group it released back on, tell the
-   * Owner, then hand the handle back to the group, with the removed record
+   * A removed app's restore: bring the group it released to the Agent's
+   * current name and handle, turn it back on, tell the Owner, then hand the
+   * handle back to the group, with the removed record
    * attached, only once Slack confirmed the group is on. Slack is never
    * trusted to have left the group as the record says: the enable is always
    * sent, and `already_enabled` is success. A refused enable leaves the Agent
@@ -1371,7 +1373,9 @@ export class AgentSlackApps {
     const { released } = presence;
     const appId = presence.app.app?.appId;
     let outcome: 'on' | 'none' | 'refused' | 'permission' = released ? 'on' : 'none';
+    let keptHandle: string | undefined;
     if (released) {
+      keptHandle = await this.renameReleasedGroup(agent, presence, released.userGroupId);
       try {
         await this.deps.transport.enableUserGroup(released.userGroupId);
       } catch (error) {
@@ -1386,9 +1390,13 @@ export class AgentSlackApps {
     const enableRefused = outcome === 'refused' || outcome === 'permission';
     // A refusal changes nothing in Slack, so a group Slack never confirmed it turned off still answers.
     const mentionable = outcome === 'on' || (enableRefused && released?.answers === true);
-    const kind: AgentAppMessageKind = mentionable ? 'app_removed' : outcome === 'permission' ? 'app_removed_permission' : 'app_removed_unreachable';
+    const kind: AgentAppMessageKind = mentionable
+      ? keptHandle ? 'app_removed_handle_kept' : 'app_removed'
+      : outcome === 'permission' ? 'app_removed_permission' : 'app_removed_unreachable';
+    // People mention the group by the handle Slack has; one it refused never answers, so it is never named as one that does.
+    const names = { ...this.names(agent), ...(keptHandle ? { handle: keptHandle, refusedHandle: presence.normalizedHandle } : {}) };
     try {
-      await this.message(kind, agent, presence.app.startedBy, `agent-app-removed:${agent.id}:${appId ?? ''}:${presence.app.at}:${kind}`);
+      await this.message(kind, agent, presence.app.startedBy, `agent-app-removed:${agent.id}:${appId ?? ''}:${presence.app.at}:${kind}`, names);
     } catch (error) {
       const refused = error instanceof SlackTransportError && !error.retryable;
       if (!refused && !finalAttempt) throw error;
@@ -1406,6 +1414,30 @@ export class AgentSlackApps {
       // Another writer moved the record after the enable was sent: the driver reads it again and repeats the step.
       if (!(error instanceof AgentRevisionConflictError)) throw error;
       return this.deps.stores.config.getAgent(agent.id);
+    }
+  }
+
+  /**
+   * Renames made while the app held the handle never reached the group it
+   * released, so before the group answers again it takes the Agent's current
+   * name and handle, by the rename a user-group Agent's group gets. A
+   * refusal leaves the group as it was and returns the handle it keeps when
+   * that is not the Agent's; Slack not answering throws, so the job retries.
+   */
+  private async renameReleasedGroup(agent: CustomAgentConfig, presence: RemovedAgentApp, userGroupId: string): Promise<string | undefined> {
+    const refused = (error: unknown) => {
+      if (!(error instanceof SlackTransportError) || error.retryable) throw error;
+      logSlackRefusal('restore_handle', { agentId: agent.id, ...(presence.app.app ? { appId: presence.app.app.appId } : {}) }, error);
+    };
+    const groups = await this.deps.transport.listUserGroups({ includeDisabled: true }).catch((error: unknown) => refused(error));
+    const group = groups?.find((candidate) => candidate.id === userGroupId);
+    if (!groups || !group) return undefined;
+    try {
+      await bringUserGroupToAgent(this.deps.transport, group, agent, presence.normalizedHandle, groups);
+      return undefined;
+    } catch (error) {
+      refused(error);
+      return group.handle === presence.normalizedHandle ? undefined : group.handle;
     }
   }
 
@@ -1755,8 +1787,8 @@ export class AgentSlackApps {
     agent: CustomAgentConfig,
     slackUserId: string,
     idempotencyKey: string,
+    names: AgentAppNames = this.names(agent),
   ): Promise<{ channelId: string; ts: string }> {
-    const names = this.names(agent);
     const linked: readonly AgentAppMessageKind[] = [
       'config_token_needed', 'permission_needed', 'app_removed_permission', 'handle_taken', 'update_refused', 'follow_token_needed',
     ];

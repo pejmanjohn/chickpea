@@ -70,6 +70,8 @@ class FakeTransport implements AgentAppTransport {
   async disableUserGroup(id: string) { const g = this.groups.get(id)!; g.disabled = true; return { ...g }; }
   async enableUserGroup(id: string) { const g = this.groups.get(id); if (!g) throw new SlackTransportError('usergroups.enable', 'no_such_subteam'); g.disabled = false; this.enabled.push(id); return { ...g }; }
   async lookupUserGroup(id: string) { const g = this.groups.get(id); return g ? { ...g } : undefined; }
+  async listUserGroups() { return [...this.groups.values()].map((g) => ({ ...g })); }
+  async updateUserGroup(): Promise<never> { throw new Error('not in this unit'); }
   async lookupChannel(): Promise<never> { throw new Error('not in this unit'); }
   async joinPublicChannel(): Promise<never> { throw new Error('not in this unit'); }
   async openDirectConversation(userId: string) { return { id: `D_${userId}`, private: true, member: true, archived: false }; }
