@@ -5848,6 +5848,9 @@
         apps.rowNotes[agentId] = unanswered
           ? { yourApps: true, text: "Slack may have made an app for " + name + " before Chickpea stopped. If you see one in Your Apps in Slack that you don't use, delete it." }
           : { yourApps: true, text: "Chickpea couldn't delete the Slack app it made for " + name + ", so delete " + name + " in Your Apps in Slack. " + name + " keeps answering as it did before." };
+      } else if (body && body.app === "not_found") {
+        var found = slackAppsRow(agentId).name;
+        apps.rowNotes[agentId] = { yourApps: true, text: "Chickpea couldn't find the Slack app it made for " + found + " to delete it. If " + found + " still appears in Your Apps in Slack, you can delete it there. " + found + " keeps answering as it did before." };
       }
       render();
     }).catch(function (error) {
@@ -19621,7 +19624,8 @@
       loadSlackChannels(false);
     }
     render();
-    revalidateCurrentVisibleResources();
+    // A route change: a hidden or automation tab still loads what it shows, or Agents in Slack stays on "Loading…".
+    revalidateCurrentVisibleResources({ navigation: true });
   }
 
   function openDestinations() {

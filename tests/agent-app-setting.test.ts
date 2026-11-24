@@ -149,7 +149,12 @@ function slackWorkspace() {
       created.push(input.handle);
       return { ...group };
     },
-    updateUserGroup: async (id: string, patch: Partial<SlackUserGroup>) => ({ ...Object.assign(required(id, 'usergroups.update'), patch) }),
+    updateUserGroup: async (id: string, patch: Partial<SlackUserGroup>) => {
+      const group = required(id, 'usergroups.update');
+      // As Slack was seen to answer: a disabled group is not found for an update, and keeps what it had.
+      if (group.disabled) throw new SlackTransportError('usergroups.update', 'no_such_subteam');
+      return { ...Object.assign(group, patch) };
+    },
     enableUserGroup: async (id: string) => ({ ...Object.assign(required(id, 'usergroups.enable'), { disabled: false }) }),
     disableUserGroup: async (id: string) => ({ ...Object.assign(required(id, 'usergroups.disable'), { disabled: true }) }),
     lookupChannel: async (id: string) => {
@@ -238,6 +243,8 @@ async function adminApp(t: TestContext, options: {
     transport: {
       disableUserGroup: async (id) => { calls.push(`disable:${id}`); return { id, name: 'x', handle: 'x', disabled: true }; },
       enableUserGroup: async (id) => { calls.push(`enable:${id}`); return { id, name: 'x', handle: 'x', disabled: false }; },
+      listUserGroups: async () => [],
+      updateUserGroup: async () => { throw new Error('not in this unit'); },
       openDirectConversation: async (user) => { calls.push(`dm:${user}`); return { id: `D_${user}`, private: true, member: true, archived: false }; },
       postMessage: async (input) => { calls.push(`post:${input.channelId}`); texts.push(input.text); return { channelId: input.channelId, ts: '1.0' }; },
       lookupChannel: async (id) => { if (!options.slack) throw new Error('no Channels here'); return options.slack.transport.lookupChannel(id); },

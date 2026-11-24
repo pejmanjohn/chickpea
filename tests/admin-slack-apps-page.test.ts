@@ -85,6 +85,8 @@ async function harness(options: {
   handle?: (path: string, method: string, body: unknown) => FakeResponse | Promise<FakeResponse | undefined> | undefined;
   /** More of the page's options, such as onboarding's. */
   page?: Parameters<typeof renderAdminPage>[0];
+  /** The page opens in a tab the browser reports hidden, as a background or automation tab is. */
+  hidden?: boolean;
 } = {}) {
   const api = options.api ?? apiState();
   let html = '';
@@ -116,6 +118,7 @@ async function harness(options: {
       return null;
     },
     get activeElement() { return activeElement ?? body; },
+    visibilityState: options.hidden ? 'hidden' : 'visible',
     body,
     querySelector(selector: string) {
       if (selector === '.main-inner') return { set innerHTML(value: string) { throw new Error(`Admin failed to load: ${value}`); } };
@@ -699,6 +702,15 @@ test("Cancel's answers: an app left for the Owner, Slack not answering, and a Ca
   assert.match(left.text(), /Chickpea couldn&#39;t delete the Slack app it made for Sales Desk, so delete Sales Desk in Your Apps in Slack\. Sales Desk keeps answering as it did before\. Open Your Apps in Slack/);
   assert.match(left.html(), /<a class="hint-link" href="https:\/\/api\.slack\.com\/apps" target="_blank" rel="noopener">Open Your Apps in Slack &nearr;<\/a>/);
 
+  // Defect caught: an Owner asked to delete in Your Apps an app Slack says does not exist.
+  const notFound = await harness({
+    api: waiting(),
+    handle: (path) => path.endsWith('/cancel') ? respond({ agent: row('agent_sales', 'Sales Desk', 'sales-desk', 'user_group'), app: 'not_found' }) : undefined,
+  });
+  await notFound.click({ 'data-action': 'slack-apps-cancel', 'data-agent': 'agent_sales' });
+  assert.match(notFound.text(), /Chickpea couldn&#39;t find the Slack app it made for Sales Desk to delete it\. If Sales Desk still appears in Your Apps in Slack, you can delete it there\. Sales Desk keeps answering as it did before\. Open Your Apps in Slack/);
+  assert.doesNotMatch(notFound.text(), /so delete Sales Desk/);
+
   const deleted = await harness({
     api: waiting(),
     handle: (path) => path.endsWith('/cancel') ? respond({ agent: row('agent_sales', 'Sales Desk', 'sales-desk', 'user_group'), app: 'deleted' }) : undefined,
@@ -785,6 +797,15 @@ test('each removal says what it did: retired, not confirmed by Slack, or no toke
     assert.ok(page.text().includes(sentence.replace(/'/g, '&#39;')), removed);
     assert.equal(page.html().includes('callout callout-success slack-apps-callout'), success, removed);
   }
+});
+
+// Defect caught: a route to the section in a tab the browser reports hidden loaded nothing, so it stayed on
+// "Loading…" until the tab was focused or the page reloaded.
+test('the section loads when its route opens in a hidden tab', async () => {
+  const page = await harness({ hidden: true });
+  assert.equal(sectionRequests(page.requests).filter((request) => request.path === '/admin/api/slack-apps').length, 1);
+  assert.doesNotMatch(page.text(), /Loading…/);
+  assert.match(page.html(), /data-agent="agent_sales"[^>]*>Move to its own app</);
 });
 
 test('a section that could not load says so, and Try again loads it', async () => {

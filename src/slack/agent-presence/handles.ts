@@ -1,5 +1,5 @@
 import { appRecordOf, type CustomAgentConfig } from '../../config/types.ts';
-import type { SlackUserGroup } from '../transport/types.ts';
+import type { SlackTransport, SlackUserGroup } from '../transport/types.ts';
 
 const SLACK_AGENT_HANDLE_MAX_LENGTH = 80;
 // Slack's method docs name description_too_long but give no number. A QA
@@ -94,6 +94,24 @@ export function agentUserGroupName(
     const candidate = `${base} ${suffix}`;
     if (!taken.has(key(candidate))) return candidate;
   }
+}
+
+/**
+ * Brings an Agent's user group to the Agent's name, handle and description,
+ * as a rename of the Agent does; a group already there is left alone. Slack's
+ * refusal is thrown, and the group keeps what it had.
+ */
+export async function bringUserGroupToAgent(
+  transport: Pick<SlackTransport, 'updateUserGroup'>,
+  group: SlackUserGroup,
+  agent: { name: string; description?: string },
+  handle: string,
+  groups: readonly Pick<SlackUserGroup, 'id' | 'name'>[],
+): Promise<SlackUserGroup> {
+  const name = agentUserGroupName(agent.name, groups, group.id);
+  const description = agentUserGroupDescription(agent);
+  if (group.name === name && group.handle === handle && group.description === description) return group;
+  return transport.updateUserGroup(group.id, { name, handle, description });
 }
 
 /**

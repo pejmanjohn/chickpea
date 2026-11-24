@@ -11,11 +11,12 @@ import {
   PrivateChannelSetupError,
   PrivateChannelSetupService,
 } from '../src/slack/private-channel-setup-service.ts';
-import type {
-  SlackChannel,
-  SlackMessageReference,
-  SlackTransport,
-  SlackUserGroup,
+import {
+  SlackTransportError,
+  type SlackChannel,
+  type SlackMessageReference,
+  type SlackTransport,
+  type SlackUserGroup,
 } from '../src/slack/transport/types.ts';
 
 const WORKSPACE = 'T_PRIVATE';
@@ -105,6 +106,8 @@ class FakePrivateSlackTransport implements SlackTransport {
   }
   async updateUserGroup(id: string, patch: Partial<SlackUserGroup>) {
     const group = this.groups.find((candidate) => candidate.id === id)!;
+    // As Slack was seen to answer: a disabled group is not found for an update, and keeps what it had.
+    if (group.disabled) throw new SlackTransportError('usergroups.update', 'no_such_subteam');
     Object.assign(group, patch);
     return { ...group };
   }
