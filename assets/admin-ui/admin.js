@@ -5575,17 +5575,27 @@
   }
 
   // The token goes to Chickpea once and is never kept here: the field is
-  // emptied before the request leaves, and nothing renders it back.
+  // emptied before the request leaves, and nothing renders it back. A paste
+  // anywhere on the page lands here, so text that is not a refresh token is
+  // answered on the page and never sent.
   function submitSlackAppsToken(value) {
     var apps = slackAppsState();
     var field = document.getElementById("slack-apps-token");
     if (field) field.value = "";
     var pasted = String(value || "").trim();
     if (!pasted || apps.token.phase === "checking") return;
+    var accessTokenShape = /^xoxe\.xox/.test(pasted);
+    var refuse = function (code) {
+      apps.token.phase = "error";
+      apps.token.error = slackAppsTokenError(code, accessTokenShape);
+      render();
+      var retry = document.getElementById("slack-apps-token");
+      if (retry && retry.focus) retry.focus();
+    };
+    if (!/^xoxe-/.test(pasted)) { refuse("not_refresh_token"); return; }
     apps.token.phase = "checking";
     apps.token.error = "";
     render();
-    var accessTokenShape = /^xoxe\.xox/.test(pasted);
     postJson(SLACK_APPS_API + "/token", "PUT", { refreshToken: pasted }).then(function () {
       var mode = apps.data && apps.data.setting ? apps.data.setting.mode : "shared";
       if (!apps.token.turnOn || mode === "own_app") return mode;
@@ -5600,11 +5610,7 @@
       var next = document.querySelector('[data-role="slack-apps-token-continue"]');
       if (next && next.focus) next.focus();
     }).catch(function (error) {
-      apps.token.phase = "error";
-      apps.token.error = slackAppsTokenError(error && error.message, accessTokenShape);
-      render();
-      var retry = document.getElementById("slack-apps-token");
-      if (retry && retry.focus) retry.focus();
+      refuse(error && error.message);
     });
   }
 
