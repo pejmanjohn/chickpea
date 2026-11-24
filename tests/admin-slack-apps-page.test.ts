@@ -413,6 +413,14 @@ test("the browser follows only Slack's own Allow URL", async () => {
   }
 });
 
+test('leaving the token page for another Slack tab shows that tab, not the token page again', async () => {
+  const page = await harness({ path: '/admin/destinations/slack/connection/token' });
+  assert.match(page.text(), /Let Chickpea create Slack apps for your Agents/);
+  await page.click({ 'data-action': 'toggle-add-channel' });
+  assert.doesNotMatch(page.text(), /Let Chickpea create Slack apps for your Agents/);
+  assert.equal(page.location.pathname, '/admin/destinations/slack/channels');
+});
+
 test('the section shows a change made elsewhere when the Owner comes back to the window', async () => {
   const page = await harness();
   assert.match(page.html(), /data-agent="agent_sales"[^>]*>Move to its own app</);

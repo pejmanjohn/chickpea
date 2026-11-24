@@ -4891,7 +4891,7 @@
   }
 
   function slackOverviewHtml() {
-    if (AGENT_SLACK_APPS_OFFERED && state.slackApps && state.slackApps.token.open) return slackAppsTokenPageHtml();
+    if (AGENT_SLACK_APPS_OFFERED && state.destinationTab === "connection" && state.slackApps && state.slackApps.token.open) return slackAppsTokenPageHtml();
     var body = !state.slack
       ? destinationOverviewHtml()
       : state.destinationTab === "connection"
