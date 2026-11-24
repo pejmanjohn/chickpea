@@ -622,3 +622,17 @@ test('while paused, Try again on a live app whose update holds tells the Owner t
   assert.equal(await f.service.pausedReply('agent_live'), "Adding Slack apps is paused, so Chickpea can't update Support's Slack app now. Support keeps answering.");
   assert.deepEqual(f.slack.calls, []);
 });
+
+// Defect caught: a host that passes the fact as anything but a boolean, such as the text of a deployment variable, read
+// as allowing creation, so a pause an operator set is not one and nothing says so.
+test('a host fact that is neither absent nor true pauses creating apps', async (t) => {
+  const f = await fixture(t, {});
+  assert.equal(f.service.mayCreateApps(), true, 'a host that says nothing allows it');
+  for (const value of ['false', 'true', 0, 1, null]) {
+    (f.host as { mayCreateApps?: unknown }).mayCreateApps = value;
+    assert.equal((await (await f.adminJson(API, 'GET')).json() as { paused: boolean }).paused, true, `${JSON.stringify(value)}: Admin reads a pause`);
+    const start = await f.adminJson(`${API}/agents/agent_sales/start`, 'POST', {});
+    assert.deepEqual([start.status, (await start.json() as { error: string }).error], [409, 'paused'], `${JSON.stringify(value)}: Start is refused`);
+  }
+  assert.deepEqual(f.slack.calls, [], 'and Slack is asked for nothing');
+});

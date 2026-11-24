@@ -30,9 +30,15 @@ export interface AgentSlackAppsHost {
   readonly mayCreateApps?: boolean;
 }
 
-/** The one reading of `mayCreateApps`: a host that says nothing allows creating apps. */
+/**
+ * The one reading of `mayCreateApps`: a host that says nothing allows
+ * creating apps, and so does `true`. Anything else pauses, so a host that
+ * passes the text of a variable where a boolean belongs stops creating
+ * instead of carrying on as if nothing were set.
+ */
 export function agentSlackAppsMayCreate(host: AgentSlackAppsHost): boolean {
-  return host.mayCreateApps !== false;
+  const mayCreateApps: unknown = host.mayCreateApps;
+  return mayCreateApps === undefined || mayCreateApps === true;
 }
 
 let installedHost: AgentSlackAppsHost | undefined;
