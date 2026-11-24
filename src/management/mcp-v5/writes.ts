@@ -182,8 +182,9 @@ export async function createAgent(
   return afterCreation(waiting({
     ...result,
     ...(version ? { version } : {}),
-    // A Channel kept for an Agent not in Slack yet is joined at the switch after an Owner's Allow.
-    summary: `${result.summary} It joins ${added} Channel${added === 1 ? '' : 's'}${waitingName ? ' once it is in Slack' : ''}.`,
+    // A Channel kept for an Agent not in Slack yet is completed after an Owner's Allow. Its bot is never brought
+    // into a private one, where it answers through Chickpea, so "answers in" is true of both kinds.
+    summary: `${result.summary} It ${waitingName ? 'answers in' : 'joins'} ${added} Channel${added === 1 ? '' : 's'}${waitingName ? ' once it is in Slack' : ''}.`,
     ...(notAdded.length ? { warnings: [...result.warnings ?? [], ...notAdded] } : {}),
   }));
 }

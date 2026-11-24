@@ -873,7 +873,7 @@ test('create_agent with Channels where each new Agent is its own Slack app keeps
     name: 'Support Desk', instructions: 'Answer support questions.', channels: ['C_SUPPORT'], idempotencyKey: 'create',
   }));
   assert.equal(created.status, 'done');
-  assert.match(created.summary, /It joins 1 Channel once it is in Slack\. Support Desk isn't in Slack yet: a workspace Owner adds it to Slack in Chickpea Admin\./);
+  assert.match(created.summary, /It answers in 1 Channel once it is in Slack\. Support Desk isn't in Slack yet: a workspace Owner adds it to Slack in Chickpea Admin\./);
   assert.deepEqual(created.warnings ?? [], []);
   assert.deepEqual((await f.config.listAgentChannelGrants(teamId, 'C_SUPPORT')).map(({ status }) => status), ['pending']);
 });

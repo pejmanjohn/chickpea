@@ -11442,7 +11442,7 @@
       (state.profileConflict ? ' <button type="button" class="btn btn-soft btn-sm" data-action="reload-profile">Reload latest Agent</button>' : '') + '</div>';
   }
 
-  // A handle another Agent holds is refused with free ones to choose from instead.
+  // A handle another Agent holds is refused with suggestions to choose from instead.
   function offerHandleSuggestions(error) {
     var handles = error && error.payload && Array.isArray(error.payload.suggestions) ? error.payload.suggestions : [];
     state.profileHandleSuggestions = handles.length ? { message: state.profileError, handles: handles } : null;

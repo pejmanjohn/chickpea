@@ -10229,7 +10229,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           ? undefined
           : handlesOtherAgentsStore(await configStore.listAgents(), agentId);
         if (held?.has(handle)) {
-          // The same free handles the management MCP offers for this refusal.
+          // The handles the management MCP suggests for this refusal: no other Agent stores them. Slack is not asked.
           return c.json({
             error: 'invalid_request',
             message: `@${handle} is already in use.`,
