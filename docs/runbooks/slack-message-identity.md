@@ -101,6 +101,15 @@ only through Chickpea's thread-owner routing, so only when Chickpea's bot is in
 that Channel. The app's bot answers it when that bot is in the Channel too, and
 Chickpea's bot answers as the Agent otherwise.
 
+The app subscribes to `agent_session_stopped`, so its runs have Slack's Stop
+button wherever its bot answers: its own DM, and Channels and group DMs its bot
+is in. A press there stops the run when that run's stored speaker is the app's
+own bot and the person may use the Agent there; a press about any other run
+(another Agent's, or this Agent's through Chickpea's bot) stops nothing, and
+the app's indicator is settled with its token and no `username` or
+`icon_url`. An app created before this subscription has no Stop button until
+its manifest is updated; people stop its runs by typing.
+
 ### Channels
 
 - Slack's own Add people or agents puts the app's bot in a Channel, and the

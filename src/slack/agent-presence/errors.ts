@@ -1,6 +1,11 @@
 import type { CustomAgentConfig } from '../../config/types.ts';
 import { SlackTransportError } from '../transport/types.ts';
-import { normalizeAgentHandle } from './handles.ts';
+import {
+  alternativeAgentHandles,
+  handlesOtherAgentsHoldInSlack,
+  handlesOtherAgentsStore,
+  normalizeAgentHandle,
+} from './handles.ts';
 
 type AgentPresenceErrorCode =
   | 'paid_plan_required'
@@ -40,6 +45,24 @@ export class AgentPresenceError extends Error {
 /** Adding an Agent to a Channel never turns it on; that stays the person's own step. */
 export function agentOffMessage(agent: Pick<CustomAgentConfig, 'name'>): string {
   return `${agent.name} is off. Turn it on first, then add it to the Channel.`;
+}
+
+/**
+ * Restoring takes an Agent's handle back in Slack, so it is refused while
+ * another Agent in Slack holds it. An archived Agent cannot be renamed, so
+ * the refusal says what to do instead.
+ */
+export function restoreHandleRefusal(
+  agents: readonly CustomAgentConfig[],
+  agent: CustomAgentConfig,
+): AgentPresenceError | undefined {
+  const handle = agent.slackPresence?.normalizedHandle;
+  if (!handle || !handlesOtherAgentsHoldInSlack(agents, agent.id).has(handle)) return undefined;
+  return new AgentPresenceError(
+    'handle_collision',
+    `Another Agent in Slack uses @${handle}. Rename or archive that Agent, then restore this one.`,
+    { suggestions: alternativeAgentHandles(handle, new Set([handle, ...handlesOtherAgentsStore(agents, agent.id)])) },
+  );
 }
 
 export function agentOffError(agent: Pick<CustomAgentConfig, 'name'>): AgentPresenceError {
