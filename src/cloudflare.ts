@@ -1895,6 +1895,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     return this.call((stores) => stores.turnJobs.getTurnEnvelope(id) ?? null);
   }
 
+  async slackOwnBotRun(id: string) {
+    return this.call((stores) => stores.turnJobs.ownBotRun(id) ?? null);
+  }
+
   async slackWorkspaceObjectRecord(object: InstallationWorkspaceObject) {
     return this.call((stores) => {
       stores.objectInventory.recordWorkspaceObject(object);
@@ -3835,6 +3839,7 @@ async function drainCloudflareManagementReceipts(
         env,
         resolveInstallation,
         agentPresence: async (agentId) => stores.config.listAgents().find(({ id }) => id === agentId)?.slackPresence,
+        scheduleAction: (actionId) => appStores.routines.getScheduleAction(actionId),
         onDelivered: async (deliveredRecord, delivery) => {
           try {
             await completeAgentWelcomeDelivery(

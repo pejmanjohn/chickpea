@@ -1,3 +1,5 @@
+import type { WebClient } from '@slack/web-api';
+
 import { getSlackStateStore, type PlatformEnv } from '../../config/state-backend.ts';
 import {
   type ActiveAgentApp,
@@ -6,6 +8,7 @@ import {
   type CustomAgentConfig,
 } from '../../config/types.ts';
 import { isTransientSlackApiError, slackConversationsInfo, slackConversationsOpen } from '../credentials.ts';
+import { slackPlatformErrorCode } from '../errors.ts';
 import { ADMISSION_MEMBERSHIP_TTL_MS } from '../installation-execution.ts';
 import { type SlackSpeaker, speakerFor } from '../speaker.ts';
 import { slackConversationKind } from '../thread-key.ts';
@@ -210,6 +213,22 @@ export async function hostPostSpeaker(input: {
       agentBotIsIn(input.env, input.agentId, app.app.appId, input.channelId)).catch(notVerified)).member
     : false;
   return speakerFor(presence, { kind: 'channel', appBotIsMember, chickpeaBotIsMember: true });
+}
+
+/**
+ * Whether Chickpea's bot is in a Channel or group DM, asked on its own
+ * client. Slack answers a bot outside a private Channel or group DM
+ * `channel_not_found`. Any other failure throws: the caller must not guess.
+ */
+export async function installationBotIsIn(client: WebClient, channelId: string): Promise<boolean> {
+  try {
+    const info = await client.conversations.info({ channel: channelId });
+    return info.channel?.is_member === true || info.channel?.is_mpim === true;
+  } catch (error) {
+    const code = slackPlatformErrorCode(error);
+    if (code === 'channel_not_found' || code === 'not_in_channel') return false;
+    throw error;
+  }
 }
 
 /**

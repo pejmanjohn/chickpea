@@ -8,6 +8,8 @@ import ts from 'typescript';
 process.env.SLACK_STATE_DB_PATH = ':memory:';
 
 import type { ResolvedAssignment } from '../src/config/types.ts';
+import type { deliverManagementReceiptToSlack } from '../src/management/receipts.ts';
+import { RoutineStoreLogic } from '../src/routines/store.ts';
 import type { SlackStateStore } from '../src/slack/claim-store.ts';
 import {
   cacheSlackInstallationExecutionContexts,
@@ -24,6 +26,7 @@ import type { TurnJob } from '../src/slack/turn-job-types.ts';
 import { type PendingTurnJob, TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
+import { localGatewayAppStores } from '../src/state/tag-state-stores.ts';
 import type { InteractiveRunClaim, WorkStore } from '../src/work/types.ts';
 
 const OWN_BOT: SlackSpeaker = { kind: 'own_bot', botUserId: 'USUPPORTBOT' };
@@ -191,6 +194,38 @@ test("the Cloudflare state store repairs, and ends welcomes of, a run stored wit
     });
     await receipts({ turnJobs, work: {}, management: {}, config: {} }, {}, resolve);
     assert.deepEqual(asked, expected, "a welcome's presentation, closed when its delivery is given up");
+  } finally {
+    db.close();
+  }
+});
+
+test("the Cloudflare state store's receipt drain reads a schedule action from its own routine rows, so the receipt can come from the bot that can post where it was asked", async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const routines = new RoutineStoreLogic(db, () => 1_900_000_000_000);
+    const action = routines.reserveScheduleAction({
+      actionId: 'rsaction_cf_drain', actionDigest: 'd'.repeat(64), requestOperationId: 'management_cf_drain',
+      workspaceId: 'T_CF', actorUserId: 'user_owner', actorMembershipId: 'membership_owner', agentId: 'agent_support',
+      conversationKind: 'im', channelId: 'D1', threadTs: '1900000000.000100', messageTs: '1900000000.000100', at: 1_900_000_000_000,
+    });
+    const asked: unknown[] = [];
+    const receipts = cloudflareFunction<(...args: unknown[]) => Promise<unknown>>('drainCloudflareManagementReceipts', {
+      localSlackPresentationState: () => ({}),
+      localGatewayAppStores,
+      localSettingsStore: () => ({}),
+      isAgentAppSwitchJob: () => false,
+      drainManagementReceiptOutbox: async (options: { deliver(record: object): Promise<unknown> }) => options.deliver({}),
+      deliverManagementReceiptToSlack: async (_record: object, input: Parameters<typeof deliverManagementReceiptToSlack>[1]) => {
+        asked.push(await input.scheduleAction?.('rsaction_cf_drain'), await input.scheduleAction?.('rsaction_cf_missing'));
+        return { deliveryRef: 'slack:D1:1' };
+      },
+    });
+    const stores = {
+      routines, turnJobs: {}, slack: {}, work: {}, presentations: {}, management: {}, config: {}, identity: {},
+      snapshots: {}, settings: {}, memory: {}, usage: {},
+    };
+    await receipts(stores, {}, async () => ({}));
+    assert.deepEqual(asked, [action, undefined]);
   } finally {
     db.close();
   }

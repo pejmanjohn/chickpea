@@ -110,6 +110,7 @@ import {
   getConfigStore,
   getIdentityStore,
   getManagementStore,
+  getRoutineStore,
   getSettingsStore,
   getSlackStateStore,
   getUsageStore,
@@ -2819,6 +2820,7 @@ async function finishSetup(
       ...(dependencies.platformEnv ? { env: dependencies.platformEnv } : {}),
       agentPresence: async (agentId) =>
         (await dependencies.config.listAgents()).find(({ id }) => id === agentId)?.slackPresence,
+      scheduleAction: (actionId) => getRoutineStore(dependencies.platformEnv).getScheduleAction(actionId),
       onDelivered: (deliveredRecord, delivery) => completeAgentWelcomeDelivery(
         deliveredRecord,
         delivery,

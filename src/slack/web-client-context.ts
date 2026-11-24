@@ -47,7 +47,7 @@ import {
   type ThreadFileRecord,
 } from './thread-files.ts';
 import type { SlackPublicContextEntry } from '../config/types.ts';
-import type { AgentAppBot } from './agent-app-bots.ts';
+import { type AgentAppBot, agentAppSiblings } from './agent-app-bots.ts';
 import type { NormalizedSlackTurn, SlackCoAddressed } from './types.ts';
 import { boundedSlackPublicHandoff, type SlackPublicHandoffMessage } from './public-context.ts';
 import { isSlackContentMessageSubtype } from './message-subtypes.ts';
@@ -242,9 +242,11 @@ export async function hydrateSlackPublicHandoffFallback(
 ): Promise<SlackPublicHandoffMessage[]> {
   const gate = options.readGate ?? UNGATED_SLACK_READS;
   const appBots = options.agentAppBots ?? [];
+  const { siblingBotUserIds, siblingAppIds } = agentAppSiblings(appBots);
   const self: SlackContextSelf = {
     ...(options.botUserId ? { botUserId: options.botUserId } : {}),
-    ...(appBots.length ? { siblingBotUserIds: appBots.map((bot) => bot.botUserId) } : {}),
+    ...(siblingBotUserIds.length ? { siblingBotUserIds } : {}),
+    ...(siblingAppIds.length ? { siblingAppIds } : {}),
   };
   const decision = await reserveRead(gate, 'conversations.replies', [], 'handoff');
   if (!decision.ok) return [];
@@ -265,7 +267,9 @@ export async function hydrateSlackPublicHandoffFallback(
         const role = message.role === 'app' && !options.botUserId ? 'agent' : message.role ?? 'human';
         // An Agent app's bot posts only as its Agent; the installation's bot
         // posts for every other Agent, so its rows stay the previous owner's.
-        const agentId = appBots.find((bot) => bot.botUserId === message.userId)?.agentId ?? previousAgentId;
+        const appId = raw.app_id ?? raw.bot_profile?.app_id;
+        const agentId = appBots.find((bot) => (bot.botUserId !== undefined && bot.botUserId === message.userId) ||
+          (bot.appId !== undefined && bot.appId === appId))?.agentId ?? previousAgentId;
         return [{
           workspaceId: turn.workspaceId,
           channelId: turn.channelId,

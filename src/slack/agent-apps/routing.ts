@@ -29,7 +29,7 @@ export function agentsByAppBot(agents: readonly CustomAgentConfig[]): Map<string
 
 function appAgentsByBot(agents: readonly CustomAgentConfig[]): Map<string, CustomAgentConfig> {
   const byId = new Map(agents.map((agent) => [agent.id, agent]));
-  return new Map(agentAppBots(agents).map(({ agentId, botUserId }) => [botUserId, byId.get(agentId)!]));
+  return new Map(agentAppBots(agents).flatMap(({ agentId, botUserId }) => botUserId ? [[botUserId, byId.get(agentId)!]] : []));
 }
 
 /**

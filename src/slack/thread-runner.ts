@@ -625,7 +625,9 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
       repair: () => drainSlackPresentationRepairs({
         presentations: local.listAutoRepairableV3(MAX_TURN_DRAIN_BATCH),
         state: presentation.state,
-        resolveClient: async (workspaceId) => (await resolveInstallation(workspaceId)).client,
+        // A run its Agent app's own bot spoke is repaired by that bot; Chickpea's bot is not in that app's DM.
+        resolveClient: async (workspaceId, turnJobId) =>
+          (await resolveInstallation(workspaceId, await rows.ownBotRun(turnJobId))).client,
         onFailure: (_presentation, error) => {
           console.warn('[chickpea] Slack presentation repair failed:', sanitizeError(error));
         },

@@ -50,6 +50,10 @@ interface Harness {
   calls: SlackCall[];
   /** What `conversations.history` returns. */
   history: Record<string, unknown>[];
+  /** What `conversations.replies` returns. */
+  replies: Record<string, unknown>[];
+  /** Who `conversations.members` names in #C1. */
+  members: string[];
   context(): Promise<SlackInstallationExecutionContext>;
 }
 
@@ -117,6 +121,9 @@ async function withHarness(t: TestContext, run: (h: Harness) => Promise<void>): 
 
   const calls: SlackCall[] = [];
   const history: Record<string, unknown>[] = [];
+  const replies: Record<string, unknown>[] = [];
+  // The Channel holds the person and the Agent's bot; the workspace's bot was never added.
+  const members = ['U1', AGENT_BOT_USER];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = input instanceof Request ? input : new Request(String(input), init);
     const url = new URL(request.url);
@@ -140,11 +147,10 @@ async function withHarness(t: TestContext, run: (h: Harness) => Promise<void>): 
           ? { ok: true, channel: channel.startsWith('C')
             ? { id: channel, context_team_id: TEAM, name: 'team', is_channel: true, is_member: true }
             : { id: channel, is_im: true, user: 'U1' } }
-          // The Channel holds the person and the Agent's bot; the workspace's bot was never added.
           : method === 'conversations.members'
-            ? { ok: true, members: ['U1', AGENT_BOT_USER], response_metadata: { next_cursor: '' } }
+            ? { ok: true, members, response_metadata: { next_cursor: '' } }
             : method === 'conversations.replies' || method === 'conversations.history'
-              ? { ok: true, messages: method === 'conversations.history' ? history : [] }
+              ? { ok: true, messages: method === 'conversations.history' ? history : replies }
               : method.startsWith('chat.')
                 ? { ok: true, ts: '1900000000.000200', channel }
                 : { ok: true };
@@ -157,7 +163,7 @@ async function withHarness(t: TestContext, run: (h: Harness) => Promise<void>): 
     botUserId: WORKSPACE_BOT_USER, client: {} as SlackInstallationExecutionContext['client'],
   };
   const resolve = withAgentAppExecution(async () => base, env);
-  await run({ env, stores, agent, calls, history, context: () => resolve(TEAM, { agentId: agent.id }) });
+  await run({ env, stores, agent, calls, history, replies, members, context: () => resolve(TEAM, { agentId: agent.id }) });
 }
 
 function assignmentFor(agent: CustomAgentConfig, channelId: string): ResolvedAssignment {
@@ -378,4 +384,57 @@ test("`!memory` addressed to the Agent's bot is the Agent's memory command where
   assert.deepEqual(prompts, [], 'the command never reaches the model');
   const posted = h.calls.slice(before).filter((call) => call.method.startsWith('chat.')).map((call) => readable(call.body)).join('\n');
   assert.match(posted, /This Agent has one shared memory/, "Support's memory is listed");
+}));
+
+/** A person's reply, in a #C1 thread its app's bot spoke in, that Chickpea's bot answers for `agent`. */
+async function threadReplyAsChickpea(h: Harness, agent: CustomAgentConfig): Promise<Array<[string, string]>> {
+  h.members.push(WORKSPACE_BOT_USER);
+  h.replies.push(
+    { user: 'U1', text: 'Where do refunds go?', ts: at(60), thread_ts: at(60) },
+    { user: AGENT_BOT_USER, bot_id: 'BAGENT', app_id: APP_ID, bot_profile: { app_id: APP_ID, name: 'support' }, text: 'Account 99.', ts: at(61), thread_ts: at(60) },
+    { user: 'U1', text: 'And chargebacks?', ts: at(62), thread_ts: at(60) },
+  );
+  const chickpea: SlackInstallationExecutionContext = {
+    workspaceId: TEAM, transportMode: 'direct', sharedAppReads: false, botToken: 'xoxb-workspace-bot',
+    botUserId: WORKSPACE_BOT_USER, client: createSlackWebClient('xoxb-workspace-bot'),
+  };
+  const turn: NormalizedSlackTurn = {
+    workspaceId: TEAM, channelId: 'C1', channelType: 'channel', eventId: 'EvThread62', text: 'And chargebacks?',
+    userId: 'U1', messageTs: at(62), threadTs: at(60), source: 'implicit_thread_reply', contextMode: 'thread',
+    interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+  };
+  const prompts: string[] = [];
+  await runTurn(turn, assignmentFor(agent, 'C1'), h.env, {
+    installationContext: chickpea,
+    usageRecordingEnabled: false,
+    agentPrompt: async (input) => {
+      prompts.push(input.message);
+      return { text: ANSWER, requestedModel: 'local-stub/agent-app', returnedModel: null, reportedUsage: null, usageCompleteness: 'not_reported' as const };
+    },
+  });
+  assert.equal(prompts.length, 1, 'the model ran');
+  return [...prompts[0]!.matchAll(/role=(\w+)[^\]]*\] "([^"]+)":/g)].map(([, role, name]) => [name!, role!]);
+}
+
+test("after its app is removed, an ordinary turn in a thread the app's bot spoke in reads that bot's posts as the Agent's", async (t) => withHarness(t, async (h) => {
+  const current = await h.stores.config.getAgent(h.agent.id);
+  assert.equal(current.slackPresence?.kind, 'agent_app');
+  // As Slack's app_uninstalled leaves it: the record keeps the app, not its bot.
+  const removed: AgentAppLifecycle = {
+    state: 'needs_attention', at: Date.now(), startedBy: 'U1', reason: 'app_removed', resume: 'icon_set',
+    app: { appId: APP_ID, clientId: `${APP_ID}.client` }, icon: 'agent_avatar',
+  };
+  const agent = await h.stores.config.updateAgent(current.id, { slackPresence: { ...current.slackPresence!, app: removed } }, current.revision);
+  assert.deepEqual(await threadReplyAsChickpea(h, agent), [['support', 'agent']], "its app's earlier post is an Agent's, not another app's");
+}));
+
+test('an Agent with no app record reads the same thread as before: an app it does not know stays an app', async (t) => withHarness(t, async (h) => {
+  const current = await h.stores.config.getAgent(h.agent.id);
+  const agent = await h.stores.config.updateAgent(current.id, {
+    slackPresence: {
+      requestedHandle: 'support', normalizedHandle: 'support', desiredState: 'active', health: 'healthy',
+      avatar: { kind: 'generated', revision: 1, seed: 'support' }, userGroupId: 'SSUPPORT',
+    },
+  }, current.revision);
+  assert.deepEqual(await threadReplyAsChickpea(h, agent), [['support', 'app']]);
 }));

@@ -187,7 +187,7 @@ import {
 } from '../slack/node-turn-relay.ts';
 import { slackSemanticActivityStatusEnabled } from '../slack/semantic-status-flag.ts';
 import { hydrateSlackPublicHandoffFallback } from '../slack/web-client-context.ts';
-import { type AgentAppBot, agentSlackAddress, listAgentAppBots } from '../slack/agent-app-bots.ts';
+import { type AgentAppBot, agentAppSiblings, agentSlackAddress, listAgentAppBots } from '../slack/agent-app-bots.ts';
 import { slackAdmissionInStore } from '../slack/admission-path.ts';
 import { hydrateTurnSlackContext } from '../slack/turn-context-reads.ts';
 import type { SlackContextSelf } from '../slack/thread-context.ts';
@@ -792,7 +792,7 @@ async function serveAgentAppHomeAction(
 
 /** The bot users of this installation: its own, and every Agent app's. */
 function tenantBotUserIds(appBots: readonly AgentAppBot[], installationBotUserId: string | undefined): string[] {
-  const ids = appBots.map((bot) => bot.botUserId);
+  const ids = agentAppSiblings(appBots).siblingBotUserIds;
   return installationBotUserId ? [installationBotUserId, ...ids] : ids;
 }
 
@@ -3591,6 +3591,7 @@ async function processSlackEvent(
     await recordAgentThreadMessage(stores.config, payload.team_id, payload.event, {
       ...(installation.botUserId ? { botUserId: installation.botUserId } : {}),
       siblingBotUserIds: tenantBots,
+      siblingAppIds: agentAppSiblings(appBots).siblingAppIds,
     }, threadRoute);
   }
   if (recordOnly) return;

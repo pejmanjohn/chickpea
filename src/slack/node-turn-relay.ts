@@ -6,6 +6,7 @@ import {
   getConfigStore,
   getIdentityStore,
   getManagementStore,
+  getRoutineStore,
   getSettingsStore,
   getWorkStore,
   isCloudflareTarget,
@@ -924,6 +925,7 @@ async function drainNodeWakePassOnce(options: NodeTurnRelayDrainOptions): Promis
         identity,
         ...(env ? { env } : {}),
         agentPresence: async (agentId) => (await config.listAgents()).find(({ id }) => id === agentId)?.slackPresence,
+        scheduleAction: (actionId) => getRoutineStore(env).getScheduleAction(actionId),
         onDelivered: async (deliveredRecord, delivery) => {
           try {
             await completeAgentWelcomeDelivery(

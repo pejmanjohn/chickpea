@@ -151,7 +151,7 @@ import {
   foldedRequestText,
   type FoldedMessage,
 } from './follow-ups.ts';
-import { agentSlackAddress, listAgentAppBots } from './agent-app-bots.ts';
+import { agentAppSiblings, agentSlackAddress, listAgentAppBots } from './agent-app-bots.ts';
 import { createSlackReadGate, sharesSlackAppReadBudget } from './read-budget.ts';
 import { resolveSlackContextNames } from './context-names.ts';
 import type { FlueDispatchReceiptV1 } from './turn-job-types.ts';
@@ -1412,7 +1412,7 @@ async function runTurnAttempt(
     client,
     turn,
     ...(installationContext ? { botUserId: installationContext.botUserId } : {}),
-    siblingBotUserIds: await siblingBotUserIds(assignment, installationContext?.botUserId, turnConfig(), turn.workspaceId),
+    ...await siblingAgents(assignment, installationContext?.botUserId, turnConfig(), turn.workspaceId),
     sharedAppReads,
     state: options.appStores?.slackState ?? getSlackStateStore(platformEnv),
     ...(threadRecord ? { record: threadRecord } : {}),
@@ -3283,20 +3283,22 @@ function logMemoryLeaseFailure(stage: 'before_run' | 'after_run', agentId: strin
 /**
  * The other bots whose posts in this turn's context are Agents' replies:
  * teammates' own apps and, with the Agent-app port, every bot this
- * installation answers as other than the one reading.
+ * installation answers as other than the one reading, and every Agent app,
+ * removed ones too, by its app ID.
  */
-async function siblingBotUserIds(
+async function siblingAgents(
   assignment: Pick<ResolvedAssignment, 'teammates'>,
   readerBotUserId: string | undefined,
   config: Pick<ConfigStore, 'listAgentAppBots' | 'getWorkspaceInstallation'>,
   workspaceId: string,
-): Promise<string[]> {
+): Promise<{ siblingBotUserIds: string[]; siblingAppIds: string[] }> {
   const teammates = (assignment.teammates ?? []).flatMap((teammate) => 'botUserId' in teammate ? [teammate.botUserId] : []);
   const appBots = await listAgentAppBots(config);
+  const apps = agentAppSiblings(appBots);
   const installationBot = appBots.length ? (await config.getWorkspaceInstallation(workspaceId))?.botUserId : undefined;
-  const bots = new Set([...teammates, ...(installationBot ? [installationBot] : []), ...appBots.map((bot) => bot.botUserId)]);
+  const bots = new Set([...teammates, ...(installationBot ? [installationBot] : []), ...apps.siblingBotUserIds]);
   if (readerBotUserId) bots.delete(readerBotUserId);
-  return [...bots];
+  return { siblingBotUserIds: [...bots], siblingAppIds: apps.siblingAppIds };
 }
 
 /**
