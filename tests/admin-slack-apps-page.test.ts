@@ -829,9 +829,11 @@ test("each row button's name says which Agent it is for", async () => {
 
 /**
  * Hosted onboarding's optional Slack apps step, against a fake of onboarding's
- * API. `github` adds Connect GitHub after it, for six steps instead of five.
+ * API. `github` adds Connect GitHub after it, for six steps instead of five;
+ * `chickpeaModels` is an Owner on Chickpea's models, whose bar has no provider
+ * or model step.
  */
-async function onboarding(options: { github?: boolean; free?: boolean; api?: ApiState; offered?: boolean } = {}) {
+async function onboarding(options: { github?: boolean; free?: boolean; api?: ApiState; offered?: boolean; chickpeaModels?: boolean } = {}) {
   const github = options.github !== false;
   const world = { stage: options.offered === false ? 'connect_github' : 'slack_apps', rev: 1 };
   const view = () => ({
@@ -846,7 +848,10 @@ async function onboarding(options: { github?: boolean; free?: boolean; api?: Api
     ...(options.offered === undefined ? {} : { offered: options.offered }),
     api,
     path: '/admin/onboarding',
-    page: { selfHosted: false, installationOwner: true, onboarding: { initial: view(), githubConnectPath: github ? '/github/connect' : null } },
+    page: {
+      selfHosted: false, installationOwner: true, billingOffered: options.chickpeaModels === true,
+      onboarding: { initial: view(), githubConnectPath: github ? '/github/connect' : null },
+    },
     handle(path, method, body) {
       if (path === '/admin/api/onboarding' && method === 'GET') return respond(view());
       if (path === '/admin/api/onboarding/slack-apps' && method === 'POST') {
@@ -890,15 +895,18 @@ test('onboarding offers Slack apps after the model and before Connect GitHub, as
   assert.deepEqual(page.writes(), [], 'opening the step changes nothing');
 });
 
-test('the step bar fits five steps as it always has, and six without cutting a label short', async () => {
+test('the step bar wraps a label instead of cutting it short from four steps up: the Owner on Chickpea\'s models has four, their own key five or six', async () => {
+  const four = await onboarding({ chickpeaModels: true });
+  assert.deepEqual(stepBar(four.html()), ['Add to Slack (Done, complete)', 'Slack apps (Optional, active)', 'Connect GitHub (Optional)', 'Try Chickpea (Say hi)']);
+  assert.match(four.html(), /Step 2 of 4 &middot; Optional/);
   const five = await onboarding({ github: false });
   assert.deepEqual(stepBar(five.html()).map((step) => step.split(' (')[0]), ['Add to Slack', 'Choose provider', 'Choose model', 'Slack apps', 'Try Chickpea']);
   assert.match(five.html(), /Step 4 of 5 &middot; Optional/);
   const css = readFileSync('assets/admin-ui/admin.css', 'utf8');
-  // Five or fewer keep equal columns and one line; six size each column to its label and wrap rather than cut it.
+  // Three or fewer keep equal columns and one line; from four, each column is sized to its label, which wraps rather than being cut.
   assert.match(css, /\.onboarding-orientation \{ display: grid; gap: 10px; grid-auto-columns: minmax\(0, 1fr\);/);
-  assert.match(css, /\.onboarding-orientation:has\(> li:nth-child\(6\)\) \{ grid-auto-columns: auto; \}/);
-  assert.match(css, /\.onboarding-orientation:has\(> li:nth-child\(6\)\) :is\(\.onboarding-step-label, \.onboarding-step-note\) \{ white-space: normal; \}/);
+  assert.match(css, /\.onboarding-orientation:has\(> li:nth-child\(4\)\) \{ grid-auto-columns: auto; \}/);
+  assert.match(css, /\.onboarding-orientation:has\(> li:nth-child\(4\)\) :is\(\.onboarding-step-label, \.onboarding-step-note\) \{ white-space: normal; \}/);
 });
 
 test("the free-plan line shows when onboarding knows the plan, above the buttons, and names no number", async () => {

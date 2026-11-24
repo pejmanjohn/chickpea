@@ -59,12 +59,12 @@ export const ONBOARDING_SCENE_CSS = `.onboarding-tone-gold { --tone: #f7e2ad; --
 .onboarding-orientation li.active, .onboarding-orientation li.complete { color: #3b3220; }
 .onboarding-step-label, .onboarding-step-note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .onboarding-step-note { color: #6b5c42; font-size: .8125rem; font-weight: 600; }
-.onboarding-orientation:has(> li:nth-child(6)) { grid-auto-columns: auto; }
-.onboarding-orientation:has(> li:nth-child(6)) li { min-width: min-content; }
-.onboarding-orientation:has(> li:nth-child(6)) :is(.onboarding-step-label, .onboarding-step-note) { white-space: normal; }
+.onboarding-orientation:has(> li:nth-child(4)) { grid-auto-columns: auto; }
+.onboarding-orientation:has(> li:nth-child(4)) li { min-width: min-content; }
+.onboarding-orientation:has(> li:nth-child(4)) :is(.onboarding-step-label, .onboarding-step-note) { white-space: normal; }
 @media (max-width: 900px) {
-  .onboarding-orientation:has(> li:nth-child(6)) { gap: 6px; }
-  .onboarding-orientation:has(> li:nth-child(6)) li { font-size: .8125rem; }
+  .onboarding-orientation:has(> li:nth-child(4)) { gap: 6px; }
+  .onboarding-orientation:has(> li:nth-child(4)) li { font-size: .8125rem; }
 }
 @media (max-width: 720px) {
   .onboarding-scene { --arch: 84px; align-self: stretch; flex-direction: row; gap: 18px; height: auto; justify-content: flex-start; min-height: 0; padding: 70px 24px 24px; position: relative; }
