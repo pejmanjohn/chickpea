@@ -4098,54 +4098,83 @@ test("a press or modal submission through an Agent's app on a card its bot did n
   const warn = t.mock.method(console, 'warn', () => undefined);
   const owner = await h.stores.identity.resolveSlackIdentity(TEAM, 'U1');
   assert.ok(owner);
-  // Finance's approval card, posted by Chickpea's bot in a #C1 thread Finance owns.
-  const threadTs = '1900011300.000100';
-  const cardTs = '1900011300.000300';
-  await h.stores.config.putAgentThreadRoute({ workspaceId: TEAM, channelId: 'C1', threadTs, agentId: 'agent_finance', agentGeneration: 1 });
-  const scope = `slack:${TEAM}:C1:${threadTs}:agent:agent_finance`;
-  await h.stores.management.putChangeSetProposal({
-    proposalId: 'proposal_finance', organizationId: owner.membership.organizationId,
-    actorUserId: owner.user.id, actorMembershipId: owner.membership.id,
-    originKey: scope, approvalScopeKey: scope, idempotencyKey: 'proposal_finance',
-    guideVersion: 'test', authoringReason: 'agent_edit', digest: 'd'.repeat(64),
-    operations: [{ itemId: 'memory', kind: 'update_agent_memory', agentId: 'agent_finance', expectedRevision: 0, body: 'Refunds go to account 99.' }],
-    preview: { summary: 'Preview', changes: [], missingSetup: [] },
-    targetRevisions: { 'memory:agent_finance': 0 }, at: Date.now(),
-  });
-  const surfaceId = uiSurfaceId(`msg:C1:${threadTs}`, 'host-approval:1');
-  const now = Date.now();
-  await h.stores.slackState.executeUiSurface!({
-    kind: 'put_surface',
-    record: {
-      id: surfaceId, namespace: 'host', workspaceId: TEAM, channelId: 'C1', threadTs, conversationThreadTs: threadTs,
-      conversationKind: 'channel', agentId: 'agent_finance', turnJobId: `msg:C1:${threadTs}`, requesterUserId: 'U1',
-      spec: { kind: 'approval', approval: 'workspace_change', proposalId: 'proposal_finance' },
-      status: 'open', messageTs: cardTs, createdAt: now, updatedAt: now, expiresAt: now + 60_000,
-    },
-  });
-  h.hold('C1', { ts: threadTs, user: 'U1', text: '<!subteam^SFINANCE|@finance> remember the refund account' });
-  h.hold('C1', { ts: cardTs, user: 'UBOT', bot_id: 'BCHICKPEA', app_id: MAIN_APP.appId, text: 'Approve this change?', thread_ts: threadTs });
-  h.calls.length = 0;
-
-  const pressed = await h.deliver('interactions', {
+  // An approval card Chickpea's bot posted in a #C1 thread, for `agentId`; with no `cardTs` stored, one not pressed before.
+  const chickpeaPosted = async (agentId: string, threadTs: string, cardTs: string, stored = true) => {
+    await h.stores.config.putAgentThreadRoute({ workspaceId: TEAM, channelId: 'C1', threadTs, agentId, agentGeneration: 1 });
+    const scope = `slack:${TEAM}:C1:${threadTs}:agent:${agentId}`;
+    const proposalId = `proposal_${threadTs}`;
+    await h.stores.management.putChangeSetProposal({
+      proposalId, organizationId: owner.membership.organizationId,
+      actorUserId: owner.user.id, actorMembershipId: owner.membership.id,
+      originKey: scope, approvalScopeKey: scope, idempotencyKey: proposalId,
+      guideVersion: 'test', authoringReason: 'agent_edit', digest: 'd'.repeat(64),
+      operations: [{ itemId: 'memory', kind: 'update_agent_memory', agentId, expectedRevision: 0, body: 'Refunds go to account 99.' }],
+      preview: { summary: 'Preview', changes: [], missingSetup: [] },
+      targetRevisions: { [`memory:${agentId}`]: 0 }, at: Date.now(),
+    });
+    const surfaceId = uiSurfaceId(`msg:C1:${threadTs}`, 'host-approval:1');
+    const now = Date.now();
+    await h.stores.slackState.executeUiSurface!({
+      kind: 'put_surface',
+      record: {
+        id: surfaceId, namespace: 'host', workspaceId: TEAM, channelId: 'C1', threadTs, conversationThreadTs: threadTs,
+        conversationKind: 'channel', agentId, turnJobId: `msg:C1:${threadTs}`, requesterUserId: 'U1',
+        spec: { kind: 'approval', approval: 'workspace_change', proposalId },
+        status: 'open', ...(stored ? { messageTs: cardTs } : {}), createdAt: now, updatedAt: now, expiresAt: now + 60_000,
+      },
+    });
+    h.hold('C1', { ts: threadTs, user: 'U1', text: 'remember the refund account' });
+    h.hold('C1', { ts: cardTs, user: 'UBOT', bot_id: 'BCHICKPEA', app_id: MAIN_APP.appId, text: 'Approve this change?', thread_ts: threadTs });
+    return surfaceId;
+  };
+  const press = (surfaceId: string, threadTs: string, messageTs: string, patch: { private?: true } = {}) => h.deliver('interactions', {
     type: 'block_actions', api_app_id: AGENT_APP, team: { id: TEAM }, user: { id: 'U1' }, trigger_id: 'trigger-1',
-    container: { type: 'message', channel_id: 'C1', message_ts: cardTs, is_ephemeral: false },
-    channel: { id: 'C1' }, message: { ts: cardTs, thread_ts: threadTs },
-    actions: [{ type: 'button', action_id: uiActionId('host', 'approval', 0), block_id: uiBlockId('host', surfaceId, 1), value: uiValue(surfaceId, 0), action_ts: '1900011300.000400' }],
-  });
-  assert.equal(pressed.status, 200);
-  const submitted = await h.deliver('interactions', {
+    container: { type: 'message', channel_id: 'C1', message_ts: messageTs, is_ephemeral: patch.private === true },
+    channel: { id: 'C1' }, message: { ts: messageTs, thread_ts: threadTs },
+    actions: [{ type: 'button', action_id: uiActionId('host', 'approval', 0), block_id: uiBlockId('host', surfaceId, 1), value: uiValue(surfaceId, 0), action_ts: `${messageTs.split('.')[0]}.000400` }],
+  }, { settle: true });
+  const submit = (surfaceId: string) => h.deliver('interactions', {
     type: 'view_submission', api_app_id: AGENT_APP, team: { id: TEAM }, user: { id: 'U1' },
     view: { id: 'V1', callback_id: 'chickpea.ui.v1.form', private_metadata: surfaceId, state: { values: {} } },
-  });
+  }, { settle: true });
+  const reasons = () => interactionsRefused(warn).map((line) => (line as { reason: string }).reason);
+  const cardReads = () => h.calls.splice(0).map((call) => [call.method, call.token]);
+
+  // Another Agent's card: refused from the stored card, before any read, whatever the press says of its message.
+  const financeThread = '1900011300.000100';
+  const finance = await chickpeaPosted('agent_finance', financeThread, '1900011300.000300');
+  h.calls.length = 0;
+  assert.equal((await press(finance, financeThread, '1900011300.000300')).status, 200);
+  assert.equal((await press(finance, financeThread, '1900011300.000300', { private: true })).status, 200);
+  const submitted = await submit(finance);
   assert.equal(submitted.status, 200);
   assert.equal(await submitted.text(), '', 'the modal gets no answer from the card');
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  assert.equal(await pendingTurn(h.stores, (pending) => pending.turn.threadTs === threadTs), undefined, 'the press approves nothing');
-  assert.deepEqual(h.calls.map((call) => [call.method, call.token]), [['conversations.replies', AGENT_BOT], ['conversations.replies', AGENT_BOT]],
+  assert.deepEqual(cardReads(), [], 'nothing is asked of Slack');
+
+  // Another Agent's card not pressed before has no message stored: a press naming a post of this app's own bot is refused too.
+  const unpressedThread = '1900011400.000100';
+  const unpressed = await chickpeaPosted('agent_finance', unpressedThread, '1900011400.000300', false);
+  h.hold('C1', { ts: '1900011400.000900', user: AGENT_BOT_USER, bot_id: 'BAGENT', app_id: AGENT_APP, text: 'hello', thread_ts: unpressedThread });
+  h.calls.length = 0;
+  assert.equal((await press(unpressed, unpressedThread, '1900011400.000900')).status, 200);
+  assert.deepEqual(cardReads(), []);
+  const kept = await h.stores.slackState.executeUiSurface!({ kind: 'get_surface', id: unpressed });
+  assert.equal(kept.kind === 'surface' ? kept.surface?.messageTs : 'unread', undefined, 'and the card is bound to no message');
+  assert.deepEqual(reasons(), ['other_agent', 'other_agent', 'other_agent', 'other_agent']);
+
+  // This app's own Agent's card that Chickpea's bot posted: Slack shows who posted it, and a press called private is read back the same.
+  const supportThread = '1900011500.000100';
+  const support = await chickpeaPosted('agent_support', supportThread, '1900011500.000300');
+  h.calls.length = 0;
+  assert.equal((await press(support, supportThread, '1900011500.000300')).status, 200);
+  assert.equal((await press(support, supportThread, '1900011500.000300', { private: true })).status, 200);
+  assert.equal((await submit(support)).status, 200);
+  assert.deepEqual(cardReads(), [['conversations.replies', AGENT_BOT], ['conversations.replies', AGENT_BOT], ['conversations.replies', AGENT_BOT]],
     "each reads the card back on the app's token, and nothing else is called");
-  assert.deepEqual(interactionsRefused(warn), [
-    { component: 'agent_apps', event: 'interaction_refused', appId: AGENT_APP, reason: 'other_poster' },
-    { component: 'agent_apps', event: 'interaction_refused', appId: AGENT_APP, reason: 'other_poster' },
-  ]);
+  assert.deepEqual(reasons().slice(4), ['other_poster', 'other_poster', 'other_poster']);
+  assert.deepEqual(interactionsRefused(warn)[0], { component: 'agent_apps', event: 'interaction_refused', appId: AGENT_APP, reason: 'other_agent' },
+    'a line names the app and the reason, and nothing else');
+
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.deepEqual((await h.stores.slackState.listPendingTurns!()).map((pending) => pending.turn.threadTs), [], 'nothing is approved');
 }));

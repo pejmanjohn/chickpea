@@ -20,7 +20,10 @@ export type AgentAppMessageCheck = { confirmed: true; event: Message } | { confi
 type Message = Record<string, unknown>;
 type MessagePlace = { channelId: string; ts: string; threadTs?: string };
 
-/** Half the life of a message's claim (two hours after its turn), so a message young enough to pass still holds it. */
+/**
+ * Half the life of a message's claim (two hours from its admission, longer while its turn is unfinished), so a
+ * message young enough to pass still holds it.
+ */
 const STALE_AFTER_MS = 60 * 60_000;
 /** A message this young that Slack does not show yet is read once more, after a pause. */
 const JUST_SENT_MS = 10_000;

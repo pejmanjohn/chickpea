@@ -933,11 +933,15 @@ function handleAgentAppSlackInteractions(
       execution, botUserId: bot.botUserId,
     };
     const uiAction = parseSlackUiBlockAction(payload);
-    // A press on a private message, which Slack does not return, goes on as before; a press inside a modal acts on
-    // nothing. Every other press must be on a card this app's bot posted.
-    if (uiAction?.containerType === 'message' && !uiAction.isEphemeral && !await agentAppCardIsOwn(
-      { channelId: uiAction.channelId!, messageTs: uiAction.messageTs!, threadTs: uiAction.threadTs }, bot, handoff.appId,
-    )) return;
+    // A press inside a modal acts on nothing. Any other must be on a card this app's bot posted. Only a press that
+    // names no stored card can be on a private message, which Slack does not return: that one goes on as before.
+    if (uiAction?.containerType === 'message') {
+      const control = parseUiControl(uiAction);
+      const card = control ? await readUiSurface(execution.stores!, control.surfaceId) : undefined;
+      if ((card || !uiAction.isEphemeral) && !await agentAppCardIsOwn(
+        card, { channelId: uiAction.channelId!, messageTs: uiAction.messageTs!, threadTs: uiAction.threadTs }, bot, handoff.appId,
+      )) return;
+    }
     if (uiAction && opensModal(uiAction) && await openSlackUiModal(uiAction, context)) return;
     if (uiAction) {
       detach(c, handleSlackUiAction({ ...context, action: uiAction }).catch((error) => {
@@ -953,7 +957,7 @@ function handleAgentAppSlackInteractions(
       : viewSubmissionSurfaceId(submission);
     const card = cardId ? await readUiSurface(execution.stores!, cardId) : undefined;
     if (!await agentAppCardIsOwn(
-      card?.messageTs ? { channelId: card.channelId, messageTs: card.messageTs, threadTs: card.threadTs } : undefined, bot, handoff.appId,
+      card, card?.messageTs ? { channelId: card.channelId, messageTs: card.messageTs, threadTs: card.threadTs } : undefined, bot, handoff.appId,
     )) return;
     return receiveSlackUiViewSubmission(c, submission, platformEnv, context);
   };
@@ -961,16 +965,22 @@ function handleAgentAppSlackInteractions(
 
 /**
  * Slack sends a card's presses only to the app whose bot posted it, so one an
- * Agent's app delivers is honored only for a card its own bot posted
- * (sender.ts). Any other is refused with one line and no content.
+ * Agent's app delivers is honored only for a card its own bot posted. An
+ * app's bot posts only its own Agent's cards, so the stored `card` it names,
+ * when it names one, must be that Agent's: a card not pressed before has no
+ * message stored to hold the press to. The message at `place` must then be
+ * one Slack shows that bot posted (sender.ts). Any other is refused with one
+ * line and no content.
  */
 async function agentAppCardIsOwn(
-  card: { channelId: string; messageTs: string; threadTs?: string | null } | undefined,
+  card: Pick<UiSurfaceRecord, 'agentId'> | undefined,
+  place: { channelId: string; messageTs: string; threadTs?: string | null } | undefined,
   bot: AgentAppBotCredentials,
   appId: string,
 ): Promise<boolean> {
-  const { agentAppCardRefusal } = await import('../slack/agent-apps/sender.ts');
-  const reason = card ? await agentAppCardRefusal(card, bot, appId) : 'no_card';
+  const reason = card && card.agentId !== bot.agentId
+    ? 'other_agent'
+    : place ? await (await import('../slack/agent-apps/sender.ts')).agentAppCardRefusal(place, bot, appId) : 'no_card';
   if (reason) console.warn(JSON.stringify({ component: 'agent_apps', event: 'interaction_refused', appId, reason }));
   return !reason;
 }
