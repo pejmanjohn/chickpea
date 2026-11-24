@@ -2515,7 +2515,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     transport: SlackTransport,
     announce: AgentPresenceAnnouncements | null,
   ): AgentPresenceReconciler => {
-    const agentApps = agentAppPresenceHooks(c.env as PlatformEnv | undefined);
+    const agentApps = agentAppPresenceHooks(c.env as PlatformEnv | undefined, settings(c));
     return new AgentPresenceReconciler({ config: store(c), transport, announce, ...(agentApps ? { agentApps } : {}) });
   };
   const reconcileAgentSlackPresence = async (
@@ -10539,13 +10539,21 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       }
       const workspaceId = parsed.output.workspaceId ?? actor.slackTeamId;
       if (workspaceId !== actor.slackTeamId) throw new AuthorizationError();
-      const refused = restoreHandleRefusal(await store(c).listAgents(), current);
-      if (refused) throw refused;
-      const updated = current.slackPresence?.userGroupId
+      const agentApps = agentAppPresenceHooks(c.env as PlatformEnv | undefined, settings(c));
+      // The reconciler's restore turns the presence back on; with no group where each new Agent is its own app, the
+      // Agent is not in Slack yet. A store-only restore would leave the presence marked for archiving.
+      const ownApp = !current.slackPresence?.userGroupId && Boolean(agentApps && await agentApps.ownAppMode());
+      // An Agent that will wait for its own app takes no handle, so it is not refused for one.
+      if (!ownApp || current.slackPresence?.kind === 'agent_app') {
+        const refused = restoreHandleRefusal(await store(c).listAgents(), current);
+        if (refused) throw refused;
+      }
+      const updated = current.slackPresence?.userGroupId || ownApp
         ? await new AgentPresenceReconciler({
             config: store(c),
             transport: await agentSlackTransport(c, workspaceId),
             announce: null,
+            ...(agentApps ? { agentApps } : {}),
           }).restore(agentId)
         : await store(c).restoreAgent(agentId, current.revision);
       return c.json({ agent: await agentAdminProjectionForRequest(c, updated) });
@@ -11942,6 +11950,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.route('/', createAgentSlackAppAdminRoutes({
     actor: agentActor,
     identity,
+    placeInSlack: async (c, agentIds) => {
+      const actor = await agentActor(c);
+      const transport = await agentSlackTransport(c, actor.slackTeamId);
+      const reconciler = presenceReconciler(c, transport, presenceAnnouncements(c, transport));
+      const { placeInSlack } = await import('../slack/agent-presence/place-in-slack.ts');
+      // Each Agent's own failure is recorded on it, for its Retry; the rest go on.
+      for (const agentId of agentIds) {
+        await placeInSlack({ reconciler, config: store(c), identity: identity(c) }, agentId).catch(() => undefined);
+      }
+    },
     ...(options.agentSlackApps ? { service: options.agentSlackApps } : {}),
   }));
 

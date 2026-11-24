@@ -848,7 +848,12 @@ export class ConfigStoreLogic {
       'SELECT * FROM config_workspace_installations WHERE workspace_id = ?',
       workspaceId,
     );
-    return row ? rowToWorkspaceInstallation(row as unknown as WorkspaceInstallationRow) : undefined;
+    if (!row) return undefined;
+    // Every Slack event and turn reads this record, so it carries the one fact that spares them reading the Agents.
+    const apps = this.db.get(
+      `SELECT EXISTS (SELECT 1 FROM config_agents WHERE agent_kind = 'user' AND slack_presence_json LIKE '%"app"%') AS present`,
+    ) as { present: number } | undefined;
+    return { ...rowToWorkspaceInstallation(row as unknown as WorkspaceInstallationRow), agentApps: Number(apps?.present) === 1 };
   }
 
   listWorkspaceInstallations(): WorkspaceInstallation[] {

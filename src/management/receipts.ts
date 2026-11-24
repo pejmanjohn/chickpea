@@ -9,7 +9,7 @@ import {
   resolveSlackInstallationExecutionContext,
   type SlackInstallationExecutionResolver,
 } from '../slack/installation-execution.ts';
-import { agentSlackAppsHost, hostPostSpeaker, ownBotClient } from '../slack/agent-apps/index.ts';
+import { START_APP_ACTION, agentSlackAppsHost, hostPostSpeaker, ownBotClient } from '../slack/agent-apps/index.ts';
 import type { AgentAppBot } from '../slack/agent-app-bots.ts';
 import { renderSlackActionLink } from '../slack/message-format.ts';
 import type { SlackPresentationStatePort } from '../slack/agent-view-presentation.ts';
@@ -31,6 +31,7 @@ import type {
   ManagementReceiptDestination,
   ManagementReceiptOutboxRecord,
   ManagementReceipt,
+  ManagementAgentAppAddRequest,
   ManagementAgentAppSwitchJob,
   ManagementAgentCreatedWelcome,
   ManagementChickpeaIntroduction,
@@ -167,6 +168,7 @@ export function formatManagementSetupReceipt(
     return `✅ That scheduled-work action completed.${scheduleActionSafeStateText(receipt.safeState)}`;
   }
   if (isAgentCreatedWelcome(receipt)) return formatAgentCreatedWelcome(receipt, options.groupDm === true);
+  if (isAgentAppAddRequest(receipt)) return formatAgentAppAddRequest(receipt);
   if (isChickpeaIntroduction(receipt)) return formatChickpeaIntroduction(receipt);
   if (isConnectorConnectedReceipt(receipt)) {
     const scope = receipt.ownerKind === 'member' ? 'personal' : 'team';
@@ -749,7 +751,6 @@ export async function deliverManagementReceiptToSlack(
   const baseMessage = {
     channel,
     ...(threadTs ? { thread_ts: threadTs } : {}),
-    text,
     client_msg_id: record.outboxId,
     ...(agentReceipt
       ? {
@@ -761,7 +762,11 @@ export async function deliverManagementReceiptToSlack(
           unfurl_media: false,
         }
       : {}),
-  } as Parameters<typeof execution.client.chat.postMessage>[0];
+  };
+  /** One post of the receipt's final words, with the Add to Slack button where the receipt asks for it. */
+  const post = (words: string, via = client, extra: Record<string, unknown> = {}) => via.chat.postMessage({
+    ...baseMessage, text: words, ...addToSlackBlocks(record.receipt, words), ...extra,
+  } as Parameters<typeof execution.client.chat.postMessage>[0]);
   let response;
   let deliveredText = text;
   let persona: 'agent' | 'chickpea' = agentReceipt ? 'agent' : 'chickpea';
@@ -771,32 +776,25 @@ export async function deliverManagementReceiptToSlack(
     ) ?? false;
     if (slackPresenceIncomplete) {
       deliveredText = formatAgentWelcomeFallback(record.receipt, groupDm);
-      response = await execution.client.chat.postMessage({
-        ...baseMessage,
-        text: deliveredText,
-      });
+      response = await post(deliveredText, execution.client);
     } else {
       try {
-        response = await execution.client.chat.postMessage({
-          ...baseMessage,
+        response = await post(text, execution.client, {
           username: record.receipt.persona.name,
           ...(record.receipt.persona.avatarUrl
             ? { icon_url: record.receipt.persona.avatarUrl }
             : {}),
-        } as Parameters<typeof execution.client.chat.postMessage>[0]);
+        });
         persona = 'agent';
       } catch (error) {
         const code = slackPlatformErrorCode(error);
         if (!code || !PERSONA_FALLBACK_CODES.has(code)) throw error;
         deliveredText = formatAgentWelcomeFallback(record.receipt, groupDm);
-        response = await execution.client.chat.postMessage({
-          ...baseMessage,
-          text: deliveredText,
-        });
+        response = await post(deliveredText, execution.client);
       }
     }
   } else {
-    response = await client.chat.postMessage(baseMessage);
+    response = await post(text);
   }
   if (!response.ok || !response.ts) throw new Error('Slack did not acknowledge the receipt.');
   try {
@@ -928,6 +926,7 @@ function formatAgentCreatedWelcome(receipt: ManagementAgentCreatedWelcome, group
   const lines = [welcomeGreeting(receipt, boundedSlackText, (name) => `*${name}*`)];
   const handleChange = takenHandleText(receipt, 'my');
   if (handleChange) lines.push(handleChange);
+  if (receipt.notInSlackYet) lines.push(NOT_IN_SLACK_YET_LINES[receipt.notInSlackYet]);
   if (incomplete.includes('source_channel')) {
     lines.push(`I’m not in this Channel yet, so people here can’t mention me.${
       viewAgentLinkUrl(receipt) ? ' Open View Agent to add me.' : ''
@@ -999,7 +998,13 @@ function formatAgentWelcomeFallback(receipt: ManagementAgentCreatedWelcome, grou
   const viewAgentUrl = viewAgentLinkUrl(receipt);
   const openViewAgent = (purpose: string) => viewAgentUrl ? ` Open View Agent to ${purpose}.` : '';
   const created = `I created *${name}*`;
-  const lead = handleMissing && channelMissing
+  const lead = receipt.notInSlackYet === 'owners_asked' || receipt.notInSlackYet === 'owner_needed'
+    ? `${created}. A workspace Owner needs to add it to Slack before people can mention it.${
+      receipt.notInSlackYet === 'owners_asked' ? ' I’ve asked them.' : ''
+    }`
+    : receipt.notInSlackYet === 'creator_adds'
+    ? `${created}. It isn’t in Slack yet, so people can’t mention it. Choose Add to Slack to give it its own Slack app.`
+    : handleMissing && channelMissing
     ? `${created}, but Slack wouldn’t create its handle${handle ? `, ${handle},` : ''} and I couldn’t add it to this Channel. People can’t mention it until that’s fixed.${openViewAgent('fix it')}`
     : handleMissing
     ? `${created}, but Slack wouldn’t create its handle${handle ? `, ${handle}` : ''}, so people can’t mention it yet.${openViewAgent('fix it')}`
@@ -1023,6 +1028,48 @@ function formatAgentWelcomeFallback(receipt: ManagementAgentCreatedWelcome, grou
     ...(receipt.firstAsk ? [firstAskInvitation(receipt.firstAsk, 'it')] : []),
   ];
   return lines.join('\n\n');
+}
+
+/** What a new Agent not in Slack yet says about it, in its own voice, by who adds it. */
+const NOT_IN_SLACK_YET_LINES = {
+  creator_adds: 'I’m not in Slack yet, so people can’t mention me. Choose Add to Slack to give me my own Slack app.',
+  owners_asked: 'I’m not in Slack yet. A workspace Owner needs to add me to Slack before people can mention me. I’ve asked them.',
+  owner_needed: 'I’m not in Slack yet. A workspace Owner needs to add me to Slack before people can mention me.',
+} satisfies Record<NonNullable<ManagementAgentCreatedWelcome['notInSlackYet']>, string>;
+
+function isAgentAppAddRequest(receipt: ManagementReceipt): receipt is ManagementAgentAppAddRequest {
+  return 'kind' in receipt && receipt.kind === 'agent_app_add_request';
+}
+
+function formatAgentAppAddRequest(receipt: ManagementAgentAppAddRequest): string {
+  const name = `*${boundedSlackText(receipt.agentName, 80)}*`;
+  const creator = receipt.creatorSlackUserId && /^[UW][A-Z0-9]+$/.test(receipt.creatorSlackUserId)
+    ? `<@${receipt.creatorSlackUserId}> created ${name}`
+    : `${name} was created`;
+  return `${creator}, and it isn’t in Slack yet, so people can’t mention it. Choose Add to Slack to give it its own Slack app.`;
+}
+
+/**
+ * The Add to Slack button, for a message that asks an Owner to add an Agent:
+ * the text as sections, then the button. Only an Owner's click acts on it.
+ */
+function addToSlackBlocks(receipt: ManagementReceipt, text: string): { blocks?: unknown[] } {
+  const target = isAgentAppAddRequest(receipt) || (isAgentCreatedWelcome(receipt) && receipt.notInSlackYet === 'creator_adds')
+    ? receipt
+    : undefined;
+  if (!target) return {};
+  return {
+    blocks: [
+      ...text.split('\n\n').map((paragraph) => ({ type: 'section', text: { type: 'mrkdwn', text: paragraph.slice(0, 3_000) } })),
+      {
+        type: 'actions',
+        elements: [{
+          type: 'button', style: 'primary', action_id: START_APP_ACTION, value: target.agentId,
+          text: { type: 'plain_text', text: 'Add to Slack' },
+        }],
+      },
+    ],
+  };
 }
 
 function viewAgentLinkUrl(receipt: ManagementAgentCreatedWelcome): string | undefined {

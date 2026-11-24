@@ -15,6 +15,7 @@ import {
   type ManagementAdapterFixture,
 } from './helpers/management-adapter-fixture.ts';
 import { serviceResult } from './helpers/management-service-result.ts';
+import { asUserGroup } from './helpers/user-group-presence.ts';
 import { withPersonApproval } from './helpers/slack-person-approval.ts';
 
 const NOW = 1_800_000_000_000;
@@ -508,6 +509,39 @@ test('add_agent_to_channel refuses an off Agent and says to turn it on first; tu
   assert.equal((await f.config.getAgent('agent_research')).enabled, true);
 });
 
+/** As the reconciler keeps a Channel for an Agent not in Slack yet: a pending grant under whoever added it. */
+function keepsChannelWaiting(fixture: () => ManagementAdapterFixture): NonNullable<WorkspaceManagementServiceInput['publishAgentChannel']> {
+  return async ({ actor, workspaceId, channelId, agentId }) => {
+    const { config } = fixture();
+    const grant = await config.putAgentChannelGrant({
+      workspaceId, channelId, agentId, status: 'pending', createdByMembershipId: actor.membershipId, channelLabel: 'support', channelIsPrivate: false,
+    }, 0);
+    return { agent: await config.getAgent(agentId), grant };
+  };
+}
+
+// Defects caught: an Agent not in Slack yet refused a Channel over MCP, so the Channel was lost; a kept Channel reported
+// as joined, or with nothing said.
+test('add_agent_to_channel keeps the Channel waiting for an Agent not in Slack yet, and says it joins once it is added', async (t) => {
+  let fixture!: ManagementAdapterFixture;
+  const { f, call, teamId } = await harness(t, 'waiting-channel', {
+    overrides: { publishAgentChannel: keepsChannelWaiting(() => fixture) },
+  });
+  fixture = f;
+  const created = await createFixtureAgent(f, 'agent_research');
+  await f.config.updateAgent('agent_research', {
+    slackPresence: { ...asUserGroup(created.slackPresence), desiredState: 'active', health: 'unpublished', errorCode: 'awaiting_own_app' },
+  }, created.revision);
+  await f.config.putChannel({ workspaceId: teamId, channelId: 'C_SUPPORT', label: 'support', lifecycle: 'active' });
+  const added = structured(await call('add_agent_to_channel', {
+    agentId: 'agent_research', channelId: 'C_SUPPORT', idempotencyKey: 'add-waiting',
+  }));
+  assert.equal(added.status, 'done');
+  assert.equal(added.summary, "Research isn't in Slack yet, so it doesn't answer in the Channel yet.", 'never "now answers in the Channel"');
+  assert.ok(added.warnings.includes('Research joins #support once a workspace Owner adds it to Slack.'), JSON.stringify(added.warnings));
+  assert.deepEqual((await f.config.listAgentChannelGrants(teamId, 'C_SUPPORT')).map(({ status }) => status), ['pending']);
+});
+
 test('a change saved to an Agent that is off says not to suggest trying it; one that is on says nothing of the kind', async (t) => {
   const { f, call } = await harness(t, 'off-save');
   await createFixtureAgent(f, 'agent_research', { enabled: false });
@@ -764,4 +798,59 @@ test('create_agent returns the version its Channel grants leave, and a confirm a
   assert.match(String(stale.nextStep), /fresh preview and confirmToken/);
   assert.equal(stale.retryable, true);
   assert.equal((await f.config.getAgent(created.agent.agentId)).enabled, true);
+});
+
+test('create_agent where each new Agent is its own Slack app says the Agent is not in Slack yet and an Owner adds it in Admin', async (t) => {
+  const { f, call } = await harness(t, 'create-own-app', {
+    overrides: {
+      // As the reconciler leaves a new Agent with the workspace's Slack apps setting on.
+      publishAgentPresence: async ({ agentId }) => {
+        const current = await f.config.getAgent(agentId);
+        return {
+          agent: await f.config.updateAgent(agentId, {
+            lifecycle: 'active',
+            slackPresence: { ...asUserGroup(current.slackPresence), desiredState: 'active', health: 'unpublished', errorCode: 'awaiting_own_app' },
+          }, current.revision),
+        };
+      },
+    },
+  });
+  const proposed = structured(await call('propose_agent', {
+    name: 'Support Desk', handle: 'support-desk', job: 'Answers support questions from the help center.',
+    instructions: 'Answer from the help center and link the article.', sampleAsk: 'How do I reset my password?',
+    promisedAnswer: 'Open Settings, then Security.',
+  }));
+  const created = structured(await call('create_agent', proposed.create.arguments));
+  assert.equal(created.status, 'done');
+  assert.equal(created.summary,
+    "Created Support Desk. Support Desk isn't in Slack yet: a workspace Owner adds it to Slack in Chickpea Admin.");
+  assert.doesNotMatch(JSON.stringify(created), /xoxe|authorize|oauth/i, 'no token and no app link');
+});
+
+// Defects caught: Channels asked for at creation over MCP dropped for an Agent not in Slack yet, or reported as joined.
+test('create_agent with Channels where each new Agent is its own Slack app keeps them waiting until it is added', async (t) => {
+  let fixture!: ManagementAdapterFixture;
+  const { f, teamId, call } = await harness(t, 'create-own-app-channels', {
+    overrides: {
+      publishAgentPresence: async ({ agentId }) => {
+        const current = await fixture.config.getAgent(agentId);
+        return {
+          agent: await fixture.config.updateAgent(agentId, {
+            lifecycle: 'active',
+            slackPresence: { ...asUserGroup(current.slackPresence), desiredState: 'active', health: 'unpublished', errorCode: 'awaiting_own_app' },
+          }, current.revision),
+        };
+      },
+      publishAgentChannel: keepsChannelWaiting(() => fixture),
+    },
+  });
+  fixture = f;
+  await f.config.putChannel({ workspaceId: teamId, channelId: 'C_SUPPORT', label: 'support', lifecycle: 'active' });
+  const created = structured(await call('create_agent', {
+    name: 'Support Desk', instructions: 'Answer support questions.', channels: ['C_SUPPORT'], idempotencyKey: 'create',
+  }));
+  assert.equal(created.status, 'done');
+  assert.match(created.summary, /It joins 1 Channel once it is in Slack\. Support Desk isn't in Slack yet: a workspace Owner adds it to Slack in Chickpea Admin\./);
+  assert.deepEqual(created.warnings ?? [], []);
+  assert.deepEqual((await f.config.listAgentChannelGrants(teamId, 'C_SUPPORT')).map(({ status }) => status), ['pending']);
 });

@@ -74,6 +74,7 @@ import {
   type ConnectionAccountMcpPolicy,
   type ConnectionAccountOwnerKind,
   type ConnectionAccountPolicy,
+  AWAITING_OWN_APP,
   agentAppIsLive,
   type CustomAgentConfig,
   MODEL_ROLES,
@@ -107,6 +108,7 @@ import type { GatewayAttachmentClient } from '../slack/gateway/client.ts';
 import { isTransientSlackApiError } from '../slack/credentials.ts';
 import { slackPlatformErrorCode } from '../slack/errors.ts';
 import { SlackInstallationUnavailableError } from '../slack/installation-execution.ts';
+import { activeOwnerSlackUserIds } from '../slack/credits-ask.ts';
 import { SlackTransportError } from '../slack/transport/types.ts';
 import { getGithubConnection, isValidRepositoryFullName, type GithubConnection } from '../config/github-app.ts';
 import { newAgentCredentialIncarnation } from '../config/connection-credential-binding.ts';
@@ -166,7 +168,7 @@ import {
 } from '../routines/content-access.ts';
 import type { WorkStore } from '../work/types.ts';
 import { alternativeAgentHandles, handlesOtherAgentsStore, normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
-import { AgentPresenceError, agentOffError, restoreHandleRefusal } from '../slack/agent-presence/errors.ts';
+import { AgentPresenceError, agentOffError, joinsOnceInSlackMessage, restoreHandleRefusal } from '../slack/agent-presence/errors.ts';
 import {
   listPrivatelyUsableAgents,
   logUnavailableFacts,
@@ -1967,7 +1969,7 @@ export class WorkspaceManagementService {
         )
       ? deferredHandoffProposal.proposalId
       : undefined;
-    const receipt: ManagementAgentCreatedWelcome = {
+    const receipt: ManagementAgentCreatedWelcome = await this.withOwnersAsked(actor, agent, {
       ...this.agentCreatedWelcome({
         actor,
         operationId: input.operationId,
@@ -1983,7 +1985,7 @@ export class WorkspaceManagementService {
       connectorNotices,
       followOnNotices: input.followOnNotices,
       ...(deferredHandoffProposalId ? { deferredHandoffProposalId } : {}),
-    };
+    });
     const outbox: ManagementReceiptOutboxRecord = {
       outboxId: `agent_welcome_${input.operationId}`,
       operationId: input.operationId,
@@ -2026,13 +2028,15 @@ export class WorkspaceManagementService {
     firstAsk?: string | undefined;
   }): ManagementAgentCreatedWelcome {
     const { agent, creation, baseUrl } = input;
+    // Waiting for its own Slack app is where this Agent should be, not a handle Slack failed to make.
+    const waiting = agent.slackPresence?.errorCode === AWAITING_OWN_APP;
     const incomplete: Array<'slack_presence' | 'source_channel'> = [];
-    if (creation.warning || agent.slackPresence?.health !== 'healthy' ||
-        !agent.slackPresence.userGroupId) {
+    if (!waiting && (creation.warning || agent.slackPresence?.health !== 'healthy' ||
+        !agent.slackPresence.userGroupId)) {
       incomplete.push('slack_presence');
     }
     if (input.sourceChannelMissing) incomplete.push('source_channel');
-    const handle = agent.slackPresence?.normalizedHandle ?? agent.slackPresence?.requestedHandle;
+    const handle = waiting ? undefined : agent.slackPresence?.normalizedHandle ?? agent.slackPresence?.requestedHandle;
     const avatarUrl = baseUrl
       ? agentAvatarUrlForPresentation(agent, baseUrl, this.stores.avatarInstallationId)
       : undefined;
@@ -2059,7 +2063,68 @@ export class WorkspaceManagementService {
       },
       ...(viewAgentUrl ? { viewAgentUrl } : {}),
       ...(input.firstAsk ? { firstAsk: input.firstAsk } : {}),
+      ...(waiting ? { notInSlackYet: input.actor.role === 'owner' ? 'creator_adds' as const : 'owners_asked' as const } : {}),
     };
+  }
+
+  /**
+   * The welcome for a new Agent whose Owners are to be asked: they are asked
+   * first, so the welcome says so only when at least one was.
+   */
+  private async withOwnersAsked(
+    actor: LiveManagementActor,
+    agent: CustomAgentConfig,
+    receipt: ManagementAgentCreatedWelcome,
+  ): Promise<ManagementAgentCreatedWelcome> {
+    if (receipt.notInSlackYet !== 'owners_asked') return receipt;
+    return await this.askOwnersToAdd(actor, agent) > 0 ? receipt : { ...receipt, notInSlackYet: 'owner_needed' };
+  }
+
+  /**
+   * A new Agent waiting for an Owner to add it to Slack, made by someone who
+   * is not one: each active Owner gets a DM naming the creator, with the Add
+   * button. One per Owner per Agent, however often the creation replays.
+   * Answers how many Owners were asked: none when there is no one to ask or
+   * asking failed.
+   */
+  private async askOwnersToAdd(actor: LiveManagementActor, agent: CustomAgentConfig): Promise<number> {
+    try {
+      const workspaceId = actor.origin.kind === 'slack'
+        ? actor.origin.workspaceId
+        : (await this.stores.identity.getUser(actor.userId))?.slackTeamId;
+      if (!workspaceId) return 0;
+      const [owners, bindings] = await Promise.all([
+        activeOwnerSlackUserIds(this.stores.identity, workspaceId),
+        this.stores.identity.listExternalIdentities(),
+      ]);
+      const creator = bindings.find((binding) => binding.membershipId === actor.membershipId && binding.slackTeamId === workspaceId);
+      const at = this.now();
+      for (const owner of owners) {
+        const outboxId = `agent_app_add:${agent.id}:${owner}`;
+        await this.stores.management.putOutbox({
+          outboxId,
+          operationId: outboxId,
+          destination: { kind: 'slack_dm', workspaceId, slackUserId: owner },
+          receipt: {
+            kind: 'agent_app_add_request', agentId: agent.id, agentName: agent.name,
+            ...(creator ? { creatorSlackUserId: creator.slackUserId } : {}),
+          },
+          status: 'pending',
+          attempts: 0,
+          nextAttemptAt: at,
+          createdAt: at,
+          updatedAt: at,
+        });
+      }
+      return owners.length;
+    } catch (error) {
+      // The Agent and its creator's welcome stand; the Owners still see it in Admin.
+      console.warn('[chickpea:management] Owners were not asked to add a new Agent to Slack', JSON.stringify({
+        agentId: agent.id,
+        error: error instanceof Error ? error.name : 'unknown',
+      }));
+      return 0;
+    }
   }
 
   /**
@@ -2092,15 +2157,16 @@ export class WorkspaceManagementService {
           continue;
         }
         const operation = request.operations.find(({ itemId }) => itemId === outcome.itemId);
-        const receipt = this.agentCreatedWelcome({
+        const agent = await this.stores.config.getAgent(agentId);
+        const receipt = await this.withOwnersAsked(actor, agent, this.agentCreatedWelcome({
           actor,
           operationId: request.operationId,
-          agent: await this.stores.config.getAgent(agentId),
+          agent,
           creation: outcome,
           baseUrl,
           surface: 'direct',
           firstAsk: operation?.kind === 'create_agent' ? operation.firstAsk : undefined,
-        });
+        }));
         const at = this.now();
         const claimed = await this.stores.management.claimAgentCreationWelcome({
           operationId: claimId,
@@ -7222,10 +7288,12 @@ export class WorkspaceManagementService {
             published.grant,
             grantInverseAtRevision(prepared.inverse, published.grant.revision),
           );
+          const waiting = published.grant.status !== 'active' && published.agent.slackPresence?.errorCode === AWAITING_OWN_APP;
           // Publishing reconciles the Agent's Slack presence and can advance its
           // revision; report it so the next change targets the current revision.
           return {
             ...mutation,
+            ...(waiting ? { warning: joinsOnceInSlackMessage(published.agent, published.grant.channelLabel ? `#${published.grant.channelLabel}` : 'the Channel') } : {}),
             changed: [
               ...mutation.changed,
               { kind: 'agent', id: published.agent.id, revision: published.agent.revision },

@@ -7,6 +7,7 @@ import {
   type CreatedAgentHandoffConfig,
 } from '../slack/agent-routing.ts';
 import { agentAvatarUrlForPresentation } from '../slack/agent-presence/avatar-assets.ts';
+import { AGENT_PRESENCE_ISSUES, type AgentPresenceErrorCode } from '../slack/agent-presence/errors.ts';
 import { isLaterCoAddressedTurn, personRequestTextSource } from '../slack/agent-asks.ts';
 import {
   shouldResolveSlackManagementApproval,
@@ -422,12 +423,9 @@ async function formatHostSlackManagementReceipt(input: {
   };
   if (applied.length === 0) {
     if (incomplete.length > 0) {
-      return message(incomplete.join('\n'), codes.map((code) => `Issue: ${escapeSlackControlCharacters(code)}`));
+      return message(incomplete.join('\n'), issueSentences(codes));
     }
-    const detail = codes.length > 0
-      ? ` (${[...new Set(codes)].map(escapeSlackControlCharacters).join(', ')})`
-      : '';
-    return message(`I couldn’t apply the approved changes${detail}. Nothing was changed.`);
+    return message('I couldn’t apply the approved changes. Nothing was changed.', issueSentences(codes));
   }
   const creation = result.outcomes.find(({ operationKind }) => operationKind === 'create_agent');
   const originKind = slackConversationKind(input.turn);
@@ -507,10 +505,20 @@ async function formatHostSlackManagementReceipt(input: {
     } attention.`;
   return message(receipt, [
     ...incomplete,
-    ...codes.map((code) => `Issue: ${escapeSlackControlCharacters(code)}`),
+    ...issueSentences(codes),
     ...warnings.map(escapeSlackControlCharacters),
     ...(await input.pastedKey(askedConnections(deferredSetup)).catch(() => false) ? [TEST_PASTED_KEY] : []),
   ]);
+}
+
+/**
+ * What the person reads for items that did not apply: a sentence for each
+ * code Chickpea has one for. A code never reaches them; one with no sentence
+ * leaves the reply's own sentence to speak for it.
+ */
+function issueSentences(codes: readonly string[]): string[] {
+  return [...new Set(codes)].flatMap((code) =>
+    Object.hasOwn(AGENT_PRESENCE_ISSUES, code) ? [AGENT_PRESENCE_ISSUES[code as AgentPresenceErrorCode]] : []);
 }
 
 /**

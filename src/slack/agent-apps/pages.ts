@@ -30,11 +30,14 @@ export type AgentAppMessageKind =
   | 'allow'
   | 'archived_left'
   | 'cancel_left'
+  | 'cancel_unfinished'
   | 'archived_installed'
   | 'permission_needed'
   | 'app_removed_unreachable'
   | 'app_removed_permission'
   | 'recreated'
+  | 'app_limit'
+  | 'config_token_missing'
   | AgentAppAttention;
 
 type Button =
@@ -87,6 +90,13 @@ const DM_COPY = {
       `Chickpea made a second ${name} app in Slack because it lost track of the first. Keep the one you allow from Chickpea's next message; after you allow it, Your Apps in Slack shows it as installed. Delete the other ${name} app there.`,
     buttons: () => [yourApps],
   },
+  /** Nothing was created, and the Agent is as it was before the press. */
+  app_limit: {
+    // Which refusal Slack sends, and on which plans, is not yet seen: the sentence names neither a plan nor a number.
+    text: ({ name }) =>
+      `Slack wouldn't create another app for this workspace, which may have reached Slack's limit on apps. Deleting an app you no longer need in Slack and adding ${name} again may help.`,
+    buttons: () => [],
+  },
   create_refused: {
     text: ({ name }) => `Slack didn't finish ${name}'s app. Choose Try again. If it keeps happening, check that your workspace allows new apps.`,
     buttons: (links) => [tryAgain(links)],
@@ -107,6 +117,11 @@ const DM_COPY = {
   config_token_needed: {
     text: ({ name }) => `Chickpea needs a new Slack refresh token to finish ${name}'s app.`,
     buttons: (links) => links.tokenPageUrl ? [{ label: 'Paste a new token', url: links.tokenPageUrl }] : [],
+  },
+  /** Add to Slack pressed in a workspace that has never kept a token, or removed it. */
+  config_token_missing: {
+    text: ({ name }) => `Chickpea needs a Slack refresh token to add ${name} to Slack.`,
+    buttons: (links) => links.tokenPageUrl ? [{ label: 'Paste a token', url: links.tokenPageUrl }] : [],
   },
   /** Removed, and its user group is back on. */
   app_removed: {
@@ -141,6 +156,12 @@ const DM_COPY = {
       `Chickpea couldn't delete the Slack app it made for ${name}, so delete ${name} in Your Apps in Slack. ${name} keeps answering as it did before.`,
     buttons: () => [yourApps],
   },
+  /** An Owner cancelled before Allow and Slack refused to uninstall the app; the next Cancel or Try again picks it up. */
+  cancel_unfinished: {
+    text: ({ name }) =>
+      `Chickpea couldn't finish removing the Slack app it made for ${name}. Choose Try again in a minute. ${name} keeps answering as it did before.`,
+    buttons: (links) => [tryAgain(links)],
+  },
   /** Archived with the app still installed: no record proved it was the Agent's, so Chickpea neither uninstalled nor deleted it. */
   archived_installed: {
     text: ({ name }) =>
@@ -148,6 +169,26 @@ const DM_COPY = {
     buttons: () => [yourApps],
   },
 } satisfies Record<AgentAppMessageKind, Copy>;
+
+/** What the person who pressed Add to Slack sees when the press starts nothing. */
+export function addPressReply(
+  kind: 'gone' | 'owner_needed' | 'archived' | 'in_slack' | 'already_started',
+  names?: AgentAppNames,
+): string {
+  const name = names?.name ?? '';
+  switch (kind) {
+    case 'gone':
+      return 'That Agent no longer exists.';
+    case 'owner_needed':
+      return `A workspace Owner needs to add ${name} to Slack.`;
+    case 'archived':
+      return `${name} is archived, so it can't be added to Slack.`;
+    case 'in_slack':
+      return `${name} is already in Slack.`;
+    case 'already_started':
+      return `Chickpea is already adding ${name} to Slack. Its latest message to you says what's next.`;
+  }
+}
 
 /** Where an Agent's own bot is after the switch, by Channel ID. */
 export interface AgentAppSwitchReport {
@@ -157,12 +198,15 @@ export interface AgentAppSwitchReport {
   throughChickpea: readonly string[];
   /** Slack refused to turn the user group off, so it still answers too. */
   groupStillOn: boolean;
+  /** The Agent was not in Slack before its app: an add, not a move of a handle people already use. */
+  added: boolean;
 }
 
 const CHANNEL_ID = /^[CG][A-Z0-9]{2,}$/;
 
 /**
- * The Owner's one message once an Agent's handle has moved to its own app.
+ * The Owner's one message once an Agent is its own app: one added to Slack,
+ * or one whose handle moved there.
  * Channels are named with Slack's `<#C…>` reference, which Slack shows as the
  * Channel's name to anyone who can see it; everything else is escaped.
  */
@@ -172,7 +216,9 @@ export function agentAppSwitchedMessage(names: AgentAppNames, report: AgentAppSw
   const joined = channels(report.joined);
   const elsewhere = channels(report.throughChickpea);
   const text = [
-    escapeMrkdwn(`${name} is now its own Slack app. People keep using @${handle}.`),
+    escapeMrkdwn(report.added
+      ? `${name} is now in Slack as its own app. People can message it and mention @${handle}.`
+      : `${name} is now its own Slack app. People keep using @${handle}.`),
     ...(joined ? [`${escapeMrkdwn('It joined')} ${joined}.`] : []),
     ...(elsewhere ? [`In ${elsewhere} ${escapeMrkdwn('it keeps answering through Chickpea until someone there adds it.')}`] : []),
     ...(report.groupStillOn

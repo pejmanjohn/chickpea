@@ -598,7 +598,21 @@ export type ManagementReceipt =
   | ManagementScheduleActionAcknowledgement
   | ManagementAgentCreatedWelcome
   | ManagementChickpeaIntroduction
-  | ManagementAgentAppSwitchJob;
+  | ManagementAgentAppSwitchJob
+  | ManagementAgentAppAddRequest;
+
+/**
+ * An Owner's DM: someone who is not an Owner created an Agent that waits, not
+ * in Slack yet, for an Owner to add it as its own Slack app. It carries the
+ * Add button, a press only an Owner's click acts on.
+ */
+export interface ManagementAgentAppAddRequest {
+  kind: 'agent_app_add_request';
+  agentId: string;
+  agentName: string;
+  /** Absent when the creator has no Slack identity in the workspace. */
+  creatorSlackUserId?: string;
+}
 
 /**
  * Not a message: the job that finishes moving an Agent's handle to its own
@@ -667,6 +681,12 @@ export interface ManagementAgentCreatedWelcome {
   fallbackOutboxId?: string;
   viewAgentUrl?: string;
   firstAsk?: string;
+  /**
+   * The Agent is not in Slack yet, waiting for its own Slack app: an Owner
+   * creator adds it from the welcome's button; anyone else's Owners are
+   * asked, or `owner_needed` when no Owner could be asked.
+   */
+  notInSlackYet?: 'creator_adds' | 'owners_asked' | 'owner_needed';
   /** Compatibility fields for proposal-created welcomes. */
   setupUrl?: string;
   suggestedConnector?: string;

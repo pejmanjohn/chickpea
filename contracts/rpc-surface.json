@@ -9866,6 +9866,14 @@
         "signedBy?": "string"
       }
     },
+    "ManagementAgentAppAddRequest": {
+      "object": {
+        "agentId": "string",
+        "agentName": "string",
+        "creatorSlackUserId?": "string",
+        "kind": "\"agent_app_add_request\""
+      }
+    },
     "ManagementAgentAppSwitchJob": {
       "object": {
         "agentId": "string",
@@ -9978,6 +9986,13 @@
           }
         },
         "kind": "\"agent_created_welcome\"",
+        "notInSlackYet?": {
+          "union": [
+            "\"creator_adds\"",
+            "\"owner_needed\"",
+            "\"owners_asked\""
+          ]
+        },
         "persona": {
           "object": {
             "avatarUrl?": "string",
@@ -11581,6 +11596,7 @@
         "#ManagementAgentCreatedWelcome",
         "#ManagementChickpeaIntroduction",
         "#ManagementAgentAppSwitchJob",
+        "#ManagementAgentAppAddRequest",
         {
           "object": {
             "code?": "string",
@@ -24468,6 +24484,7 @@
     },
     "WorkspaceInstallation": {
       "object": {
+        "agentApps?": "boolean",
         "appId?": "string",
         "botUserId?": "string",
         "createdAt": "number",

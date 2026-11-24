@@ -45,6 +45,7 @@ import {
   createAgentSlackAppRoutes,
   withAgentAppExecution,
 } from '../src/slack/agent-apps/index.ts';
+import { START_APP_ACTION } from '../src/slack/agent-apps/pages.ts';
 import { clearAdmissionMembershipsForTests } from '../src/slack/agent-apps/place.ts';
 import { readAppSecrets, saveConfigurationToken, writeAppSecrets } from '../src/slack/agent-apps/secrets.ts';
 import { createAgentAppSlackApi } from '../src/slack/agent-apps/slack-api.ts';
@@ -327,6 +328,8 @@ async function withHarness(
             : channel.startsWith('G')
               ? { id: channel, name: 'mpdm-owner--teammate-1', is_mpim: true, is_private: true, is_member: true, is_archived: false }
               : { id: channel, is_im: true, user: 'U1' } }
+          : method === 'apps.manifest.create'
+            ? { ok: true, app_id: 'A0NEWAPP', credentials: { client_id: '7.client', client_secret: 'cs-new', signing_secret: 'ss-new' } }
           : method === 'conversations.create'
             ? { ok: true, channel: { id: 'C9NEW', name: body.get('name'), is_channel: true, is_private: body.get('is_private') === 'true', is_member: true } }
           : method === 'conversations.join'
@@ -1281,6 +1284,69 @@ test("Admin's archive of an Agent not in Slack yet, with its app attached, retir
   assert.equal(await readAppSecrets(h.secrets(), AGENT_APP), undefined, "and the app's secrets are gone");
 }));
 
+/** Someone presses Add to Slack on a message in a #C1 thread, as Chickpea's app hears it. */
+function addToSlackPress(user: string, agentId = 'agent_support') {
+  return {
+    type: 'block_actions', api_app_id: MAIN_APP.appId, team: { id: TEAM }, user: { id: user }, trigger_id: 'trigger-add',
+    channel: { id: 'C1' }, container: { type: 'message', channel_id: 'C1', message_ts: '1900004000.000200', thread_ts: '1900004000.000100' },
+    actions: [{ action_id: START_APP_ACTION, value: agentId, action_ts: '1900004000.000300' }],
+  };
+}
+
+// Defects caught: a press by someone who is not an Owner, or an Owner's for an Agent already being added, already in
+// Slack, or archived, answered with silence; an old button starting a move for an Agent with a user group.
+test("Add to Slack in a message: only an Owner's press adds a waiting Agent, and every other press is answered privately", async (t) => withHarness(t, async (h) => {
+  const support = await h.stores.config.getAgent('agent_support');
+  await h.stores.config.updateAgent(support.id, {
+    slackPresence: {
+      requestedHandle: 'support', normalizedHandle: 'support', desiredState: 'active', health: 'unpublished',
+      errorCode: AWAITING_OWN_APP, avatar: support.slackPresence!.avatar,
+    },
+  }, support.revision);
+  await h.stores.config.createAgent({ ...support, id: 'agent_gone', name: 'Gone', lifecycle: 'archived', slackPresence: {
+    requestedHandle: 'gone', normalizedHandle: 'gone', desiredState: 'disabled', health: 'unpublished', avatar: support.slackPresence!.avatar,
+  } });
+  const creates = () => h.calls.filter((call) => call.method === 'apps.manifest.create').length;
+  const audits: Array<[string, string | null | undefined, string | null | undefined]> = [];
+  const record = h.stores.identity.recordAuthAudit.bind(h.stores.identity);
+  t.mock.method(h.stores.identity, 'recordAuthAudit', async (input: Parameters<typeof record>[0]) => {
+    audits.push([input.action, input.reasonCode, input.membershipId]);
+    return record(input);
+  });
+  const replies = () => slackPosts(h, 'chat.postEphemeral').map((body) => [body.get('channel'), body.get('user'), body.get('thread_ts'), body.get('text')]);
+  const dms = () => slackPosts(h, 'chat.postMessage').map((body) => body.get('text'));
+
+  assert.equal((await h.deliverToChickpea(addToSlackPress('U2'), 'interactions')).status, 200);
+  assert.equal((await h.deliverToChickpea(addToSlackPress('U1'), 'interactions')).status, 200);
+  assert.equal(creates(), 0, 'nothing is created without a token');
+  assert.match(dms().at(-1) ?? '', /Chickpea needs a Slack refresh token to add Support to Slack\./, 'asked for a token, not a new one');
+
+  const rotated = { accessToken: 'xoxe.xoxp-1-config-access', refreshToken: 'xoxe-1-config-refresh', teamId: TEAM, expiresAt: Date.now() + 12 * 3_600_000 };
+  assert.equal(await saveConfigurationToken({ ...h.secrets(), slack: { rotate: async () => rotated } }, TEAM, 'xoxe-1-pasted-token-0000'), 'saved');
+  assert.equal((await h.deliverToChickpea(addToSlackPress('U1'), 'interactions')).status, 200);
+  assert.equal(creates(), 1, "the Owner's press creates the app");
+  assert.equal(appRecordOf((await h.stores.config.getAgent('agent_support')).slackPresence)?.state, 'awaiting_consent');
+  assert.match(dms().at(-1) ?? '', /Support's Slack app is ready\. Choose Allow/);
+
+  assert.equal((await h.deliverToChickpea(addToSlackPress('U1'), 'interactions')).status, 200);
+  assert.equal((await h.deliverToChickpea(addToSlackPress('U1', 'agent_finance'), 'interactions')).status, 200);
+  assert.equal((await h.deliverToChickpea(addToSlackPress('U1', 'agent_gone'), 'interactions')).status, 200);
+  assert.equal(creates(), 1, 'a second press, or a press for an Agent with a user group, creates nothing');
+  assert.equal(appRecordOf((await h.stores.config.getAgent('agent_finance')).slackPresence), undefined, 'and starts no move');
+  const thread = '1900004000.000100';
+  assert.deepEqual(replies(), [
+    ['C1', 'U2', thread, 'A workspace Owner needs to add Support to Slack.'],
+    ['C1', 'U1', thread, "Chickpea is already adding Support to Slack. Its latest message to you says what's next."],
+    ['C1', 'U1', thread, 'Finance is already in Slack.'],
+    ['C1', 'U1', thread, "Gone is archived, so it can't be added to Slack."],
+  ]);
+  assert.deepEqual(audits.filter(([action]) => action.startsWith('agent_apps.')), [
+    ['agent_apps.started', 'token_needed', h.ownerMembershipId],
+    ['agent_apps.started', 'started', h.ownerMembershipId],
+    ['agent_apps.started', 'already_started', h.ownerMembershipId],
+  ], "each Owner's Start is recorded as Admin's is; a press that starts nothing is not");
+}));
+
 const SUPPORT_READY = '@support is ready in this channel. Mention @support to start a conversation.';
 const SUPPORT_WELCOME = 'Hi, I’m *Support*.\n\nMention <@UAGENTBOT> to start a thread with me. I only join conversations that mention me';
 const SUPPORT_WELCOME_IN_THREADS = `${SUPPORT_WELCOME}, and once I’m in a thread you can keep going there without the mention.`;
@@ -1791,6 +1857,23 @@ test("a live app Agent's reply in a thread in Chickpea's DM posts with Chickpea'
   assert.equal(job.turn.dmBotUserId, undefined, "no marker: Chickpea's DM");
   assert.deepEqual(sender(await postAsRun(h, job)), AS_SUPPORT);
   assert.deepEqual(await readingTokens(h, job), [MAIN_BOT], 'it reads the thread it answers in as the bot that answers');
+}));
+
+// Defects caught: the presentation owner giving a group-less user-group presence its persona only as a draft, so an
+// Agent not in Slack yet answered its creator in Chickpea's DM as plain Chickpea.
+test("an Agent not in Slack yet answers in Chickpea's DM under its own name and picture", async (t) => withHarness(t, async (h) => {
+  const support = await h.stores.config.getAgent('agent_support');
+  await h.stores.config.updateAgent(support.id, {
+    slackPresence: {
+      requestedHandle: 'support', normalizedHandle: 'support', desiredState: 'active', health: 'unpublished',
+      errorCode: AWAITING_OWN_APP, avatar: support.slackPresence!.avatar,
+    },
+  }, support.revision);
+  const job = await admitSupportTurn(h, CHICKPEA_DM, '1900003050.000100', '1900003050.000200');
+  assert.deepEqual(job.turn.speaker, { kind: 'chickpea_as_agent' });
+  const reply = await postAsRun(h, job);
+  assert.deepEqual(sender(reply), AS_SUPPORT, "Chickpea's bot posts under Support's name and picture, not as Chickpea");
+  assert.match(reply!.body.get('icon_url') ?? '', /\/agents\/agent_support\/avatar\//);
 }));
 
 test("a live app Agent's turn in its own DM is marked with its bot, and posts and reads as that bot with no persona", async (t) => withHarness(t, async (h) => {
@@ -2958,6 +3041,40 @@ test("an app Agent asked in its own DM to start a group DM has Chickpea's bot op
   assert.equal(opened?.token, MAIN_BOT);
   assert.deepEqual(sender(h.calls.find((call) => call.method === 'chat.postMessage' && call.body.get('text') === 'Kicking off Q3 refunds here.')), AS_SUPPORT);
 }));
+
+// Defects caught: a workspace that never gave an Agent its own app paying a state-store read for app bots on every
+// Slack event; the fact going stale once an Agent does have an app record.
+test('a Slack event reads the Agents\' app bots only where some Agent has an app record', async (t) => {
+  await withHarness(t, async (h) => {
+    const reads = t.mock.method(h.stores.config, 'listAgentAppBots');
+    const support = await h.stores.config.getAgent('agent_support');
+    await h.stores.config.updateAgent(support.id, {
+      slackPresence: {
+        requestedHandle: 'support', normalizedHandle: 'support', desiredState: 'active', health: 'healthy',
+        avatar: support.slackPresence!.avatar, userGroupId: 'SSUPPORT',
+      },
+    }, support.revision);
+
+    assert.equal((await h.deliverToChickpea(channelMessage('1900000400.000100', 'hello team').chickpea)).status, 200);
+    assert.equal(reads.mock.callCount(), 0, 'no Agent has an app record, so nothing is read');
+
+    const current = await h.stores.config.getAgent('agent_support');
+    await h.stores.config.updateAgent(current.id, {
+      slackPresence: { ...asUserGroupPresence(current.slackPresence), app: UNINSTALLING_ATTACHED },
+    }, current.revision);
+    assert.equal((await h.deliverToChickpea(channelMessage('1900000400.000200', 'hello again').chickpea)).status, 200);
+    assert.equal(reads.mock.callCount(), 1, 'an app record turns the read back on');
+  });
+});
+
+const UNINSTALLING_ATTACHED: Extract<AgentAppLifecycle, { state: 'uninstalling' }> = {
+  state: 'uninstalling', at: Date.now(), startedBy: 'U1', app: { appId: AGENT_APP, clientId: '1.client' }, botUserId: AGENT_BOT_USER, next: 'delete',
+};
+
+function asUserGroupPresence(presence: CustomAgentConfig['slackPresence']) {
+  if (!presence || presence.kind === 'agent_app') throw new Error('expected a user-group presence');
+  return presence;
+}
 
 /** A person's message in their DM with Chickpea's own app, as Chickpea's app hears it: in the thread `root`, or a root of its own. */
 function chickpeaDmMessage(root: string, ts: string, text: string) {

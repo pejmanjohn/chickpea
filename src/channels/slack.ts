@@ -768,9 +768,15 @@ async function serveAgentAppHomeAction(
   const workspaceId = payload.team?.id;
   const userId = payload.user?.id;
   if (!workspaceId || !userId) return false;
+  const pressed = payload as { channel?: { id?: unknown }; container?: { thread_ts?: unknown }; message?: { thread_ts?: unknown } };
+  const channelId = typeof pressed.channel?.id === 'string' ? pressed.channel.id : undefined;
+  const threadTs = [pressed.container?.thread_ts, pressed.message?.thread_ts].find((ts): ts is string => typeof ts === 'string');
   return handleAgentAppHomeAction({
     env: platformEnv,
     payload,
+    detach: (work) => detach(c, work.catch((error) => {
+      console.error('[chickpea] Agent app press failed:', sanitizeError(error));
+    })),
     viewer: async () => {
       const stores = resolveStores(platformEnv);
       const installation = await stores.config.getWorkspaceInstallation(workspaceId);
@@ -784,6 +790,28 @@ async function serveAgentAppHomeAction(
       return {
         role: actor.principal?.role,
         republish: () => publishAgentAppHome({ workspaceId, userId, stores, transport, botUserId, actor, platformEnv }),
+        audit: async (action, reasonCode) => {
+          const principal = actor.principal;
+          if (!principal) return;
+          await stores.identity.recordAuthAudit({
+            event: 'authorization', outcome: 'success', action, reasonCode,
+            correlationId: principal.correlationId, authenticatorKind: principal.authenticatorKind,
+            userId: principal.userId, membershipId: principal.membershipId,
+          }).catch(() => {
+            console.warn(JSON.stringify({ component: 'agent_apps', event: 'audit_unavailable', action }));
+          });
+        },
+        // Where the button was, only the presser sees it; a Home tab press is answered in their DM with Chickpea.
+        tell: async (text) => {
+          if (channelId) {
+            await createSlackWebClient(credentials.botToken ?? '').chat.postEphemeral({
+              channel: channelId, user: userId, text, ...(threadTs ? { thread_ts: threadTs } : {}),
+            });
+            return;
+          }
+          const dm = await transport.openDirectConversation(userId);
+          await transport.postMessage({ channelId: dm.id, text });
+        },
       };
     },
   });
@@ -3005,7 +3033,7 @@ async function addRequestedAgentToChannel(
           (input.gateway ?? createGatewayDeploymentClient(platformEnv)).publishAvatar(candidate),
         updateAgent: (agentId, patch, revision) => stores.config.updateAgent(agentId, patch, revision),
       });
-      const agentApps = agentAppPresenceHooks(platformEnv);
+      const agentApps = agentAppPresenceHooks(platformEnv, stores.settings);
       const published = await new AgentPresenceReconciler({
         config: stores.config,
         transport,
@@ -3024,6 +3052,7 @@ async function addRequestedAgentToChannel(
         actorMembershipId: principal.membershipId,
         actorSlackUserId: request.userId,
       });
+      if (published.grant.status !== 'active') return 'waiting';
       return published.appBot === 'left_out' ? 'bot_left_out' : 'added';
     },
     adminUrl: async () => {
@@ -3317,6 +3346,7 @@ function privateChannelSetupService(execution: PrivateChannelSetupExecution): Pr
       requireAgentChannelPublication(
         current.principal, await stores.config.getAgent(agentId), current.routing.channelMember,
       );
+      const agentApps = agentAppPresenceHooks(execution.platformEnv, stores.settings);
       return new AgentPresenceReconciler({
         config: stores.config,
         transport,
@@ -3324,6 +3354,7 @@ function privateChannelSetupService(execution: PrivateChannelSetupExecution): Pr
           env: execution.platformEnv, settings: stores.settings, identity: stores.identity,
           management: stores.management, transport, installationBot: transport,
         }),
+        ...(agentApps ? { agentApps } : {}),
       }).publish({
         workspaceId, channelId, agentId,
         actorMembershipId: current.principal.membershipId,
@@ -3552,7 +3583,7 @@ async function processSlackEvent(
     )
   ) return;
   // Every bot Chickpea answers as here is itself: the installation's, and each Agent app's.
-  const appBots = ask ? [] : await listAgentAppBots(stores.config);
+  const appBots = ask ? [] : await listAgentAppBots(stores.config, installation);
   const tenantBots = ask || !agentSlackAppsHost() ? [] : tenantBotUserIds(appBots, installation.botUserId);
   const threadRoutes = new Map<string, AgentThreadRoute | undefined>();
   const threadRoute = async (channelId: string, threadTs: string) => {

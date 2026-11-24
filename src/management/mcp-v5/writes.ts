@@ -1,5 +1,6 @@
 import type { z } from 'zod';
 
+import { AWAITING_OWN_APP } from '../../config/types.ts';
 import { defaultAgentAvatarFileNamed } from '../../slack/agent-presence/default-avatar-pool.ts';
 import { AGENT_AUTHORING_GUIDE_VERSION } from '../agent-authoring/index.ts';
 import {
@@ -146,7 +147,11 @@ export async function createAgent(
     ? created.outcomes[0]?.changed?.find(({ kind }) => kind === 'agent')?.id
     : undefined;
   if (!agentId) return changeResult(deps, context, created);
-  if (!input.channels?.length) return afterCreation(await changeResult(deps, context, created, { agentId }));
+  const waitingName = await notInSlackYet(deps, context, agentId);
+  const waiting = (result: ChangeResult): ChangeResult => waitingName
+    ? { ...result, summary: `${result.summary} ${waitingName} isn't in Slack yet: a workspace Owner adds it to Slack in Chickpea Admin.` }
+    : result;
+  if (!input.channels?.length) return afterCreation(waiting(await changeResult(deps, context, created, { agentId })));
 
   // The Agent exists now, so a grant that fails is a warning, never the result.
   const granted = await applyChange(deps, context, {
@@ -174,12 +179,27 @@ export async function createAgent(
     ? [`It could not be added to its Channels: ${granted.message}`]
     : outcomes.filter(({ disposition }) => disposition !== 'applied')
       .map((outcome) => `It could not be added to one of its Channels: ${outcome.instruction ?? 'the grant did not apply.'}`);
-  return afterCreation({
+  return afterCreation(waiting({
     ...result,
     ...(version ? { version } : {}),
-    summary: `${result.summary} It joins ${added} Channel${added === 1 ? '' : 's'}.`,
+    // A Channel kept for an Agent not in Slack yet is joined at the switch after an Owner's Allow.
+    summary: `${result.summary} It joins ${added} Channel${added === 1 ? '' : 's'}${waitingName ? ' once it is in Slack' : ''}.`,
     ...(notAdded.length ? { warnings: [...result.warnings ?? [], ...notAdded] } : {}),
-  });
+  }));
+}
+
+/**
+ * Where each new Agent is its own Slack app, a new Agent is not in Slack
+ * until an Owner adds it in Admin: its name when so, for the result to say.
+ * Nothing here starts an app or touches the configuration token.
+ */
+async function notInSlackYet(
+  deps: FiveZeroDeps,
+  context: ManagementActorContext,
+  agentId: string,
+): Promise<string | undefined> {
+  const { agent } = await deps.service.agentReader(context, agentId).catch(() => ({ agent: undefined }));
+  return agent?.slackPresence?.errorCode === AWAITING_OWN_APP ? agent.name : undefined;
 }
 
 /** A new Agent's next part of the job, unless it is off: an Agent that is off answers no one, so its own next step stays. */
@@ -353,7 +373,12 @@ export async function addAgentToChannel(
       }];
     },
   });
-  return changeResult(deps, context, result, { agentId: input.agentId });
+  // A Channel kept for an Agent not in Slack yet is not answered in yet; the outcome's warning says when it will be.
+  const waitingName = await notInSlackYet(deps, context, input.agentId);
+  return changeResult(deps, context, result, {
+    agentId: input.agentId,
+    ...(waitingName ? { summary: `${waitingName} isn't in Slack yet, so it doesn't answer in the Channel yet.` } : {}),
+  });
 }
 
 /** The server reads the Channel's revision: the preview is the whole new setting. */

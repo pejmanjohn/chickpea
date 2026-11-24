@@ -18,7 +18,7 @@ import type { IdentityStore } from '../../identity/types.ts';
 import { requestOrigin } from '../../http/request-origin.ts';
 import { agentAvatarInstallation, agentAvatarUrlForPresentation } from '../agent-presence/avatar-assets.ts';
 import { agentSlackAppsHost, type AgentSlackAppsHost } from './host.ts';
-import { type AgentSlackState, agentSlackState } from './lifecycle.ts';
+import { type AgentSlackState, agentSlackState, waitsForOwnApp } from './lifecycle.ts';
 import { liveAgentSlackApps } from './live.ts';
 import { TOKEN_PAGE_PATH } from './pages.ts';
 import type { AgentSlackApps } from './service.ts';
@@ -37,6 +37,12 @@ const OLD_TOKEN_PAGE_PATH = '/admin/agents/:agentId/slack-app';
 
 export interface AgentSlackAppAdminDeps {
   actor(c: Context): Promise<{ principal: AuthPrincipal; slackUserId: string; slackTeamId: string }>;
+  /**
+   * Give each of these Agents a user group and finish the Channels its
+   * creator asked for, as creation in `shared` mode would have; each one's
+   * failure is kept on it and the rest go on.
+   */
+  placeInSlack(c: Context, agentIds: readonly string[]): Promise<void>;
   /** Where each change is recorded as an audit event. */
   identity(c: Context): IdentityStore;
   /** Test seam: the service for an env; live stores and the main bot otherwise. */
@@ -87,12 +93,14 @@ type SlackAppsAuditAction =
  *
  * - `GET /admin/api/slack-apps` → `{ setting: { mode, changedBy, changedAt }, token: { stored: false } |
  *   { stored: true, pastedBy, pastedAt }, agents: SlackAppsAgentRow[] }`.
- * - `PUT /admin/api/slack-apps/mode` `{ mode: 'shared' | 'own_app' }` → `{ setting }`.
+ * - `PUT /admin/api/slack-apps/mode` `{ mode: 'shared' | 'own_app' }` → `{ setting }`; with `shared`, every such PUT
+ *   also gives each Agent in Slack nowhere a user group and answers `{ setting, waiting: SlackAppsAgentRow[] }`, the
+ *   Agents still not in Slack after it, so pressing again repairs a reconcile that stopped partway.
  * - `PUT /admin/api/slack-apps/token` `{ refreshToken }` → `{ token }`; 400 `{ error: 'not_refresh_token' | 'rejected' |
  *   'other_workspace' }`; 503 `{ error: 'slack_down' }`.
  * - `DELETE /admin/api/slack-apps/token` → `{ token: { stored: false }, removed: 'discarded' | 'unconfirmed' | 'none' }`.
  * - `POST /admin/api/slack-apps/agents/:agentId/start` → 200 `{ next: 'authorize', authorizeUrl, agent }`; 202
- *   `{ next: 'creating', agent }`; 409 `{ error: 'token_needed' | 'permission_needed' }` or
+ *   `{ next: 'creating', agent }`; 409 `{ error: 'token_needed' | 'permission_needed' | 'app_limit' }` or
  *   `{ error: 'needs_attention' | 'already_own_app' | 'cancelling', agent }`; 404.
  * - `POST /admin/api/slack-apps/agents/:agentId/cancel` → `{ agent, app: 'deleted' | 'left_for_owner' }`; 409
  *   `{ error: 'not_waiting' }`; 503 `{ error: 'slack_unavailable' }`; 404.
@@ -154,7 +162,14 @@ export function createAgentSlackAppAdminRoutes(deps: AgentSlackAppAdminDeps): Ho
     if (!parsed.success) return invalidRequest(c);
     const { setting, changed } = await gated.apps.setMode(parsed.output.mode, gated.slackUserId);
     if (changed) await audit(c, gated.principal, 'agent_apps.mode_changed', setting.mode);
-    return c.json({ setting: settingJson(setting) });
+    if (setting.mode !== 'shared') return c.json({ setting: settingJson(setting) });
+    // Shared: each Agent waiting for its own app gets a user group. Agents with an app, or one on its way, keep it.
+    const unplaced = async () => (await gated.apps.userAgents()).filter(waitsForOwnApp);
+    const before = await unplaced();
+    if (before.length > 0) await deps.placeInSlack(c, before.map((agent) => agent.id));
+    const grants = await gated.apps.agentChannelGrants();
+    const waiting = before.length > 0 ? await unplaced() : [];
+    return c.json({ setting: settingJson(setting), waiting: waiting.map((agent) => agentRow(c, agent, grants)) });
   });
 
   app.put(`${API}/token`, async (c) => {
@@ -199,6 +214,7 @@ export function createAgentSlackAppAdminRoutes(deps: AgentSlackAppAdminDeps): Ho
         return c.json({ error: pressed.kind, agent: await rowOf(c, apps, pressed.agent) }, 409);
       case 'token_needed':
       case 'permission_needed':
+      case 'app_limit':
         return c.json({ error: pressed.kind }, 409);
       default:
         return c.json({ error: 'not_found' }, 404);
@@ -209,7 +225,7 @@ export function createAgentSlackAppAdminRoutes(deps: AgentSlackAppAdminDeps): Ho
     const gated = await owner(c);
     if (!gated.ok) return gated.response;
     const { apps } = gated;
-    const cancelled = await known(() => apps.cancel(c.req.param('agentId')));
+    const cancelled = await known(() => apps.cancel(c.req.param('agentId'), gated.slackUserId));
     if (cancelled && cancelled.kind !== 'not_eligible') {
       await audit(c, gated.principal, 'agent_apps.cancelled', cancelled.kind === 'cancelled' ? cancelled.app : cancelled.kind);
     }

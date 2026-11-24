@@ -63,9 +63,12 @@ class FakeTransport implements AgentAppTransport {
   groups = new Map<string, SlackUserGroup>([['S1', { id: 'S1', name: 'Support', handle: 'support', disabled: true }]]);
   enabled: string[] = [];
   posted: Array<{ channelId: string; text: string }> = [];
+  async channelHasMember() { return true; }
   async disableUserGroup(id: string) { const g = this.groups.get(id)!; g.disabled = true; return { ...g }; }
   async enableUserGroup(id: string) { const g = this.groups.get(id); if (!g) throw new SlackTransportError('usergroups.enable', 'no_such_subteam'); g.disabled = false; this.enabled.push(id); return { ...g }; }
   async lookupUserGroup(id: string) { const g = this.groups.get(id); return g ? { ...g } : undefined; }
+  async lookupChannel(): Promise<never> { throw new Error('not in this unit'); }
+  async joinPublicChannel(): Promise<never> { throw new Error('not in this unit'); }
   async openDirectConversation(userId: string) { return { id: `D_${userId}`, private: true, member: true, archived: false }; }
   async postMessage(input: { channelId: string; text: string }) { this.posted.push({ channelId: input.channelId, text: input.text }); return { channelId: input.channelId, ts: `${this.posted.length}.0` }; }
 }
@@ -124,7 +127,7 @@ async function fixture(
   if (options.token !== false) assert.equal(await saveConfigurationToken(secrets, TEAM, 'xoxe-1-pasted-token-0000'), 'saved');
   const transport = new FakeTransport();
   const clock = { now: NOW };
-  const service = new AgentSlackApps({ env: ENV, stores: { config, settings }, host: HOST, transport, slack, keyring, now: () => clock.now, armSwitch: async () => undefined });
+  const service = new AgentSlackApps({ env: ENV, stores: { config, settings }, host: HOST, transport, slack, keyring, now: () => clock.now, armSwitch: async () => undefined, memberInSlack: async (id) => ({ membershipId: id, slackUserId: id, role: 'owner' }) });
   /** What each finished retirement reported, as tenant end would see it. */
   const retirements: string[] = [];
   const reconciler = new AgentPresenceReconciler({
@@ -136,6 +139,7 @@ async function fixture(
         return retired.agent;
       },
       bringBotIn: async () => { throw new Error('archive brings no bot in'); },
+      ownAppMode: async () => false,
     },
   });
   return { config, settings, secrets, slack, transport, clock, service, reconciler, agent, retirements };

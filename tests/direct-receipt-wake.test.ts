@@ -551,9 +551,10 @@ test('a note the state store never answers or refuses neither delays nor fails t
 });
 
 // Defect caught: the direct path learning the Agent apps' bots by loading
-// every Agent's config (configListAgents) on every delivery.
-test("the Worker's direct path reads the Agent apps' bots without loading any Agent's config", async (t) => {
-  const calls = async (withAgentApps: boolean) => {
+// every Agent's config (configListAgents) on every delivery, and reading the
+// bots at all in a workspace where no Agent has an app.
+test("the Worker's direct path reads the Agent apps' bots only where an Agent has an app, and never loads an Agent's config for it", async (t) => {
+  const calls = async (withAgentApps: boolean, appRecord: boolean) => {
     configureAgentSlackApps(withAgentApps ? {
       requestUrls: () => ({ events: 'https://cloud.test/e', interactions: 'https://cloud.test/i' }),
       redirectUri: 'https://cloud.test/slack/agent-apps/callback',
@@ -562,6 +563,27 @@ test("the Worker's direct path reads the Agent apps' bots without loading any Ag
     let log: string[] = [];
     try {
       await withDirectWorker(t, async (worker) => {
+        const support = worker.stores.config.createAgent({
+          id: 'agent_support', kind: 'user', revision: 1, name: 'Support', instructions: 'You are Support.', enabled: true,
+          lifecycle: 'active', editPolicy: 'creator_and_admins', configurationGeneration: 1,
+          slackPresence: {
+            requestedHandle: 'support', normalizedHandle: 'support', desiredState: 'active', health: 'healthy',
+            avatar: { kind: 'generated', revision: 1, seed: 'agent_support' }, userGroupId: 'SSUPPORT',
+          },
+          skills: [], mcpServers: [], apiConnections: [], repositories: [],
+        });
+        if (appRecord) {
+          worker.stores.config.updateAgent(support.id, {
+            slackPresence: {
+              kind: 'agent_app', requestedHandle: 'support', normalizedHandle: 'support', desiredState: 'active', health: 'healthy',
+              avatar: support.slackPresence!.avatar, released: { userGroupId: 'SSUPPORT' },
+              app: {
+                state: 'active', at: 1, app: { appId: 'A0SUPPORT', clientId: '1.client' }, icon: 'agent_avatar',
+                botUserId: 'USUPPORTBOT', installedAt: 1, installedBy: 'U1',
+              },
+            },
+          }, support.revision);
+        }
         assert.equal((await worker.deliver(worker.event(DM))).status, 200);
         await settled(() => worker.log.includes('rpc:admitSlackTurn') || worker.failures.length > 0);
         assert.deepEqual(worker.failures, []);
@@ -573,8 +595,8 @@ test("the Worker's direct path reads the Agent apps' bots without loading any Ag
     const count = (method: string) => log.filter((entry) => entry === `rpc:${method}`).length;
     return { agents: count('configListAgents'), bots: count('configListAgentAppBots') };
   };
-  const without = await calls(false);
-  const withApps = await calls(true);
+  const without = await calls(false, false);
   assert.equal(without.bots, 0, 'without the Agent-app port no bot is read');
-  assert.deepEqual(withApps, { agents: without.agents, bots: 1 }, 'the port adds one bot read and no Agent list');
+  assert.deepEqual(await calls(true, false), without, 'with the port and no Agent app, nothing more is read');
+  assert.deepEqual(await calls(true, true), { agents: without.agents, bots: 1 }, 'an Agent app adds one bot read and no Agent list');
 });

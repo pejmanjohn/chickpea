@@ -125,6 +125,9 @@ class FakeTransport implements AgentAppTransport {
   refuseDisable: boolean | string = false;
   posted: Posted[] = [];
   constructor(private readonly calls: ExternalCalls) {}
+  async lookupChannel(): Promise<never> { throw new Error('not in this unit'); }
+  async joinPublicChannel(): Promise<never> { throw new Error('not in this unit'); }
+  async channelHasMember(): Promise<never> { throw new Error('not in this unit'); }
   disableUserGroup(id: string) {
     return this.calls.through('disableUserGroup', async (): Promise<SlackUserGroup> => {
       if (this.refuseDisable) throw new SlackTransportError('usergroups.disable', this.refuseDisable === true ? 'permission_denied' : this.refuseDisable);
@@ -250,6 +253,7 @@ async function fixture(
     now: () => clock.now, publicOrigin: async () => 'https://core.test',
     userGroupPermissionMissing: async () => f.permission.missing,
     armSwitch: async () => undefined,
+    memberInSlack: async (id) => ({ membershipId: id, slackUserId: id, role: 'owner' }),
   });
   return f;
 }

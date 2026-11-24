@@ -7,7 +7,7 @@ import {
   normalizeAgentHandle,
 } from './handles.ts';
 
-type AgentPresenceErrorCode =
+export type AgentPresenceErrorCode =
   | 'paid_plan_required'
   | 'user_group_policy_denied'
   | 'two_factor_required'
@@ -22,6 +22,27 @@ type AgentPresenceErrorCode =
   | 'slack_unavailable'
   | 'slack_operation_failed'
   | 'agent_off';
+
+/**
+ * What a person reads when a change of this kind did not apply, for replies
+ * that name no Agent: a sentence for every code, so a code never reaches them.
+ */
+export const AGENT_PRESENCE_ISSUES: Readonly<Record<AgentPresenceErrorCode, string>> = {
+  paid_plan_required: 'Slack user groups require a paid Slack plan.',
+  user_group_policy_denied: 'Slack blocked Chickpea from creating or editing the Agent’s handle.',
+  two_factor_required: 'Slack requires two-factor authentication before the Agent’s handle can be changed.',
+  handle_collision: 'That Slack handle is already in use.',
+  name_collision: 'A Slack user group already has the Agent’s name. Retry in Chickpea picks a free one.',
+  invalid_handle: 'Slack rejected the Agent’s handle.',
+  channel_membership_required: 'Join the Slack Channel before adding the Agent to it.',
+  private_channel_invite_required: 'Invite Chickpea to the private Channel, then try again.',
+  rate_limited: 'Slack is limiting changes to Agent handles. Try again in a moment.',
+  user_group_create_ambiguous: 'Chickpea couldn’t tell whether Slack made the Agent’s handle. Open the Agent in Chickpea to finish it.',
+  slack_reconnect_required: 'Chickpea needs Slack reconnected before it can change Agent handles.',
+  slack_unavailable: 'Slack couldn’t be reached. Try again in a moment.',
+  slack_operation_failed: 'Slack couldn’t finish the change.',
+  agent_off: 'The Agent is off. Turn it on first, then try again.',
+};
 
 export class AgentPresenceError extends Error {
   constructor(
@@ -67,6 +88,15 @@ export function restoreHandleRefusal(
 
 export function agentOffError(agent: Pick<CustomAgentConfig, 'name'>): AgentPresenceError {
   return new AgentPresenceError('agent_off', agentOffMessage(agent));
+}
+
+/**
+ * Adding an Agent not in Slack yet to a Channel keeps the Channel waiting for
+ * it: the Agent joins once an Owner adds it to Slack. `channel` names the
+ * Channel as the reader sees it: `#support`, or `this channel` inside it.
+ */
+export function joinsOnceInSlackMessage(agent: Pick<CustomAgentConfig, 'name'>, channel: string): string {
+  return `${agent.name} joins ${channel} once a workspace Owner adds it to Slack.`;
 }
 
 const PAID_PLAN_ERRORS = new Set([

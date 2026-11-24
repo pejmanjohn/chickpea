@@ -25,6 +25,7 @@ import { agentSlackAppsHost, type AgentAppRetirement, type AgentSlackAppIngress,
 import { FINISH_APP_ACTION, START_APP_ACTION, TRY_AGAIN_ACTION } from './pages.ts';
 import { type AgentAppSwitchJob, agentAppIsLive, agentAppMoveJob, agentAppRecord } from './lifecycle.ts';
 import { readOwnAppSecrets, type SecretDeps } from './secrets.ts';
+import { readAgentSlackAppsSetting } from './setting.ts';
 import type { AgentAppTransport, AgentSlackApps } from './service.ts';
 import { createAgentAppSlackApi, logSlackRefusal } from './slack-api.ts';
 import { loadCredentialKeyring } from '../credential-keyring.ts';
@@ -231,12 +232,19 @@ export async function endAgentSlackAppLive(
 }
 
 /** The reconciler's hooks for an Agent's own app: present only with the port. */
-export function agentAppPresenceHooks(env: PlatformEnv | undefined): AgentAppPresenceHooks | undefined {
+export function agentAppPresenceHooks(
+  env: PlatformEnv | undefined,
+  /** The caller's own settings store, where it has one; the env's otherwise. */
+  settings?: Pick<SettingsStore, 'getSetting'>,
+): AgentAppPresenceHooks | undefined {
   const host = agentSlackAppsHost();
   if (!host) return undefined;
   return {
     async retire(agent) {
       return (await (await liveAgentSlackApps(env, host)).retire(agent)).agent;
+    },
+    async ownAppMode() {
+      return (await readAgentSlackAppsSetting(settings ?? getSettingsStore(env))).mode === 'own_app';
     },
     async bringBotIn(agent, channel) {
       const presence = agent.slackPresence;
@@ -333,7 +341,9 @@ export async function agentAppHomeRows(input: {
 export async function handleAgentAppHomeAction(input: {
   env: PlatformEnv | undefined;
   payload: { type?: unknown; user?: { id?: unknown }; actions?: unknown };
-  viewer: () => Promise<{ role?: string | undefined; republish: () => Promise<void> } | undefined>;
+  viewer: () => Promise<AgentAppPresser | undefined>;
+  /** Runs the press after Slack has its answer, as the neighbouring actions do. */
+  detach: (work: Promise<void>) => void;
 }): Promise<boolean> {
   const host = agentSlackAppsHost();
   if (!host || input.payload.type !== 'block_actions' || !Array.isArray(input.payload.actions)) return false;
@@ -344,13 +354,32 @@ export async function handleAgentAppHomeAction(input: {
   if (!action) return false;
   const slackUserId = input.payload.user?.id;
   if (typeof slackUserId !== 'string') return true;
-  const viewer = await input.viewer();
-  if (viewer?.role !== 'owner') return true;
-  const service = await liveAgentSlackApps(input.env, host);
-  if (action.action_id === START_APP_ACTION) await service.start(action.value, slackUserId);
-  else await service.retry(action.value, slackUserId);
-  await viewer.republish();
+  input.detach((async () => {
+    const viewer = await input.viewer();
+    if (!viewer) return;
+    const owner = viewer.role === 'owner';
+    if (action.action_id === START_APP_ACTION) {
+      // Add to Slack also reaches people who are not Owners: it sits in a creation thread anyone there can see.
+      const { reply, started } = await (await liveAgentSlackApps(input.env, host)).addFromSlack(action.value, slackUserId, owner);
+      // The same change as Admin's Start, through another door, recorded the same way.
+      if (started) await viewer.audit('agent_apps.started', started);
+      if (reply) await viewer.tell(reply);
+    } else {
+      if (!owner) return;
+      await (await liveAgentSlackApps(input.env, host)).retry(action.value, slackUserId);
+    }
+    if (owner) await viewer.republish();
+  })());
   return true;
+}
+
+/** Who pressed, as Chickpea's bot sees them: their role, their Home tab, and a private reply where they pressed. */
+export interface AgentAppPresser {
+  role?: string | undefined;
+  republish: () => Promise<void>;
+  tell: (text: string) => Promise<void>;
+  /** Records a change as an audit event, as Admin does; a failed record is logged and never fails the press. */
+  audit: (action: 'agent_apps.started', reasonCode: string) => Promise<void>;
 }
 
 const AGENT_APP_ACTIONS = new Set([START_APP_ACTION, FINISH_APP_ACTION, TRY_AGAIN_ACTION]);
@@ -375,15 +404,35 @@ export async function liveAgentSlackApps(
   const settings = local?.settings ?? getSettingsStore(env);
   const management = local?.management ?? resolved.management;
   const credentials = installationCredentials(env, local?.identity);
+  const config = local?.config ?? resolved.config;
+  const identity = local?.identity ?? resolved.identity;
   const { AgentSlackApps } = await import('./service.ts');
   return new AgentSlackApps({
     env,
-    stores: { config: local?.config ?? resolved.config, settings },
+    stores: { config, settings },
     host,
     transport: mainBotTransport(credentials, settings),
     armSwitch: (job) => armAgentAppSwitch(management, job, Date.now()),
     publicOrigin: () => resolveSlackPublicUrl(env, resolved.settings, resolved.identity),
     userGroupPermissionMissing: async () => hostedSlackUpdateGrantsUserGroupToken() && !(await credentials()).userGroupToken,
+    placeInSlack: async (agentId) => {
+      const resolved = await credentials();
+      const hooks = agentAppPresenceHooks(env, settings);
+      const [{ AgentPresenceReconciler }, { placeInSlack }] = await Promise.all([
+        import('../agent-presence/reconciler.ts'), import('../agent-presence/place-in-slack.ts'),
+      ]);
+      const reconciler = new AgentPresenceReconciler({
+        config,
+        transport: createDirectSlackTransport(resolved.botToken ?? '', ownerUserGroupToken(resolved, settings)),
+        announce: null,
+        ...(hooks ? { agentApps: hooks } : {}),
+      });
+      await placeInSlack({ reconciler, config, identity }, agentId);
+    },
+    memberInSlack: async (membershipId) => {
+      const { memberInSlack } = await import('../agent-presence/place-in-slack.ts');
+      return memberInSlack(identity, membershipId);
+    },
   });
 }
 
@@ -499,5 +548,8 @@ function mainBotTransport(
     enableUserGroup: async (id) => (await bot()).enableUserGroup(id),
     openDirectConversation: async (userId) => (await bot()).openDirectConversation(userId),
     postMessage: async (input) => (await bot()).postMessage(input),
+    lookupChannel: async (channelId) => (await bot()).lookupChannel(channelId),
+    joinPublicChannel: async (channelId) => (await bot()).joinPublicChannel(channelId),
+    channelHasMember: async (channelId, userId) => (await bot()).channelHasMember(channelId, userId),
   };
 }

@@ -315,6 +315,7 @@ test('an Agent with its own Slack app is not deleted until archive retires the a
       },
     }, agent.revision),
     bringBotIn: async () => undefined,
+    ownAppMode: async () => false,
   })));
 
 test('an archive that never turned the user group off leaves the Agent undeletable', async () => {

@@ -5,6 +5,7 @@ import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import {
+  AWAITING_OWN_APP,
   type AgentSlackPresence,
   type CustomAgentConfig,
   agentAppIsLive,
@@ -15,7 +16,7 @@ import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { AgentSlackAppsHost } from '../src/slack/agent-apps/host.ts';
 import { AgentSlackApps, type AgentAppTransport } from '../src/slack/agent-apps/service.ts';
 import { agentAppMoveJob } from '../src/slack/agent-apps/lifecycle.ts';
-import { readAppSecrets, saveConfigurationToken, writeAppSecrets } from '../src/slack/agent-apps/secrets.ts';
+import { discardConfigurationToken, readAppSecrets, saveConfigurationToken, writeAppSecrets } from '../src/slack/agent-apps/secrets.ts';
 import type { AgentAppBotTransport, AgentAppSwitchJob } from '../src/slack/agent-apps/service.ts';
 import { type AgentAppSlackApi, SlackRefused } from '../src/slack/agent-apps/slack-api.ts';
 import { AgentPresenceReconciler } from '../src/slack/agent-presence/reconciler.ts';
@@ -64,8 +65,11 @@ class FakeSlack implements AgentAppSlackApi {
   async rotate() {
     return { accessToken: 'xoxe.xoxp-1-access', refreshToken: 'xoxe-1-refresh', teamId: TEAM, expiresAt: NOW + 365 * 86_400_000 };
   }
+  /** Slack's answer to the next create, as an `ok: false` code. */
+  createRefusal: string | undefined;
   create() {
     return this.calls.through('create', async () => {
+      if (this.createRefusal) throw new SlackRefused('apps.manifest.create', this.createRefusal);
       const n = this.created.length + 1;
       this.created.push(`A0APP${n}`);
       return { appId: `A0APP${n}`, clientId: `${n}.client`, clientSecret: `client-secret-${n}`, signingSecret: `signing-secret-${n}` };
@@ -97,7 +101,38 @@ class FakeMainBot implements AgentAppTransport {
   groups = new Map<string, SlackUserGroup>([['S1', { id: 'S1', name: 'Support', handle: 'support', disabled: false }]]);
   ownerPermission = true;
   posted: Array<{ channelId: string; text: string; idempotencyKey: string | undefined }> = [];
+  /** Channels Chickpea's bot is in; as for any bot, a private one it is not in is not found. */
+  readonly in = new Set<string>();
+  joined: string[] = [];
   constructor(private readonly calls: Calls) {}
+  lookupChannel(channelId: string) {
+    return this.calls.through(`main-lookup:${channelId}`, async (): Promise<SlackChannel> => {
+      const channel = CHANNELS.get(channelId);
+      if (!channel || (channel.private && !this.in.has(channelId))) throw new SlackTransportError('conversations.info', 'channel_not_found');
+      return { id: channelId, private: channel.private, member: this.in.has(channelId), archived: channel.archived ?? false };
+    });
+  }
+  /** People who left a Channel, as `channel:user`; everyone else is in each Channel. */
+  readonly left = new Set<string>();
+  /** Channels whose members Slack refuses to list, as it does for one it will not show this bot. */
+  readonly membersRefused = new Set<string>();
+  async channelHasMember(channelId: string, userId: string) {
+    const channel = CHANNELS.get(channelId);
+    if (this.membersRefused.has(channelId)) throw new SlackTransportError('conversations.members', 'fetch_members_failed');
+    if (!channel || (channel.private && !this.in.has(channelId))) throw new SlackTransportError('conversations.members', 'channel_not_found');
+    return !this.left.has(`${channelId}:${userId}`);
+  }
+  joinPublicChannel(channelId: string) {
+    return this.calls.through(`main-join:${channelId}`, async (): Promise<SlackChannel> => {
+      const channel = CHANNELS.get(channelId);
+      if (!channel) throw new SlackTransportError('conversations.join', 'channel_not_found');
+      if (channel.private) throw new SlackTransportError('conversations.join', 'method_not_supported_for_channel_type');
+      if (channel.archived) throw new SlackTransportError('conversations.join', 'is_archived');
+      this.in.add(channelId);
+      this.joined.push(channelId);
+      return { id: channelId, private: false, member: true, archived: false };
+    });
+  }
   disableUserGroup(id: string) {
     return this.calls.through('disableUserGroup', async () => this.toggle('usergroups.disable', id, true));
   }
@@ -162,11 +197,12 @@ class FakeAppBot implements AgentAppBotTransport {
   }
 }
 
-const CHANNELS = new Map([
+const CHANNELS = new Map<string, { private: boolean; archived?: boolean }>([
   ['CSALES', { private: false }],
   ['CDEALS', { private: false }],
   ['GPRIV', { private: true }],
   ['COTHER', { private: false }],
+  ['COLD', { private: false, archived: true }],
 ]);
 
 async function fixture(
@@ -232,10 +268,12 @@ async function fixture(
     armSwitch: async (job) => { armed.push(job); },
     userGroupPermissionMissing: async () => permission.missing,
     publicOrigin: async () => 'https://chickpea.test',
+    // Each membership's Slack user, as an Admin, except one no longer active.
+    memberInSlack: async (membershipId) => membershipId === 'm_gone' ? undefined : { membershipId, slackUserId: `U_${membershipId}`, role: 'admin' },
   });
   const reconciler = new AgentPresenceReconciler({
     config, transport: main as unknown as SlackTransport, announce: null, now: () => clock.now,
-    agentApps: { retire: async (current) => (await service.retire(current)).agent, bringBotIn: async () => undefined },
+    agentApps: { retire: async (current) => (await service.retire(current)).agent, bringBotIn: async () => undefined, ownAppMode: async () => false },
   });
   return { config, settings, secrets, slack, main, bot, calls, clock, armed, store, permission, service, reconciler };
 }
@@ -910,3 +948,97 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+
+// Defects caught: a Channel an Agent not in Slack yet was added to staying pending after Allow, so the new app never
+// answers there; only the creator's adds completed, so a Channel an Owner or editor added later was lost; a Channel
+// made active for someone who has since left it, or left the workspace.
+test('an Agent born as its own app gets every Channel it was added to while waiting once Allow switches it', async (t) => {
+  const f = await fixture(t, { userGroupId: undefined, grants: [] });
+  const created = await f.config.getAgent('agent_support');
+  await f.config.updateAgent(created.id, {
+    creatorMembershipId: 'm_creator',
+    slackPresence: { ...created.slackPresence!, desiredState: 'active', errorCode: AWAITING_OWN_APP },
+  }, created.revision);
+  for (const [channelId, by] of [['CSALES', 'm_creator'], ['CDEALS', 'm_other'], ['COTHER', 'm_left'], ['GPRIV', 'm_gone']] as const) {
+    await f.config.putChannel({ workspaceId: TEAM, channelId, lifecycle: 'active' }, 0);
+    await f.config.putAgentChannelGrant({
+      workspaceId: TEAM, channelId, agentId: 'agent_support', status: 'pending', createdByMembershipId: by, channelIsPrivate: false,
+    }, 0);
+  }
+
+  f.main.left.add('COTHER:U_m_left');
+  f.main.in.add('GPRIV');
+
+  assert.equal((await f.service.start('agent_support', OWNER)).kind, 'started');
+  assert.equal((await presenceOf(f))?.errorCode, AWAITING_OWN_APP, 'not in Slack until Allow');
+  await allow(f);
+  await f.service.continueSwitch('agent_support');
+
+  const grants = Object.fromEntries((await f.config.listAgentChannelGrants()).map((grant) => [grant.channelId, grant.status]));
+  assert.deepEqual(grants, { CDEALS: 'active', COTHER: 'pending', CSALES: 'active', GPRIV: 'pending' },
+    'each ends as its writer\'s add, checked again: one who left the Channel, or is no longer a member, leaves it waiting');
+  assert.deepEqual(f.bot.joined.sort(), ['CDEALS', 'CSALES'], 'the bot joins each');
+  assert.match(ownerMessages(f).join('\n'), /It joined <#CSALES> and <#CDEALS>\.|It joined <#CDEALS> and <#CSALES>\./);
+  assert.equal((await presenceOf(f))?.errorCode, undefined, 'in Slack now');
+  await f.service.continueSwitch('agent_support');
+  assert.deepEqual(f.bot.joined.sort(), ['CDEALS', 'CSALES'], 'a rerun repeats nothing');
+});
+
+// Defects caught: Slack refusing to say who is in one waiting Channel stopping the whole switch on every run, so the
+// new app joins no Channel and its Owner is never told.
+test('a waiting Channel whose members Slack refuses to list stays waiting, and the switch still finishes', async (t) => {
+  const f = await fixture(t, { userGroupId: undefined, grants: [] });
+  const created = await f.config.getAgent('agent_support');
+  await f.config.updateAgent(created.id, {
+    creatorMembershipId: 'm_creator',
+    slackPresence: { ...created.slackPresence!, desiredState: 'active', errorCode: AWAITING_OWN_APP },
+  }, created.revision);
+  for (const channelId of ['CSALES', 'CDEALS']) {
+    await f.config.putChannel({ workspaceId: TEAM, channelId, lifecycle: 'active' }, 0);
+    await f.config.putAgentChannelGrant({
+      workspaceId: TEAM, channelId, agentId: 'agent_support', status: 'pending', createdByMembershipId: 'm_creator', channelIsPrivate: false,
+    }, 0);
+  }
+  f.main.membersRefused.add('CDEALS');
+
+  assert.equal((await f.service.start('agent_support', OWNER)).kind, 'started');
+  await allow(f);
+  assert.equal(await f.service.continueSwitch('agent_support'), 'done');
+
+  const grants = Object.fromEntries((await f.config.listAgentChannelGrants()).map((grant) => [grant.channelId, grant.status]));
+  assert.deepEqual(grants, { CDEALS: 'pending', CSALES: 'active' });
+  assert.deepEqual(f.bot.joined, ['CSALES']);
+  assert.match(ownerMessages(f).join('\n'), /It joined <#CSALES>\./);
+});
+
+// Defects caught: an app-limit refusal shown as a broken app that needs attention, or the Agent left with a record.
+test("Slack's app limit leaves the Agent as it was, with the message that says why", async (t) => {
+  for (const code of ['managed_app_limit_reached', 'service_limits_exceeded']) {
+    const f = await fixture(t, { userGroupId: undefined, grants: [] });
+    f.slack.createRefusal = code;
+
+    assert.deepEqual(await f.service.start('agent_support', OWNER), { kind: 'app_limit' });
+
+    assert.equal(appRecordOf(await presenceOf(f)), undefined, 'no app record is left');
+    assert.deepEqual(f.slack.created, []);
+    assert.deepEqual(f.main.posted.map((message) => [message.channelId, message.text]), [[`D_${OWNER}`, escapeMrkdwn(
+      "Slack wouldn't create another app for this workspace, which may have reached Slack's limit on apps. Deleting an app you no longer need in Slack and adding Support again may help.",
+    )]]);
+    f.slack.createRefusal = undefined;
+    assert.equal((await f.service.start('agent_support', OWNER)).kind, 'started', 'a later press starts afresh');
+  }
+});
+
+// Defects caught: a Slack press with no token doing nothing, so the Owner never learns what to do.
+test('an Owner\'s press in Slack with no token asks that Owner for one and starts nothing', async (t) => {
+  const f = await fixture(t, { userGroupId: undefined, grants: [] });
+  await discardConfigurationToken(f.secrets, TEAM);
+  const before = f.main.posted.length;
+
+  assert.deepEqual(await f.service.addFromSlack('agent_support', OWNER, true), { started: 'token_needed' }, 'the answer is the message');
+
+  assert.equal(appRecordOf(await presenceOf(f)), undefined);
+  assert.deepEqual(f.main.posted.slice(before).map((message) => [message.channelId, message.text]), [[`D_${OWNER}`, escapeMrkdwn(
+    "Chickpea needs a Slack refresh token to add Support to Slack.",
+  )]], 'no token was ever kept, so none is called new');
+});

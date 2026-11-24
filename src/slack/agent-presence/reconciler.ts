@@ -1,5 +1,6 @@
 import type { ConfigStore } from '../../config/store.ts';
 import {
+  AWAITING_OWN_APP,
   type AgentChannelGrant,
   type AgentSlackPresence,
   type CustomAgentConfig,
@@ -37,6 +38,8 @@ export interface AgentAppPresenceHooks {
   retire(agent: CustomAgentConfig): Promise<CustomAgentConfig>;
   /** Brings a live app's bot into a Channel the Agent was added to; undefined for an Agent without one. */
   bringBotIn(agent: CustomAgentConfig, channel: { id: string; private: boolean }): Promise<AgentAppBot | undefined>;
+  /** Whether the workspace's Slack apps setting is `own_app`: a new Agent then waits for its own app instead of a user group. */
+  ownAppMode(): Promise<boolean>;
 }
 
 /** A live app's bot after publishing: in the Channel, with a transport that posts as it, or left out. */
@@ -310,12 +313,27 @@ export class AgentPresenceReconciler {
       throw new AgentPresenceError('slack_operation_failed', 'Archived Agents cannot be published.');
     }
     if (!agent.enabled) throw agentOffError(agent);
+    // Not in Slack yet: the Channel waits as a pending grant, which the switch after an Owner's Allow completes.
+    const waitingForApp = await this.notInSlackYet(agent);
+    if (waitingForApp) {
+      // Nothing new is granted: the Channel already waits for this Agent's own app, under whoever first asked for it,
+      // so a later edit or Retry by anyone leaves it as it is.
+      const waitingGrant = (await config.listAgentChannelGrants(input.workspaceId, input.channelId))
+        .find((grant) => grant.agentId === agent.id && grant.status === 'pending');
+      if (waitingGrant) {
+        return { agent: agent.slackPresence?.errorCode === AWAITING_OWN_APP ? agent : await this.reconcile(agent.id), grant: waitingGrant };
+      }
+    }
+    // A Channel Slack will not take yet leaves a waiting Agent as it is: not in Slack yet, not needing attention.
+    const recordFailure = waitingForApp
+      ? async () => undefined
+      : (failed: CustomAgentConfig, error: AgentPresenceError) => this.recordFailure(failed, error);
     let channel;
     try {
       channel = await transport.lookupChannel(input.channelId);
     } catch (error) {
       const classified = classifyAgentPresenceError(error);
-      await this.recordFailure(agent, classified);
+      await recordFailure(agent, classified);
       throw classified;
     }
     const ensurePendingGrant = async (): Promise<AgentChannelGrant> => {
@@ -341,12 +359,13 @@ export class AgentPresenceReconciler {
     // Surface the actionable invite step before attempting that impossible
     // membership probe.
     if (!channel.member && channel.private) {
-      await ensurePendingGrant();
+      // A waiting Agent's pending grant becomes active at the switch, so it is written only after the membership check.
+      if (!waitingForApp) await ensurePendingGrant();
       const error = new AgentPresenceError(
         'private_channel_invite_required',
         'Invite Chickpea to the private Slack Channel before retrying.',
       );
-      await this.recordFailure(agent, error);
+      await recordFailure(agent, error);
       throw error;
     }
     try {
@@ -358,7 +377,7 @@ export class AgentPresenceReconciler {
       }
     } catch (error) {
       const classified = classifyAgentPresenceError(error);
-      await this.recordFailure(await config.getAgent(agent.id), classified);
+      await recordFailure(await config.getAgent(agent.id), classified);
       throw classified;
     }
     const persistedChannel = await config.getChannel(input.workspaceId, input.channelId);
@@ -380,6 +399,10 @@ export class AgentPresenceReconciler {
       await config.refreshChannelLabel(input.workspaceId, input.channelId, channel.name);
     }
     const pendingGrant = await ensurePendingGrant();
+    if (waitingForApp) {
+      const waiting = agent.slackPresence?.errorCode === AWAITING_OWN_APP ? agent : await this.reconcile(agent.id);
+      return { agent: waiting, grant: pendingGrant };
+    }
     if (!channel.member) {
       try {
         await transport.joinPublicChannel(input.channelId);
@@ -456,7 +479,8 @@ export class AgentPresenceReconciler {
           ...withoutPresenceErrors(presence),
           normalizedHandle,
           desiredState: 'active',
-          health: 'pending',
+          // Not in Slack yet stays so until Slack gives it a group, whatever this attempt meets.
+          ...(presence.errorCode === AWAITING_OWN_APP ? { health: 'unpublished', errorCode: AWAITING_OWN_APP } : { health: 'pending' }),
         },
       },
       agent.revision,
@@ -489,6 +513,8 @@ export class AgentPresenceReconciler {
         group = handleMatch;
       }
     }
+
+    if (!group && await this.ownAppMode()) return this.awaitOwnApp(agent);
 
     // Chickpea's own rule, before Slack is asked to give this Agent the
     // handle: another Agent in Slack holds it, whichever kind of Agent it is.
@@ -725,8 +751,11 @@ export class AgentPresenceReconciler {
         'The Agent identity changed before restore. Review the change again.',
       );
     }
-    const refused = restoreHandleRefusal(await config.listAgents(), agent);
-    if (refused) throw refused;
+    // An Agent that will wait for its own app takes no handle, so it is not refused for one.
+    if (!await this.notInSlackYet(agent)) {
+      const refused = restoreHandleRefusal(await config.listAgents(), agent);
+      if (refused) throw refused;
+    }
     agent = await config.restoreAgent(agent.id, agent.revision, credentialIncarnation);
     let presence = requiredPresence(agent);
     agent = await config.updateAgent(
@@ -743,7 +772,9 @@ export class AgentPresenceReconciler {
       agent.revision,
     );
     presence = requiredPresence(agent);
-    if (!presence.userGroupId) return agent;
+    if (!presence.userGroupId) {
+      return presence.kind !== 'agent_app' && await this.ownAppMode() ? this.awaitOwnApp(agent) : agent;
+    }
     try {
       await enableUserGroup(transport, presence.userGroupId);
       return config.updateAgent(
@@ -764,6 +795,39 @@ export class AgentPresenceReconciler {
       await this.recordFailure(agent, classified);
       throw classified;
     }
+  }
+
+  private async ownAppMode(): Promise<boolean> {
+    return await this.dependencies.agentApps?.ownAppMode() ?? false;
+  }
+
+  /** An Agent with no user group of its own nor its own app, in a workspace where each new Agent is its own app. */
+  private async notInSlackYet(agent: CustomAgentConfig): Promise<boolean> {
+    const presence = agent.slackPresence;
+    if (!presence || presence.kind === 'agent_app' || presence.userGroupId) return false;
+    return this.ownAppMode();
+  }
+
+  /**
+   * No user group: the Agent is not in Slack yet, handle-less until an
+   * Owner adds it as its own Slack app. It answers in Chickpea's DM meanwhile,
+   * so it is active.
+   */
+  private async awaitOwnApp(agent: CustomAgentConfig): Promise<CustomAgentConfig> {
+    return this.dependencies.config.updateAgent(
+      agent.id,
+      {
+        ...(agent.lifecycle === 'archived' ? {} : { lifecycle: 'active' as const }),
+        slackPresence: {
+          ...withoutPendingCreate(withoutPresenceErrors(userGroupPresence(agent))),
+          desiredState: 'active',
+          health: 'unpublished',
+          errorCode: AWAITING_OWN_APP,
+          observedAt: this.now(),
+        },
+      },
+      agent.revision,
+    );
   }
 
   private async updateGroupIfNeeded(
@@ -809,6 +873,9 @@ export class AgentPresenceReconciler {
     error: AgentPresenceError,
   ): Promise<void> {
     const current = await this.dependencies.config.getAgent(agent.id);
+    // A failure gives an Agent not in Slack yet no handle, so it stays waiting; the caller still gets the error. Only an
+    // ambiguous create is recorded, because Slack may have made the group and the next attempt adopts it by that code.
+    if (current.slackPresence?.errorCode === AWAITING_OWN_APP && error.code !== 'user_group_create_ambiguous') return;
     const presence = withoutPresenceErrors(requiredPresence(current));
     await this.dependencies.config.updateAgent(
       current.id,

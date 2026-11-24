@@ -5,7 +5,10 @@ import test from 'node:test';
 import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
 import { createDemoStarterAgent } from '../src/config/seed.ts';
 import type { ParsedSkillSource } from '../src/config/skill-import.ts';
-import type { CustomAgentConfig } from '../src/config/types.ts';
+import type { SqliteConfigStore } from '../src/config/store.ts';
+import { AWAITING_OWN_APP, type CustomAgentConfig } from '../src/config/types.ts';
+import type { WorkspaceManagementServiceInput } from '../src/management/service.ts';
+import { AgentPresenceError } from '../src/slack/agent-presence/errors.ts';
 import { AGENT_AUTHORING_GUIDE_VERSION } from '../src/management/agent-authoring/index.ts';
 import {
   executeHostSlackManagementApproval,
@@ -38,8 +41,12 @@ function ask(): SlackAgentAsk {
   };
 }
 
-async function setup(suffix: string) {
-  const f = await createManagementAdapterFixture(suffix, {
+async function setup(
+  suffix: string,
+  overrides: (stores: { config: SqliteConfigStore }) => Partial<WorkspaceManagementServiceInput> = () => ({}),
+) {
+  const f = await createManagementAdapterFixture(suffix, (stores) => ({
+    ...overrides(stores),
     resolveSkillImport: async (source: ParsedSkillSource) => ({
       owner: source.owner,
       repo: source.repo,
@@ -58,7 +65,7 @@ async function setup(suffix: string) {
       capped: false,
       skipped: 0,
     }),
-  });
+  }));
   const workspaceId = f.owner.binding.slackTeamId;
   const installation = await f.config.ensureWorkspaceInstallation({
     workspaceId, transportMode: 'direct', teamId: workspaceId, appId: 'A_APPROVAL', botUserId: 'U_CHICKPEA',
@@ -302,6 +309,55 @@ test('a held setup the person cannot use after the approval is named in the rece
     assert.equal(approval.kind === 'message' ? approval.text : '',
       'Applied the approved changes.\n\nIssue: invalid_request',
       'the connection the setup names does not exist, and the person is told');
+  } finally {
+    f.close();
+  }
+});
+
+// Defects caught: an approved Channel for an Agent not in Slack yet refused with its raw code and lost; a kept one
+// reported with nothing said; a refusal of this kind shown to the person as its code.
+test('an approved Channel for an Agent not in Slack yet is kept, and the person is told it joins once an Owner adds it', async () => {
+  const { f, workspaceId, chickpea, desk, turn, signal, tool, hostApproves } = await setup('approval-waiting-channel', ({ config }) => ({
+    // As the reconciler keeps a Channel for an Agent not in Slack yet.
+    publishAgentChannel: async ({ actor, workspaceId: team, channelId, agentId }) => {
+      const current = await config.getAgent(agentId);
+      const { userGroupId: _none, ...presence } = asUserGroup(current.slackPresence);
+      const agent = await config.updateAgent(agentId, {
+        slackPresence: { ...presence, desiredState: 'active', health: 'unpublished', errorCode: AWAITING_OWN_APP },
+      }, current.revision);
+      const grant = await config.putAgentChannelGrant({
+        workspaceId: team, channelId, agentId, status: 'pending', createdByMembershipId: actor.membershipId, channelLabel: 'desk-pub', channelIsPrivate: false,
+      }, 0);
+      return { agent, grant };
+    },
+  }));
+  try {
+    const result = await tool(signal(CHICKPEA_AGENT_ID, turn('Add Desk to #desk-pub.')), 'apply_workspace_changes', {
+      idempotencyKey: 'waiting-channel',
+      operations: [{ itemId: 'channel', kind: 'grant_agent_channel', workspaceId, channelId: 'C_DESK_PUB', agentId: desk.id, expectedRevision: 0 }],
+    });
+    const approval = await hostApproves(chickpea, turn('approve'), heldProposalId(result));
+    assert.equal(approval.kind === 'message' ? approval.text : '',
+      'Applied the approved changes.\n\nDesk joins #desk-pub once a workspace Owner adds it to Slack.');
+    assert.deepEqual((await f.config.listAgentChannelGrants(workspaceId, 'C_DESK_PUB')).map(({ status }) => status), ['pending']);
+  } finally {
+    f.close();
+  }
+});
+
+test('an approved Channel add Slack refuses tells the person why in words, never with its code', async () => {
+  const { f, workspaceId, chickpea, desk, turn, signal, tool, hostApproves } = await setup('approval-presence-words', () => ({
+    publishAgentChannel: async () => { throw new AgentPresenceError('channel_membership_required', 'Join the Slack Channel before adding this Agent.'); },
+  }));
+  try {
+    const result = await tool(signal(CHICKPEA_AGENT_ID, turn('Add Desk to #desk-pub.')), 'apply_workspace_changes', {
+      idempotencyKey: 'refused-channel',
+      operations: [{ itemId: 'channel', kind: 'grant_agent_channel', workspaceId, channelId: 'C_DESK_PUB', agentId: desk.id, expectedRevision: 0 }],
+    });
+    const approval = await hostApproves(chickpea, turn('approve'), heldProposalId(result));
+    const text = approval.kind === 'message' ? approval.text : '';
+    assert.equal(text, 'I couldn’t apply the approved changes. Nothing was changed.\n\nJoin the Slack Channel before adding the Agent to it.');
+    assert.doesNotMatch(text, /channel_membership_required|Issue:/);
   } finally {
     f.close();
   }

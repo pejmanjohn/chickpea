@@ -314,6 +314,39 @@ test('a clicker who is not in the Channel is refused before anything is publishe
   assert.deepEqual(notices, ['That Agent is not available here.']);
 });
 
+// Defects caught: an Agent not in Slack yet refused from Slack, so the Channel was lost; one kept with nothing said, or
+// said to be ready where no handle reaches it; one added for someone not in the Channel.
+test('an Agent not in Slack yet is added from Slack as a waiting Channel: the person is told it joins once an Owner adds it', async () => {
+  const add = async (channelMember: boolean) => {
+    const notices: string[] = [];
+    let published = 0;
+    await addAgentToChannel({
+      workspaceId: 'T1', userId: 'U1', channelId: 'C1', threadTs: null, agentId: LEGAL.id, requestId: '5003.000100',
+    }, {
+      claim: async () => true,
+      resolveActor: async () => ({
+        routing: { fullMember: true, channelMember },
+        principal: {
+          userId: 'user_owner', membershipId: 'membership_owner', organizationId: 'org_oss', role: 'owner',
+          authenticatorKind: 'slack_event', credentialId: 'slack:T1:U1', correlationId: 'slack-event:T1:U1', machine: false,
+        },
+      }),
+      getAgent: async () => ({
+        id: LEGAL.id, kind: 'user', name: 'Legal', enabled: true, lifecycle: 'active', creatorMembershipId: 'membership_owner',
+        editPolicy: 'creator_and_admins',
+        slackPresence: { normalizedHandle: 'legal', desiredState: 'active', health: 'unpublished', errorCode: 'awaiting_own_app' },
+      }) as unknown as CustomAgentConfig,
+      identity: { listMemberships: async () => [], listExternalIdentities: async () => [] },
+      publish: async () => { published += 1; return 'waiting'; },
+      adminUrl: async () => undefined,
+      client: { chat: { postEphemeral: async (input: { text?: string }) => { notices.push(String(input.text)); return { ok: true }; } } } as never,
+    });
+    return { notices, published };
+  };
+  assert.deepEqual(await add(true), { notices: ['Legal joins this channel once a workspace Owner adds it to Slack.'], published: 1 });
+  assert.deepEqual(await add(false), { notices: ['That Agent is not available here.'], published: 0 });
+});
+
 test('an Agent that is off is not added from Slack: the person who may add it is told to turn it on first', async () => {
   const add = async (enabled: boolean) => {
     const notices: string[] = [];

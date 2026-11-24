@@ -12,6 +12,7 @@ import {
   type AgentPresenceDesiredState,
   type AgentPresenceHealth,
   type AttachedAgentApp,
+  type CustomAgentConfig,
   appRecordOf,
 } from '../../config/types.ts';
 
@@ -37,6 +38,8 @@ export type AgentAppEvent =
   | { type: 'created'; at: number; app: AgentAppRecord }
   | { type: 'create_refused'; at: number; reason: 'create_refused' | 'slack_busy' }
   | { type: 'create_ambiguous'; at: number }
+  /** Slack refused the create because the workspace has all the apps its plan allows: nothing was made. */
+  | { type: 'app_limit_reached'; at: number }
   /** The recorded app has no record, so it is left for the Owner; create again. */
   | { type: 'recreate'; at: number; manifestFingerprint: string }
   | { type: 'urls_set'; at: number }
@@ -135,7 +138,10 @@ export type AgentSlackState =
 
 export function agentSlackState(presence: AgentSlackPresence): AgentSlackState {
   const app = appRecordOf(presence);
-  const unattached = (): AgentSlackState => ({ state: presence.errorCode === AWAITING_OWN_APP ? 'not_in_slack' : 'user_group' });
+  // An Agent with no group answers no mention, whatever a failed attempt to give it one left behind.
+  const unattached = (): AgentSlackState => ({
+    state: presence.errorCode === AWAITING_OWN_APP || !presence.userGroupId ? 'not_in_slack' : 'user_group',
+  });
   if (!app) return unattached();
   switch (app.state) {
     case 'awaiting_consent':
@@ -143,6 +149,8 @@ export function agentSlackState(presence: AgentSlackPresence): AgentSlackState {
     case 'active':
       return { state: pendingSwitchStep(app) ? 'switching' : 'own_app' };
     case 'needs_attention':
+      // A Cancel's removal Slack refused to finish reads as the Cancel it is; the next Cancel or Start picks it up.
+      if (app.resume === 'uninstalling' && presence.kind !== 'agent_app') return { state: 'cancelling' };
       return { state: 'needs_attention', reason: app.reason };
     case 'uninstalling':
       // On a user group's presence this is a Cancel's removal, finished by the next Cancel or Start; the group answers
@@ -151,6 +159,27 @@ export function agentSlackState(presence: AgentSlackPresence): AgentSlackState {
     default:
       return { state: 'creating' };
   }
+}
+
+/**
+ * An Agent no mention reaches and nothing is giving one: no user group, no
+ * app of its own, and no app record on its way. Told from what the presence
+ * holds, never from a marker a failure could have overwritten.
+ */
+function placedNowhere(presence: AgentSlackPresence | undefined): boolean {
+  return presence !== undefined && presence.kind !== 'agent_app' && !presence.userGroupId && !presence.app;
+}
+
+/**
+ * An Agent waiting for its own Slack app: on, neither a draft nor archived,
+ * its presence asks to be in Slack, and it is in Slack nowhere. Only these
+ * are placed when the workspace goes back to one user group per Agent; a
+ * draft, an Agent never published, one turned off, or one archived is never
+ * touched by the setting.
+ */
+export function waitsForOwnApp(agent: Pick<CustomAgentConfig, 'enabled' | 'lifecycle' | 'slackPresence'>): boolean {
+  return agent.enabled && agent.lifecycle !== 'draft' && agent.lifecycle !== 'archived' &&
+    agent.slackPresence?.desiredState === 'active' && placedNowhere(agent.slackPresence);
 }
 
 /** A `creating` record Slack never answered within the settle window; nothing creates again until Try again. */
@@ -206,6 +235,8 @@ export function transition(app: AgentAppLifecycle, event: AgentAppEvent): AgentA
       return app.state === 'creating' ? attention(app.startedBy, at, event.reason, 'creating') : WRONG_STATE;
     case 'create_ambiguous':
       return app.state === 'creating' ? attention(app.startedBy, at, 'ambiguous_create', 'creating') : WRONG_STATE;
+    case 'app_limit_reached':
+      return app.state === 'creating' ? WITHDRAWN : WRONG_STATE;
     case 'recreate':
       return app.state === 'created'
         ? { state: 'creating', at, startedBy: app.startedBy, manifestFingerprint: event.manifestFingerprint }
