@@ -610,7 +610,7 @@ export function isTransientSlackApiError(error: string | undefined): boolean {
     /^slack_http_5\d\d$/.test(error ?? '');
 }
 
-const SLACK_TRUTH_FETCH_TIMEOUT_MS = 5_000;
+export const SLACK_TRUTH_FETCH_TIMEOUT_MS = 5_000;
 
 interface SlackTruthJsonResult {
   ok: boolean;

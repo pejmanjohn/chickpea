@@ -3924,23 +3924,77 @@ test("a real message is admitted once after one read on the app's token, and a r
 
 const limited: string[] = [];
 
-test("a read Slack does not answer is retried, and the message is never admitted unconfirmed", async (t) => withHarness(t, async (h) => {
+/** The notices the Agent's bot posted, as [token, channel, thread, text]. */
+function unreadNotices(h: Harness): Array<[string | undefined, string | null, string | null, string | null]> {
+  return h.calls.filter((call) => call.method === 'chat.postMessage')
+    .map((call) => [call.token, call.body.get('channel'), call.body.get('thread_ts'), call.body.get('text')]);
+}
+
+test("a read Slack keeps refusing until the check's twelve seconds are up admits nothing, and the Agent's bot asks the person in the message's thread to send it again", async (t) => withHarness(t, async (h) => {
   const warn = t.mock.method(console, 'warn', () => undefined);
   t.mock.method(console, 'error', () => undefined);
+  const { UNREAD_MESSAGE_NOTICE } = await import('../src/slack/agent-apps/sender.ts');
   const ts = '1900010300.000100';
-  const message = appDm(ts, { text: 'what did we refund?' });
-  limited.push(`conversations.history ${AGENT_BOT}`);
+  const reply = '1900010300.000200';
+  limited.push(`conversations.history ${AGENT_BOT}`, `conversations.replies ${AGENT_BOT}`);
   t.after(() => { limited.length = 0; });
-  for (const attempt of [1, 2]) {
-    const response = await h.deliver('events', { ...message, event_id: `EvLimited${attempt}` }, { settle: true });
-    assert.equal(response.ok, false, 'Slack is answered with a failure, so it delivers again');
+  for (const [index, message] of [appDm(ts, { text: 'what did we refund?' }), appDm(reply, { text: 'and last week?', thread_ts: ts })].entries()) {
+    const { value: response, waitedMs } = await onSuiteClock(t, () => h.deliver('events', { ...message, event_id: `EvLimited${index}` }, { settle: true }));
+    assert.equal(response.ok, false, 'the delivery ends as a failure');
+    // Slack asks for a second each time; the pauses double from a quarter second, and the next would end past twelve.
+    assert.ok(waitedMs >= 9_000 && waitedMs < 9_200, `answered after ${waitedMs} ms of pauses`);
   }
-  assert.equal(await pendingTurn(h.stores, (pending) => pending.turn.messageTs === ts), undefined, 'nothing is admitted meanwhile');
+  assert.deepEqual([confirmations(h, ts).length, confirmations(h, reply).length], [6, 6]);
+  assert.deepEqual(await h.stores.slackState.listPendingTurns!(), [], 'nothing is admitted');
+  assert.deepEqual(unreadNotices(h), [[AGENT_BOT, 'D1', ts, UNREAD_MESSAGE_NOTICE], [AGENT_BOT, 'D1', ts, UNREAD_MESSAGE_NOTICE]],
+    "one notice for each, from the app's bot, in the message's thread");
   assert.deepEqual(notConfirmed(warn).map((line) => (line as { reason: string }).reason), ['ratelimited', 'ratelimited'], 'the line names the limit');
+
+  // An edit or a delete Slack will not confirm is given up on the same way, and tells nobody.
+  const changes = [
+    dmEvent({ event_id: 'EvLimitedEdit' }, {
+      subtype: 'message_changed', ts: '1900010300.000300', event_ts: '1900010300.000300', user: undefined, text: undefined,
+      message: { type: 'message', user: 'U1', text: 'what did we refund today?', ts, edited: { user: 'U1', ts: '1900010300.000300' } },
+      previous_message: { type: 'message', user: 'U1', text: 'what did we refund?', ts },
+    }),
+    dmEvent({ event_id: 'EvLimitedDelete' }, {
+      subtype: 'message_deleted', ts: '1900010300.000400', event_ts: '1900010300.000400', deleted_ts: ts, user: undefined, text: undefined,
+      previous_message: { type: 'message', user: 'U1', text: 'what did we refund?', ts },
+    }),
+  ];
+  for (const change of changes) {
+    assert.equal((await onSuiteClock(t, () => h.deliver('events', change, { settle: true }))).value.ok, false);
+  }
+  assert.equal(unreadNotices(h).length, 2, 'no notice for an edit or a delete');
+  assert.equal(notConfirmed(warn).length, 4);
+
   limited.length = 0;
-  assert.equal((await h.deliver('events', { ...message, event_id: 'EvLimited3' }, { settle: true })).status, 200);
+  assert.equal((await h.deliver('events', { ...appDm(ts, { text: 'what did we refund?' }), event_id: 'EvLimited3' }, { settle: true })).status, 200);
   assert.equal((await h.stores.slackState.listPendingTurns!()).filter((pending) => pending.turn.messageTs === ts).length, 1, 'admitted once Slack answers');
 }, { rateLimited: limited }));
+
+test("a read Slack refuses for good is not made again, and tells nobody", async (t) => withHarness(t, async (h) => {
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  const ts = '1900010350.000100';
+  const { value: response, waitedMs } = await onSuiteClock(t, () => h.deliver('events', appDm(ts, { text: 'what did we refund?' }), { settle: true }));
+  assert.equal(response.status, 200);
+  assert.ok(waitedMs < 250, `no pause, ${waitedMs} ms`);
+  assert.equal(confirmations(h, ts).length, 1, 'one read');
+  assert.deepEqual(unreadNotices(h), []);
+  assert.deepEqual(notConfirmed(warn).map((line) => (line as { reason: string }).reason), ['missing_scope']);
+}, { refuse: { [`conversations.history ${AGENT_BOT}`]: 'missing_scope' } }));
+
+test("a notice Slack will not take is asked for once and not again, and the delivery ends as it would have", async (t) => withHarness(t, async (h) => {
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  t.mock.method(console, 'error', () => undefined);
+  const ts = '1900010360.000100';
+  const { value: response, waitedMs } = await onSuiteClock(t, () => h.deliver('events', appDm(ts, { text: 'what did we refund?' }), { settle: true }));
+  assert.equal(response.ok, false, 'the delivery ends as a failure');
+  assert.ok(waitedMs >= 9_000 && waitedMs < 9_200, `no wait for the notice's own limit, ${waitedMs} ms`);
+  assert.equal(unreadNotices(h).length, 1, 'one post, which Slack limits, and no second');
+  assert.deepEqual(notConfirmed(warn).map((line) => (line as { reason: string }).reason), ['ratelimited'], "the line names the read's limit, as with a notice that posts");
+  assert.deepEqual(await h.stores.slackState.listPendingTurns!(), [], 'nothing is admitted');
+}, { rateLimited: [`conversations.history ${AGENT_BOT}`, `chat.postMessage ${AGENT_BOT}`] }));
 
 test("an edit an Agent app delivers steers its message's turn only when Slack holds the edited text", async (t) => withHarness(t, async (h) => {
   const warn = t.mock.method(console, 'warn', () => undefined);
@@ -3968,6 +4022,60 @@ test("an edit an Agent app delivers steers its message's turn only when Slack ho
   assert.deepEqual((await h.stores.slackState.listPendingTurns!()).filter((pending) => pending.turn.channelId === 'D1').map((pending) => pending.turn.text),
     ['refund order 12', 'refund order 13'], "the turn is steered once, with Slack's words");
   assert.deepEqual(notConfirmed(warn).map((line) => (line as { reason: string }).reason), ['other_sender']);
+}));
+
+test("an edit an Agent app delivers that changes nothing acted on, as Slack sends while replies come in, is not read and does nothing", async (t) => withHarness(t, async (h) => {
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  t.mock.method(console, 'info', () => undefined);
+  const ts = '1900010450.000100';
+  assert.equal((await h.deliver('events', appDm(ts, { text: 'refund order 12' }), { settle: true })).status, 200);
+  const original = { type: 'message', user: 'U1', text: 'refund order 12', ts };
+  const counts = (replies: number) => ({
+    thread_ts: ts, reply_count: replies, reply_users_count: 1, latest_reply: `1900010450.00020${replies}`, reply_users: [AGENT_BOT_USER],
+  });
+  const change = (at: string, message: Record<string, unknown>, previous: Record<string, unknown>) => dmEvent({ event_id: `EvChange${at}` }, {
+    subtype: 'message_changed', hidden: true, ts: at, event_ts: at, user: undefined, text: undefined, message, previous_message: previous,
+  });
+  const edited = { ...original, text: 'refund order 13', edited: { user: 'U1', ts: '1900010450.000300' } };
+  const reads = () => confirmations(h, ts).length;
+  const turns = async () => (await turnsOn(h, ts)).map((job) => job.turn.text);
+  let sent = 0;
+  const metadataOnly = async (pairs: Array<[Record<string, unknown>, Record<string, unknown>]>) => {
+    const callsBefore = h.calls.length;
+    for (const [message, previous] of pairs) {
+      const at = `1900010450.0004${sent++}0`;
+      assert.equal((await h.deliver('events', change(at, message, previous), { settle: true })).status, 200);
+    }
+    assert.deepEqual(h.calls.slice(callsBefore), [], 'no read, and nothing routed');
+  };
+  await metadataOnly([[{ ...original, ...counts(1) }, original], [{ ...original, ...counts(2) }, { ...original, ...counts(1) }]]);
+  assert.deepEqual(await turns(), ['refund order 12']);
+
+  // A real edit is read once, and steers its turn as before; the counts that change after it are not read either.
+  assert.equal((await h.deliver('events', change('1900010450.000300', { ...edited, ...counts(2) }, { ...original, ...counts(2) }), { settle: true })).status, 200);
+  assert.equal(reads(), 2);
+  assert.deepEqual(await turns(), ['refund order 12', 'refund order 13']);
+  await metadataOnly([[{ ...edited, ...counts(3) }, { ...edited, ...counts(2) }]]);
+
+  // A change to any one thing an edit, a delete or the thread record acts on is read.
+  const total = [{ text: 'Order 12: $40' }];
+  for (const [index, [patch, earlier]] of ([
+    [{ edited: { user: 'U1', ts: '1900010450.000500' } }],
+    [{ files: [{ id: 'F0ORDER12', name: 'order-12.csv' }] }],
+    [{ attachments: total }],
+    [{ blocks: [{ type: 'rich_text', elements: [{ type: 'rich_text_section', elements: [{ type: 'link', url: 'https://orders.example/12' }] }] }] }],
+    // The words the edit steers with change, while the text the thread record keeps does not.
+    [{ text: 'refund order 13\nOrder 12: $40' }, { attachments: total }],
+    [{ subtype: 'tombstone' }],
+  ] as Array<[Record<string, unknown>, Record<string, unknown>?]>).entries()) {
+    const before = reads();
+    const at = `1900010450.00060${index}`;
+    const delivery = change(at, { ...edited, ...counts(1), ...patch }, { ...edited, ...counts(1), ...earlier });
+    assert.equal((await h.deliver('events', delivery, { settle: true })).status, 200);
+    assert.equal(reads(), before + 1, Object.keys(patch).join());
+  }
+  assert.deepEqual(notConfirmed(warn).map((line) => (line as { reason: string }).reason), ['deleted']);
+  assert.equal(warn.mock.calls.length, 1, 'and no line for a change that was not read');
 }));
 
 test("a message through Chickpea's own app asks Slack nothing more", async (t) => withHarness(t, async (h) => {
@@ -4040,23 +4148,137 @@ test("an edit naming the app's bot rewrites nobody's row in the thread record, a
 
 const shortLimits: Array<{ call: string; retryAfter: number }> = [];
 
-test("a read Slack limits for no longer than the check may pause is waited out and made once more; a longer limit fails the delivery as before", async (t) => withHarness(t, async (h) => {
+test("a read Slack limits is made again after its Retry-After, or a quarter second when it names none, and the message is admitted once", async (t) => withHarness(t, async (h) => {
+  t.after(() => { shortLimits.length = 0; });
+  for (const [retryAfter, ts, pause] of [[2, '1900011100.000100', 2_000], [0, '1900011100.000200', 250]] as const) {
+    shortLimits.push({ call: `conversations.history ${AGENT_BOT}`, retryAfter });
+    const { value: response, waitedMs } = await onSuiteClock(t, () => h.deliver('events', appDm(ts, { text: 'what did we refund?' }), { settle: true }));
+    assert.equal(response.status, 200);
+    assert.ok(waitedMs >= pause && waitedMs < pause + 200, `read again after ${waitedMs} ms`);
+    assert.equal(confirmations(h, ts).length, 2, 'the limited read, then one more');
+    assert.equal((await turnsOn(h, ts)).length, 1, 'admitted once');
+  }
+  assert.deepEqual(unreadNotices(h), []);
+}, { rateLimits: shortLimits }));
+
+let limitRead: ((method: string, body: URLSearchParams) => void | Promise<unknown>) | undefined;
+
+test("a Retry-After that would not end before the check's deadline with room for a read is not waited out: the person is asked at once", async (t) => withHarness(t, async (h) => {
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  t.mock.method(console, 'error', () => undefined);
+  t.after(() => { shortLimits.length = 0; limitRead = undefined; });
+  const ts = '1900011100.000300';
+  shortLimits.push({ call: `conversations.history ${AGENT_BOT}`, retryAfter: 12 });
+  const { value: response, waitedMs } = await onSuiteClock(t, () => h.deliver('events', appDm(ts, { text: 'and last week?' }), { settle: true }));
+  assert.equal(response.ok, false);
+  assert.ok(waitedMs < 250, `no pause, ${waitedMs} ms`);
+  assert.equal(confirmations(h, ts).length, 1);
+  assert.equal(await pendingTurn(h.stores, (job) => job.turn.messageTs === ts), undefined);
+  assert.equal(unreadNotices(h).length, 1);
+  assert.deepEqual(notConfirmed(warn).map((line) => (line as { reason: string }).reason), ['ratelimited']);
+
+  // A read that timed out leaves less: six seconds from then would end with under a second left to read in.
+  const later = '1900011100.000400';
+  limitRead = (method, body) => {
+    if (method !== 'conversations.history' || body.get('latest') !== later || confirmations(h, later).length > 1) return undefined;
+    shortLimits.push({ call: `conversations.history ${AGENT_BOT}`, retryAfter: 6 });
+    return new Promise(() => undefined);
+  };
+  const { value: limited, waitedMs: waitedLater } = await onSuiteClock(t, () => h.deliver('events', appDm(later, { text: 'and the week before?' }), { settle: true }));
+  assert.equal(limited.ok, false);
+  // Five seconds for the read that timed out, a quarter second's pause, then the limit, which is not waited out.
+  assert.ok(waitedLater >= 5_250 && waitedLater < 5_450, `given up on after ${waitedLater} ms`);
+  assert.equal(confirmations(h, later).length, 2);
+  assert.equal(unreadNotices(h).length, 2);
+  assert.deepEqual(notConfirmed(warn).map((line) => (line as { reason: string }).reason), ['ratelimited', 'ratelimited']);
+}, { rateLimits: shortLimits, beforeCall: (method, body) => limitRead?.(method, body) }));
+
+let slowRead: ((method: string, body: URLSearchParams) => void | Promise<unknown>) | undefined;
+/** Slack answers none of these reads of `ts` after the first `answered`. */
+const unansweredAfter = (h: Harness, ts: string, answered: number) => (method: string, body: URLSearchParams) =>
+  ['conversations.history', 'conversations.replies'].includes(method) && body.get('latest') === ts && confirmations(h, ts).length > answered
+    ? new Promise(() => undefined)
+    : undefined;
+
+test("reads Slack never answers end the check within twelve seconds of the first, and the line is written before the notice is asked for", async (t) => withHarness(t, async (h) => {
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  t.mock.method(console, 'error', () => undefined);
+  t.after(() => { slowRead = undefined; });
+  const ts = '1900011150.000100';
+  const linesAtNotice: number[] = [];
+  const unanswered = unansweredAfter(h, ts, 0);
+  slowRead = (method, body) => {
+    if (method === 'chat.postMessage') linesAtNotice.push(notConfirmed(warn).length);
+    return unanswered(method, body);
+  };
+  const { value: response, waitedMs } = await onSuiteClock(t, () => h.deliver('events', appDm(ts, { text: 'what did we refund?' }), { settle: true }));
+  assert.equal(response.ok, false, 'the delivery ends as a failure');
+  // Five seconds, a quarter second, five seconds, half a second, and the second and a quarter left.
+  assert.ok(waitedMs >= 12_000 && waitedMs < 12_200, `given up on after ${waitedMs} ms`);
+  assert.equal(confirmations(h, ts).length, 3);
+  assert.deepEqual(notConfirmed(warn).map((line) => (line as { reason: string }).reason), ['slack_request_timeout']);
+  assert.equal(unreadNotices(h).length, 1);
+  assert.deepEqual(linesAtNotice, [1], 'the line was written when the notice was asked for');
+  assert.deepEqual(await h.stores.slackState.listPendingTurns!(), [], 'nothing is admitted');
+}, { beforeCall: (method, body) => slowRead?.(method, body) }));
+
+test("a notice Slack does not answer is given up on after five seconds, and the delivery ends", async (t) => withHarness(t, async (h) => {
   const warn = t.mock.method(console, 'warn', () => undefined);
   t.mock.method(console, 'error', () => undefined);
   t.after(() => { shortLimits.length = 0; });
-  const ts = '1900011100.000100';
-  shortLimits.push({ call: `conversations.history ${AGENT_BOT}`, retryAfter: 0 });
-  assert.equal((await h.deliver('events', appDm(ts, { text: 'what did we refund?' }), { settle: true })).status, 200);
-  assert.ok(await pendingTurn(h.stores, (job) => job.turn.messageTs === ts), 'admitted on the second read');
-  assert.equal(confirmations(h, ts).length, 2, 'the limited read, then one more');
-
-  const later = '1900011100.000200';
-  shortLimits.push({ call: `conversations.history ${AGENT_BOT}`, retryAfter: 2 });
-  assert.equal((await h.deliver('events', appDm(later, { text: 'and last week?' }), { settle: true })).ok, false, 'Slack delivers it again');
-  assert.equal(await pendingTurn(h.stores, (job) => job.turn.messageTs === later), undefined);
+  // The read is limited past the deadline, so the check gives up at once; the notice's post is then never answered.
+  shortLimits.push({ call: `conversations.history ${AGENT_BOT}`, retryAfter: 13 });
+  const answering = globalThis.fetch;
+  let notices = 0;
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const request = input instanceof Request ? input : new Request(String(input), init);
+    if (!request.url.endsWith('/chat.postMessage')) return answering(input, init);
+    notices += 1;
+    // On the client's own signal, as a real fetch listens: a Request's copy follows it too weakly to keep it alive.
+    const signal = init?.signal ?? request.signal;
+    return new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason)));
+  }) as typeof fetch;
+  const started = performance.now();
+  const response = await h.deliver('events', appDm('1900011170.000100', { text: 'what did we refund?' }), { settle: true });
+  const tookMs = performance.now() - started;
+  assert.equal(response.ok, false, 'the delivery ends as a failure');
+  assert.ok(tookMs >= 4_900 && tookMs < 6_500, `ended after ${Math.round(tookMs)} ms`);
+  assert.equal(notices, 1);
   assert.deepEqual(notConfirmed(warn).map((line) => (line as { reason: string }).reason), ['ratelimited']);
-  assert.equal(confirmations(h, later).length, 1, 'a longer limit is not waited out');
 }, { rateLimits: shortLimits }));
+
+test("a read Slack answers after two timed out is admitted once, and nobody is asked again", async (t) => withHarness(t, async (h) => {
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  t.after(() => { slowRead = undefined; });
+  const ts = '1900011160.000100';
+  let read = 0;
+  slowRead = (method, body) => method === 'conversations.history' && body.get('latest') === ts && ++read <= 2 ? new Promise(() => undefined) : undefined;
+  const { value: response, waitedMs } = await onSuiteClock(t, () => h.deliver('events', appDm(ts, { text: 'what did we refund?' }), { settle: true }));
+  assert.equal(response.status, 200);
+  assert.ok(waitedMs >= 10_750 && waitedMs < 10_950, `admitted after ${waitedMs} ms`);
+  assert.equal(confirmations(h, ts).length, 3);
+  assert.deepEqual((await turnsOn(h, ts)).map((job) => job.turn.text), ['what did we refund?'], 'one turn');
+  assert.deepEqual(unreadNotices(h), []);
+  assert.deepEqual(notConfirmed(warn), []);
+}, { beforeCall: (method, body) => slowRead?.(method, body) }));
+
+test("a message Slack shows as not there yet and then stops answering for, just sent or dated ahead, is given up on within twelve seconds", async (t) => withHarness(t, async (h) => {
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  t.mock.method(console, 'error', () => undefined);
+  t.after(() => { slowRead = undefined; });
+  const now = Math.floor(Date.now() / 1_000);
+  for (const [index, ts] of [`${now}.000100`, `${now + 5}.000100`].entries()) {
+    slowRead = unansweredAfter(h, ts, 1);
+    const { value: response, waitedMs } = await onSuiteClock(t, () => h.deliver('events', appDm(ts, { text: 'refund order 19' }), { settle: true, forged: true }));
+    assert.equal(response.ok, false);
+    // The half-second re-read, five seconds, a quarter second, five seconds; the next half second would leave too little.
+    assert.ok(waitedMs >= 10_750 && waitedMs < 10_950, `given up on after ${waitedMs} ms`);
+    assert.equal(confirmations(h, ts).length, 3);
+    assert.equal(unreadNotices(h).length, index + 1);
+  }
+  assert.deepEqual(notConfirmed(warn).map((line) => (line as { reason: string }).reason), ['slack_request_timeout', 'slack_request_timeout']);
+  assert.deepEqual(await h.stores.slackState.listPendingTurns!(), []);
+}, { beforeCall: (method, body) => slowRead?.(method, body) }));
 
 let beforeRead: ((method: string, body: URLSearchParams) => void) | undefined;
 
@@ -4203,11 +4425,11 @@ test("a press or modal submission through an Agent's app on a card its bot did n
 }));
 
 /**
- * What `work` settles to, and how long it waited on timers first, on the suite's clock: the test owns the timers, and
- * the clock moves one millisecond whenever nothing else can run.
+ * What `work` settles to, and how long it waited on timers first, on the suite's clock: the test owns the timers and
+ * `Date`, and the clock moves one millisecond whenever nothing else can run.
  */
 async function onSuiteClock<T>(t: TestContext, work: () => Promise<T>): Promise<{ value: T; waitedMs: number }> {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
   try {
     let settled = false;
     const running = work().finally(() => { settled = true; });
@@ -4228,20 +4450,22 @@ async function onSuiteClock<T>(t: TestContext, work: () => Promise<T>): Promise<
 const budgetLimits: Array<{ call: string; retryAfter: number }> = [];
 let budgetRead: ((method: string, body: URLSearchParams) => void | Promise<unknown>) | undefined;
 
-test("a message's pauses, for a rate limit and for a re-read, share a second and a half, so they alone never keep Slack waiting three seconds", async (t) => withHarness(t, async (h) => {
+test("a message's reads and pauses, for rate limits and for a re-read, end within twelve seconds of its first read", async (t) => withHarness(t, async (h) => {
   const warn = t.mock.method(console, 'warn', () => undefined);
   t.mock.method(console, 'error', () => undefined);
   t.after(() => { budgetLimits.length = 0; budgetRead = undefined; });
   const ts = `${Math.floor(Date.now() / 1_000)}.000900`;
-  // Limited for a second, then not shown yet, then limited for a second again.
-  budgetLimits.push({ call: `conversations.history ${AGENT_BOT}`, retryAfter: 1 });
+  // Limited for three seconds, then not shown yet, then limited for three seconds at each read after.
+  const limit = { call: `conversations.history ${AGENT_BOT}`, retryAfter: 3 };
+  budgetLimits.push(limit);
   budgetRead = (method, body) => {
-    if (method === 'conversations.history' && body.get('latest') === ts) budgetLimits.push({ call: `conversations.history ${AGENT_BOT}`, retryAfter: 1 });
+    if (method === 'conversations.history' && body.get('latest') === ts) budgetLimits.push(limit, limit, limit);
   };
   const { value: response, waitedMs } = await onSuiteClock(t, () => h.deliver('events', appDm(ts, { text: 'refund order 17' }), { forged: true }));
-  assert.ok(waitedMs >= 1_500 && waitedMs < 1_700, `the delivery is answered after ${waitedMs} ms of pauses`);
-  assert.equal(response.ok, false, 'Slack delivers it again');
-  assert.equal(confirmations(h, ts).length, 3, 'the limit that no longer fits is not waited out');
+  // 3 s, the half-second re-read, 3 s, 3 s: the next three seconds would leave no second to read in.
+  assert.ok(waitedMs >= 9_500 && waitedMs < 9_700, `the delivery is answered after ${waitedMs} ms of pauses`);
+  assert.equal(response.ok, false);
+  assert.equal(confirmations(h, ts).length, 5);
   assert.deepEqual(notConfirmed(warn).map((line) => (line as { reason: string }).reason), ['ratelimited']);
 }, { rateLimits: budgetLimits, beforeCall: (method, body) => budgetRead?.(method, body) }));
 
@@ -4299,7 +4523,8 @@ test("a modal submission whose card read Slack rate limits keeps the modal open 
   const card = await putApprovalCard(h, { agentId: 'agent_support', threadTs, cardTs: '1900011900.000300', poster: OWN_BOT_POST });
   cardLimits.push({ call: `conversations.replies ${AGENT_BOT}`, retryAfter: 1 });
   h.calls.length = 0;
-  const submitted = await submitCard(h, card);
+  const { value: submitted, waitedMs } = await onSuiteClock(t, () => submitCard(h, card));
+  assert.ok(waitedMs < 250, `the submission is answered with no pause, after ${waitedMs} ms`);
   assert.equal(submitted.status, 200);
   assert.deepEqual(await submitted.json(), {
     response_action: 'errors', errors: { [formFieldBlockId(card, 0)]: 'Not sent yet. Try again, or reply in the thread instead.' },

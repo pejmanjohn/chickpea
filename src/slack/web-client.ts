@@ -2,8 +2,11 @@ import { WebClient, WebClientEvent } from '@slack/web-api';
 
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 
-/** `rejectRateLimitedCalls`: a rate-limited call fails at once instead of waiting out Retry-After. */
-export interface SlackWebClientOptions { rejectRateLimitedCalls?: boolean; onRateLimited?(): void }
+/**
+ * `rejectRateLimitedCalls`: a rate-limited call fails at once instead of waiting out Retry-After. `timeoutMs`: how
+ * long a call may take, ten seconds unless given.
+ */
+export interface SlackWebClientOptions { rejectRateLimitedCalls?: boolean; timeoutMs?: number; onRateLimited?(): void }
 
 /** Build an identity-specific client shared by admission and execution. The
  * fetch wrapper avoids workerd's receiver check, and `manual` replaces the
@@ -13,7 +16,7 @@ export function createSlackWebClient(botToken: string | undefined, options: Slac
   const slackApiUrl = process.env.SLACK_API_URL;
   const client = new WebClient(botToken, {
     retryConfig: { retries: 0 },
-    timeout: 10_000,
+    timeout: options.timeoutMs ?? 10_000,
     ...(options.rejectRateLimitedCalls ? { rejectRateLimitedCalls: true } : {}),
     fetch: (input, init) => {
       const patchedInit =
