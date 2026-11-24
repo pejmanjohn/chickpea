@@ -19,7 +19,7 @@ export interface SlackTurnHearing {
   botUserId: string;
   /** An Agent's own app heard it; Chickpea's bot otherwise. */
   agentApp: boolean;
-  /** Chickpea built the turn (an ask, a setup's wake, a hand-off), so no bot's hearing says which DM it is in. */
+  /** Chickpea built the turn (a setup's wake, a hand-off) and does not know which DM it is in, and no bot's hearing says. */
   byHost?: boolean;
   /** Slack said the bot that heard it is not in the Channel. */
   notInChannel?: boolean;

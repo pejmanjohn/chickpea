@@ -96,13 +96,13 @@ const AGENT_APP = 'A0AGENT1';
 const AGENT_SECRET = 'agent-app-signing-secret';
 const AGENT_BOT = 'xoxb-agent-bot';
 const AGENT_BOT_USER = 'UAGENTBOT';
-const BOTS = [[MAIN_BOT, 'UBOT'], [AGENT_BOT, AGENT_BOT_USER]] as const;
 /** The Owner's DM with Chickpea's app. `D1` is their DM with Support's own app. */
 const CHICKPEA_DM = 'DCHICKPEA';
 const DM_BOTS: Partial<Record<string, string>> = { D1: AGENT_BOT, [CHICKPEA_DM]: MAIN_BOT };
 const FINANCE_APP = 'A0AGENT2';
 const FINANCE_BOT = 'xoxb-finance-bot';
 const FINANCE_BOT_USER = 'UFINBOT';
+const BOTS = [[MAIN_BOT, 'UBOT'], [AGENT_BOT, AGENT_BOT_USER], [FINANCE_BOT, FINANCE_BOT_USER]] as const;
 /** Each Agent app bot's DM with the Owner, as `conversations.open` names it. */
 const APP_DMS: Partial<Record<string, string>> = { [AGENT_BOT]: 'D1', [FINANCE_BOT]: 'DFINANCE' };
 const HOST: AgentSlackAppsHost = {
@@ -263,8 +263,13 @@ async function withHarness(
     )) {
       return Response.json({ ok: false, error: 'channel_not_found' });
     }
+    // As in Slack, a bot lists the members of a private Channel or group DM only when it is in it.
+    if (method === 'conversations.members' && (options.privateChannels?.includes(channel) || channel.startsWith('G')) &&
+      outside.get(token ?? '')?.has(channel)) {
+      return Response.json({ ok: false, error: 'channel_not_found' });
+    }
     // As in Slack, a bot posts or edits only where it is: a Channel or group DM it is in, and its own app's DM.
-    if (['chat.postMessage', 'chat.update', 'chat.startStream', 'chat.appendStream', 'chat.stopStream'].includes(method)) {
+    if (['chat.postMessage', 'chat.postEphemeral', 'chat.update', 'chat.startStream', 'chat.appendStream', 'chat.stopStream'].includes(method)) {
       if (channel.startsWith('C') && outside.get(token ?? '')?.has(channel)) return Response.json({ ok: false, error: 'not_in_channel' });
       if (channel.startsWith('G') && outside.get(token ?? '')?.has(channel)) return Response.json({ ok: false, error: 'channel_not_found' });
       const dmBot = DM_BOTS[channel];
@@ -2165,14 +2170,11 @@ test("a teammate with its own app, asked inside another Agent's own DM, never ge
   }, env, { stores: h.stores });
   const asked = await pendingTurn(h.stores, (job) => job.assignment.agentId === 'agent_finance');
   assert.ok(asked, 'Finance is asked in the thread');
-  assert.equal(asked.turn.dmBotUserId, undefined);
-  assert.notEqual(asked.turn.speaker?.kind, 'own_bot', "Support's DM is not Finance's own");
+  assert.equal(asked.turn.dmBotUserId, AGENT_BOT_USER, "the asking run's speaker places the ask in Support's DM");
+  assert.deepEqual(asked.turn.speaker, { kind: 'unavailable', reason: 'no_bot_can_post' }, "Support's DM is not Finance's own");
   await postAsRun(h, asked).catch(() => undefined);
-  assert.deepEqual(
-    h.calls.filter((call) => call.token === FINANCE_BOT).map((call) => `${call.method} ${call.body.get('channel') ?? call.body.get('users')}`),
-    ['conversations.open U1'],
-    "Finance's token only opened its own DM with the Owner, which is not this one",
-  );
+  assert.deepEqual(h.calls.filter((call) => call.token === FINANCE_BOT), [], "Finance's token is never used");
+  assert.deepEqual(h.calls.filter((call) => call.method.startsWith('chat.') && call.token !== AGENT_BOT), [], 'and nothing posts in the DM for Finance');
 }));
 
 test("a mention the app's own bot heard in a group DM it is in answers as that bot, with no persona", async (t) => withHarness(t, async (h) => {
@@ -2702,8 +2704,8 @@ test("in Chickpea's DM a mention of the app Agent's bot addresses it as a handle
   assert.deepEqual((await turnsOn(h, alone)).map(shape), [['agent_support', undefined, THROUGH_CHICKPEA]], "the bot's mention alone is Support's");
   assert.deepEqual(personaOnAnyAppToken(h), []);
   assert.deepEqual(h.calls.filter((call) => call.token === AGENT_BOT && call.method.startsWith('chat.')), [], "the app's bot is not in Chickpea's DM");
-  assert.deepEqual(h.calls.filter((call) => call.method === 'conversations.members'), [],
-    "Chickpea's bot heard the message in its own DM, so routing asks Slack who is in it for nobody");
+  assert.deepEqual(h.calls.filter((call) => call.method === 'conversations.members' || call.method === 'conversations.open'), [],
+    "Chickpea's bot heard the message in its own DM, so nobody asks Slack who is in it or whose DM it is");
 }));
 
 test("without the port a mention of the app Agent's bot in Chickpea's DM is plain text, and in a user-group workspace Chickpea's DM asks Slack nothing more", async (t) => withHarness(t, async (h) => {
@@ -2792,7 +2794,25 @@ test("asks in a thread in Chickpea's DM reach each way between app and user-grou
   assert.deepEqual(sender(await postAsRun(h, supportAsked)), AS_SUPPORT);
   assert.deepEqual(h.calls.filter((call) => (call.token === AGENT_BOT || call.token === FINANCE_BOT) && call.method.startsWith('chat.')), [],
     "no app's bot is in Chickpea's DM");
+  assert.deepEqual(h.calls.filter((call) => call.method === 'conversations.open'), [], 'and no app is asked whose DM it is');
 }));
+
+test("in Chickpea's DM an app Agent named beside another, or asked, answers through Chickpea without its app's token, even when Slack refuses that token", async (t) => withHarness(t, async (h) => {
+  const root = '1900005550.000100';
+  await h.stores.config.putAgentThreadRoute({ workspaceId: TEAM, channelId: CHICKPEA_DM, threadTs: root, agentId: 'agent_finance', agentGeneration: 1 });
+  const ts = '1900005550.000200';
+  assert.equal((await h.deliverToChickpea(chickpeaDmMessage(root, ts, `<!subteam^SFINANCE|@finance> bring in <@${AGENT_BOT_USER}> on the refunds`))).status, 200);
+  const [finance, support] = await turnsOn(h, ts);
+  assert.deepEqual([finance, support].map((job) => job && shape(job)),
+    [['agent_finance', 0, THROUGH_CHICKPEA], ['agent_support', 1, THROUGH_CHICKPEA]], 'each Agent named answers once');
+  assert.deepEqual(sender(await postAsRun(h, support!)), AS_SUPPORT);
+  await answered(h, support!, '1900005550.000250');
+  const asked = await askedBy(h, finance!, '1900005550.000300', posted(finance!, '@support what did we refund?'));
+  assert.deepEqual(shape(asked), ['agent_support', undefined, THROUGH_CHICKPEA]);
+  assert.deepEqual(sender(await postAsRun(h, asked)), AS_SUPPORT);
+  assert.deepEqual(h.calls.filter((call) => call.method === 'conversations.open'), [], "nobody asks Slack whose DM Chickpea's DM is");
+  assert.deepEqual(h.calls.filter((call) => call.token === AGENT_BOT), [], "the app's token is not used");
+}, { refuse: { [`conversations.open ${AGENT_BOT}`]: 'account_inactive' } }));
 
 const NO_TEAMMATE_HERE = 'Teammates: no other Chickpea Agent can join this direct message, so you cannot ask a teammate anything here, and you never answer for one. When the person needs a teammate, name it without @ and tell them they can mention it in a channel or message it directly.';
 
@@ -2911,4 +2931,59 @@ test("in a user-group workspace a group DM naming two Agents is answered by each
   assert.equal((await h.deliverToChickpea(messageIn('G1', ts, '<!subteam^SSUPPORT|@support> and <!subteam^SFINANCE|@finance> compare refunds').chickpea)).status, 200);
   assert.deepEqual((await turnsOn(h, ts)).map(shape), [['agent_support', 0, THROUGH_CHICKPEA], ['agent_finance', 1, THROUGH_CHICKPEA]]);
   assert.deepEqual(h.calls.filter((call) => call.token !== MAIN_BOT || call.method === 'conversations.open').map((call) => `${call.method} ${call.token}`), []);
+}));
+
+test("a group DM message naming two app Agents where both their bots are and Chickpea's is not: each answers once as its own bot, from the two apps' deliveries alone", async (t) => withHarness(t, async (h) => {
+  t.mock.method(console, 'info', () => undefined);
+  await giveFinanceApp(h);
+  const financeDelivery = withAgentSlackAppHandoff(h.base, { kind: 'delivery', agentId: 'agent_finance', appId: FINANCE_APP, signingSecret: 'signing-2' });
+  for (const [index, text] of [
+    `<@${AGENT_BOT_USER}> and <@${FINANCE_BOT_USER}> compare refunds`,
+    `<@${FINANCE_BOT_USER}> and <@${AGENT_BOT_USER}> compare refunds`,
+  ].entries()) {
+    const financeFirst = index === 1;
+    for (const first of ['support', 'finance'] as const) {
+      const ts = `1900006100.000${index}${first === 'finance' ? 2 : 1}0`;
+      const support = messageIn('G3', ts, text).app;
+      const finance = {
+        ...support, event_id: `EvFinance${ts}`, api_app_id: FINANCE_APP,
+        authorizations: [{ team_id: TEAM, user_id: FINANCE_BOT_USER, is_bot: true, is_enterprise_install: false }],
+      };
+      const order = first === 'finance' ? ['finance', 'support', 'finance'] : ['support', 'finance', 'support'];
+      for (const app of order) {
+        const response = app === 'finance'
+          ? await h.deliver('events', finance, { env: financeDelivery, secret: 'signing-2', settle: true })
+          : await h.deliver('events', support, { settle: true });
+        assert.equal(response.status, 200);
+      }
+      const turns = await turnsOn(h, ts);
+      const label = `${financeFirst ? 'Finance' : 'Support'} named first, ${first} heard first`;
+      assert.deepEqual(turns.map(shape), financeFirst
+        ? [['agent_finance', 0, FINANCE_OWN_BOT], ['agent_support', 1, SUPPORT_BOT]]
+        : [['agent_support', 0, SUPPORT_BOT], ['agent_finance', 1, FINANCE_OWN_BOT]], label);
+      assert.deepEqual(await Promise.all(turns.map(async (job) => sender(await postAsRun(h, job)))),
+        financeFirst ? [FINANCE_POSTS_AS_ITS_BOT, OWN_BOT] : [OWN_BOT, FINANCE_POSTS_AS_ITS_BOT], label);
+    }
+  }
+  assert.deepEqual(h.calls.filter((call) => call.token === MAIN_BOT && call.method.startsWith('chat.')), [], "Chickpea's bot is not in the group DM");
+  assert.deepEqual(personaOnAnyAppToken(h), []);
+}, { notMemberOf: { [MAIN_BOT]: ['G3'] } }));
+
+test("in a group DM thread a user-group Agent's ask reaches the app Agent that answered there, which answers once as its own bot", async (t) => withHarness(t, async (h) => {
+  t.mock.method(console, 'info', () => undefined);
+  const ts = '1900006200.000100';
+  const message = messageIn('G1', ts, `<!subteam^SFINANCE|@finance> and <@${AGENT_BOT_USER}> compare refunds`);
+  assert.equal((await h.deliverToChickpea(message.chickpea)).status, 200);
+  assert.equal((await h.deliver('events', message.app, { settle: true })).status, 200);
+  const [finance, support] = await turnsOn(h, ts);
+  assert.deepEqual([finance, support].map((job) => job && shape(job)),
+    [['agent_finance', 0, THROUGH_CHICKPEA], ['agent_support', 1, SUPPORT_BOT]]);
+  // As in a DM thread, an Agent can be asked in a group DM thread once it has answered there.
+  await answered(h, support!, '1900006200.000150');
+  const ask = posted(finance!, '@support what did we refund?');
+  assert.equal(ask, `<@${AGENT_BOT_USER}> what did we refund?`);
+  const asked = await askedBy(h, finance!, '1900006200.000200', ask);
+  assert.deepEqual(shape(asked), ['agent_support', undefined, SUPPORT_BOT]);
+  assert.deepEqual(sender(await postAsRun(h, asked)), OWN_BOT);
+  assert.deepEqual(personaOnAnyAppToken(h), []);
 }));

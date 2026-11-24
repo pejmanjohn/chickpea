@@ -1876,6 +1876,12 @@ interface SlackAgentAskAdmission {
   targetAgentId: string;
   /** The turn's claim key and job id, when the message and Agent alone do not name it (a setup's wake). */
   messageKey?: string;
+  /**
+   * In a DM, the host knows whose DM it is: the turn's `dmBotUserId` names an
+   * Agent app's, and its absence means Chickpea's. Admission then asks no
+   * app's token which DM this is.
+   */
+  dmKnown?: true;
   /** Called once the turn is durably queued, before anything else can fail. */
   onQueued?(): void;
   /**
@@ -2013,6 +2019,11 @@ export async function processSlackAgentAsks(
 
   const originMessageTs = agentAskOrigin(asking);
   const fromHandle = agentSlackHandle(from)?.handle;
+  // An ask is in the asking run's DM, which that run's stored speaker names: its own app's bot, or Chickpea's.
+  const dmSpeaker = asking.channelType === 'im' &&
+    (asking.speaker?.kind === 'own_bot' || asking.speaker?.kind === 'chickpea_as_agent')
+    ? asking.speaker
+    : undefined;
   for (const { agent, delivery } of targets) {
     // The asked Agent reads the ask as a person's mention arrives, so quoting it asks nobody.
     const text = slackReadbackText(delivery.text);
@@ -2028,6 +2039,7 @@ export async function processSlackAgentAsks(
       contextMode: 'thread',
       ...(asking.channelType ? { channelType: asking.channelType } : {}),
       ...(asking.requesterTimezone ? { requesterTimezone: asking.requesterTimezone } : {}),
+      ...(dmSpeaker?.kind === 'own_bot' ? { dmBotUserId: dmSpeaker.botUserId } : {}),
       agentAsk: {
         fromAgentId: from.id,
         fromAgentName: from.name,
@@ -2059,6 +2071,7 @@ export async function processSlackAgentAsks(
       kind: 'ask',
       turn,
       targetAgentId: agent.id,
+      ...(dmSpeaker ? { dmKnown: true as const } : {}),
       ...(provided?.enqueueTurn ? { enqueueTurn: provided.enqueueTurn } : {}),
       // A handed-back answer at the limit asked nobody: no pause to announce.
       ...(handedBack ? {} : {
@@ -2379,7 +2392,8 @@ async function admitCoAddressedTurns(input: {
       { ...input.payload, event_id: coTurn.eventId },
       input.platformEnv,
       input.execution,
-      { kind: 'ask', turn: coTurn, targetAgentId: agent.agentId },
+      // Only Chickpea's delivery fans a DM message out, so a DM here is Chickpea's.
+      { kind: 'ask', turn: coTurn, targetAgentId: agent.agentId, dmKnown: true },
     );
   }
 }
@@ -4378,7 +4392,7 @@ async function processSlackEvent(
     hearing: {
       botUserId: resolvedBotUserId,
       agentApp: Boolean(execution?.agentApp),
-      ...(ask ? { byHost: true } : {}),
+      ...(ask && !(ask.kind === 'ask' && ask.dmKnown) ? { byHost: true } : {}),
       ...(hearingBotNotInChannel ? { notInChannel: true } : {}),
       ...(execution?.installationBot && installation.botUserId
         ? { installationBot: { botUserId: installation.botUserId, transport: execution.installationBot } }
