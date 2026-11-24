@@ -5136,6 +5136,7 @@
             }
           }
         },
+        "inAgentAppDm?": "true",
         "instructions": "string",
         "interactionMode?": "\"workspace_management\"",
         "model": "string",
@@ -5189,6 +5190,7 @@
             }
           }
         },
+        "inAgentAppDm?": "true",
         "instructions": "string",
         "interactionMode?": "\"workspace_management\"",
         "model": "string",
@@ -14742,6 +14744,7 @@
             }
           }
         },
+        "inAgentAppDm?": "true",
         "interactionMode?": "\"workspace_management\"",
         "model?": "string",
         "modelAttribution?": "#AgentModelAttribution",

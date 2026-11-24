@@ -374,24 +374,31 @@ export async function resolveAgentRoute(
   // Several handles address each of those Agents, in order: the first takes
   // the thread and the rest answer after it, as guests. Every one must be
   // reachable by this person here, or none is asked; the first is checked
-  // below as the routed Agent. In a Channel or a group DM an Agent app's bot
-  // is its Agent's handle while the host serves that app. In a Channel,
-  // Chickpea's bot and that app's bot each hear such a message and route it
-  // alike, so whichever hears it first admits every Agent it names and the
-  // other delivery finds the message taken. In a group DM an app's delivery
-  // admits only its own Agent, so the two deliveries do not route it alike:
-  // any other Agent named there answers only if Chickpea's delivery admits it.
-  const addressed = (surface === 'channel' || groupDm
-    ? agentsNamed(turn.text, agentsByGroupId, agents)
-    : mentionedAgents).slice(0, MAX_ADDRESSED_AGENTS);
+  // below as the routed Agent. An Agent app's bot is its Agent's handle while
+  // the host serves that app. In a Channel or a group DM, Chickpea's bot and
+  // that app's bot each hear such a message and route it alike, so whichever
+  // hears it first admits every Agent it names and the other delivery finds
+  // the message taken. An app's own DM is its Agent's alone: no other bot is
+  // in it, so an Agent it names is no turn's.
+  const conversation = slackConversationKind(turn);
+  const named = agentsNamed(turn.text, agentsByGroupId, agents).slice(0, MAX_ADDRESSED_AGENTS);
+  // Nobody can add an Agent to a group DM: one that no bot there can post for
+  // gets no turn, and the others it names answer.
+  const addressed: CustomAgentConfig[] = [];
+  for (const agent of named) {
+    if (!groupDm || named.length === 1 || !input.postingBotInChannel || await input.postingBotInChannel(agent)) {
+      addressed.push(agent);
+    }
+  }
   const severalAgents = addressed.length > 1 && !input.appHomeAgentId &&
-    (appAgentId === undefined || surface === 'channel');
+    (appAgentId === undefined || conversation !== 'im');
   // Each of them answers as its own bot: its app's, or Chickpea's. An Agent
   // this person could use or be offered here whose bot is not in the Channel
   // is not in it either: its reply could not be posted, and an Add that only
-  // grants it would leave that bot out.
+  // grants it would leave that bot out. Chickpea's bot heard a message in its
+  // own DM, so it can answer for each of them there.
   const postingBotAbsent = async (agent: CustomAgentConfig, access: AgentAccess): Promise<boolean> =>
-    severalAgents && (access === 'allowed' || access === 'not_in_channel') &&
+    severalAgents && surface === 'channel' && (access === 'allowed' || access === 'not_in_channel') &&
     input.postingBotInChannel !== undefined && !await input.postingBotInChannel(agent);
   if (severalAgents) {
     for (const agent of addressed.slice(1)) {
@@ -494,7 +501,7 @@ function mentionLabelNamesAgent(text: string, userGroupId: string, agents: reado
 
 const AGENT_ADDRESS = /<!subteam\^([A-Z0-9]+)(?:\|[^>]*)?>|<@([UW][A-Z0-9]+)(?:\|[^>]*)?>/g;
 
-/** The Agents a Channel or group DM message names by user group or by served app bot, once each, in the order it names them. */
+/** The Agents a message names by user group or by served app bot, once each, in the order it names them. */
 function agentsNamed(
   text: string,
   byGroupId: ReadonlyMap<string, CustomAgentConfig>,

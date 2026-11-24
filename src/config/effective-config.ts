@@ -166,24 +166,39 @@ export function withPlainHandleIdentity(config: EffectiveSlackConfig): Effective
   };
 }
 
-type TeammateAssignment = Pick<ResolvedAssignment, 'teammates'> & {
+type TeammateAssignment = Pick<ResolvedAssignment, 'teammates' | 'inAgentAppDm'> & {
   agent: Pick<CustomAgentConfig, 'kind'>;
 };
 
-/** The teammates this Agent may ask here: none for the built-in Chickpea. */
+/** The teammates this Agent may ask here: none for the built-in Chickpea, and none in its own app's DM. */
 function askableTeammates(assignment: TeammateAssignment): AgentTeammate[] {
-  return agentMayAskTeammates(assignment.agent) ? assignment.teammates ?? [] : [];
+  return agentMayAskTeammates(assignment.agent) && assignment.inAgentAppDm !== true ? assignment.teammates ?? [] : [];
+}
+
+/**
+ * In its own app's DM no other Agent can post, so a user Agent is told it
+ * asks no teammate there, and where the person can reach one.
+ */
+function teammatesElsewhereInstructions(teammates: readonly AgentTeammate[]): string {
+  return [
+    'Teammates: no other Chickpea Agent can join this direct message, so you cannot ask a teammate anything here, and you never answer for one. When the person needs a teammate, name it without @ and tell them they can mention it in a channel or message it directly.',
+    ...(teammates.length ? [`Teammates named here: ${teammates.map(({ name }) => JSON.stringify(name)).join(', ')}.`] : []),
+  ].join('\n');
 }
 
 /**
  * Whom this Agent can ask here, and how asking works: a plain `@handle` in
  * its reply asks that Agent, which answers in the thread after it. The
  * thread's own Agent gets a turn once its teammates answer; a guest only
- * when it asks to be mentioned back. Absent when it has no teammates here.
+ * when it asks to be mentioned back. Absent when it has no teammates here;
+ * in its own app's DM, where it can ask none, it is told so instead.
  */
 export function agentTeammateInstructions(
   assignment: TeammateAssignment & Pick<ResolvedAssignment, 'threadGuest'>,
 ): string | undefined {
+  if (assignment.inAgentAppDm === true && agentMayAskTeammates(assignment.agent)) {
+    return teammatesElsewhereInstructions(assignment.teammates ?? []);
+  }
   const teammates = askableTeammates(assignment);
   if (teammates.length === 0) return undefined;
   const example = teammates[0]!.handle;

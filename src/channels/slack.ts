@@ -242,7 +242,6 @@ import {
   AGENT_ASK_MAX_TARGETS,
   AGENT_ASK_PAUSE_TEXT,
   AGENT_ASK_TURN_LIMIT,
-  agentAskNotInAgentDmText,
   agentAskOrigin,
   agentSlackHandle,
   isHandedBackTurn,
@@ -1885,6 +1884,12 @@ interface SlackAgentAskAdmission {
   targetAgentId: string;
   /** The turn's claim key and job id, when the message and Agent alone do not name it (a setup's wake). */
   messageKey?: string;
+  /**
+   * In a DM, the host knows whose DM it is: the turn's `dmBotUserId` names an
+   * Agent app's, and its absence means Chickpea's. Admission then asks no
+   * app's token which DM this is.
+   */
+  dmKnown?: true;
   /** Called once the turn is durably queued, before anything else can fail. */
   onQueued?(): void;
   /**
@@ -2006,15 +2011,6 @@ export async function processSlackAgentAsks(
       if (targets.length < AGENT_ASK_MAX_TARGETS) targets.push({ agent, delivery });
     }
   }
-  // Neither a teammate's bot nor Chickpea's can post in an Agent app's own DM: no teammate is asked there.
-  if (asking.dmBotUserId !== undefined) {
-    for (const { agent } of targets) {
-      await postAgentAskNotInAgentDm({ stores, platformEnv, asking, from, teammate: agent }).catch((error: unknown) => {
-        console.warn('[chickpea] agent ask refusal line failed:', error instanceof Error ? error.name : 'unknown');
-      });
-    }
-    return;
-  }
   // The thread's own Agent, if it started this chain: asks made here carry it,
   // and a guest's answer that asks nobody goes back to it. One that mentions
   // an Agent is a report or a further ask, whose answer comes back later.
@@ -2031,6 +2027,11 @@ export async function processSlackAgentAsks(
 
   const originMessageTs = agentAskOrigin(asking);
   const fromHandle = agentSlackHandle(from)?.handle;
+  // An ask is in the asking run's DM, which that run's stored speaker names: its own app's bot, or Chickpea's.
+  const dmSpeaker = asking.channelType === 'im' &&
+    (asking.speaker?.kind === 'own_bot' || asking.speaker?.kind === 'chickpea_as_agent')
+    ? asking.speaker
+    : undefined;
   for (const { agent, delivery } of targets) {
     // The asked Agent reads the ask as a person's mention arrives, so quoting it asks nobody.
     const text = slackReadbackText(delivery.text);
@@ -2046,6 +2047,7 @@ export async function processSlackAgentAsks(
       contextMode: 'thread',
       ...(asking.channelType ? { channelType: asking.channelType } : {}),
       ...(asking.requesterTimezone ? { requesterTimezone: asking.requesterTimezone } : {}),
+      ...(dmSpeaker?.kind === 'own_bot' ? { dmBotUserId: dmSpeaker.botUserId } : {}),
       agentAsk: {
         fromAgentId: from.id,
         fromAgentName: from.name,
@@ -2077,6 +2079,7 @@ export async function processSlackAgentAsks(
       kind: 'ask',
       turn,
       targetAgentId: agent.id,
+      ...(dmSpeaker ? { dmKnown: true as const } : {}),
       ...(provided?.enqueueTurn ? { enqueueTurn: provided.enqueueTurn } : {}),
       // A handed-back answer at the limit asked nobody: no pause to announce.
       ...(handedBack ? {} : {
@@ -2397,7 +2400,8 @@ async function admitCoAddressedTurns(input: {
       { ...input.payload, event_id: coTurn.eventId },
       input.platformEnv,
       input.execution,
-      { kind: 'ask', turn: coTurn, targetAgentId: agent.agentId },
+      // Only Chickpea's delivery fans a DM message out, so a DM here is Chickpea's.
+      { kind: 'ask', turn: coTurn, targetAgentId: agent.agentId, dmKnown: true },
     );
   }
 }
@@ -2472,43 +2476,6 @@ async function postAgentAskPause(input: {
       turn,
       { runtimeContract: 'chickpea-v1', agentId: from.id },
       { messageTs: posted.ts, text: AGENT_ASK_PAUSE_TEXT },
-    ).catch(() => undefined);
-  }
-}
-
-/**
- * An Agent asked a teammate from inside its own app's DM, where the
- * teammate cannot reply: the asking Agent's bot says so in the thread, once
- * per teammate for the person's message, and the line enters the thread
- * record, so the Agent reads why on its next turn. A run with no stored own
- * bot posts nothing: no other bot can post there.
- */
-async function postAgentAskNotInAgentDm(input: {
-  stores: AppStores;
-  platformEnv: PlatformEnv | undefined;
-  asking: SlackAgentAskRequest['turn'];
-  from: CustomAgentConfig;
-  teammate: CustomAgentConfig;
-}): Promise<void> {
-  const { asking, from } = input;
-  const ownBot = await ownBotClient(input.platformEnv, asking.workspaceId, from.id, asking.speaker);
-  if (!ownBot) return;
-  const key = `agent-ask-not-in-dm:${asking.workspaceId}:${asking.channelId}:${asking.threadTs}:${agentAskOrigin(asking)}:${input.teammate.id}`;
-  if (!(await input.stores.slackState.claim(key))) return;
-  const text = agentAskNotInAgentDmText(input.teammate.name);
-  let posted: Awaited<ReturnType<typeof ownBot.chat.postMessage>>;
-  try {
-    posted = await ownBot.chat.postMessage({ channel: asking.channelId, thread_ts: asking.threadTs, text });
-  } catch (error) {
-    await input.stores.slackState.release(key).catch(() => undefined);
-    throw error;
-  }
-  if (typeof posted.ts === 'string' && posted.ts) {
-    await recordDeliveredSlackAgentMessage(
-      input.stores.config,
-      asking,
-      { runtimeContract: 'chickpea-v1', agentId: from.id },
-      { messageTs: posted.ts, text },
     ).catch(() => undefined);
   }
 }
@@ -4433,7 +4400,7 @@ async function processSlackEvent(
     hearing: {
       botUserId: resolvedBotUserId,
       agentApp: Boolean(execution?.agentApp),
-      ...(ask ? { byHost: true } : {}),
+      ...(ask && !(ask.kind === 'ask' && ask.dmKnown) ? { byHost: true } : {}),
       ...(hearingBotNotInChannel ? { notInChannel: true } : {}),
       ...(execution?.installationBot && installation.botUserId
         ? { installationBot: { botUserId: installation.botUserId, transport: execution.installationBot } }
@@ -4441,6 +4408,10 @@ async function processSlackEvent(
     },
     env: platformEnv,
   });
+  // Admission marked the Agent app's own DM, which no other bot is in.
+  if (slackConversationKind(turn) === 'im' && turn.dmBotUserId !== undefined) {
+    assignment = { ...assignment, inAgentAppDm: true };
+  }
 
   // Canonical Work admission stores a concrete configured model. A missing
   // model is an operator configuration error, but it must still follow the
