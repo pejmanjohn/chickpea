@@ -132,9 +132,12 @@ code reads an app's row as a person's. See
 
 Reading uses scopes the app already has: `channels:history`, `groups:history`,
 `im:history`, `channels:read`, `groups:read`, and `users:read`. No reconnect is
-needed. A group DM also needs `mpim:history`, which apps made before group DM
-support lack. Without it, a group DM turn sees only its own message, and the
-reading tools cannot read that group DM.
+needed. A group DM also needs `mpim:history`, which workspace apps made before
+group DM support lack, and so do Agent apps made before an Agent's own app
+asked for it. Without it, a group DM turn sees only its own message, and the
+reading tools cannot read that group DM. An Agent app reads a message back
+from Slack before it trusts who sent it, so without the scope a mention of its
+bot in a group DM that only its bot is in is refused.
 
 Reading another channel, or looking up a person, from a DM first checks that
 the DM is not shared with another organization. With `im:read`, Slack's

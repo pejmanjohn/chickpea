@@ -135,9 +135,8 @@ async function withHarness(t: TestContext, run: (h: Harness) => Promise<void>): 
     const token = request.headers.get('authorization')?.replace(/^Bearer /, '') ?? form.get('token') ?? undefined;
     calls.push({ method, token, body });
     const channel = form.get('channel') ?? 'C1';
-    // As in Slack, the Agent app's token holds no im:read or mpim:history.
-    if (token === AGENT_BOT && ((method === 'conversations.info' && channel.startsWith('D')) ||
-      (['conversations.history', 'conversations.replies'].includes(method) && channel.startsWith('G')))) {
+    // As in Slack, the Agent app's token holds no im:read.
+    if (token === AGENT_BOT && method === 'conversations.info' && channel.startsWith('D')) {
       return Response.json({ ok: false, error: 'missing_scope' });
     }
     const answer = method === 'auth.test'

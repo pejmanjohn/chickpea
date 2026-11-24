@@ -170,7 +170,10 @@ function userAgent(id: string, name: string, handle: string): CustomAgentConfig 
  * `sharedFrom` are Channels whose `conversations.info` names another workspace as their context team.
  * `refuse` answers a call, keyed `<method> <token>`, with that Slack error.
  * `rateLimited` answers a call, keyed the same way, with HTTP 429 and a one-second Retry-After.
+ * `rateLimits` answers the next call matching each entry once with HTTP 429 and that Retry-After, in seconds.
  * `history` and `replies` are the messages `conversations.history` and `conversations.replies` return; `reactions.get` finds its message in `replies`.
+ * `grantedScopes` are, per Agent app bot token, the scopes Slack granted it; by default today's.
+ * `beforeCall` sees each call that is not refused or rate limited, before Slack answers it.
  */
 async function withHarness(
   t: TestContext,
@@ -184,6 +187,9 @@ async function withHarness(
     rateLimited?: readonly string[];
     history?: readonly Record<string, unknown>[];
     replies?: readonly Record<string, unknown>[];
+    grantedScopes?: Partial<Record<string, readonly string[]>>;
+    rateLimits?: Array<{ call: string; retryAfter: number }>;
+    beforeCall?: (method: string, body: URLSearchParams) => void;
   } = {},
 ): Promise<void> {
   await stopNodeTurnRelay();
@@ -305,11 +311,18 @@ async function withHarness(
     if (options.rateLimited?.includes(`${method} ${token}`)) {
       return Response.json({ ok: false, error: 'ratelimited' }, { status: 429, headers: { 'retry-after': '1' } });
     }
+    const limit = options.rateLimits?.findIndex((entry) => entry.call === `${method} ${token}`) ?? -1;
+    if (limit >= 0) {
+      const { retryAfter } = options.rateLimits!.splice(limit, 1)[0]!;
+      return Response.json({ ok: false, error: 'ratelimited' }, { status: 429, headers: { 'retry-after': String(retryAfter) } });
+    }
+    options.beforeCall?.(method, body);
     // As in Slack, an Agent app's token is refused what its scopes leave out: reading a DM (im:read), a group DM's
-    // messages (mpim:history), and opening a group DM (mpim:write).
+    // messages when it was granted no mpim:history, and opening a group DM (mpim:write).
     if (token && APP_DMS[token] && (
       (method === 'conversations.info' && channel.startsWith('D')) ||
-      (['conversations.history', 'conversations.replies'].includes(method) && channel.startsWith('G')) ||
+      (['conversations.history', 'conversations.replies'].includes(method) && channel.startsWith('G') &&
+        !(options.grantedScopes?.[token] ?? AGENT_APP_BOT_SCOPES).includes('mpim:history')) ||
       (method === 'conversations.open' && (body.get('users') ?? '').includes(','))
     )) {
       return Response.json({ ok: false, error: 'missing_scope' });
@@ -636,9 +649,11 @@ test("an interaction is served the same way and runs with the Agent's client", a
   assert.equal((await h.deliver('interactions', { ...click, api_app_id: MAIN_APP.appId })).status, 404, 'another app');
   assert.equal((await h.deliver('interactions', { ...click, team: { id: 'TOTHER' } })).status, 404, 'another workspace');
   assert.equal(h.calls.length, 0);
+  h.hold('D1', { ts: '1900000000.000050', user: AGENT_BOT_USER, text: 'Approve this change?' });
   assert.equal((await h.deliver('interactions', click)).status, 200);
-  for (let attempt = 0; attempt < 100 && !h.calls.length; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.deepEqual(h.calls.map((call) => call.method), ['chat.postEphemeral'], 'a click on a closed card is told so privately');
+  for (let attempt = 0; attempt < 100 && h.calls.length < 2; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(h.calls.map((call) => call.method), ['conversations.history', 'chat.postEphemeral'],
+    "the card is read back as the app's bot's, and a click on a closed card is told so privately");
   assert.ok(h.calls.every((call) => call.token === AGENT_BOT), "every call the click makes is the Agent's");
 }));
 
@@ -907,6 +922,9 @@ test("a click on the app Agent's approval card reaches that Agent, as the thread
         status: 'open', messageTs: cardTs, createdAt: now, updatedAt: now, expiresAt: now + 60_000,
       },
     });
+    // Support's bot posted the card in the thread, as Slack shows it.
+    h.hold('C1', { ts: threadTs, user: 'U1', text: `<@${AGENT_BOT_USER}> remember the refund account` });
+    h.hold('C1', { ts: cardTs, user: AGENT_BOT_USER, text: 'Approve this change?', thread_ts: threadTs });
     h.calls.length = 0;
     const clicked = await h.deliver('interactions', {
       type: 'block_actions', api_app_id: AGENT_APP, team: { id: TEAM }, user: { id: 'U1' }, trigger_id: 'trigger-1',
@@ -2272,7 +2290,6 @@ test('a mention both deliveries route, the app having become able to answer betw
 }, { notMemberOf: { [AGENT_BOT]: ['C1'] } }));
 
 test("a mention of the app Agent's bot in a group DM both bots are in is answered once, through Chickpea's delivery, as the app's bot", async (t) => withHarness(t, async (h) => {
-  t.mock.method(console, 'warn', () => undefined);
   for (const [ts, first] of [['1900004500.000100', 'chickpea'], ['1900004500.000200', 'app']] as const) {
     const message = messageIn('G1', ts, `<@${AGENT_BOT_USER}> where do refunds go?`);
     for (const ingress of first === 'app' ? ['app', 'chickpea'] : ['chickpea', 'app']) {
@@ -2280,7 +2297,7 @@ test("a mention of the app Agent's bot in a group DM both bots are in is answere
         assert.equal((await h.deliverToChickpea(message.chickpea)).status, 200);
       } else {
         assert.equal((await h.deliver('events', message.app)).status, 200);
-        if (first === 'app') assert.deepEqual(await answersTo(h, ts), [], "the app cannot read a group DM back, so its own delivery admits nothing");
+        if (first === 'app') assert.deepEqual(await answersTo(h, ts), [], "Chickpea's bot is in the group DM, so the app's own delivery leaves it to Chickpea's");
       }
     }
     assert.deepEqual(await answersTo(h, ts), [SUPPORT_AS_ITS_BOT], `${first} heard first: one answer, from Support's own bot`);
@@ -2502,21 +2519,33 @@ test("a teammate with its own app, asked inside another Agent's own DM, never ge
   assert.deepEqual(h.calls.filter((call) => call.method.startsWith('chat.') && call.token !== AGENT_BOT), [], 'and nothing posts in the DM for Finance');
 }));
 
-test("a mention the app's own bot heard in a group DM is not admitted, since Slack shows an Agent app no group DM's messages", async (t) => withHarness(t, async (h) => {
+test("a mention the app's own bot heard in a group DM it is in and Chickpea's bot is not answers as that bot, with no persona", async (t) => withHarness(t, async (h) => {
+  const now = Math.floor(Date.now() / 1_000);
+  const ts = `${now}.000300`;
+  assert.equal((await h.deliver('events', dmEvent({ event_id: `EvMpim${now}` }, {
+    type: 'app_mention', channel: 'G1', channel_type: 'mpim', text: `<@${AGENT_BOT_USER}> hello`, ts, event_ts: ts,
+  }))).status, 200);
+  const job = await pendingTurn(h.stores, (pending) => pending.turn.channelId === 'G1');
+  assert.ok(job, 'the mention is a turn of Support');
+  assert.deepEqual(job.turn.speaker, { kind: 'own_bot', botUserId: AGENT_BOT_USER });
+  assert.deepEqual(confirmations(h, ts), [['conversations.history', AGENT_BOT]], "read back once, on the app's own token");
+  assert.deepEqual(sender(await postAsRun(h, job)), OWN_BOT);
+  assert.deepEqual(personaOnAppToken(h), []);
+}, { notMemberOf: { [MAIN_BOT]: ['G1'] } }));
+
+test("a group DM mention through an app granted no group DM history is refused for the scope it lacks, and starts nothing", async (t) => withHarness(t, async (h) => {
   const warn = t.mock.method(console, 'warn', () => undefined);
   const now = Math.floor(Date.now() / 1_000);
-  for (const [index, kind] of [[1, { channel_type: 'mpim' }], [2, { channel_type: undefined }]] as const) {
-    const ts = `${now}.00030${index}`;
-    assert.equal((await h.deliver('events', dmEvent({ event_id: `EvMpim${now}${index}` }, {
-      type: 'app_mention', channel: 'G1', ...kind, text: `<@${AGENT_BOT_USER}> hello`, ts, event_ts: ts,
-    }), { settle: true })).status, 200);
-  }
+  const ts = `${now}.000310`;
+  assert.equal((await h.deliver('events', dmEvent({ event_id: `EvMpimOld${now}` }, {
+    type: 'app_mention', channel: 'G1', channel_type: 'mpim', text: `<@${AGENT_BOT_USER}> hello`, ts, event_ts: ts,
+  }), { settle: true })).status, 200);
   assert.equal(await pendingTurn(h.stores, (pending) => pending.turn.channelId === 'G1'), undefined, 'no turn');
-  assert.deepEqual(notConfirmed(warn), [
-    { component: 'agent_apps', event: 'delivery_not_confirmed', appId: AGENT_APP, reason: 'group_dm' },
-    { component: 'agent_apps', event: 'delivery_not_confirmed', appId: AGENT_APP, reason: 'missing_scope' },
-  ], 'a group DM is said so, or Slack refuses the read for the scope the app lacks');
+  assert.deepEqual(notConfirmed(warn), [{ component: 'agent_apps', event: 'delivery_not_confirmed', appId: AGENT_APP, reason: 'missing_scope' }]);
   assert.deepEqual(h.calls.filter((call) => call.method.startsWith('chat.')), [], 'and nothing is posted');
+}, {
+  notMemberOf: { [MAIN_BOT]: ['G1'] },
+  grantedScopes: { [AGENT_BOT]: AGENT_APP_BOT_SCOPES.filter((scope) => scope !== 'mpim:history') },
 }));
 
 /** Admits one turn of `agentId` in the #C1 thread `root`, heard by Chickpea's app, and returns it. */
@@ -3091,23 +3120,25 @@ async function appHeardTurn(h: Harness, channelId: string, ts: string): Promise<
   return job;
 }
 
-test("canvases say plainly they are not available in a private Channel only the app Agent's bot is in, and work as before where Chickpea's bot is", async (t) => withHarness(t, async (h) => {
+test("canvases say plainly they are not available in a private Channel or a group DM only the app Agent's bot is in, and work as before where Chickpea's bot is", async (t) => withHarness(t, async (h) => {
   const env = withHostedSlackApp(h.base, MAIN_APP);
   const plan = { agentId: 'agent_support', actorMembershipId: h.ownerMembershipId } as RuntimePlanV2;
   type Tool = { run(input: { data: object; toolCallId?: string }): Promise<string> };
-  // A group DM only the app's bot is in admits no turn it hears: its app cannot read the message back from Slack.
-  const job = await appHeardTurn(h, 'CPRIV', '1900004830.000100');
-  const signal = { ...signalOf(job), conversationKind: 'channel' as const };
-  const before = h.calls.length;
-  // A Channel says to add Chickpea to it.
-  const message = CANVASES_NOT_IN_THIS_CHANNEL;
-  const [read, refusedCreate] = createSlackCanvasTools(() => slackCanvasService(plan, signal, env)) as unknown as Tool[];
-  assert.deepEqual(JSON.parse(await read!.run({ data: {} })), { status: 'not_read', code: 'not_in_this_conversation', message });
-  assert.deepEqual(JSON.parse(await refusedCreate!.run({ data: { title: 'Refunds', markdown: '# Plan' }, toolCallId: 'call_CPRIV' })),
-    { status: 'not_written', code: 'not_in_this_conversation', message });
-  const asked = h.calls.slice(before).filter((call) => !['auth.test', 'users.info'].includes(call.method));
-  assert.ok(asked.every((call) => call.method === 'conversations.info' && call.token === MAIN_BOT),
-    "only whether Chickpea's bot is there is asked, and nothing of the app's token");
+  for (const [channelId, ts] of [['CPRIV', '1900004830.000100'], ['G1', '1900004830.000200']] as const) {
+    const job = await appHeardTurn(h, channelId, ts);
+    const signal = { ...signalOf(job), conversationKind: channelId.startsWith('G') ? 'mpim' as const : 'channel' as const };
+    const before = h.calls.length;
+    // A Channel says to add Chickpea to it; a group DM keeps the sentence its DM has.
+    const message = channelId.startsWith('G') ? CANVASES_NOT_IN_THIS_CONVERSATION : CANVASES_NOT_IN_THIS_CHANNEL;
+    const [read, create] = createSlackCanvasTools(() => slackCanvasService(plan, signal, env)) as unknown as Tool[];
+    assert.deepEqual(JSON.parse(await read!.run({ data: {} })),
+      { status: 'not_read', code: 'not_in_this_conversation', message }, channelId);
+    assert.deepEqual(JSON.parse(await create!.run({ data: { title: 'Refunds', markdown: '# Plan' }, toolCallId: `call_${channelId}` })),
+      { status: 'not_written', code: 'not_in_this_conversation', message }, channelId);
+    const asked = h.calls.slice(before).filter((call) => !['auth.test', 'users.info'].includes(call.method));
+    assert.ok(asked.every((call) => call.method === 'conversations.info' && call.token === MAIN_BOT),
+      `${channelId}: only whether Chickpea's bot is there is asked, and nothing of the app's token`);
+  }
   // A Channel both bots are in: Chickpea's bot makes the canvas, as before.
   const shared = await appHeardTurn(h, 'C1', '1900004830.000300');
   const [, create] = createSlackCanvasTools(() => slackCanvasService(plan, signalOf(shared), env)) as unknown as Tool[];
@@ -3115,7 +3146,7 @@ test("canvases say plainly they are not available in a private Channel only the 
   assert.notEqual(created.code, 'not_in_this_conversation', JSON.stringify(created));
   const canvasCalls = h.calls.filter((call) => call.method.includes('canvases'));
   assert.ok(canvasCalls.length > 0 && canvasCalls.every((call) => call.token === MAIN_BOT), "every canvas call is Chickpea's bot's");
-}, { privateChannels: ['CPRIV'], notMemberOf: { [MAIN_BOT]: ['CPRIV'] } }));
+}, { privateChannels: ['CPRIV'], notMemberOf: { [MAIN_BOT]: ['CPRIV', 'G1'] } }));
 
 test("an app Agent asked in its own DM to create a Channel has Chickpea's bot create it and post as the Agent", async (t) => withHarness(t, async (h) => {
   const env = withHostedSlackApp(h.base, MAIN_APP);
@@ -3463,9 +3494,8 @@ test("a group DM message naming two app Agents where only Support's bot is: Supp
   assert.deepEqual(personaOnAnyAppToken(h), []);
 }, { notMemberOf: { [FINANCE_BOT]: ['G1'] } }));
 
-test("a group DM message only Agent apps' bots hear gives no Agent a turn, since no app can read it back from Slack, and nobody is told", async (t) => withHarness(t, async (h) => {
+test("a group DM message naming an Agent no bot there can post for gives that Agent no turn, and Support, whose bot is there, still answers once", async (t) => withHarness(t, async (h) => {
   t.mock.method(console, 'info', () => undefined);
-  t.mock.method(console, 'warn', () => undefined);
   for (const [index, text] of [
     `<@${AGENT_BOT_USER}> and <!subteam^SFINANCE|@finance> compare refunds`,
     `<!subteam^SFINANCE|@finance> and <@${AGENT_BOT_USER}> compare refunds`,
@@ -3477,7 +3507,9 @@ test("a group DM message only Agent apps' bots hear gives no Agent a turn, since
     const message = messageIn('G2', ts, text).app;
     assert.equal((await h.deliver('events', message, { settle: true })).status, 200);
     assert.equal((await h.deliver('events', message, { settle: true })).status, 200);
-    assert.deepEqual(await turnsOn(h, ts), [], `${text}: no turn, after a redelivery too`);
+    const turns = await turnsOn(h, ts);
+    assert.deepEqual(turns.map(shape), [['agent_support', undefined, SUPPORT_BOT]], `${text}: only Support has a turn, after a redelivery too`);
+    assert.deepEqual(sender(await postAsRun(h, turns[0]!)), OWN_BOT);
   }
   assert.deepEqual(h.calls.filter((call) => call.method.startsWith('chat.') && call.token !== AGENT_BOT), [], 'nothing posts on a bot not in the group DM');
   assert.deepEqual(h.calls.filter((call) => call.method === 'chat.postEphemeral'), [], 'and nobody is told an Agent is not available');
@@ -3493,9 +3525,8 @@ test("in a user-group workspace a group DM naming two Agents is answered by each
   assert.deepEqual(h.calls.filter((call) => call.token !== MAIN_BOT || call.method === 'conversations.open').map((call) => `${call.method} ${call.token}`), []);
 }));
 
-test("a group DM message naming two app Agents where both their bots are and Chickpea's is not gives neither a turn from the two apps' deliveries alone", async (t) => withHarness(t, async (h) => {
+test("a group DM message naming two app Agents where both their bots are and Chickpea's is not: each answers once as its own bot, from the two apps' deliveries alone", async (t) => withHarness(t, async (h) => {
   t.mock.method(console, 'info', () => undefined);
-  t.mock.method(console, 'warn', () => undefined);
   await giveFinanceApp(h);
   const financeDelivery = withAgentSlackAppHandoff(h.base, { kind: 'delivery', agentId: 'agent_finance', appId: FINANCE_APP, signingSecret: 'signing-2' });
   for (const [index, text] of [
@@ -3517,10 +3548,17 @@ test("a group DM message naming two app Agents where both their bots are and Chi
           : await h.deliver('events', support, { settle: true });
         assert.equal(response.status, 200);
       }
-      assert.deepEqual(await turnsOn(h, ts), [], `${financeFirst ? 'Finance' : 'Support'} named first, ${first} heard first`);
+      const turns = await turnsOn(h, ts);
+      const label = `${financeFirst ? 'Finance' : 'Support'} named first, ${first} heard first`;
+      assert.deepEqual(turns.map(shape), financeFirst
+        ? [['agent_finance', 0, FINANCE_OWN_BOT], ['agent_support', 1, SUPPORT_BOT]]
+        : [['agent_support', 0, SUPPORT_BOT], ['agent_finance', 1, FINANCE_OWN_BOT]], label);
+      assert.deepEqual(await Promise.all(turns.map(async (job) => sender(await postAsRun(h, job)))),
+        financeFirst ? [FINANCE_POSTS_AS_ITS_BOT, OWN_BOT] : [OWN_BOT, FINANCE_POSTS_AS_ITS_BOT], label);
     }
   }
-  assert.deepEqual(h.calls.filter((call) => call.method.startsWith('chat.')), [], 'nothing is posted');
+  assert.deepEqual(h.calls.filter((call) => call.token === MAIN_BOT && call.method.startsWith('chat.')), [], "Chickpea's bot is not in the group DM");
+  assert.deepEqual(personaOnAnyAppToken(h), []);
 }, { notMemberOf: { [MAIN_BOT]: ['G3'] } }));
 
 test("in a group DM thread a user-group Agent's ask reaches the app Agent that answered there, which answers once as its own bot", async (t) => withHarness(t, async (h) => {
@@ -3617,16 +3655,18 @@ test("Slack's Stop button in a Channel thread where the app's bot answers stops 
   assert.deepEqual(personaOnAppToken(h), []);
 }));
 
-test("Slack's Stop button in a group DM where the app's bot answers stops the run there", async (t) => withHarness(t, async (h) => {
+test("Slack's Stop button in a group DM where only the app's bot is stops the run there", async (t) => withHarness(t, async (h) => {
   const ts = '1900009150.000100';
-  assert.equal((await h.deliverToChickpea(messageIn('G1', ts, `<@${AGENT_BOT_USER}> refunds?`).chickpea)).status, 200);
+  assert.equal((await h.deliver('events', dmEvent({ event_id: 'EvStopMpim' }, {
+    type: 'app_mention', channel: 'G1', channel_type: 'mpim', text: `<@${AGENT_BOT_USER}> refunds?`, ts, event_ts: ts,
+  }), { settle: true })).status, 200);
   const job = await pendingTurn(h.stores, (pending) => pending.turn.channelId === 'G1');
   assert.ok(job);
   assert.deepEqual(job.turn.speaker, { kind: 'own_bot', botUserId: AGENT_BOT_USER });
   assert.equal((await h.deliver('events', stopPress('G1', ts, '1900009150.000200'), { settle: true })).status, 200);
   assert.equal((await stopOf(h, job))?.role, 'stopped');
   assert.deepEqual(personaOnAppToken(h), []);
-}));
+}, { notMemberOf: { [MAIN_BOT]: ['G1'] } }));
 
 test("Slack's Stop button delivered to an Agent app about another Agent's run stops nothing, logs it, and settles the app's own indicator as its bot", async (t) => withHarness(t, async (h) => {
   const root = '1900009160.000100';
@@ -3949,4 +3989,163 @@ test("a delete an Agent app delivers goes on only when Slack no longer holds the
   assert.equal((await h.deliver('events', deletion('1900010600.000300'), { settle: true })).status, 200);
   assert.equal(notConfirmed(warn).length, 1, 'a real delete goes on');
   assert.deepEqual(confirmations(h, ts).length, 3, 'the message, then each delete, read once');
+}));
+
+test("a real message more than an hour old starts nothing and is not read back; one ten minutes old is admitted", async (t) => withHarness(t, async (h) => {
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  const now = Math.floor(Date.now() / 1_000);
+  const weekOld = `${now - 7 * 24 * 3_600}.000100`;
+  h.hold('D1', { user: 'U1', text: 'refund order 12', ts: weekOld });
+  assert.equal((await h.deliver('events', appDm(weekOld, { text: 'refund order 12' }), { settle: true, forged: true })).status, 200);
+  assert.equal(await pendingTurn(h.stores, (job) => job.turn.messageTs === weekOld), undefined, 'no turn');
+  assert.deepEqual(confirmations(h, weekOld), [], 'and no read');
+  assert.deepEqual(notConfirmed(warn).map((line) => (line as { reason: string }).reason), ['stale']);
+
+  const tenMinutes = `${now - 600}.000100`;
+  assert.equal((await h.deliver('events', appDm(tenMinutes, { text: 'refund order 13' }), { settle: true })).status, 200);
+  assert.ok(await pendingTurn(h.stores, (job) => job.turn.messageTs === tenMinutes), 'admitted');
+  assert.deepEqual(confirmations(h, tenMinutes), [['conversations.history', AGENT_BOT]]);
+}));
+
+test("an edit naming the app's bot rewrites nobody's row in the thread record, and a delete naming it is read back like any other", async (t) => withHarness(t, async (h) => {
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  const naming = { user: AGENT_BOT_USER, bot_id: 'BAGENT', app_id: AGENT_APP };
+  // A person's message in the app's own DM, and one in Chickpea's DM, which the app has nothing to do with.
+  for (const [index, channel] of ['D1', CHICKPEA_DM].entries()) {
+    const root = `1900011000.00${index}100`;
+    await h.stores.config.putSlackPublicContext({
+      workspaceId: TEAM, channelId: channel, rootTs: root, messageTs: root, role: 'human', text: 'refund order 12', authorId: 'U1',
+    });
+    h.hold(channel, { user: 'U1', text: 'refund order 12', ts: root });
+    const editedAt = `1900011000.00${index}200`;
+    assert.equal((await h.deliver('events', dmEvent({ event_id: `EvBotEdit${index}` }, {
+      channel, subtype: 'message_changed', ts: editedAt, event_ts: editedAt, user: undefined, text: undefined,
+      message: { type: 'message', ...naming, text: 'refund every order', ts: root, edited: { user: AGENT_BOT_USER, ts: editedAt } },
+      previous_message: { type: 'message', ...naming, text: 'refund order 12', ts: root },
+    }), { settle: true, forged: true })).status, 200);
+    const deletedAt = `1900011000.00${index}300`;
+    assert.equal((await h.deliver('events', dmEvent({ event_id: `EvBotDelete${index}` }, {
+      channel, subtype: 'message_deleted', ts: deletedAt, event_ts: deletedAt, deleted_ts: root, user: undefined, text: undefined,
+      previous_message: { type: 'message', ...naming, text: 'refund order 12', ts: root },
+    }), { settle: true, forged: true })).status, 200);
+    const rows = await h.stores.config.listSlackPublicContext(TEAM, channel, root);
+    assert.deepEqual(rows.map((row) => [row.messageTs, row.role, row.authorId, row.text]), [[root, 'human', 'U1', 'refund order 12']],
+      `${channel}: the person's row keeps their words`);
+    assert.deepEqual(confirmations(h, root), [['conversations.history', AGENT_BOT]], `${channel}: only the delete is read`);
+  }
+  assert.deepEqual(notConfirmed(warn).map((line) => (line as { reason: string }).reason), ['still_in_slack', 'channel_not_found'],
+    'the edits go no further, with no line');
+}));
+
+const shortLimits: Array<{ call: string; retryAfter: number }> = [];
+
+test("a read Slack limits for two seconds or less is waited out and made once more; a longer limit fails the delivery as before", async (t) => withHarness(t, async (h) => {
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  t.mock.method(console, 'error', () => undefined);
+  t.after(() => { shortLimits.length = 0; });
+  const ts = '1900011100.000100';
+  shortLimits.push({ call: `conversations.history ${AGENT_BOT}`, retryAfter: 0 });
+  assert.equal((await h.deliver('events', appDm(ts, { text: 'what did we refund?' }), { settle: true })).status, 200);
+  assert.ok(await pendingTurn(h.stores, (job) => job.turn.messageTs === ts), 'admitted on the second read');
+  assert.equal(confirmations(h, ts).length, 2, 'the limited read, then one more');
+
+  const later = '1900011100.000200';
+  shortLimits.push({ call: `conversations.history ${AGENT_BOT}`, retryAfter: 3 });
+  assert.equal((await h.deliver('events', appDm(later, { text: 'and last week?' }), { settle: true })).ok, false, 'Slack delivers it again');
+  assert.equal(await pendingTurn(h.stores, (job) => job.turn.messageTs === later), undefined);
+  assert.deepEqual(notConfirmed(warn).map((line) => (line as { reason: string }).reason), ['ratelimited']);
+  assert.equal(confirmations(h, later).length, 1, 'a longer limit is not waited out');
+}, { rateLimits: shortLimits }));
+
+let beforeRead: ((method: string, body: URLSearchParams) => void) | undefined;
+
+test("a message sent seconds ago that Slack does not show yet is read once more before it is refused", async (t) => withHarness(t, async (h) => {
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  t.after(() => { beforeRead = undefined; });
+  const now = Math.floor(Date.now() / 1_000);
+  const late = `${now}.000700`;
+  let reads = 0;
+  beforeRead = (method, body) => {
+    // Slack holds the message from the second read on.
+    if (method === 'conversations.history' && body.get('latest') === late && (reads += 1) === 2) {
+      h.hold('D1', { user: 'U1', text: 'refund order 14', ts: late });
+    }
+  };
+  assert.equal((await h.deliver('events', appDm(late, { text: 'refund order 14' }), { settle: true, forged: true })).status, 200);
+  assert.deepEqual((await turnsOn(h, late)).map((job) => job.turn.text), ['refund order 14'], 'admitted once');
+  assert.equal(confirmations(h, late).length, 2);
+
+  const never = `${now}.000800`;
+  assert.equal((await h.deliver('events', appDm(never, { text: 'refund order 15' }), { settle: true, forged: true })).status, 200);
+  assert.equal(await pendingTurn(h.stores, (job) => job.turn.messageTs === never), undefined);
+  assert.equal(confirmations(h, never).length, 2, 'one read more, no further');
+  assert.deepEqual(notConfirmed(warn).map((line) => (line as { reason: string }).reason), ['not_in_slack']);
+
+  // A message deleted with replies before the read is shown by Slack as deleted.
+  const deleted = '1900011200.000100';
+  h.hold('D1', { user: 'USLACKBOT', subtype: 'tombstone', text: 'This message was deleted.', ts: deleted, thread_ts: deleted, reply_count: 1 });
+  assert.equal((await h.deliver('events', appDm(deleted, { text: 'refund order 16' }), { settle: true, forged: true })).status, 200);
+  assert.deepEqual(notConfirmed(warn).map((line) => (line as { reason: string }).reason), ['not_in_slack', 'deleted']);
+}, { beforeCall: (method, body) => beforeRead?.(method, body) }));
+
+/** The lines for presses and submissions an Agent app delivered that are not honored. */
+function interactionsRefused(warn: { mock: { calls: Array<{ arguments: unknown[] }> } }): unknown[] {
+  return warn.mock.calls.flatMap(({ arguments: [line] }) =>
+    typeof line === 'string' && line.includes('"interaction_refused"') ? [JSON.parse(line) as unknown] : []);
+}
+
+test("a press or modal submission through an Agent's app on a card its bot did not post is refused, with one line and no content", async (t) => withHarness(t, async (h) => {
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  const owner = await h.stores.identity.resolveSlackIdentity(TEAM, 'U1');
+  assert.ok(owner);
+  // Finance's approval card, posted by Chickpea's bot in a #C1 thread Finance owns.
+  const threadTs = '1900011300.000100';
+  const cardTs = '1900011300.000300';
+  await h.stores.config.putAgentThreadRoute({ workspaceId: TEAM, channelId: 'C1', threadTs, agentId: 'agent_finance', agentGeneration: 1 });
+  const scope = `slack:${TEAM}:C1:${threadTs}:agent:agent_finance`;
+  await h.stores.management.putChangeSetProposal({
+    proposalId: 'proposal_finance', organizationId: owner.membership.organizationId,
+    actorUserId: owner.user.id, actorMembershipId: owner.membership.id,
+    originKey: scope, approvalScopeKey: scope, idempotencyKey: 'proposal_finance',
+    guideVersion: 'test', authoringReason: 'agent_edit', digest: 'd'.repeat(64),
+    operations: [{ itemId: 'memory', kind: 'update_agent_memory', agentId: 'agent_finance', expectedRevision: 0, body: 'Refunds go to account 99.' }],
+    preview: { summary: 'Preview', changes: [], missingSetup: [] },
+    targetRevisions: { 'memory:agent_finance': 0 }, at: Date.now(),
+  });
+  const surfaceId = uiSurfaceId(`msg:C1:${threadTs}`, 'host-approval:1');
+  const now = Date.now();
+  await h.stores.slackState.executeUiSurface!({
+    kind: 'put_surface',
+    record: {
+      id: surfaceId, namespace: 'host', workspaceId: TEAM, channelId: 'C1', threadTs, conversationThreadTs: threadTs,
+      conversationKind: 'channel', agentId: 'agent_finance', turnJobId: `msg:C1:${threadTs}`, requesterUserId: 'U1',
+      spec: { kind: 'approval', approval: 'workspace_change', proposalId: 'proposal_finance' },
+      status: 'open', messageTs: cardTs, createdAt: now, updatedAt: now, expiresAt: now + 60_000,
+    },
+  });
+  h.hold('C1', { ts: threadTs, user: 'U1', text: '<!subteam^SFINANCE|@finance> remember the refund account' });
+  h.hold('C1', { ts: cardTs, user: 'UBOT', bot_id: 'BCHICKPEA', app_id: MAIN_APP.appId, text: 'Approve this change?', thread_ts: threadTs });
+  h.calls.length = 0;
+
+  const pressed = await h.deliver('interactions', {
+    type: 'block_actions', api_app_id: AGENT_APP, team: { id: TEAM }, user: { id: 'U1' }, trigger_id: 'trigger-1',
+    container: { type: 'message', channel_id: 'C1', message_ts: cardTs, is_ephemeral: false },
+    channel: { id: 'C1' }, message: { ts: cardTs, thread_ts: threadTs },
+    actions: [{ type: 'button', action_id: uiActionId('host', 'approval', 0), block_id: uiBlockId('host', surfaceId, 1), value: uiValue(surfaceId, 0), action_ts: '1900011300.000400' }],
+  });
+  assert.equal(pressed.status, 200);
+  const submitted = await h.deliver('interactions', {
+    type: 'view_submission', api_app_id: AGENT_APP, team: { id: TEAM }, user: { id: 'U1' },
+    view: { id: 'V1', callback_id: 'chickpea.ui.v1.form', private_metadata: surfaceId, state: { values: {} } },
+  });
+  assert.equal(submitted.status, 200);
+  assert.equal(await submitted.text(), '', 'the modal gets no answer from the card');
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(await pendingTurn(h.stores, (pending) => pending.turn.threadTs === threadTs), undefined, 'the press approves nothing');
+  assert.deepEqual(h.calls.map((call) => [call.method, call.token]), [['conversations.replies', AGENT_BOT], ['conversations.replies', AGENT_BOT]],
+    "each reads the card back on the app's token, and nothing else is called");
+  assert.deepEqual(interactionsRefused(warn), [
+    { component: 'agent_apps', event: 'interaction_refused', appId: AGENT_APP, reason: 'other_poster' },
+    { component: 'agent_apps', event: 'interaction_refused', appId: AGENT_APP, reason: 'other_poster' },
+  ]);
 }));

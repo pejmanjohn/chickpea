@@ -7,18 +7,28 @@
  * Slack on the app's own bot token first, and goes on only when Slack holds
  * that message, in that conversation and thread, from that person. What goes
  * on is Slack's copy: the delivery's text, rich text and files are never
- * read, so an edit Slack already holds is admitted as edited.
+ * read, so an edit Slack already holds is admitted as edited. A press cannot
+ * be read back, but the card it was made on can (agentAppCardRefusal).
  * Loaded only for an Agent app's delivery.
  */
-import { isTransientSlackApiError, slackMessageAt } from '../credentials.ts';
+import { isTransientSlackApiError, slackMessageAt, type SlackMessageReadResult } from '../credentials.ts';
 import { SlackTransportError } from '../transport/types.ts';
 
-/** `event` is what admission reads in the delivery's place. */
-export type AgentAppMessageCheck = { confirmed: true; event: Message } | { confirmed: false; reason: string };
+/** `event` is what admission reads in the delivery's place. A refusal with no reason is dropped without a line. */
+export type AgentAppMessageCheck = { confirmed: true; event: Message } | { confirmed: false; reason: string | undefined };
 
 type Message = Record<string, unknown>;
+type MessagePlace = { channelId: string; ts: string; threadTs?: string };
 
-const refused = (reason: string): AgentAppMessageCheck => ({ confirmed: false, reason });
+/** Half the life of a message's claim (two hours after its turn), so a message young enough to pass still holds it. */
+const STALE_AFTER_MS = 60 * 60_000;
+/** A message this young that Slack does not show yet is read once more, after a pause. */
+const JUST_SENT_MS = 10_000;
+const REREAD_AFTER_MS = 500;
+/** A rate limit no longer than this is waited out, and the read made once more. */
+const SHORT_LIMIT_MS = 2_000;
+
+const refused = (reason: string | undefined): AgentAppMessageCheck => ({ confirmed: false, reason });
 
 /**
  * Whether Slack holds what a `message` or `app_mention` event delivered
@@ -34,28 +44,34 @@ export async function confirmAgentAppMessage(
   const event = record(delivered) ?? {};
   const channelId = typeof event.channel === 'string' ? event.channel : undefined;
   if (!channelId) return refused('malformed');
-  // An Agent app holds no group DM history, so Slack cannot show it a group DM's message.
-  if (event.channel_type === 'mpim') return refused('group_dm');
   // Admission takes a DM, a Channel or a group DM from the delivery's channel_type: it must be the conversation's.
   if ((event.channel_type === 'im') !== channelId.startsWith('D')) return refused('conversation_mismatch');
   if (event.type === 'message' && event.channel_type !== 'im') return refused('not_subscribed');
   if (event.type !== 'message' && event.type !== 'app_mention') return refused('not_subscribed');
 
   const deleted = event.type === 'message' && event.subtype === 'message_deleted';
+  const changed = event.type === 'message' && event.subtype === 'message_changed';
   const previous = record(event.previous_message);
-  const claimed = deleted
-    ? undefined
-    : event.type === 'message' && event.subtype === 'message_changed' ? record(event.message) : event;
-  const author = deleted ? previous?.user : claimed?.user;
-  // The app's own bot's posts and their stream updates: whoever holds its secrets can already post as it.
-  if (author === bot.botUserId) return { confirmed: true, event };
+  const claimed = deleted ? undefined : changed ? record(event.message) : event;
+  if (!deleted && claimed?.user === bot.botUserId) {
+    // A post of the app's own bot, which whoever holds its secrets can already make, starts nothing. Its edits go no
+    // further: Chickpea records what an Agent posts and updates as it does so, and an edit acts on whichever message
+    // its ts names.
+    return changed ? refused(undefined) : { confirmed: true, event };
+  }
   const ts = deleted ? (event.deleted_ts ?? previous?.ts) : claimed?.ts;
   if (typeof ts !== 'string') return refused('malformed');
+  // An older real message delivered again could outlive its claim and start a second turn. An edit steers only a
+  // live turn, and a delete is the same delete again.
+  if (!deleted && !changed && Date.now() - slackTsMs(ts) > STALE_AFTER_MS) return refused('stale');
   const threadTs = (deleted ? previous : claimed)?.thread_ts;
+  const place = { channelId, ts, ...(typeof threadTs === 'string' ? { threadTs } : {}) };
 
-  const read = await slackMessageAt(bot.botToken, {
-    channelId, ts, ...(typeof threadTs === 'string' ? { threadTs } : {}),
-  });
+  let read = await readMessage(bot.botToken, place);
+  if (!deleted && read.ok && !read.message && Math.abs(Date.now() - slackTsMs(ts)) < JUST_SENT_MS) {
+    await pause(REREAD_AFTER_MS);
+    read = await readMessage(bot.botToken, place);
+  }
   if (!read.ok) {
     const code = read.error ?? 'invalid_response';
     if (isTransientSlackApiError(code)) {
@@ -68,6 +84,7 @@ export async function confirmAgentAppMessage(
   const held = read.message;
   if (deleted) return held && held.subtype !== 'tombstone' ? refused('still_in_slack') : { confirmed: true, event };
   if (!held || !claimed) return refused('not_in_slack');
+  if (held.subtype === 'tombstone') return refused('deleted');
   if (held.user !== claimed.user) return refused('other_sender');
   if (threadOf(held) !== threadOf(claimed)) return refused('other_thread');
   if (event.type === 'app_mention' && !String(held.text ?? '').includes(`<@${bot.botUserId}`)) return refused('not_a_mention');
@@ -85,6 +102,41 @@ export async function confirmAgentAppMessage(
       ? { ...message, ...where }
       : { ...where, subtype: event.subtype, ts: event.ts, message, previous_message: event.previous_message },
   };
+}
+
+/**
+ * Why a press or modal submission delivered through an Agent's app is not
+ * honored, or undefined when it is: Slack sends a card's presses, and the
+ * submission of a modal a press opened, only to the app whose bot posted the
+ * card, so the card must be one Slack shows that app's own bot posted. Slack
+ * does not send a press again, so a read it does not answer refuses it.
+ */
+export async function agentAppCardRefusal(
+  card: { channelId: string; messageTs: string; threadTs?: string | null | undefined },
+  bot: { botToken: string; botUserId: string },
+  appId: string,
+): Promise<string | undefined> {
+  const read = await readMessage(bot.botToken, {
+    channelId: card.channelId, ts: card.messageTs, ...(card.threadTs ? { threadTs: card.threadTs } : {}),
+  });
+  if (!read.ok) return read.error ?? 'invalid_response';
+  if (!read.message) return 'not_in_slack';
+  return read.message.user === bot.botUserId || read.message.app_id === appId ? undefined : 'other_poster';
+}
+
+async function readMessage(botToken: string, place: MessagePlace): Promise<SlackMessageReadResult> {
+  const read = await slackMessageAt(botToken, place);
+  if (read.ok || read.error !== 'ratelimited' || read.retryAfterMs === undefined || read.retryAfterMs > SHORT_LIMIT_MS) return read;
+  await pause(read.retryAfterMs);
+  return slackMessageAt(botToken, place);
+}
+
+function pause(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function slackTsMs(ts: string): number {
+  return Number(ts) * 1_000;
 }
 
 function record(value: unknown): Message | undefined {

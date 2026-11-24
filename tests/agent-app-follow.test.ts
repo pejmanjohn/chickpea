@@ -838,7 +838,7 @@ const EVENT_SCOPES: Readonly<Record<string, readonly string[]>> = {
 // Defect caught: a release adding an event whose permission apps made earlier lack, so Slack refuses the follow's
 // definition for every one of them and each Owner is told to change an Agent that is not the problem.
 test('every event an Agent app hears needs only permissions an app made by an earlier release holds', () => {
-  const older = AGENT_APP_BOT_SCOPES.filter((scope) => scope !== OLDER_APPS_LACK);
+  const older = AGENT_APP_BOT_SCOPES.filter((scope) => !OLDER_APPS_LACK.includes(scope));
   for (const event of AGENT_APP_BOT_EVENTS) {
     const needs = EVENT_SCOPES[event];
     assert.ok(needs, `${event} is new: add it to EVENT_SCOPES with the bot scopes Slack lists for it.`);

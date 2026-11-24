@@ -131,6 +131,8 @@ interface ResolveAgentRouteInput {
    * taken to.
    */
   agentAppAnswersHere?: (agent: CustomAgentConfig) => Promise<boolean>;
+  /** On an Agent app's own delivery, whether Chickpea's bot is in this group DM; without the fact, it is not. */
+  chickpeaBotIsIn?: () => Promise<boolean>;
   /** Live placement-derived authority for the selected user-created Agent. */
   authorizeUserAgent?: (
     agent: CustomAgentConfig,
@@ -313,6 +315,7 @@ export async function resolveAgentRoute(
   const appSelection = await agentAppRouteSelection(
     turn, agents, input.agentApp,
     input.agentAppAnswersHere ?? (async (agent) => agentAppIsLive(agent.slackPresence)),
+    input.chickpeaBotIsIn,
   );
   const mentionedGroupIds = parseAgentUserGroupMentions(turn.text);
   // A message that also names one of this installation's user-group Agents

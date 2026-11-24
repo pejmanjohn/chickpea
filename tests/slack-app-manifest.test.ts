@@ -190,12 +190,12 @@ test("an Agent's own app subscribes to the Stop button, with the one scope and t
   assert.ok(manifest.features.agent_view, 'Slack draws Stop on an Agent Session, which agent_view gives the app');
 });
 
-test('an Agent\'s own app neither hears group DMs nor reads their history', () => {
-  assert.equal(AGENT_APP_BOT_SCOPES.includes('mpim:history'), false);
-  assert.equal(AGENT_APP_BOT_EVENTS.includes('message.mpim'), false);
+test('an Agent\'s own app reads group DM history, so a mention there can be read back, and hears no other group DM message', () => {
+  assert.equal(AGENT_APP_BOT_SCOPES.includes('mpim:history'), true);
+  assert.equal(AGENT_APP_BOT_EVENTS.includes('message.mpim'), false, 'a group DM reaches it only as a mention of its bot');
   assert.deepEqual(AGENT_APP_BOT_SCOPES, [
     'app_mentions:read', 'assistant:write', 'channels:history', 'channels:join', 'channels:read', 'chat:write',
-    'files:read', 'files:write', 'groups:history', 'groups:read', 'im:history', 'im:write', 'mpim:read',
+    'files:read', 'files:write', 'groups:history', 'groups:read', 'im:history', 'im:write', 'mpim:history', 'mpim:read',
     'reactions:read', 'reactions:write', 'users:read', 'lists:read', 'lists:write',
   ]);
 });

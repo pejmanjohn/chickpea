@@ -41,15 +41,14 @@ export const SLACK_USER_GROUP_SCOPES = Object.freeze(['usergroups:read', 'usergr
 /**
  * What an Agent's own Slack app asks for: the workspace app's bot scopes
  * without user groups, sender customization or email reads, none of which an
- * Agent that is its own bot needs, and without group DM history: group DMs
- * are served through the workspace app, and an Agent app's scopes and events
- * are not changed for them, so a mention of its bot in a group DM reads none
- * of the group's earlier messages. It also leaves out the scopes requested
+ * Agent that is its own bot needs. It keeps group DM history: a mention of its
+ * bot in a group DM is read back from Slack before it is trusted, and the
+ * Agent reads the group's earlier messages. It leaves out the scopes requested
  * for upcoming features: an Agent app made before them was never granted
  * them, and its consent must keep passing.
  */
 const AGENT_APP_LEAVES_OUT = new Set([
-  'chat:write.customize', 'users:read.email', 'mpim:history', ...UPCOMING_FEATURE_SCOPES,
+  'chat:write.customize', 'users:read.email', ...UPCOMING_FEATURE_SCOPES,
 ]);
 export const AGENT_APP_BOT_SCOPES: readonly string[] = Object.freeze(REQUESTED_SLACK_BOT_SCOPES.filter((scope) =>
   !scope.startsWith('usergroups:') && !AGENT_APP_LEAVES_OUT.has(scope)

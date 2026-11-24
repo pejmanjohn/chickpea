@@ -283,11 +283,12 @@ const ICON_MIN_PX = 512;
 const ICON_MAX_PX = 2_000;
 const GROUP_ALREADY_RELEASED = new Set(['already_disabled', 'no_such_subteam']);
 /**
- * An app made before Chickpea asked for `channels:join` may be granted
- * without it. Its bot then cannot join a Channel the Agent is added to, and
- * is reported as left out there.
+ * Scopes an app made by an earlier release may be granted without. Without
+ * `channels:join` its bot cannot join a Channel the Agent is added to, and is
+ * reported as left out there; without `mpim:history` a mention of its bot in
+ * a group DM cannot be read back from Slack, and is refused.
  */
-export const OLDER_APPS_LACK = 'channels:join';
+export const OLDER_APPS_LACK: readonly string[] = ['channels:join', 'mpim:history'];
 /**
  * How Slack refuses a create once the workspace has every app its plan
  * allows (ten on the free plan). Not yet seen live: `managed_app_limit_reached`
@@ -747,7 +748,7 @@ export class AgentSlackApps {
     };
     if (grant.teamId !== teamId) { await undo(); return consentPage('other_workspace'); }
     if (grant.appId !== app.appId || grant.installerUserId !== owner) { await undo(); return consentPage('another_person'); }
-    if (AGENT_APP_BOT_SCOPES.some((scope) => scope !== OLDER_APPS_LACK && !grant.scopes.includes(scope))) {
+    if (AGENT_APP_BOT_SCOPES.some((scope) => !OLDER_APPS_LACK.includes(scope) && !grant.scopes.includes(scope))) {
       await undo();
       return consentPage('missing_permissions');
     }

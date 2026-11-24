@@ -113,6 +113,21 @@ export async function agentAppAnswersIn(
 }
 
 /**
+ * Whether Chickpea's bot is in a Channel or group DM, asked on its own token:
+ * the same cached fact admission reads for the speaker. A read that fails
+ * counts as not a member, as admission counts it.
+ */
+export async function chickpeaBotIsMember(
+  chickpea: { botUserId: string; transport: Pick<SlackTransport, 'lookupChannel'> },
+  channelId: string,
+): Promise<boolean> {
+  return (await botMembership(chickpea.botUserId, channelId, async () => {
+    const channel = await chickpea.transport.lookupChannel(channelId);
+    return channel.member || channel.mpim === true;
+  }).catch(notVerified)).member;
+}
+
+/**
  * Where an admitted turn was heard, and so the bot that answers its run
  * (speakerFor). A DM an Agent's own app heard is marked with that app's bot;
  * a DM turn Chickpea built is the app's own when the app's DM with the

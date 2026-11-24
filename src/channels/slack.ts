@@ -18,6 +18,7 @@ import {
   agentAppPresenceHooks,
   agentAppPostingBot,
   agentSlackAppsHost,
+  chickpeaBotIsMember,
   endAgentSlackApp,
   handleAgentAppHomeAction,
   ownBotClient,
@@ -892,8 +893,9 @@ function handleAgentAppSlackEvents(
  * A message an Agent app delivers names its sender, and whoever holds the
  * app's secrets can name anyone: it goes on only once Slack shows that
  * message from that person, and as Slack's copy of it (sender.ts). Undefined
- * for one it stops, with one line and no content; a read Slack does not
- * answer is logged and thrown, so the delivery is retried.
+ * for one it stops, with one line and no content (none for an edit of the
+ * app's own bot); a read Slack does not answer is logged and thrown, so the
+ * delivery is retried.
  */
 async function agentAppMessageConfirmed(event: unknown, bot: AgentAppBotCredentials, appId: string): Promise<Record<string, unknown> | undefined> {
   const warn = (reason: string) => console.warn(JSON.stringify({
@@ -903,7 +905,7 @@ async function agentAppMessageConfirmed(event: unknown, bot: AgentAppBotCredenti
   try {
     const check = await confirmAgentAppMessage(event, bot);
     if (check.confirmed) return check.event;
-    warn(check.reason);
+    if (check.reason) warn(check.reason);
     return undefined;
   } catch (error) {
     warn(error instanceof SlackTransportError ? error.code : 'unavailable');
@@ -931,6 +933,11 @@ function handleAgentAppSlackInteractions(
       execution, botUserId: bot.botUserId,
     };
     const uiAction = parseSlackUiBlockAction(payload);
+    // A press on a private message, which Slack does not return, goes on as before; a press inside a modal acts on
+    // nothing. Every other press must be on a card this app's bot posted.
+    if (uiAction?.containerType === 'message' && !uiAction.isEphemeral && !await agentAppCardIsOwn(
+      { channelId: uiAction.channelId!, messageTs: uiAction.messageTs!, threadTs: uiAction.threadTs }, bot, handoff.appId,
+    )) return;
     if (uiAction && opensModal(uiAction) && await openSlackUiModal(uiAction, context)) return;
     if (uiAction) {
       detach(c, handleSlackUiAction({ ...context, action: uiAction }).catch((error) => {
@@ -939,8 +946,33 @@ function handleAgentAppSlackInteractions(
       return;
     }
     const submission = parseSlackUiViewSubmission(payload);
-    if (submission) return receiveSlackUiViewSubmission(c, submission, platformEnv, context);
+    if (!submission) return;
+    // A modal is opened from a card, and its submission carries the same rule.
+    const cardId = submission.callbackId === KEY_FORM_CALLBACK_ID
+      ? (await import('../slack/ui/key-card.ts')).parseKeyFormMetadata(submission.privateMetadata)?.cardId
+      : viewSubmissionSurfaceId(submission);
+    const card = cardId ? await readUiSurface(execution.stores!, cardId) : undefined;
+    if (!await agentAppCardIsOwn(
+      card?.messageTs ? { channelId: card.channelId, messageTs: card.messageTs, threadTs: card.threadTs } : undefined, bot, handoff.appId,
+    )) return;
+    return receiveSlackUiViewSubmission(c, submission, platformEnv, context);
   };
+}
+
+/**
+ * Slack sends a card's presses only to the app whose bot posted it, so one an
+ * Agent's app delivers is honored only for a card its own bot posted
+ * (sender.ts). Any other is refused with one line and no content.
+ */
+async function agentAppCardIsOwn(
+  card: { channelId: string; messageTs: string; threadTs?: string | null } | undefined,
+  bot: AgentAppBotCredentials,
+  appId: string,
+): Promise<boolean> {
+  const { agentAppCardRefusal } = await import('../slack/agent-apps/sender.ts');
+  const reason = card ? await agentAppCardRefusal(card, bot, appId) : 'no_card';
+  if (reason) console.warn(JSON.stringify({ component: 'agent_apps', event: 'interaction_refused', appId, reason }));
+  return !reason;
 }
 
 function handleDirectSlackEvents(
@@ -3802,6 +3834,9 @@ async function processSlackEvent(
           return !chickpea;
         },
         agentAppAnswersHere: (agent) => agentAppAnswersIn(platformEnv, agent, turn.channelId),
+        ...(execution?.agentApp && execution.installationBot && installation.botUserId
+          ? { chickpeaBotIsIn: () => chickpeaBotIsMember({ botUserId: installation.botUserId!, transport: execution.installationBot! }, turn.channelId) }
+          : {}),
       });
       if (routed.kind === 'ignore') return;
       if (routed.kind !== 'routed' && ui) return;
