@@ -6681,7 +6681,7 @@ test('Channel detail prefers the projected Slack Channel name over a raw Channel
 test("a private Channel's own page says a waiting Agent answers there through Chickpea, from the grant when Slack's list is unread", async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/channels/T_DESIGN/G_LAB',
-    agents: [{ ...releaseAgent, slackPresence: { ...releaseAgent.slackPresence, errorCode: 'awaiting_own_app' } }],
+    agents: [{ ...releaseAgent, slackPresence: { errorCode: 'awaiting_own_app' } }],
     assignments: [],
     channelIndex: [{
       workspaceId: 'T_DESIGN', channelId: 'G_LAB', channelName: 'lab', isPrivate: null,
