@@ -20,6 +20,19 @@ export interface AgentSlackAppsHost {
   allowUrl(agentId: string): string;
   /** Where Add to Slack in Chickpea's messages sends an Owner: the host's add route, whose page makes the press. */
   addUrl(agentId: string): string;
+  /**
+   * Whether Chickpea may create Agents' Slack apps or change them in Slack.
+   * Absent means it may. False keeps every app that exists working (its
+   * deliveries, its bot, its removal, Cancel, archive, a tenant's end, the
+   * token's removal) and refuses only what would create or change an app;
+   * new Agents get user groups meanwhile. Read through `agentSlackAppsMayCreate`.
+   */
+  readonly mayCreateApps?: boolean;
+}
+
+/** The one reading of `mayCreateApps`: a host that says nothing allows creating apps. */
+export function agentSlackAppsMayCreate(host: AgentSlackAppsHost): boolean {
+  return host.mayCreateApps !== false;
 }
 
 let installedHost: AgentSlackAppsHost | undefined;

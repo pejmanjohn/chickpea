@@ -5298,14 +5298,17 @@
     }
     var data = apps.data;
     var on = data.setting && data.setting.mode === "own_app";
+    var paused = data.paused === true;
     var busy = !!apps.busy;
+    // Paused, nothing that creates an app is offered; turning the setting off still is.
+    var pausedLine = paused ? '<p class="hint">' + esc(SLACK_APPS_PAUSED + " Agents that already have their own Slack app keep working.") + '</p>' : "";
     var head = on
-      ? '<div class="section-head"><div>' + title + '<p class="hint">Each new Agent gets its own Slack app.</p></div>' +
+      ? '<div class="section-head"><div>' + title + (paused ? pausedLine : '<p class="hint">Each new Agent gets its own Slack app.</p>') + '</div>' +
         '<button type="button" class="link-btn" data-action="slack-apps-turn-off"' + (busy ? " disabled" : "") + '>Stop creating Slack apps for new Agents</button></div>'
-      : '<div class="section-head"><div>' + title + '<p class="hint">Agents answer through the Chickpea app. People mention them by @handle in channels Chickpea is in.</p></div></div>' +
-        '<div class="action-well"><button type="button" class="btn btn-primary btn-sm" data-action="slack-apps-turn-on"' + (busy ? " disabled" : "") + '>' +
-        (apps.busy === "on" ? '<span class="spinner"></span>' : '') + (apps.turnOnFailed ? 'Turn it on' : 'Make each Agent its own Slack app') + '</button></div>';
-    var needsToken = on && !data.token.stored
+      : '<div class="section-head"><div>' + title + '<p class="hint">Agents answer through the Chickpea app. People mention them by @handle in channels Chickpea is in.</p>' + pausedLine + '</div></div>' +
+        (paused ? "" : '<div class="action-well"><button type="button" class="btn btn-primary btn-sm" data-action="slack-apps-turn-on"' + (busy ? " disabled" : "") + '>' +
+        (apps.busy === "on" ? '<span class="spinner"></span>' : '') + (apps.turnOnFailed ? 'Turn it on' : 'Make each Agent its own Slack app') + '</button></div>');
+    var needsToken = on && !paused && !data.token.stored
       ? '<div class="callout slack-apps-callout" role="status"><span>Chickpea has no Slack token, so it can&rsquo;t create Slack apps for new Agents.</span>' +
         '<button type="button" class="btn btn-soft btn-sm" data-action="slack-apps-token-open">Add a token</button></div>'
       : "";
@@ -5315,7 +5318,7 @@
     var results = apps.results.map(slackAppsResultHtml).join("");
     var errorText = apps.error || (!on && apps.turnOnFailed) || "";
     var error = errorText ? '<p class="inline-status error" role="alert">' + esc(errorText) + '</p>' : "";
-    var lists = slackAppsListsHtml(data.agents || [], on);
+    var lists = slackAppsListsHtml(data.agents || [], on, paused);
     var token = data.token.stored
       ? '<div class="action-well slack-apps-token-row"><span class="hint">' + esc(slackAppsTokenLine(data.token)) + '</span>' +
         '<button type="button" class="btn btn-ghost btn-sm" data-action="slack-apps-token-remove"' + (busy ? " disabled" : "") + '>Remove token</button></div>'
@@ -5339,7 +5342,7 @@
   // progress), and moved, each under its own heading. Off, only Agents with an
   // app of their own or one on its way are listed, so an Owner can finish or
   // see them: one in no user group then is never offered an app of its own.
-  function slackAppsListsHtml(agents, on) {
+  function slackAppsListsHtml(agents, on, paused) {
     var groups = { chickpea: [], notInSlack: [], own: [] };
     agents.forEach(function (agent) {
       var stateName = agent.slack && agent.slack.state;
@@ -5349,7 +5352,8 @@
     });
     var list = function (titleText, rows) {
       if (!rows.length) return "";
-      return '<div class="slack-apps-list"><h3 class="slack-apps-list-title">' + esc(titleText) + '</h3>' + rows.map(slackAppsRowHtml).join("") + '</div>';
+      return '<div class="slack-apps-list"><h3 class="slack-apps-list-title">' + esc(titleText) + '</h3>' +
+        rows.map(function (row) { return paused ? slackAppsPausedRowHtml(row) : slackAppsRowHtml(row); }).join("") + '</div>';
     };
     return list("Not in Slack yet", groups.notInSlack) +
       list("Still answering through the Chickpea app", groups.chickpea) +
@@ -5485,6 +5489,45 @@
       slackAppsChannelsHtml(agent) + sub + '</div><div class="slack-apps-row-action">' + actions + '</div></div>';
   }
 
+  var SLACK_APPS_PAUSED = "Adding Slack apps is paused.";
+
+  // While the host does not let Chickpea create or change apps, an Agent on
+  // its way to its own app says so and keeps only Cancel, where Cancel can
+  // withdraw it. Every other row is as it always is.
+  function slackAppsPausedRow(agent) {
+    var name = agent.name;
+    var slack = agent.slack || {};
+    switch (slack.state) {
+      case "user_group":
+        return { text: "" };
+      case "not_in_slack":
+        return { text: SLACK_APPS_PAUSED + " To give " + name + " an @handle people can mention now, choose Stop creating Slack apps for new Agents." };
+      case "creating":
+        return { text: SLACK_APPS_PAUSED + " " + name + " keeps answering as it does now." };
+      case "waiting_for_allow":
+        return { text: SLACK_APPS_PAUSED + " " + name + " keeps answering as it does now.", cancel: true };
+      case "needs_attention":
+        if (slack.reason === "app_removed" || slack.reason === "uninstall_failed") return null;
+        return { text: SLACK_APPS_PAUSED + " " + name + " keeps answering as it does now.", cancel: !!slack.cancellable };
+      default:
+        return null;
+    }
+  }
+
+  function slackAppsPausedRowHtml(agent) {
+    var paused = slackAppsPausedRow(agent);
+    if (!paused) return slackAppsRowHtml(agent);
+    var apps = slackAppsState();
+    var sub = paused.text ? '<p class="slack-apps-row-note is-notice">' + esc(paused.text) + '</p>' : "";
+    var note = apps.rowNotes[agent.id];
+    if (note) sub += '<p class="' + (note.error ? 'inline-status error" role="alert">' : 'slack-apps-row-note is-notice" role="status">') + esc(note.text) + '</p>';
+    var actions = paused.cancel ? slackAppsButtonHtml(agent, { label: "Cancel", action: "slack-apps-cancel", link: true }) : "";
+    var handle = agent.slack && agent.slack.state === "not_in_slack" ? "" : '<span class="mono">@' + esc(agent.handle) + '</span>';
+    return '<div class="slack-apps-row">' + slackAppsAvatarHtml(agent) +
+      '<div class="slack-apps-row-copy"><div class="slack-apps-row-name"><strong>' + esc(agent.name) + '</strong>' + handle + '</div>' +
+      slackAppsChannelsHtml(agent) + sub + '</div><div class="slack-apps-row-action">' + actions + '</div></div>';
+  }
+
   function slackAppsConfirmModalHtml() {
     var apps = state.slackApps;
     if (!apps || !apps.confirm) return "";
@@ -5601,6 +5644,7 @@
   }
 
   var SLACK_TOKEN_ERRORS = {
+    paused: "Adding Slack apps is paused, so Chickpea isn't taking a Slack token now.",
     rejected: "Slack didn't accept that token. Generate a new one and paste its Refresh Token.",
     slack_down: "Slack didn't answer. Try again in a minute."
   };
@@ -5696,7 +5740,10 @@
     }).catch(function (error) {
       apps.busy = "";
       apps.confirm = "";
-      apps.error = slackAppsUpdating(error) ? SLACK_APPS_UPDATING : "Chickpea couldn't change this setting. Try again.";
+      apps.error = slackAppsUpdating(error) ? SLACK_APPS_UPDATING
+        : error && error.message === "paused" ? SLACK_APPS_PAUSED + " Chickpea can't turn this on now."
+        : "Chickpea couldn't change this setting. Try again.";
+      if (error && error.message === "paused") loadSlackApps();
       render();
     });
   }
@@ -5770,6 +5817,8 @@
         return { error: true, text: "Another Agent is using @" + agent.handle + " in Slack, or is being added with it. Rename " + agent.name + ", then try again." };
       case "not_found":
         return { error: true, text: "Chickpea couldn't find this Agent. Reload the page." };
+      case "paused":
+        return null;
       default:
         return { error: true, text: "Chickpea couldn't reach Slack. Try again in a minute." };
     }
@@ -5822,7 +5871,8 @@
       if (note) apps.rowNotes[agentId] = note;
       render();
       if (code === "permission_needed") showSlackPermissionsBar();
-      if (code === "not_found") loadSlackApps();
+      // A pause that began after the page loaded: the section reloads into it.
+      if (code === "not_found" || code === "paused") loadSlackApps();
     });
   }
 

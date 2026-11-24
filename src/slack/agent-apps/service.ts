@@ -60,7 +60,7 @@ import { AGENT_APP_BOT_SCOPES } from '../scopes.ts';
 import type { CredentialKeyring } from '../secret-envelope.ts';
 import { createDirectSlackTransport } from '../transport/direct.ts';
 import { SlackTransportError, type SlackChannel, type SlackTransport } from '../transport/types.ts';
-import type { AgentAppRetirement, AgentSlackAppsHost } from './host.ts';
+import { type AgentAppRetirement, type AgentSlackAppsHost, agentSlackAppsMayCreate } from './host.ts';
 import {
   type AgentAppEvent,
   type AgentAppRefusal,
@@ -88,6 +88,7 @@ import {
   type AgentAppPageAgent,
   type AgentAppPageLinks,
   type ConsentOutcome,
+  addPausedPage,
   addRefusedPage,
   addedPage,
   consentPage,
@@ -108,6 +109,7 @@ import {
   addPressReply,
   agentAppSwitchedMessage,
   archiveRefusedCopy,
+  pausedReply,
   TOKEN_PAGE_PATH,
 } from './pages.ts';
 import {
@@ -227,6 +229,8 @@ export type AgentAppPressOutcome =
   | { kind: 'permission_needed' }
   | { kind: 'app_limit' }
   | { kind: 'handle_taken'; agent: CustomAgentConfig }
+  /** The host does not let Chickpea create or change apps now: the record is as it was. */
+  | { kind: 'paused'; agent: CustomAgentConfig }
   | { kind: 'not_eligible' };
 
 /**
@@ -442,6 +446,11 @@ export class AgentSlackApps {
     return isOwner ? addPressReply('link', names, this.deps.host.addUrl(agent.id)) : addPressReply('owner_needed', names);
   }
 
+  /** What an Owner who pressed Finish setting up is told while the host does not let Chickpea create or change apps. */
+  async pausedReply(agentId: string): Promise<string> {
+    return pausedReply(this.names(await this.deps.stores.config.getAgent(agentId)));
+  }
+
   /**
    * Perform the next step, commit by compare-and-set, repeat until the record
    * waits. `appLimit` says the run withdrew the record because Slack would not
@@ -491,7 +500,7 @@ export class AgentSlackApps {
    * would not bring to match its Agent, has its job armed again, and so does
    * a removed app's group, which Slack may now let Chickpea turn back on.
    */
-  async retry(agentId: string, ownerSlackUserId: string): Promise<CustomAgentConfig> {
+  async retry(agentId: string, ownerSlackUserId: string): Promise<CustomAgentConfig | 'paused'> {
     const { config } = this.deps.stores;
     let agent = await config.getAgent(agentId);
     const presence = agent.slackPresence;
@@ -501,6 +510,8 @@ export class AgentSlackApps {
       agent = await config.updateAgent(agentId, { slackPresence: { ...presence, released: unrefused(presence.released) } }, agent.revision);
     }
     if (app.state === 'active' || restorePending(agent.slackPresence)) return this.followAgain(agent);
+    // Every other record goes on toward Allow, which creates or changes the app; a Cancel's removal is Cancel's to finish.
+    if (!this.mayCreateApps() && !cancelPending(app)) return 'paused';
     if (app.state !== 'needs_attention') return (await this.advance(agentId)).agent;
     return (await this.tryAgain(agent, app, ownerSlackUserId)).agent;
   }
@@ -546,9 +557,11 @@ export class AgentSlackApps {
     const app = appRecordOf(presence);
     if (!app) {
       if (presence.userGroupId) return addedPage(await this.pageAgent(agent), await this.pageLinks(), 'already');
+      if (!this.mayCreateApps()) return this.pausedPage(agent);
       return handoffPage(await this.pageAgent(agent), 'creating', pressOnOpen);
     }
     if (app.state === 'active') return addedPage(await this.pageAgent(agent), await this.pageLinks(agent), 'already');
+    if (!this.mayCreateApps()) return this.pausedPage(agent);
     // An app Slack already made (waiting for Allow, partway, or removed from the workspace) is not created again.
     return handoffPage(await this.pageAgent(agent), agentAppRecord(app) ? 'opening' : 'creating', pressOnOpen);
   }
@@ -584,6 +597,8 @@ export class AgentSlackApps {
         return refused('cancelling', pressed.agent);
       case 'handle_taken':
         return refused('handle_taken', pressed.agent);
+      case 'paused':
+        return { response: await this.pausedPage(pressed.agent), pressed: pressed.kind };
       case 'token_needed':
       case 'permission_needed':
       case 'app_limit':
@@ -633,6 +648,8 @@ export class AgentSlackApps {
     }
     const record = appRecordOf(agent.slackPresence);
     const attached = agent.slackPresence.kind !== 'agent_app';
+    // A live app is already the Agent's; every other press goes on toward Allow, creating or changing the app.
+    if (!this.mayCreateApps() && record?.state !== 'active') return { kind: 'paused', agent };
     // Every press sends the Owner's browser on to Slack's Allow screen, so none posts the message asking them to choose Allow.
     if (!record) {
       const started = await this.start(agentId, ownerSlackUserId, { handOff: true });
@@ -890,7 +907,9 @@ export class AgentSlackApps {
   async pasteConfigurationToken(
     refreshToken: string,
     pastedBy: string,
-  ): Promise<'saved' | 'not_refresh_token' | 'rejected' | 'other_workspace'> {
+  ): Promise<'saved' | 'not_refresh_token' | 'rejected' | 'other_workspace' | 'paused'> {
+    // Checking a token with Slack spends it, and it is only ever kept to create and change apps.
+    if (!this.mayCreateApps()) return 'paused';
     const saved = await saveConfigurationToken(this.secrets, (await this.installation()).teamId, refreshToken, pastedBy);
     if (saved === 'saved') await this.unrefuseFollows(['config_token_needed', 'update_failed']);
     return saved;
@@ -924,10 +943,15 @@ export class AgentSlackApps {
     return readAgentSlackAppsSetting(this.deps.stores.settings);
   }
 
-  /** The mode already stored changes nothing, not even who chose it and when. */
-  async setMode(mode: AgentSlackAppsMode, changedBy: string): Promise<{ setting: AgentSlackAppsSetting; changed: boolean }> {
+  /**
+   * The mode already stored changes nothing, not even who chose it and when.
+   * While the host does not let Chickpea create apps, `own_app` cannot be
+   * turned on; turning it off always can.
+   */
+  async setMode(mode: AgentSlackAppsMode, changedBy: string): Promise<{ setting: AgentSlackAppsSetting; changed: boolean } | 'paused'> {
     const current = await this.setting();
     if (current.mode === mode) return { setting: current, changed: false };
+    if (mode === 'own_app' && !this.mayCreateApps()) return 'paused';
     return { setting: await writeAgentSlackAppsSetting(this.deps.stores.settings, { mode, changedBy, changedAt: this.now() }), changed: true };
   }
 
@@ -941,7 +965,7 @@ export class AgentSlackApps {
    * step is not retried. On the job's last try the Owner's message is given
    * up, and the switch still finishes.
    */
-  async continueSwitch(agentId: string, options: { finalAttempt?: boolean; row?: number } = {}): Promise<'done' | 'not_live'> {
+  async continueSwitch(agentId: string, options: { finalAttempt?: boolean; row?: number } = {}): Promise<'done' | 'not_live' | 'paused'> {
     const run: FollowRun = { finalAttempt: options.finalAttempt ?? false, ...(options.row !== undefined ? { row: options.row } : {}) };
     let agent = await this.deps.stores.config.getAgent(agentId);
     for (let guard = 0; guard < MAX_STEPS_PER_RUN; guard += 1) {
@@ -960,6 +984,8 @@ export class AgentSlackApps {
       const follow = await this.followOf(agent, presence.app.app.appId);
       const followStep = agentAppFollowStep(presence.app, follow.target, this.now());
       if (!followStep) return 'done';
+      // Bringing the app to match its Agent changes it in Slack: held, telling no one, and the sweep arms it once allowed.
+      if (!this.mayCreateApps()) return 'paused';
       agent = await this.followSteps[followStep](agent, presence, follow, run);
     }
     throw Object.assign(new Error('The Agent app move did not settle.'), { name: 'agent_app_move_unsettled' });
@@ -1509,13 +1535,18 @@ export class AgentSlackApps {
   /** Whether a live app does not match its Agent; one that cannot be worked out is left to the sweep, and its move is armed all the same. */
   private async followDue(agent: CustomAgentConfig): Promise<boolean> {
     const presence = agent.slackPresence;
-    if (!agentAppIsLive(presence)) return false;
+    if (!agentAppIsLive(presence) || !this.mayCreateApps()) return false;
     try {
       return agentAppFollowStep(presence.app, (await this.followOf(agent, presence.app.app.appId)).target, this.now()) !== undefined;
     } catch (error) {
       console.warn({ event: 'chickpea.agent_app.follow_not_compared', agentId: agent.id, error: error instanceof Error ? error.name : 'unknown' });
       return false;
     }
+  }
+
+  /** Whether the host lets Chickpea create apps or change them in Slack now; every refusal of a pause asks here. */
+  mayCreateApps(): boolean {
+    return agentSlackAppsMayCreate(this.deps.host);
   }
 
   private async userGroupPermissionMissing(): Promise<boolean> {
@@ -1556,6 +1587,12 @@ export class AgentSlackApps {
       ...(agent ? { add: this.deps.host.addUrl(agent.id), agentPage: `${origin}${ADMIN_PATH}/agents/${encodeURIComponent(agent.id)}` } : {}),
       ...(live ? { openInSlack: slackAppRedirect(live, (await this.installation()).teamId) } : {}),
     };
+  }
+
+  /** Only an Agent waiting for its own app while the setting is on is told how an Owner gives it a user group instead. */
+  private async pausedPage(agent: CustomAgentConfig): Promise<Response> {
+    const waiting = waitsForOwnApp(agent) && (await this.setting()).mode === 'own_app';
+    return addPausedPage(await this.pageAgent(agent), await this.pageLinks(agent), waiting);
   }
 
   private async consentPage(outcome: ConsentOutcome, agent: CustomAgentConfig): Promise<Response> {
