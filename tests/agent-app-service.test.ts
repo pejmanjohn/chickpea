@@ -585,6 +585,7 @@ test("an older record's release Slack refuses for want of the Owner's permission
 
   f.permission.missing = true;
   const retried = await f.service.retry('agent_support', 'UOWNER2');
+  assert.ok(retried !== 'paused');
   assert.equal(retried.slackPresence?.kind, undefined, 'the start is undone');
   const presence = (await f.config.getAgent('agent_support')).slackPresence;
   assert.deepEqual(
@@ -615,6 +616,7 @@ test("an older record's release Slack refuses as missing_scope or not_allowed, f
     await f.service.advance('agent_support');
     f.permission.missing = true;
     const retried = await f.service.retry('agent_support', OWNER);
+    assert.ok(retried !== 'paused');
     assert.equal(retried.slackPresence?.kind, undefined, `${code}: the start is undone`);
     assert.equal(f.transport.posted[1]?.text, PERMISSION_NEEDED, `${code}: the Owner is sent to Admin's update`);
   }

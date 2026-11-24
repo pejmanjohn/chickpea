@@ -1,6 +1,6 @@
 import { hostedGithubConnectPath } from '../config/hosted-github.ts';
 import { platformBilling } from '../config/platform-billing.ts';
-import { agentSlackAppsHost } from '../slack/agent-apps/host.ts';
+import { agentSlackAppsHost, agentSlackAppsMayCreate } from '../slack/agent-apps/host.ts';
 
 export type OnboardingStepId = 'slack' | 'provider' | 'model' | 'slack_apps' | 'github' | 'try';
 
@@ -52,6 +52,12 @@ export async function hostedSignUpOnboardingSteps(): Promise<OnboardingStep[]> {
     onChickpeaModels: platformBilling() !== undefined,
     githubOffered: await hostedGithubConnectPath() !== null,
     // The person signing up becomes the Owner.
-    slackAppsOffered: agentSlackAppsHost() !== undefined,
+    slackAppsOffered: slackAppsCreatable(),
   });
+}
+
+/** The host offers each Agent its own Slack app and lets Chickpea create them now. */
+function slackAppsCreatable(): boolean {
+  const host = agentSlackAppsHost();
+  return host !== undefined && agentSlackAppsMayCreate(host);
 }

@@ -24,6 +24,7 @@ interface Row {
   handle: string;
   avatarUrl: string | null;
   slack: { state: string; reason?: string; attention?: string; cancellable?: boolean };
+  waitsForOwnApp?: boolean;
   channels: Array<{ id: string; name: string | null; private: boolean; status: string }>;
 }
 
@@ -48,6 +49,8 @@ interface ApiState {
   setting: { mode: string; changedBy: string | null; changedAt: number | null };
   token: Record<string, unknown>;
   agents: Row[];
+  /** The host does not let Chickpea create or change apps now. */
+  paused?: boolean;
 }
 
 function apiState(overrides: Partial<ApiState> = {}): ApiState {
@@ -582,7 +585,7 @@ const attentionRows: Array<[string, RegExp, string[]]> = [
   ['urls_refused', /Slack didn&#39;t finish connecting Ops&#39;s app to Chickpea\. Wait a minute, then choose Try again\./, ['Try again']],
   ['slack_busy', /Slack is limiting how fast apps are set up\. Wait a minute, then choose Try again\./, ['Try again']],
   ['app_removed', /Ops&#39;s Slack app was removed from this workspace\. Open your messages with Chickpea and choose Add Ops to Slack to add it back\./, []],
-  ['uninstall_failed', /Removing Ops&#39;s Slack app didn&#39;t finish\. Choose Try again\./, ['Try again']],
+  ['uninstall_failed', /Chickpea couldn&#39;t remove Ops&#39;s Slack app, so Ops is not archived\. Archive Ops again to finish\./, []],
   ['something_new', /Ops&#39;s Slack app needs your attention\. Open your messages with Chickpea for details\./, []],
 ];
 
@@ -624,7 +627,7 @@ test('a live app Slack would not update stays with the Agents that have their ow
 
 test("a needs-attention row's Try again calls Start, which picks the record up where it stopped", async () => {
   const page = await harness({
-    api: apiState({ agents: [row('agent_ops', 'Ops', 'ops', 'needs_attention', { slack: { state: 'needs_attention', reason: 'uninstall_failed' } })] }),
+    api: apiState({ agents: [row('agent_ops', 'Ops', 'ops', 'needs_attention', { slack: { state: 'needs_attention', reason: 'urls_refused' } })] }),
     handle: (path) => path.endsWith('/start') ? respond({ next: 'authorize', authorizeUrl: 'https://slack.com/oauth/v2/authorize?client_id=1.2', agent: row('agent_ops', 'Ops', 'ops', 'waiting_for_allow') }) : undefined,
   });
   await page.click({ 'data-action': 'slack-apps-start', 'data-agent': 'agent_ops' });
@@ -1289,4 +1292,124 @@ test('with the setting on, a step write that fails is tried once more, then the 
   await once.click({ 'data-action': 'onboarding-slack-apps-set-up' });
   assert.equal(stepWrites, 2);
   assert.match(once.html(), /Let Agents work on your code/, 'one failure is absorbed by the retry');
+});
+
+// Defects caught: a paused section that still offers a control that creates or changes an app (turning the setting on,
+// Add, Move, Try again, Add a token), says nothing of the pause, or hides what exists and the controls that still work.
+test('paused, the section says so, offers nothing that creates or changes an app, and keeps what still works', async () => {
+  const agents = [
+    row('agent_new', 'Scout', 'scout', 'not_in_slack', { waitsForOwnApp: true }),
+    row('agent_off', 'Quiet', 'quiet', 'not_in_slack'),
+    row('agent_sales', 'Sales Desk', 'sales-desk', 'user_group', { channels: salesChannels }),
+    row('agent_making', 'Standup', 'standup', 'creating'),
+    row('agent_made', 'Events', 'events', 'creating', { slack: { state: 'creating', cancellable: true } }),
+    row('agent_ready', 'Helpdesk', 'helpdesk', 'waiting_for_allow'),
+    row('agent_token', 'Recruiting', 'recruiting', 'needs_attention', { slack: { state: 'needs_attention', reason: 'config_token_needed', cancellable: true } }),
+    row('agent_stopped', 'Legal', 'legal', 'needs_attention', { slack: { state: 'needs_attention', reason: 'create_refused', cancellable: true } }),
+    row('agent_removed', 'Ops', 'ops', 'needs_attention', { slack: { state: 'needs_attention', reason: 'app_removed' } }),
+    row('agent_undo', 'Finance', 'finance', 'cancelling'),
+    row('agent_support', 'Support', 'support', 'own_app'),
+    row('agent_stale', 'Research', 'research', 'own_app', { slack: { state: 'own_app', attention: 'update_refused' } }),
+    row('agent_tokenless', 'Payroll', 'payroll', 'own_app', { slack: { state: 'own_app', attention: 'config_token_needed' } }),
+  ];
+  const page = await harness({ api: apiState({ paused: true, token: { stored: false }, agents }) });
+  const html = page.html();
+  const text = page.text();
+  assert.match(text, /Adding Slack apps is paused\. Agents that already have their own Slack app keep working\./);
+  assert.doesNotMatch(text, /Each new Agent gets its own Slack app\./, 'the section never says new Agents get apps while none can');
+  assert.match(html, /data-action="slack-apps-turn-off"[^>]*>Stop creating Slack apps for new Agents</, 'turning the setting off is still offered');
+  assert.doesNotMatch(html, /data-action="slack-apps-(turn-on|token-open)"/, 'nothing that would create or change an app is');
+  assert.deepEqual([...html.matchAll(/data-action="slack-apps-start" data-agent="([^"]+)"/g)].map((match) => match[1]), ['agent_ready'],
+    'Add is offered only where Allow is all that is left');
+  assert.doesNotMatch(text, /Chickpea has no Slack token/, 'nor is a token asked for');
+
+  assert.match(text, /Scout Adding Slack apps is paused\. To give Scout an @handle people can mention now, choose Stop creating Slack apps for new Agents\./);
+  assert.doesNotMatch(text, /To give Quiet/, 'only an Agent turning the setting off would place is told it would');
+  assert.match(text, /Standup @standup Adding Slack apps is paused\. Standup keeps answering as it does now\./);
+  assert.doesNotMatch(html, /data-action="slack-apps-cancel" data-agent="agent_making"/, 'a create with no app yet has nothing to cancel');
+  assert.match(text, /Events @events Adding Slack apps is paused\. Events keeps answering as it does now\./);
+  assert.match(html, /data-action="slack-apps-cancel" data-agent="agent_made"[^>]*>Cancel</, 'an app Slack made, not yet allowed, offers Cancel');
+  assert.match(text, /Helpdesk @helpdesk Ready\. Add Helpdesk to Slack to finish\./, 'waiting for Allow is the ordinary row');
+  assert.match(html, /data-action="slack-apps-start" data-agent="agent_ready"[^>]*>Add Helpdesk to Slack</);
+  assert.match(html, /data-action="slack-apps-cancel" data-agent="agent_ready"[^>]*>Cancel</, 'waiting for Allow offers Cancel');
+  assert.match(text, /Recruiting @recruiting Adding Slack apps is paused\. Recruiting keeps answering as it does now\./);
+  assert.match(html, /data-action="slack-apps-cancel" data-agent="agent_token"[^>]*>Cancel</, 'stopped after Slack made the app, Cancel removes it');
+  assert.match(html, /data-action="slack-apps-cancel" data-agent="agent_stopped"[^>]*>Cancel</, 'stopped before any app, Cancel withdraws it');
+  assert.match(text, /Sales Desk @sales-desk #sales #deals/);
+  assert.doesNotMatch(text, /Sales Desk @sales-desk #sales #deals [^ ]+ Adding Slack apps is paused/, 'an Agent in a user group just stays as it is');
+
+  assert.match(text, /Ops(&#39;|')s Slack app was removed from this workspace/, 'a removed app reads as always: its Allow still works');
+  assert.match(html, /data-action="slack-apps-cancel" data-agent="agent_undo"[^>]*>Finish removing</, 'and so does finishing a Cancel');
+  assert.match(text, /Support @support Its own Slack app/, 'an Agent with its own app is unchanged');
+  for (const name of ['Research', 'Payroll']) {
+    assert.match(text, new RegExp(`${name} @${name.toLowerCase()} Adding Slack apps is paused\\. Chickpea can(&#39;|')t update ${name}(&#39;|')s Slack app now\\. ${name} keeps answering\\.`),
+      'a live app that does not match its Agent says it waits, and offers neither Try again nor a token');
+  }
+
+  const tokenPage = await harness({ path: '/admin/destinations/slack/connection/token', api: apiState({ paused: true, token: { stored: false } }) });
+  assert.match(tokenPage.text(), /Adding Slack apps is paused, so Chickpea isn(&#39;|')t taking a Slack token now\./, 'the token page, as a link in an older message opens it, says so');
+  assert.doesNotMatch(tokenPage.html(), /id="slack-apps-token"|slack-apps-token-form/, 'and asks for no token');
+
+  const off = await harness({ api: apiState({ paused: true, setting: { mode: 'shared', changedBy: null, changedAt: null }, agents: [] }) });
+  assert.match(off.text(), /Agents answer through the Chickpea app\. People mention them by @handle in channels Chickpea is in\. Adding Slack apps is paused\./);
+  assert.doesNotMatch(off.html(), /data-action="slack-apps-turn-on"/, 'off, the setting cannot be turned on');
+  assert.match(off.html(), /data-action="slack-apps-token-remove"/, 'and the token can still be removed');
+});
+
+// Defect caught: a pause that begins after the page loaded answered with "couldn't reach Slack", or not reflected.
+test('a Start or a turn-on the server refuses as paused reloads the section into its paused state', async () => {
+  const page = await harness({
+    handle: (path, method) => {
+      if (path.endsWith('/start')) {
+        page.api.paused = true;
+        return respond({ error: 'paused', agent: row('agent_sales', 'Sales Desk', 'sales-desk', 'user_group', { channels: salesChannels }) }, 409);
+      }
+      if (path === '/admin/api/slack-apps/mode' && method === 'PUT') return respond({ error: 'paused' }, 409);
+      return undefined;
+    },
+  }) as Awaited<ReturnType<typeof harness>>;
+  await page.click({ 'data-action': 'slack-apps-start', 'data-agent': 'agent_sales' });
+  assert.doesNotMatch(page.text(), /couldn(’|&#39;|')t reach Slack/);
+  assert.match(page.text(), /Adding Slack apps is paused\. Agents that already have their own Slack app keep working\./);
+  assert.doesNotMatch(page.html(), /data-action="slack-apps-start"/);
+});
+
+test('paused, onboarding has no Slack apps step', async () => {
+  const initial = {
+    githubConnectPath: '/github/connect', stage: 'connect_github', revision: '{"revision":1}', agentId: 'agent_chickpea', redirectTo: null,
+    workspace: { id: 'TACME', name: 'Acme' }, channel: null, providerId: 'anthropic', modelId: 'anthropic/claude-sonnet-5',
+    models: [], slackAppId: 'AACME', tryStartedAt: 1_800_000_000_000, completedAt: null,
+  };
+  const bar = (paused: boolean) => stepBar(renderAdminPage({
+    agentSlackAppsOffered: true, agentSlackAppsPaused: paused, selfHosted: false, installationOwner: true,
+    onboarding: { initial, githubConnectPath: '/github/connect' },
+  })).map((step) => step.split(' (')[0]);
+  assert.ok(bar(false).includes('Slack apps'));
+  assert.deepEqual(bar(true), ['Add to Slack', 'Choose provider', 'Choose model', 'Connect GitHub', 'Try Chickpea']);
+});
+
+// Defects caught: a row whose app Slack made before Allow offering no Cancel, so it can only be archived; an archive Slack
+// refused to finish offering a Try again that cannot work.
+test('a row whose app Slack made but nobody allowed offers Cancel, and an unfinished archive says to archive again', async () => {
+  const agents = [
+    row('agent_made', 'Events', 'events', 'creating', { slack: { state: 'creating', cancellable: true } }),
+    row('agent_making', 'Standup', 'standup', 'creating'),
+    row('agent_urls', 'Legal', 'legal', 'needs_attention', { slack: { state: 'needs_attention', reason: 'urls_refused', cancellable: true } }),
+    row('agent_archive', 'Finance', 'finance', 'needs_attention', { slack: { state: 'needs_attention', reason: 'uninstall_failed' } }),
+  ];
+  const page = await harness({ clock: true, api: apiState({ agents }) });
+  await page.advance(2 * 60_000 + 4_000);
+  const html = page.html();
+  assert.match(page.text(), /Creating Events(&#39;|')s Slack app hasn(&#39;|')t finished\. Choose Try again\./);
+  for (const id of ['agent_made', 'agent_urls']) {
+    assert.match(html, new RegExp(`data-action="slack-apps-start" data-agent="${id}"[^>]*>Try again<`), id);
+    assert.match(html, new RegExp(`data-action="slack-apps-cancel" data-agent="${id}"[^>]*>Cancel<`), `${id}: and Cancel`);
+  }
+  assert.doesNotMatch(html, /data-action="slack-apps-cancel" data-agent="agent_making"/, 'a create with no app yet has nothing to cancel');
+  assert.match(page.text(), /Chickpea couldn(&#39;|')t remove Finance(&#39;|')s Slack app, so Finance is not archived\. Archive Finance again to finish\./);
+  assert.doesNotMatch(html, /data-agent="agent_archive"/, 'with no Try again that cannot work');
+
+  const paused = await harness({ api: apiState({ paused: true, agents }) });
+  assert.match(paused.html(), /data-action="slack-apps-cancel" data-agent="agent_urls"[^>]*>Cancel</, 'paused, Cancel is still offered');
+  assert.match(paused.text(), /Archive Finance again to finish\./);
 });

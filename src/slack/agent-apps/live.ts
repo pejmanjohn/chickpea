@@ -20,9 +20,11 @@ import { SlackTransportError, type SlackTransport } from '../transport/types.ts'
 import { ownerUserGroupToken } from '../user-group-authority.ts';
 import { createSlackWebClient } from '../web-client.ts';
 import { installationScopeOf } from '../../config/installation-scope.ts';
-import { appRecordOf, type CustomAgentConfig } from '../../config/types.ts';
+import { AWAITING_OWN_APP, appRecordOf, type CustomAgentConfig } from '../../config/types.ts';
 import type { SlackSpeaker } from '../speaker.ts';
-import { agentSlackAppsHost, type AgentAppRetirement, type AgentSlackAppIngress, type AgentSlackAppsHost } from './host.ts';
+import {
+  agentSlackAppsHost, agentSlackAppsMayCreate, type AgentAppRetirement, type AgentSlackAppIngress, type AgentSlackAppsHost,
+} from './host.ts';
 import { FINISH_APP_ACTION, START_APP_ACTION, TRY_AGAIN_ACTION } from './pages.ts';
 import { type AgentAppSwitchJob, agentAppFollowStep, agentAppIsLive, agentAppMoveJob, agentAppRecord } from './lifecycle.ts';
 import { readOwnAppSecrets, type SecretDeps } from './secrets.ts';
@@ -244,8 +246,10 @@ export function agentAppPresenceHooks(
     async retire(agent) {
       return (await (await liveAgentSlackApps(env, host)).retire(agent)).agent;
     },
-    async ownAppMode() {
-      return (await readAgentSlackAppsSetting(settings ?? getSettingsStore(env))).mode === 'own_app';
+    async ownAppMode(agent) {
+      if ((await readAgentSlackAppsSetting(settings ?? getSettingsStore(env))).mode !== 'own_app') return false;
+      // While the host does not let Chickpea create apps, only an Agent already waiting for one goes on waiting.
+      return agentSlackAppsMayCreate(host) || agent.slackPresence?.errorCode === AWAITING_OWN_APP;
     },
     async follow(agent) {
       if (!agentAppIsLive(agent.slackPresence)) return;
@@ -375,7 +379,8 @@ export async function handleAgentAppHomeAction(input: {
       return;
     }
     if (!owner) return;
-    await apps.retry(action.value, slackUserId);
+    const retried = await apps.retry(action.value, slackUserId);
+    if (retried === 'paused') await viewer.tell(await apps.pausedReply(action.value));
     await viewer.republish();
   })());
   return true;
@@ -533,7 +538,8 @@ export async function armUnfinishedAgentAppMoves(
   for (const agent of await stores.config.listAgents()) {
     const presence = agent.slackPresence;
     let followDue = false;
-    if (agentAppIsLive(presence)) {
+    // A follow changes the app in Slack: while that is not allowed none is armed, and the next sweep after arms it.
+    if (agentAppIsLive(presence) && agentSlackAppsMayCreate(host)) {
       try {
         follow ??= (await import('./service.ts')).agentAppFollow;
         followDue = agentAppFollowStep(presence.app, follow(agent, presence.app.app.appId, host, installationId).target, at) !== undefined;

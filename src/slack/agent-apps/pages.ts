@@ -239,6 +239,14 @@ export function addPressReply(kind: 'gone' | 'owner_needed' | 'link', names?: Ag
   }
 }
 
+/** Finish setting up, or Try again on a live app's update, pressed while the host does not let Chickpea create or change apps. */
+export function pausedReply(names: Pick<AgentAppNames, 'name'>, live = false): string {
+  const name = escapeMrkdwn(names.name);
+  return live
+    ? `Adding Slack apps is paused, so Chickpea can't update ${name}'s Slack app now. ${name} keeps answering.`
+    : `Adding Slack apps is paused, so Chickpea can't finish ${name}'s Slack app now. ${name} keeps answering as it does now.`;
+}
+
 /** Where an Agent's own bot is after the switch, by Channel ID. */
 export interface AgentAppSwitchReport {
   /** Granted Channels its bot is in. */

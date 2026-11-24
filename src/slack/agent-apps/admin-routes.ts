@@ -74,6 +74,8 @@ export interface SlackAppsAgentRow {
   handle: string;
   avatarUrl: string | null;
   slack: AgentSlackState;
+  /** Set when turning the setting off would give this Agent a user group. */
+  waitsForOwnApp?: true;
   channels: Array<{ id: string; name: string | null; private: boolean; status: AgentChannelGrant['status'] }>;
 }
 
@@ -87,6 +89,7 @@ function agentRow(c: Context, agent: CustomAgentConfig, grants: readonly AgentCh
     handle: presence.normalizedHandle,
     avatarUrl: agentAvatarUrlForPresentation(agent, requestOrigin(c), installationId) ?? null,
     slack: agentSlackState(presence),
+    ...(waitsForOwnApp(agent) ? { waitsForOwnApp: true as const } : {}),
     channels: grants.filter((grant) => grant.agentId === agent.id).map((grant) => ({
       id: grant.channelId, name: grant.channelLabel ?? null, private: grant.channelIsPrivate === true, status: grant.status,
     })),
@@ -110,22 +113,24 @@ type SlackAppsAuditAction =
  * and 404 without the port; changes carry Admin's JSON request protection:
  *
  * - `GET /admin/api/slack-apps` → `{ setting: { mode, changedBy, changedAt }, token: { stored: false } |
- *   { stored: true, pastedBy, pastedAt }, agents: SlackAppsAgentRow[] }`.
+ *   { stored: true, pastedBy, pastedAt }, agents: SlackAppsAgentRow[], paused: boolean }`; `paused` while the host
+ *   does not let Chickpea create or change apps, when every route below that would answers 409 `{ error: 'paused' }`.
  * - `PUT /admin/api/slack-apps/mode` `{ mode: 'shared' | 'own_app' }` → `{ setting }`; with `shared`, every such PUT
  *   also gives each Agent in Slack nowhere a user group and answers `{ setting, waiting: SlackAppsAgentRow[] }`, the
  *   Agents still not in Slack after it, so pressing again repairs a reconcile that stopped partway. Turning
- *   `own_app` on answers 503 `{ error: 'updating' }` while the state store runs code from before the mode.
+ *   `own_app` on answers 503 `{ error: 'updating' }` while the state store runs code from before the mode, and 409
+ *   `{ error: 'paused' }` while creating apps is paused.
  * - `PUT /admin/api/slack-apps/token` `{ refreshToken }` → `{ token }`; 400 `{ error: 'not_refresh_token' | 'rejected' |
- *   'other_workspace' }`; 503 `{ error: 'slack_down' }`.
+ *   'other_workspace' }`; 409 `{ error: 'paused' }`; 503 `{ error: 'slack_down' }`.
  * - `DELETE /admin/api/slack-apps/token` → `{ token: { stored: false }, removed: 'discarded' | 'unconfirmed' | 'none' }`.
  * - `POST /admin/api/slack-apps/agents/:agentId/start` → 200 `{ next: 'authorize', authorizeUrl, agent }`; 202
  *   `{ next: 'creating', agent }`; 409 `{ error: 'token_needed' | 'permission_needed' | 'app_limit' }` or
- *   `{ error: 'needs_attention' | 'already_own_app' | 'cancelling' | 'handle_taken', agent }`; 404. Slack's Allow then
+ *   `{ error: 'needs_attention' | 'already_own_app' | 'cancelling' | 'handle_taken' | 'paused', agent }`; 404. Slack's Allow then
  *   lands the Owner back on Admin's Slack connection section.
  * - `POST /admin/api/slack-apps/agents/:agentId/cancel` → `{ agent, app: 'deleted' | 'left_for_owner' | 'not_found' | 'none' }`:
  *   `none` when the start stopped before Slack made any app, `left_for_owner` too when one may exist after a create
- *   Slack never answered, `not_found` when Slack refused the delete and says the app does not exist; 409 `{ error: 'not_waiting' }`; 503 `{ error: 'slack_unavailable' }`; 404. A row whose start
- *   stopped before any app reads `{ state: 'needs_attention', reason, cancellable: true }`.
+ *   Slack never answered, `not_found` when Slack refused the delete and says the app does not exist; 409 `{ error: 'not_waiting' }`; 503 `{ error: 'slack_unavailable' }`; 404. A row Cancel
+ *   can end reads `cancellable: true`: one whose start stopped before any app, and one whose app Slack made and nobody allowed.
  *
  * Each change is recorded as an audit event; a failed record is logged and never fails the request.
  */
@@ -174,7 +179,9 @@ export function createAgentSlackAppAdminRoutes(deps: AgentSlackAppAdminDeps): Ho
     const [setting, token, agents, grants] = await Promise.all([
       apps.setting(), apps.configurationToken(), apps.userAgents(), apps.agentChannelGrants(),
     ]);
-    return c.json({ setting: settingJson(setting), token, agents: agents.map((agent) => agentRow(c, agent, grants)) });
+    return c.json({
+      setting: settingJson(setting), token, agents: agents.map((agent) => agentRow(c, agent, grants)), paused: !apps.mayCreateApps(),
+    });
   });
 
   app.put(`${API}/mode`, async (c) => {
@@ -188,7 +195,9 @@ export function createAgentSlackAppAdminRoutes(deps: AgentSlackAppAdminDeps): Ho
       c.header('Retry-After', '60');
       return c.json({ error: 'updating' }, 503);
     }
-    const { setting, changed } = await gated.apps.setMode(parsed.output.mode, gated.slackUserId);
+    const set = await gated.apps.setMode(parsed.output.mode, gated.slackUserId);
+    if (set === 'paused') return c.json({ error: 'paused' }, 409);
+    const { setting, changed } = set;
     if (changed) await audit(c, gated.principal, 'agent_apps.mode_changed', setting.mode);
     if (setting.mode !== 'shared') return c.json({ setting: settingJson(setting) });
     // Shared: each Agent waiting for its own app gets a user group. Agents with an app, or one on its way, keep it.
@@ -212,6 +221,7 @@ export function createAgentSlackAppAdminRoutes(deps: AgentSlackAppAdminDeps): Ho
       if (!(error instanceof SlackUnavailable)) throw error;
       return c.json({ error: 'slack_down' }, 503);
     }
+    if (saved === 'paused') return c.json({ error: saved }, 409);
     if (saved !== 'saved') return c.json({ error: saved }, 400);
     await audit(c, gated.principal, 'agent_apps.token_pasted');
     return c.json({ token: await gated.apps.configurationToken() });
@@ -240,6 +250,7 @@ export function createAgentSlackAppAdminRoutes(deps: AgentSlackAppAdminDeps): Ho
       case 'already_own_app':
       case 'cancelling':
       case 'handle_taken':
+      case 'paused':
         return c.json({ error: pressed.kind, agent: await rowOf(c, apps, pressed.agent) }, 409);
       case 'token_needed':
       case 'permission_needed':

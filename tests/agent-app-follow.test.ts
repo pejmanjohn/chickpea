@@ -223,7 +223,7 @@ async function save(f: Fixture, patch: { name?: string; handle?: string; avatarR
   await f.reconciler.retry(agent.id);
 }
 
-function run(f: Fixture): Promise<'done' | 'not_live'> {
+function run(f: Fixture): Promise<'done' | 'not_live' | 'paused'> {
   return f.service.continueSwitch('agent_support');
 }
 
