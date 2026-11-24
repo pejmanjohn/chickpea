@@ -1360,6 +1360,10 @@ test('the state store tells a runner its serving version without touching storag
     ((await probe.threadRunnerTurn({ kind: 'begin', id: 'job' })).value as { servingVersion?: string }).servingVersion,
     undefined,
   );
+  storeCalls = 0;
+  const knows = await probe.threadRunnerTurn({ kind: 'knowsAgentAppsMode' });
+  assert.deepEqual([knows.ok, knows.value], [true, true], 'Admin turns the Agent-apps setting on only when the store says it knows it');
+  assert.equal(storeCalls, 0, 'no storage read');
 });
 
 test("the alarm executor starts no turn of a thread while a stop's abort for it is out, and other threads run meanwhile", async () => {

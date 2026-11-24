@@ -21,7 +21,7 @@ import type {
 } from '../src/management/types.ts';
 import { agentPresenceAnnouncements } from '../src/slack/agent-presence/announcements.ts';
 import { AgentPresenceReconciler } from '../src/slack/agent-presence/reconciler.ts';
-import type { SlackTransport, SlackUserGroup } from '../src/slack/transport/types.ts';
+import { SlackTransportError, type SlackTransport, type SlackUserGroup } from '../src/slack/transport/types.ts';
 
 const NOW = 1_800_000_000_000;
 const WORKSPACE = 'T1';
@@ -128,6 +128,8 @@ function fixture() {
       return { ...created };
     },
     async updateUserGroup(id: string, patch: Partial<SlackUserGroup>) {
+      // As Slack was seen to answer: a disabled group is not found for an update, and keeps what it had.
+      if (group(id).disabled) throw new SlackTransportError('usergroups.update', 'no_such_subteam');
       return { ...Object.assign(group(id), patch) };
     },
     async enableUserGroup(id: string) {

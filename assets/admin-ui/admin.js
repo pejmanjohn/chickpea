@@ -4574,7 +4574,7 @@
         '<p class="onboarding-success-badge" role="status">Done. Each new Agent gets its own Slack app.</p>' +
         '<p class="hint">Chickpea couldn&rsquo;t open the next step. <button type="button" class="link-btn" data-action="onboarding-slack-apps-continue"' + (busy ? ' disabled' : '') + '>Try again</button></p></section>';
     }
-    var error = state.onboardingError || (state.slackApps && state.slackApps.turnOnFailed ? SLACK_APPS_SAVED_NOT_ON : "");
+    var error = state.onboardingError || (state.slackApps && state.slackApps.turnOnFailed) || "";
     return '<section class="onboarding-panel"><p class="onboarding-eyebrow">' + onboardingStepEyebrow() + ' &middot; Optional</p>' +
       '<h1 class="onboarding-title">Make each Agent its own Slack app</h1>' +
       '<p class="onboarding-lede">Each Agent shows up in Slack like a teammate. It has its own name and picture, people can message it directly, and you add it to channels the way you add a person. Setup takes about a minute.</p>' +
@@ -4609,9 +4609,9 @@
         apps.turnOnFailed = false;
         settleOnboardingSlackApps(true);
       });
-    }).catch(function () {
+    }).catch(function (error) {
       state.onboardingBusy = false;
-      state.onboardingError = "Chickpea couldn't start this. Try again.";
+      state.onboardingError = slackAppsUpdating(error) ? SLACK_APPS_UPDATING : "Chickpea couldn't start this. Try again.";
       render();
     });
   }
@@ -5298,14 +5298,17 @@
     }
     var data = apps.data;
     var on = data.setting && data.setting.mode === "own_app";
+    var paused = data.paused === true;
     var busy = !!apps.busy;
+    // Paused, nothing that creates an app is offered; turning the setting off still is.
+    var pausedLine = paused ? '<p class="hint">' + esc(SLACK_APPS_PAUSED + " Agents that already have their own Slack app keep working.") + '</p>' : "";
     var head = on
-      ? '<div class="section-head"><div>' + title + '<p class="hint">Each new Agent gets its own Slack app.</p></div>' +
+      ? '<div class="section-head"><div>' + title + (paused ? pausedLine : '<p class="hint">Each new Agent gets its own Slack app.</p>') + '</div>' +
         '<button type="button" class="link-btn" data-action="slack-apps-turn-off"' + (busy ? " disabled" : "") + '>Stop creating Slack apps for new Agents</button></div>'
-      : '<div class="section-head"><div>' + title + '<p class="hint">Agents answer through the Chickpea app. People mention them by @handle in channels Chickpea is in.</p></div></div>' +
-        '<div class="action-well"><button type="button" class="btn btn-primary btn-sm" data-action="slack-apps-turn-on"' + (busy ? " disabled" : "") + '>' +
-        (apps.busy === "on" ? '<span class="spinner"></span>' : '') + (apps.turnOnFailed ? 'Turn it on' : 'Make each Agent its own Slack app') + '</button></div>';
-    var needsToken = on && !data.token.stored
+      : '<div class="section-head"><div>' + title + '<p class="hint">Agents answer through the Chickpea app. People mention them by @handle in channels Chickpea is in.</p>' + pausedLine + '</div></div>' +
+        (paused ? "" : '<div class="action-well"><button type="button" class="btn btn-primary btn-sm" data-action="slack-apps-turn-on"' + (busy ? " disabled" : "") + '>' +
+        (apps.busy === "on" ? '<span class="spinner"></span>' : '') + (apps.turnOnFailed ? 'Turn it on' : 'Make each Agent its own Slack app') + '</button></div>');
+    var needsToken = on && !paused && !data.token.stored
       ? '<div class="callout slack-apps-callout" role="status"><span>Chickpea has no Slack token, so it can&rsquo;t create Slack apps for new Agents.</span>' +
         '<button type="button" class="btn btn-soft btn-sm" data-action="slack-apps-token-open">Add a token</button></div>'
       : "";
@@ -5313,9 +5316,9 @@
       ? '<div class="callout' + (apps.notice.ok ? " callout-success" : "") + ' slack-apps-callout" role="status"><span>' + esc(apps.notice.text) + '</span></div>'
       : "";
     var results = apps.results.map(slackAppsResultHtml).join("");
-    var errorText = apps.error || (apps.turnOnFailed && !on ? SLACK_APPS_SAVED_NOT_ON : "");
+    var errorText = apps.error || (!on && apps.turnOnFailed) || "";
     var error = errorText ? '<p class="inline-status error" role="alert">' + esc(errorText) + '</p>' : "";
-    var lists = slackAppsListsHtml(data.agents || [], on);
+    var lists = slackAppsListsHtml(data.agents || [], on, paused);
     var token = data.token.stored
       ? '<div class="action-well slack-apps-token-row"><span class="hint">' + esc(slackAppsTokenLine(data.token)) + '</span>' +
         '<button type="button" class="btn btn-ghost btn-sm" data-action="slack-apps-token-remove"' + (busy ? " disabled" : "") + '>Remove token</button></div>'
@@ -5339,7 +5342,7 @@
   // progress), and moved, each under its own heading. Off, only Agents with an
   // app of their own or one on its way are listed, so an Owner can finish or
   // see them: one in no user group then is never offered an app of its own.
-  function slackAppsListsHtml(agents, on) {
+  function slackAppsListsHtml(agents, on, paused) {
     var groups = { chickpea: [], notInSlack: [], own: [] };
     agents.forEach(function (agent) {
       var stateName = agent.slack && agent.slack.state;
@@ -5349,7 +5352,8 @@
     });
     var list = function (titleText, rows) {
       if (!rows.length) return "";
-      return '<div class="slack-apps-list"><h3 class="slack-apps-list-title">' + esc(titleText) + '</h3>' + rows.map(slackAppsRowHtml).join("") + '</div>';
+      return '<div class="slack-apps-list"><h3 class="slack-apps-list-title">' + esc(titleText) + '</h3>' +
+        rows.map(function (row) { return paused ? slackAppsPausedRowHtml(row) : slackAppsRowHtml(row); }).join("") + '</div>';
     };
     return list("Not in Slack yet", groups.notInSlack) +
       list("Still answering through the Chickpea app", groups.chickpea) +
@@ -5392,7 +5396,8 @@
       case "app_removed":
         return { text: name + "'s Slack app was removed from this workspace. Open your messages with Chickpea and choose Add " + name + " to Slack to add it back.", actions: [] };
       case "uninstall_failed":
-        return { text: "Removing " + name + "'s Slack app didn't finish. Choose Try again.", actions: [tryAgain] };
+        // An archive Slack refused to finish: only archiving again finishes it.
+        return { text: "Chickpea couldn't remove " + name + "'s Slack app, so " + name + " is not archived. Archive " + name + " again to finish.", actions: [] };
       default:
         return { text: name + "'s Slack app needs your attention. Open your messages with Chickpea for details.", actions: [] };
     }
@@ -5445,6 +5450,7 @@
       rowClass = " needs-attention";
       sub = '<p class="slack-apps-row-note">' + esc("Creating " + name + "'s Slack app hasn't finished. Choose Try again.") + '</p>';
       actions = slackAppsButtonHtml(agent, tryAgain);
+      if (agent.slack.cancellable) actions += slackAppsButtonHtml(agent, { label: "Cancel", action: "slack-apps-cancel", link: true });
     } else if (stateName === "waiting_for_allow") {
       rowClass = " is-ready";
       sub = '<p class="slack-apps-row-note">' + esc("Ready. Add " + name + " to Slack to finish.") + '</p>' +
@@ -5462,7 +5468,7 @@
       var attention = slackAppsAttention(agent);
       sub = '<p class="slack-apps-row-note">' + esc(attention.text) + '</p>';
       actions = attention.actions.map(function (button) { return slackAppsButtonHtml(agent, button); }).join("");
-      // A start that stopped before Slack made any app can be withdrawn.
+      // A start that stopped before Slack made any app can be withdrawn, and one after can have its app deleted.
       if (agent.slack.cancellable) actions += slackAppsButtonHtml(agent, { label: "Cancel", action: "slack-apps-cancel", link: true });
     } else if (stateName === "own_app" && agent.slack.attention) {
       rowClass = " needs-attention";
@@ -5482,6 +5488,47 @@
     var handle = stateName === "not_in_slack" ? "" : '<span class="mono">@' + esc(agent.handle) + '</span>';
     return '<div class="slack-apps-row' + rowClass + '">' + slackAppsAvatarHtml(agent) +
       '<div class="slack-apps-row-copy"><div class="slack-apps-row-name"><strong>' + esc(name) + '</strong>' + handle + '</div>' +
+      slackAppsChannelsHtml(agent) + sub + '</div><div class="slack-apps-row-action">' + actions + '</div></div>';
+  }
+
+  var SLACK_APPS_PAUSED = "Adding Slack apps is paused.";
+
+  // While the host does not let Chickpea create or change apps, an Agent on
+  // its way to its own app says so and keeps only Cancel, where Cancel can
+  // end it, and a live app that does not match its Agent says it waits. An
+  // app waiting for Allow, and every other row, is as it always is.
+  function slackAppsPausedRow(agent) {
+    var name = agent.name;
+    var slack = agent.slack || {};
+    switch (slack.state) {
+      case "user_group":
+        return { text: "" };
+      case "not_in_slack":
+        return { text: agent.waitsForOwnApp ? SLACK_APPS_PAUSED + " To give " + name + " an @handle people can mention now, choose Stop creating Slack apps for new Agents." : "" };
+      case "creating":
+        return { text: SLACK_APPS_PAUSED + " " + name + " keeps answering as it does now.", cancel: !!slack.cancellable };
+      case "needs_attention":
+        if (slack.reason === "app_removed" || slack.reason === "uninstall_failed") return null;
+        return { text: SLACK_APPS_PAUSED + " " + name + " keeps answering as it does now.", cancel: !!slack.cancellable };
+      case "own_app":
+        // A live app that does not match its Agent stays so until the pause ends: no Try again, no token.
+        return slack.attention ? { text: SLACK_APPS_PAUSED + " Chickpea can't update " + name + "'s Slack app now. " + name + " keeps answering." } : null;
+      default:
+        return null;
+    }
+  }
+
+  function slackAppsPausedRowHtml(agent) {
+    var paused = slackAppsPausedRow(agent);
+    if (!paused) return slackAppsRowHtml(agent);
+    var apps = slackAppsState();
+    var sub = paused.text ? '<p class="slack-apps-row-note is-notice">' + esc(paused.text) + '</p>' : "";
+    var note = apps.rowNotes[agent.id];
+    if (note) sub += '<p class="' + (note.error ? 'inline-status error" role="alert">' : 'slack-apps-row-note is-notice" role="status">') + esc(note.text) + '</p>';
+    var actions = paused.cancel ? slackAppsButtonHtml(agent, { label: "Cancel", action: "slack-apps-cancel", link: true }) : "";
+    var handle = agent.slack && agent.slack.state === "not_in_slack" ? "" : '<span class="mono">@' + esc(agent.handle) + '</span>';
+    return '<div class="slack-apps-row">' + slackAppsAvatarHtml(agent) +
+      '<div class="slack-apps-row-copy"><div class="slack-apps-row-name"><strong>' + esc(agent.name) + '</strong>' + handle + '</div>' +
       slackAppsChannelsHtml(agent) + sub + '</div><div class="slack-apps-row-action">' + actions + '</div></div>';
   }
 
@@ -5528,6 +5575,11 @@
       return '<div class="slack-token-page">' + back + title +
         '<p class="onboarding-success-badge slack-token-success" role="status">' + esc(connected) + '</p>' +
         '<div><button type="button" class="btn btn-primary" data-action="slack-apps-token-back" data-role="slack-apps-token-continue">Continue</button></div></div>';
+    }
+    // Paused, a pasted token would be refused, so none is asked for.
+    if (slackAppsState().data && slackAppsState().data.paused === true) {
+      return '<div class="slack-token-page">' + back + title +
+        '<p class="callout slack-token-why" role="status"><span>' + esc(SLACK_TOKEN_ERRORS.paused) + '</span></p></div>';
     }
     var checking = token.phase === "checking";
     var fieldStatus = token.error
@@ -5601,6 +5653,7 @@
   }
 
   var SLACK_TOKEN_ERRORS = {
+    paused: "Adding Slack apps is paused, so Chickpea isn't taking a Slack token now.",
     rejected: "Slack didn't accept that token. Generate a new one and paste its Refresh Token.",
     slack_down: "Slack didn't answer. Try again in a minute."
   };
@@ -5654,20 +5707,26 @@
       var next = document.querySelector('[data-role="slack-apps-token-continue"]');
       if (next && next.focus) next.focus();
     }).catch(function (error) {
-      if (saved) leaveSlackAppsTokenSavedNotOn();
+      if (saved) leaveSlackAppsTokenSavedNotOn(error);
       else refuse(error && error.message);
     });
   }
 
   var SLACK_APPS_SAVED_NOT_ON = "Chickpea saved your Slack token, but couldn't turn this on yet.";
+  var SLACK_APPS_UPDATING = "Chickpea is finishing an update, so try again in a minute.";
+
+  // Admin holds turning the setting on while Chickpea's code for it is still rolling out.
+  function slackAppsUpdating(error) {
+    return !!error && error.message === "updating";
+  }
 
   // Slack accepted the token, which spends it, so the page never asks for it
   // again: the Owner goes back where they came from, and Turn it on there
-  // sends only the setting.
-  function leaveSlackAppsTokenSavedNotOn() {
+  // sends only the setting. `turnOnFailed` holds the sentence that says why.
+  function leaveSlackAppsTokenSavedNotOn(error) {
     var apps = slackAppsState();
     apps.token = { open: false, phase: "empty", error: "", turnOn: false, why: "", connectedMode: "" };
-    apps.turnOnFailed = true;
+    apps.turnOnFailed = slackAppsUpdating(error) ? SLACK_APPS_UPDATING : SLACK_APPS_SAVED_NOT_ON;
     invalidateVisibleResource("slack-apps", "");
     if (state.view === "onboarding") render();
     else openDestination("connection");
@@ -5687,10 +5746,13 @@
       invalidateVisibleResource("slack-apps", "");
       render();
       loadSlackApps();
-    }).catch(function () {
+    }).catch(function (error) {
       apps.busy = "";
       apps.confirm = "";
-      apps.error = "Chickpea couldn't change this setting. Try again.";
+      apps.error = slackAppsUpdating(error) ? SLACK_APPS_UPDATING
+        : error && error.message === "paused" ? SLACK_APPS_PAUSED + " Chickpea can't turn this on now."
+        : "Chickpea couldn't change this setting. Try again.";
+      if (error && error.message === "paused") loadSlackApps();
       render();
     });
   }
@@ -5764,6 +5826,8 @@
         return { error: true, text: "Another Agent is using @" + agent.handle + " in Slack, or is being added with it. Rename " + agent.name + ", then try again." };
       case "not_found":
         return { error: true, text: "Chickpea couldn't find this Agent. Reload the page." };
+      case "paused":
+        return null;
       default:
         return { error: true, text: "Chickpea couldn't reach Slack. Try again in a minute." };
     }
@@ -5816,7 +5880,8 @@
       if (note) apps.rowNotes[agentId] = note;
       render();
       if (code === "permission_needed") showSlackPermissionsBar();
-      if (code === "not_found") loadSlackApps();
+      // A pause that began after the page loaded: the section reloads into it.
+      if (code === "not_found" || code === "paused") loadSlackApps();
     });
   }
 
@@ -5842,6 +5907,9 @@
         apps.rowNotes[agentId] = unanswered
           ? { yourApps: true, text: "Slack may have made an app for " + name + " before Chickpea stopped. If you see one in Your Apps in Slack that you don't use, delete it." }
           : { yourApps: true, text: "Chickpea couldn't delete the Slack app it made for " + name + ", so delete " + name + " in Your Apps in Slack. " + name + " keeps answering as it did before." };
+      } else if (body && body.app === "not_found") {
+        var found = slackAppsRow(agentId).name;
+        apps.rowNotes[agentId] = { yourApps: true, text: "Chickpea couldn't find the Slack app it made for " + found + " to delete it. If " + found + " still appears in Your Apps in Slack, you can delete it there. " + found + " keeps answering as it did before." };
       }
       render();
     }).catch(function (error) {
@@ -19615,7 +19683,8 @@
       loadSlackChannels(false);
     }
     render();
-    revalidateCurrentVisibleResources();
+    // A route change: a hidden or automation tab still loads what it shows, or Agents in Slack stays on "Loading…".
+    revalidateCurrentVisibleResources({ navigation: true });
   }
 
   function openDestinations() {

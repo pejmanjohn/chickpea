@@ -1,5 +1,7 @@
 import { planDependencies, planStatus, preparePlanConnection, pollPlanHandoff, completePlanHandoff, confirmPlanConnection, cancelPlanConnection, disconnectPlan, resolvePlanSession } from '../chatgpt-plan/connection.ts';
-import { agentAppPresenceHooks, agentDmPlacementFacts, agentSlackAppsHost, readAgentSlackAppsSetting } from '../slack/agent-apps/index.ts';
+import {
+  agentAppPresenceHooks, agentDmPlacementFacts, agentSlackAppsHost, agentSlackAppsMayCreate, readAgentSlackAppsSetting,
+} from '../slack/agent-apps/index.ts';
 import {
   type AgentSlackAppAdminDeps,
   createAgentSlackAppAdminRoutes,
@@ -6684,6 +6686,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       usageAdminUi: usageAdminUi(c),
       installationOwner: isOwnerSession(principal),
       agentSlackAppsOffered: agentSlackAppsHost() !== undefined && isOwnerSession(principal),
+      agentSlackAppsPaused: agentSlackAppsPaused(),
       browserSetupOffered: standalone,
       websiteLoginsOffered: standalone || hostedWebsiteLoginsOffered(),
       websiteLoginsRemoveOnly: !standalone && hostedBrowserConfigured() && !hostedWebsiteLoginsOffered(),
@@ -10551,7 +10554,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const agentApps = agentAppPresenceHooks(c.env as PlatformEnv | undefined, settings(c));
       // The reconciler's restore turns the presence back on; with no group where each new Agent is its own app, the
       // Agent is not in Slack yet. A store-only restore would leave the presence marked for archiving.
-      const ownApp = !current.slackPresence?.userGroupId && Boolean(agentApps && await agentApps.ownAppMode());
+      const ownApp = !current.slackPresence?.userGroupId && Boolean(agentApps && await agentApps.ownAppMode(current));
       // An Agent that will wait for its own app takes no handle, so it is not refused for one.
       if (!ownApp || current.slackPresence?.kind === 'agent_app') {
         const refused = restoreHandleRefusal(await store(c).listAgents(), current);
@@ -10865,11 +10868,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     deploymentServesManyInstallations(c.env as PlatformEnv | undefined) ? hostedGithubConnectPath() : null;
 
   // Serving many installations, onboarding offers Slack apps (optional) after
-  // the model where the host offers each Agent its own Slack app, and only to
-  // the Owner signed in as themselves; standalone never.
+  // the model where the host offers each Agent its own Slack app and lets
+  // Chickpea create them now, and only to the Owner signed in as themselves;
+  // standalone never.
   const onboardingSlackAppsOffered = (c: Context): boolean =>
     deploymentServesManyInstallations(c.env as PlatformEnv | undefined) &&
-    agentSlackAppsHost() !== undefined && isOwnerSession(principalByContext.get(c));
+    agentSlackAppsHost() !== undefined && !agentSlackAppsPaused() && isOwnerSession(principalByContext.get(c));
 
   // Slack keeps no answer for a workspace's plan: an Agent it refused a handle
   // because the plan is free is Chickpea's only record of it.
@@ -14364,4 +14368,10 @@ function effectiveConfigResponse(config: EffectiveSlackConfig): object {
 function isAbortOrTimeoutError(error: unknown): boolean {
   return error instanceof Error &&
     (error.name === 'AbortError' || error.name === 'TimeoutError');
+}
+
+/** The host offers Agents' own Slack apps but does not let Chickpea create or change them now. */
+function agentSlackAppsPaused(): boolean {
+  const host = agentSlackAppsHost();
+  return host !== undefined && !agentSlackAppsMayCreate(host);
 }

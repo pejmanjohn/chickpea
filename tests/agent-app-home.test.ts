@@ -37,6 +37,7 @@ const slack = {
 } as AgentAppSlackApi;
 const transport: AgentAppTransport = {
   disableUserGroup: refuse('disableUserGroup'), enableUserGroup: refuse('enableUserGroup'),
+  listUserGroups: refuse('listUserGroups'), updateUserGroup: refuse('updateUserGroup'),
   openDirectConversation: refuse('openDirectConversation'), postMessage: refuse('postMessage'),
   lookupChannel: refuse('lookupChannel'), joinPublicChannel: refuse('joinPublicChannel'), channelHasMember: refuse('channelHasMember'),
 };

@@ -342,3 +342,21 @@ test('the step is part of the journey: it follows the model, Connect GitHub sett
     settings.close();
   }
 });
+
+// Defect caught: onboarding offering to turn on what the host does not let Chickpea do now, or the pause hiding the
+// Slack apps section an Owner still needs for the apps that exist.
+test('while the host pauses creating Agent apps, the Owner passes the step, cannot settle it, and Admin still offers the section', async (t) => {
+  host(t, { github: true });
+  configureAgentSlackApps({ ...HOST, mayCreateApps: false });
+  const { read, settle, request } = await atSlackApps(t);
+  const view = await read();
+  assert.equal(view.stage, 'connect_github');
+  assert.equal((await settle(view.revision)).status, 403);
+  const page = await request('/admin/onboarding');
+  assert.equal(page.status, 200);
+  const config = JSON.parse((await page.text()).match(/<script id="chickpea-admin-config" type="application\/json">([\s\S]*?)<\/script>/)![1]!) as {
+    agentSlackAppsOffered: boolean; onboarding: { steps: Array<{ id: string }> };
+  };
+  assert.equal(config.agentSlackAppsOffered, true, 'the section that serves the apps that exist is still offered');
+  assert.deepEqual(config.onboarding.steps.map((step) => step.id), ['slack', 'provider', 'model', 'github', 'try']);
+});

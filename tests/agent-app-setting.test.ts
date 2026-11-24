@@ -149,7 +149,12 @@ function slackWorkspace() {
       created.push(input.handle);
       return { ...group };
     },
-    updateUserGroup: async (id: string, patch: Partial<SlackUserGroup>) => ({ ...Object.assign(required(id, 'usergroups.update'), patch) }),
+    updateUserGroup: async (id: string, patch: Partial<SlackUserGroup>) => {
+      const group = required(id, 'usergroups.update');
+      // As Slack was seen to answer: a disabled group is not found for an update, and keeps what it had.
+      if (group.disabled) throw new SlackTransportError('usergroups.update', 'no_such_subteam');
+      return { ...Object.assign(group, patch) };
+    },
     enableUserGroup: async (id: string) => ({ ...Object.assign(required(id, 'usergroups.enable'), { disabled: false }) }),
     disableUserGroup: async (id: string) => ({ ...Object.assign(required(id, 'usergroups.disable'), { disabled: true }) }),
     lookupChannel: async (id: string) => {
@@ -175,7 +180,7 @@ function slackWorkspace() {
 
 async function adminApp(t: TestContext, options: {
   role?: AuthPrincipal['role']; machine?: boolean; port?: boolean; permissionMissing?: boolean;
-  slack?: ReturnType<typeof slackWorkspace>;
+  slack?: ReturnType<typeof slackWorkspace>; env?: Record<string, unknown>;
 } = {}) {
   const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
@@ -238,6 +243,8 @@ async function adminApp(t: TestContext, options: {
     transport: {
       disableUserGroup: async (id) => { calls.push(`disable:${id}`); return { id, name: 'x', handle: 'x', disabled: true }; },
       enableUserGroup: async (id) => { calls.push(`enable:${id}`); return { id, name: 'x', handle: 'x', disabled: false }; },
+      listUserGroups: async () => [],
+      updateUserGroup: async () => { throw new Error('not in this unit'); },
       openDirectConversation: async (user) => { calls.push(`dm:${user}`); return { id: `D_${user}`, private: true, member: true, archived: false }; },
       postMessage: async (input) => { calls.push(`post:${input.channelId}`); texts.push(input.text); return { channelId: input.channelId, ts: '1.0' }; },
       lookupChannel: async (id) => { if (!options.slack) throw new Error('no Channels here'); return options.slack.transport.lookupChannel(id); },
@@ -270,7 +277,7 @@ async function adminApp(t: TestContext, options: {
     ...testAdminAuthority(TOKEN, undefined, identity, principal(options.role ?? 'owner', options.machine)),
   });
   const request = (path: string, init: RequestInit = {}, headers: Record<string, string> = {}) =>
-    app.request(path, { ...init, headers: { ...testAdminHeaders(TOKEN), ...(init.headers as Record<string, string> | undefined), ...headers } }, HOSTED);
+    app.request(path, { ...init, headers: { ...testAdminHeaders(TOKEN), ...(init.headers as Record<string, string> | undefined), ...headers } }, options.env ?? HOSTED);
   const json = (method: string, body?: unknown): RequestInit => ({
     method, ...(body === undefined ? {} : { body: JSON.stringify(body) }), headers: { 'content-type': 'application/json' },
   });
@@ -381,6 +388,75 @@ test('an Owner turns the mode on and off; a bad mode, or the mode already stored
     ['agent_apps.mode_changed', 'own_app'],
     ['agent_apps.mode_changed', 'shared'],
   ], 'one record per change, none for the mode already stored');
+});
+
+/**
+ * A Cloudflare deployment serving Worker version `v2`, and its installation's
+ * state store as old and new code answer: code that knows the mode says so,
+ * code from before it refuses the question as an unknown operation, as its
+ * `threadRunnerTurn` does, and a store that cannot be reached throws.
+ */
+function deployedOn(store: { version: string; knowsMode: boolean | Error }) {
+  const asked: string[] = [];
+  const env = scopeInstallationEnv({
+    CHICKPEA_TENANCY: 'installation',
+    CF_VERSION_METADATA: { id: 'v2' },
+    TAG_STATE: {
+      getByName: (name: string) => ({
+        threadRunnerTurn: async (op: { kind: string }) => {
+          asked.push(`${name} ${op.kind}`);
+          if (store.knowsMode instanceof Error) throw store.knowsMode;
+          if (op.kind === 'servingVersion') return { ok: true, value: store.version };
+          if (op.kind === 'knowsAgentAppsMode' && store.knowsMode) return { ok: true, value: true };
+          return { ok: false, error: { code: 'internal', message: 'Unknown thread runner operation.' } };
+        },
+      }),
+    },
+  }, { installationId: 'inst_a' });
+  return { env, asked };
+}
+
+test('each new Agent is not made its own Slack app while the state store that makes Agents in Slack runs code from before the setting', async (t) => {
+  const store: { version: string; knowsMode: boolean | Error } = { version: 'v1', knowsMode: false };
+  const deployed = deployedOn(store);
+  const owner = await adminApp(t, { env: deployed.env });
+
+  // The token page, after the token is saved, turns the setting on: refused while Agents made in Slack would ignore it.
+  const early = await owner.request(`${API}/mode`, owner.json('PUT', { mode: 'own_app' }));
+  assert.equal(early.status, 503);
+  assert.equal(early.headers.get('retry-after'), '60');
+  assert.deepEqual(await early.json(), { error: 'updating' });
+  assert.deepEqual(await readAgentSlackAppsSetting(owner.settings), { mode: 'shared' });
+  assert.deepEqual(owner.audits(), []);
+  assert.ok(deployed.asked.length === 1 && deployed.asked[0]!.includes('inst_a') && deployed.asked[0]!.endsWith(' knowsAgentAppsMode'),
+    `the installation's own store is asked whether it knows the setting: ${deployed.asked.join(', ')}`);
+
+  store.knowsMode = new Error('Durable Object request timed out');
+  const unreachable = await owner.request(`${API}/mode`, owner.json('PUT', { mode: 'own_app' }));
+  assert.equal(unreachable.status, 503, 'a store that cannot be asked is not taken as knowing');
+  assert.deepEqual(await unreachable.json(), { error: 'updating' });
+  assert.deepEqual(await readAgentSlackAppsSetting(owner.settings), { mode: 'shared' });
+
+  store.knowsMode = true;
+  const on = await owner.request(`${API}/mode`, owner.json('PUT', { mode: 'own_app' }));
+  assert.equal(on.status, 200);
+  assert.deepEqual(await readAgentSlackAppsSetting(owner.settings), { mode: 'own_app', changedBy: OWNER, changedAt: NOW });
+
+  // Whatever the store runs, a setting already on stays on, and turning it off is never held back.
+  store.knowsMode = false;
+  assert.equal((await owner.request(`${API}/mode`, owner.json('PUT', { mode: 'own_app' }))).status, 200);
+  const off = await owner.request(`${API}/mode`, owner.json('PUT', { mode: 'shared' }));
+  assert.equal(off.status, 200);
+  assert.equal((await readAgentSlackAppsSetting(owner.settings)).mode, 'shared');
+});
+
+test('after a deploy that changed only the version, a state store that knows the setting lets an Owner turn it on at once', async (t) => {
+  const deployed = deployedOn({ version: 'v1', knowsMode: true });
+  const owner = await adminApp(t, { env: deployed.env });
+  const on = await owner.request(`${API}/mode`, owner.json('PUT', { mode: 'own_app' }));
+  assert.equal(on.status, 200);
+  assert.deepEqual(await readAgentSlackAppsSetting(owner.settings), { mode: 'own_app', changedBy: OWNER, changedAt: NOW });
+  assert.equal(owner.audits().length, 1);
 });
 
 test('setting the default mode on a workspace that never chose one stores nothing', async (t) => {
@@ -660,17 +736,19 @@ test('Cancel withdraws a start that stopped before Slack made any app, and says 
   assert.deepEqual(owner.script.deleted, [], 'nothing is deleted in Slack');
   assert.equal(owner.audits().filter((audit) => audit.action === 'agent_apps.cancelled').map((audit) => audit.reasonCode).join(), 'none,none,none,left_for_owner');
 
-  // Once Slack has made the app, Cancel is not offered and is refused: that app is removed only from Allow. The second
-  // record is one no transition writes today; a record that holds an app is never withdrawn, whatever it would resume.
+  // Once Slack has made the app, Cancel removes the app instead of withdrawing the start. The second record is one no
+  // transition writes today; a record that holds an app is never withdrawn, whatever it would resume.
   for (const [reason, resume] of [['config_token_needed', 'created'], ['create_refused', 'creating']] as const) {
     const current = await owner.config.getAgent('agent_support');
     await owner.config.updateAgent('agent_support', {
       slackPresence: { ...group('support'), app: { state: 'needs_attention', at: NOW, startedBy: OWNER, reason, resume, app: APP } },
     }, current.revision);
     const listed = await (await owner.request(API)).json() as { agents: Array<{ id: string; slack: unknown }> };
-    assert.deepEqual(listed.agents.find((row) => row.id === 'agent_support')?.slack, { state: 'needs_attention', reason }, resume);
-    assert.equal((await owner.request(`${API}/agents/agent_support/cancel`, owner.json('POST', {}))).status, 409, resume);
-    assert.equal(appRecordOf((await owner.config.getAgent('agent_support')).slackPresence)?.state, 'needs_attention', `${resume}: the record stays`);
+    assert.deepEqual(listed.agents.find((row) => row.id === 'agent_support')?.slack, { state: 'needs_attention', reason, cancellable: true }, resume);
+    const cancelled = await owner.request(`${API}/agents/agent_support/cancel`, owner.json('POST', {}));
+    assert.equal(cancelled.status, 200, resume);
+    assert.notEqual((await cancelled.json() as { app: string }).app, 'none', `${resume}: never told no app existed`);
+    assert.equal(appRecordOf((await owner.config.getAgent('agent_support')).slackPresence), undefined, `${resume}: the record is gone`);
   }
 });
 
@@ -1114,7 +1192,7 @@ test('a Start that Slack left partway is resumed by the next press, which still 
   owner.script.update = 'unanswered';
   const first = await owner.request(`${API}/agents/agent_support/start`, owner.json('POST', {}));
   assert.equal(first.status, 202);
-  assert.deepEqual((await first.json() as { agent: { slack: unknown } }).agent.slack, { state: 'creating' });
+  assert.deepEqual((await first.json() as { agent: { slack: unknown } }).agent.slack, { state: 'creating', cancellable: true });
   assert.equal((await owner.config.getAgent('agent_support')).slackPresence?.app?.state, 'created');
 
   owner.script.update = undefined;
