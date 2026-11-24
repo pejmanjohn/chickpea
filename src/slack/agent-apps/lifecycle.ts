@@ -49,6 +49,8 @@ export type AgentAppEvent =
   | { type: 'config_token_needed'; at: number }
   | { type: 'icon_set'; at: number; icon: AgentAppIcon }
   | { type: 'allow_dm_posted'; at: number; channelId: string; ts: string }
+  /** The press is sending the Owner's browser to Slack's Allow screen, so no message asks them to choose Allow. */
+  | { type: 'handed_to_slack'; at: number }
   | { type: 'consent_opened'; at: number; nonceDigest: string; owner: string; expiresAt: number }
   | { type: 'consent_granted'; at: number; botUserId: string; installedBy: string }
   /** That Owner's open Allow link is spent or undone; any other Owner's stays open. */
@@ -279,6 +281,10 @@ export function transition(app: AgentAppLifecycle, event: AgentAppEvent): AgentA
             icon: app.icon,
             allowDm: { channelId: event.channelId, ts: event.ts },
           }
+        : WRONG_STATE;
+    case 'handed_to_slack':
+      return app.state === 'icon_set'
+        ? { state: 'awaiting_consent', at, startedBy: app.startedBy, app: app.app, icon: app.icon }
         : WRONG_STATE;
     case 'consent_opened': {
       if (app.state !== 'awaiting_consent') return WRONG_STATE;

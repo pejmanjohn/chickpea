@@ -234,7 +234,7 @@ test("an Owner's press creates the app and goes straight to Slack's Allow; press
   assert.match(url.searchParams.get('state')!, /^agent_support\.[a-f0-9-]{36}\.slack$/, 'the state says the press came from Slack');
   assert.equal(appsMade(f), 1);
   assert.deepEqual(f.audits, [[OWNER, 'authorize']], "the Owner's press is recorded as Admin's Start is");
-  assert.match(f.posted[0]?.text ?? '', /Support's Slack app is ready\. Choose Allow/, 'the Allow message stays as the way back');
+  assert.deepEqual(f.posted, [], "no message asks the Owner to choose Allow: their browser is already on Slack's screen");
 
   const again = await press(f);
   assert.equal(again.status, 303, 'a second press opens Slack again');
@@ -244,27 +244,31 @@ test("an Owner's press creates the app and goes straight to Slack's Allow; press
   assert.equal(appsMade(f), 1);
 });
 
-// Defects caught (finding 2): a press whose Allow message Slack refused left the record partway, and the next press
-// from Slack told the Owner to read a message that was never sent, instead of finishing.
-test('a press that stopped partway is finished by the next press, with one app', async (t) => {
-  const f = await fixture(t);
-  t.mock.method(console, 'error', () => undefined);
-  f.refusePosts.count = 1;
-  const stopped = await press(f);
-  assert.equal(stopped.status, 502);
-  const html = await stopped.text();
-  assert.equal(headline(html), "Adding Support to Slack didn't finish", 'true whether or not Slack made the app: here it did');
-  assert.doesNotMatch(words(html), /allows new apps/, 'Slack did not refuse the create');
-  assert.deepEqual(primary(html), { label: 'Try again', href: undefined }, 'Try again is the press again');
-  assert.equal((await recordOf(f))?.state, 'icon_set', 'what was done is kept');
-  assert.equal(appsMade(f), 1);
+// Defects caught: an Owner sent to Slack's Allow screen also messaged to choose Allow, so they got two messages for
+// one add; a record an earlier build left waiting to post that message never finishing; Slack's own Try again, which
+// sends no browser anywhere, leaving the Owner with no way to Allow.
+test("a record left waiting to post the Allow message finishes: a press goes to Slack with no message, Slack's Try again posts it", async (t) => {
+  for (const finish of ['press', 'try_again'] as const) {
+    const f = await fixture(t);
+    t.mock.method(console, 'error', () => undefined);
+    // As the build before this one leaves it: Slack refused its Allow message, after making the app.
+    f.refusePosts.count = 1;
+    await assert.rejects(f.service.start('agent_support', OWNER));
+    assert.equal((await recordOf(f))?.state, 'icon_set', 'waiting at the message');
+    assert.equal(appsMade(f), 1);
 
-  const finished = await press(f);
-  assert.equal(finished.status, 303);
-  assert.match(finished.headers.get('location')!, /^https:\/\/slack\.com\/oauth\/v2\/authorize\?/);
-  assert.equal((await recordOf(f))?.state, 'awaiting_consent');
-  assert.equal(appsMade(f), 1, 'one app');
-  assert.doesNotMatch(JSON.stringify(f.posted), /latest message to you/);
+    if (finish === 'press') {
+      const finished = await press(f);
+      assert.equal(finished.status, 303);
+      assert.match(finished.headers.get('location')!, /^https:\/\/slack\.com\/oauth\/v2\/authorize\?/);
+      assert.deepEqual(f.posted, [], 'the press sends the Owner to Slack, and asks nothing else of them');
+    } else {
+      await f.service.retry('agent_support', OWNER);
+      assert.match(f.posted.at(-1)?.text ?? '', /Support's Slack app is ready\. Choose Allow/, 'the message is the only way to Allow');
+    }
+    assert.equal((await recordOf(f))?.state, 'awaiting_consent', finish);
+    assert.equal(appsMade(f), 1, 'one app');
+  }
 });
 
 // Defects caught: a press answered with JSON or a raw code; a refusal whose page offers a way that cannot work.
@@ -566,4 +570,5 @@ test("a removed app is added back from the hand-off, whichever presence holds th
   assert.equal(new URL(response.headers.get('location')!).searchParams.get('client_id'), '7.c', "Slack's Allow for the same app");
   assert.equal((await recordOf(f))?.state, 'awaiting_consent');
   assert.equal(appsMade(f), 0);
+  assert.deepEqual(f.posted, [], 'the Owner is on Slack\'s screen already, so no message asks them to choose Allow');
 });

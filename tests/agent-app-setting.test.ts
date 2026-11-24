@@ -707,7 +707,8 @@ async function allowAndSwitch(owner: Awaited<ReturnType<typeof adminApp>>, agent
   const callback = new URLSearchParams({ code: 'code-1', state: new URL(authorizeUrl).searchParams.get('state')! });
   const landed = await owner.service.completeConsent(callback, OWNER);
   assert.equal(landed.status, 303, 'the Allow went through');
-  assert.equal(landed.headers.get('location'), `${ADMIN_ORIGIN}/admin/destinations/slack/connection`, 'a press in Admin lands back in Admin');
+  const from = new URL(authorizeUrl).searchParams.get('state')!.split('.').at(-1);
+  if (from === 'admin') assert.equal(landed.headers.get('location'), `${ADMIN_ORIGIN}/admin/destinations/slack/connection`, 'a press in Admin lands back in Admin');
   assert.equal(await owner.service.continueSwitch(agentId), 'done');
 }
 
@@ -763,6 +764,37 @@ test("after Allow, a waiting Channel whose writer has left it stays waiting and 
   assert.equal((await grantOf(f.owner, 'CSALES'))?.status, 'pending');
   assert.deepEqual(f.slack.joined, [], 'nobody joins for someone no longer there');
   assert.equal(f.owner.texts.at(-1)!.includes('CSALES'), false);
+});
+
+// Defects caught: the creator's welcome carries both a Channel to approve and the Add to Slack link, and one order lost
+// the Channel: approving first refused for an Agent not in Slack yet, or adding first left the approval nothing to do.
+test("the welcome's Channel ends with the Agent in it whichever comes first: approving it, or adding the Agent to Slack", async (t) => {
+  const approve = (f: Awaited<ReturnType<typeof ownAppWorkspace>>) => f.owner.presence().publish({
+    workspaceId: TEAM, agentId: 'agent_new', channelId: 'CSALES', actorMembershipId: CREATOR, actorSlackUserId: CREATOR_SLACK,
+  });
+  /** The Add to Slack link's press, then Slack's Allow and the switch. */
+  const add = async (f: Awaited<ReturnType<typeof ownAppWorkspace>>) => {
+    const pressed = await f.owner.service.addPress('agent_new', OWNER);
+    assert.equal(pressed.response.status, 303);
+    await allowAndSwitch(f.owner, 'agent_new', pressed.response.headers.get('location')!);
+  };
+  for (const order of ['approve, then add', 'add, then approve'] as const) {
+    const f = await ownAppWorkspace(t);
+    f.slack.channel('CSALES', { members: [CREATOR_SLACK] });
+    await f.owner.config.createAgent({ ...agent('agent_new', 'Newbie', notInSlack('newbie')), creatorMembershipId: CREATOR, model: 'local-stub/newbie' });
+    await f.owner.presence().retry('agent_new');
+
+    if (order === 'approve, then add') {
+      assert.equal((await approve(f)).grant.status, 'pending', 'approving first keeps the Channel waiting');
+      await add(f);
+    } else {
+      await add(f);
+      assert.equal((await approve(f)).grant.status, 'active', 'approving after the add is an ordinary add');
+    }
+    assert.equal((await grantOf(f.owner, 'CSALES'))?.status, 'active', order);
+    assert.equal((await f.owner.config.getAgent('agent_new')).slackPresence?.kind, 'agent_app', order);
+    if (order === 'approve, then add') assert.ok(f.slack.appBotIn.has('CSALES'), "the Agent's own bot joins at the switch");
+  }
 });
 
 // Defects caught: a wait made active in a private Channel Chickpea's bot has since been removed from, where nothing

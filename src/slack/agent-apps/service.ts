@@ -247,6 +247,8 @@ interface Run {
   wroteCreating: boolean;
   /** An archive's own run; any other removal of an app attached to a user group is a Cancel's. */
   archiving: boolean;
+  /** The press that runs it sends the Owner's browser to Slack's Allow screen next. */
+  handOff: boolean;
 }
 
 type Outcome = { event: AgentAppEvent; after?: () => Promise<void> } | 'wait';
@@ -321,7 +323,7 @@ export class AgentSlackApps {
    * permission the switch will need to turn the group off is checked first,
    * so a move never reaches a switch it cannot finish.
    */
-  async start(agentId: string, ownerSlackUserId: string): Promise<AgentAppStartOutcome> {
+  async start(agentId: string, ownerSlackUserId: string, options: { handOff?: boolean } = {}): Promise<AgentAppStartOutcome> {
     const { config } = this.deps.stores;
     const agent = await config.getAgent(agentId);
     const presence = agent.slackPresence;
@@ -347,9 +349,9 @@ export class AgentSlackApps {
       if (!(error instanceof AgentRevisionConflictError)) throw error;
       const latest = await config.getAgent(agentId);
       if (appRecordOf(latest.slackPresence)) return { kind: 'already_started', agent: latest };
-      return this.start(agentId, ownerSlackUserId);
+      return this.start(agentId, ownerSlackUserId, options);
     }
-    const advanced = await this.advance(agentId, { wroteCreating: true });
+    const advanced = await this.advance(agentId, { wroteCreating: true, handOff: options.handOff ?? false });
     if (advanced.withdrawn === 'app_limit') return { kind: 'app_limit' };
     if (advanced.withdrawn === 'handle_taken') return { kind: 'handle_taken', agent: advanced.agent };
     return { kind: 'started', agent: advanced.agent };
@@ -377,11 +379,12 @@ export class AgentSlackApps {
    * waits. `appLimit` says the run withdrew the record because Slack would not
    * create another app in this workspace.
    */
-  async advance(agentId: string, options: { wroteCreating?: boolean; archiving?: boolean } = {}): Promise<Advanced> {
+  async advance(agentId: string, options: { wroteCreating?: boolean; archiving?: boolean; handOff?: boolean } = {}): Promise<Advanced> {
     const { config } = this.deps.stores;
     let agent = await config.getAgent(agentId);
     let wroteCreating = options.wroteCreating ?? false;
     const archiving = options.archiving ?? false;
+    const handOff = options.handOff ?? false;
     for (let guard = 0; guard < MAX_STEPS_PER_RUN; guard += 1) {
       const presence = agent.slackPresence;
       const app = appRecordOf(presence);
@@ -394,7 +397,7 @@ export class AgentSlackApps {
       }
       const step = nextStep(app, now);
       if (!step) return { agent };
-      const outcome = await this.performers[step]({ agent, presence, app, now, wroteCreating, archiving });
+      const outcome = await this.performers[step]({ agent, presence, app, now, wroteCreating, archiving, handOff });
       if (outcome === 'wait') return { agent };
       const committed = await this.commit(agent, outcome.event);
       agent = committed.agent;
@@ -442,6 +445,7 @@ export class AgentSlackApps {
     agent: CustomAgentConfig,
     app: Extract<AgentAppLifecycle, { state: 'needs_attention' }>,
     ownerSlackUserId: string,
+    handOff = false,
   ): Promise<Advanced> {
     const agentId = agent.id;
     const manifestFingerprint = slackManifestFingerprint(this.createManifest(agent));
@@ -449,7 +453,7 @@ export class AgentSlackApps {
       type: 'try_again', at: this.now(), startedBy: ownerSlackUserId, manifestFingerprint,
     });
     if (resumed.outcome === 'refused') return { agent: resumed.agent };
-    return this.advance(agentId, { wroteCreating: app.resume === 'creating' });
+    return this.advance(agentId, { wroteCreating: app.resume === 'creating', handOff });
   }
 
   /** "Allow <Agent> in Slack": a fresh consent nonce, then Slack's authorize page. Creates nothing. */
@@ -459,7 +463,7 @@ export class AgentSlackApps {
     const app = appRecordOf(agent.slackPresence);
     if (!app) return this.consentPage('expired', agent);
     if (app.state === 'active') return this.consentPage('already_active', agent);
-    if (app.state === 'needs_attention' && app.reason === 'app_removed') agent = (await this.tryAgain(agent, app, ownerSlackUserId)).agent;
+    if (app.state === 'needs_attention' && app.reason === 'app_removed') agent = (await this.tryAgain(agent, app, ownerSlackUserId, true)).agent;
     const url = await this.authorizeUrl(agent, ownerSlackUserId, 'slack');
     return url ? Response.redirect(url, 303) : this.consentPage('expired', agent);
   }
@@ -564,13 +568,14 @@ export class AgentSlackApps {
     }
     const record = appRecordOf(agent.slackPresence);
     const attached = agent.slackPresence.kind !== 'agent_app';
+    // Every press sends the Owner's browser on to Slack's Allow screen, so none posts the message asking them to choose Allow.
     if (!record) {
-      const started = await this.start(agentId, ownerSlackUserId);
+      const started = await this.start(agentId, ownerSlackUserId, { handOff: true });
       if (started.kind !== 'started' && started.kind !== 'already_started') return started;
       agent = started.agent;
     } else if (record.state === 'needs_attention' && record.reason === 'app_removed') {
       // A removed app, whichever kind holds the handle now: its Allow is offered again, as the Allow link does.
-      agent = (await this.tryAgain(agent, record, ownerSlackUserId)).agent;
+      agent = (await this.tryAgain(agent, record, ownerSlackUserId, true)).agent;
     } else if (attached && cancelPending(record)) {
       const finished = record.state === 'needs_attention'
         ? await this.tryAgain(agent, record, ownerSlackUserId)
@@ -581,8 +586,8 @@ export class AgentSlackApps {
         return { kind: 'token_needed' };
       }
       const resumed = record.state === 'needs_attention'
-        ? await this.tryAgain(agent, record, ownerSlackUserId)
-        : await this.advance(agentId);
+        ? await this.tryAgain(agent, record, ownerSlackUserId, true)
+        : await this.advance(agentId, { handOff: true });
       if (resumed.withdrawn === 'app_limit') return { kind: 'app_limit' };
       if (resumed.withdrawn === 'handle_taken') return { kind: 'handle_taken', agent: resumed.agent };
       agent = resumed.agent;
@@ -1304,6 +1309,8 @@ export class AgentSlackApps {
 
     post_allow_dm: async (run) => {
       if (run.app.state !== 'icon_set') return 'wait';
+      // The Owner is on their way to Slack's Allow screen; the Add link they pressed, and Admin's row, bring them back.
+      if (run.handOff) return { event: { type: 'handed_to_slack', at: run.now } };
       const posted = await this.message('allow', run.agent, run.app.startedBy, `agent-app-allow:${run.agent.id}:${run.app.at}`);
       return { event: { type: 'allow_dm_posted', at: run.now, channelId: posted.channelId, ts: posted.ts } };
     },

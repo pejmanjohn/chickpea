@@ -323,6 +323,13 @@ test('Allow from a removed app resumes the sequence first, and an active app say
   assert.match(pageText(await response.text()), /Support is already in Slack/);
   const notStarted = await fixture(t, { state: 'created', at: NOW, startedBy: OWNER, app: APP });
   assert.equal((await notStarted.service.allow('agent_support', OWNER)).status, 410);
+
+  // The link sends the Owner to Slack's Allow screen, so no message asks them to choose Allow.
+  const removed = await fixture(t, { state: 'needs_attention', at: NOW, startedBy: OWNER, reason: 'app_removed', resume: 'icon_set', app: APP, icon: 'agent_avatar' });
+  const reopened = await removed.service.allow('agent_support', OWNER);
+  assert.equal(reopened.status, 303);
+  assert.equal((await appOf(removed.config))?.state, 'awaiting_consent');
+  assert.doesNotMatch(JSON.stringify(removed.posted), /Choose Allow/);
 });
 
 // Defects caught: a second Owner's Allow overwriting the first Owner's open link, one Owner's cancel spending
