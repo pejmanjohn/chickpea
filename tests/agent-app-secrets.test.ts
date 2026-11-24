@@ -172,6 +172,22 @@ for (const code of ['ratelimited', 'request_timeout', 'invalid_arguments']) {
   });
 }
 
+// Defects caught: a token Slack says is dead read as Slack not answering, so every caller waits forever and nobody is
+// asked for a token; or the pair deleted for it; or its claim left standing, so the next caller reads Slack not answering.
+for (const code of ['token_revoked', 'invalid_auth', 'account_inactive']) {
+  test(`a rotation Slack answers ${code} asks for a token at once, for every caller, and keeps the pair`, async (t) => {
+    let now = NOW;
+    const d = fixture(t, { now: () => now });
+    assert.equal(await saveConfigurationToken(d, TEAM, PASTED, 'UOWNER'), 'saved');
+    now = NOW + TWELVE_HOURS;
+    d.refuse = code;
+    await assert.rejects(() => withConfigurationToken(d, TEAM, async () => 'unused'), ConfigTokenNeeded);
+    await assert.rejects(() => withConfigurationToken(d, TEAM, async () => 'unused'), ConfigTokenNeeded, 'the claim is released');
+    assert.deepEqual(d.rotations, [PASTED, 'xoxe-1-refresh-1', 'xoxe-1-refresh-1']);
+    assert.deepEqual(await configurationTokenStatus(d, TEAM), { stored: true, pastedBy: 'UOWNER', pastedAt: NOW }, 'the pair is kept');
+  });
+}
+
 test('a spent pair with no newer one asks the Owner again and is forgotten', async (t) => {
   let now = NOW;
   const d = fixture(t, { now: () => now });

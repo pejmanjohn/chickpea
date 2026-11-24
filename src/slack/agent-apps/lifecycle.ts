@@ -152,16 +152,26 @@ export function agentAppMoveJob(
   return undefined;
 }
 
+/** How long an update that did not go through is held before it is tried again, so an outage heals by itself. */
+export const FOLLOW_FAILED_RETRY_MS = 24 * 60 * 60_000;
+
 /**
  * The step that brings a live app to match its Agent: its definition, then
  * its picture. Nothing while a refusal holds: for this same target, or a
- * missing token for any.
+ * missing token for any. An update that did not go through holds for a day.
  */
-export function agentAppFollowStep(app: ActiveAgentApp, target: AgentAppFollowTarget): 'definition' | 'picture' | undefined {
+export function agentAppFollowStep(
+  app: ActiveAgentApp,
+  target: AgentAppFollowTarget,
+  now: number,
+): 'definition' | 'picture' | undefined {
   const { follows } = app;
   const refused = follows?.refused;
   if (refused?.reason === 'config_token_needed') return undefined;
-  if (refused?.manifestFingerprint === target.manifestFingerprint && refused.avatarRevision === target.avatarRevision) return undefined;
+  const lapsed = refused?.reason === 'update_failed' && now - refused.at >= FOLLOW_FAILED_RETRY_MS;
+  if (!lapsed && refused?.manifestFingerprint === target.manifestFingerprint && refused.avatarRevision === target.avatarRevision) {
+    return undefined;
+  }
   if (follows?.manifestFingerprint !== target.manifestFingerprint) return 'definition';
   if (follows?.avatarRevision !== target.avatarRevision) return 'picture';
   return undefined;

@@ -8,16 +8,16 @@ import { type AgentAppFollows, type AgentSlackPresence, type CustomAgentConfig, 
 import type { ManagementReceiptOutboxRecord } from '../src/management/types.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { type AgentSlackAppsHost, configureAgentSlackApps } from '../src/slack/agent-apps/host.ts';
-import { agentAppFollowStep, agentSlackState } from '../src/slack/agent-apps/lifecycle.ts';
+import { FOLLOW_FAILED_RETRY_MS, agentAppFollowStep, agentSlackState } from '../src/slack/agent-apps/lifecycle.ts';
 import { agentAppSwitchRow, armAgentAppSwitch, armUnfinishedAgentAppMoves } from '../src/slack/agent-apps/live.ts';
-import { discardConfigurationToken, saveConfigurationToken, writeAppSecrets } from '../src/slack/agent-apps/secrets.ts';
+import { discardConfigurationToken, readAppSecrets, saveConfigurationToken, writeAppSecrets } from '../src/slack/agent-apps/secrets.ts';
 import { AgentSlackApps, type AgentAppSwitchJob, type AgentAppTransport, OLDER_APPS_LACK, agentAppFollow } from '../src/slack/agent-apps/service.ts';
 import { type AgentAppSlackApi, SlackRefused, SlackUnavailable } from '../src/slack/agent-apps/slack-api.ts';
 import { AgentPresenceReconciler } from '../src/slack/agent-presence/reconciler.ts';
 import { AGENT_APP_BOT_EVENTS, type SlackAppManifest } from '../src/slack/app-manifest.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { AGENT_APP_BOT_SCOPES } from '../src/slack/scopes.ts';
-import type { SlackTransport } from '../src/slack/transport/types.ts';
+import { SlackTransportError, type SlackTransport } from '../src/slack/transport/types.ts';
 import { refuseLikeSlack } from './helpers/slack-manifest-rules.ts';
 
 const NOW = 1_800_000_000_000;
@@ -51,10 +51,11 @@ class FakeSlack implements AgentAppSlackApi {
   /** Runs while Slack is answering an update, as a change elsewhere would land then. */
   duringUpdate: (() => Promise<void>) | undefined;
   unanswered = false;
-  refuseRotation = false;
+  /** Slack's refusal of the stored refresh token. */
+  refuseRotation: string | undefined;
   rotations = 0;
   async rotate(refreshToken: string) {
-    if (this.refuseRotation) throw new SlackRefused('tooling.tokens.rotate', 'invalid_refresh_token');
+    if (this.refuseRotation) throw new SlackRefused('tooling.tokens.rotate', this.refuseRotation);
     assert.match(refreshToken, /^xoxe-1-/);
     this.rotations += 1;
     return { accessToken: `xoxe.xoxp-1-access-${this.rotations}`, refreshToken: `xoxe-1-refresh-${this.rotations}`, teamId: TEAM, expiresAt: NOW + 12 * 3_600_000 };
@@ -88,15 +89,25 @@ class FakeSlack implements AgentAppSlackApi {
 
 /** Chickpea's own bot, for the Owner's DMs; Slack drops a second post with the same client_msg_id. */
 class FakeMainBot implements AgentAppTransport {
-  posted: Array<{ text: string; idempotencyKey: string | undefined }> = [];
+  posted: Array<{ text: string; idempotencyKey: string | undefined; channelId: string }> = [];
+  /** Groups turned back on, which only a removed app's restore does. */
+  enabled: string[] = [];
+  /** Owners Slack will never let Chickpea's bot message, as one who left the workspace. */
+  unreachable = new Set<string>();
   async disableUserGroup(): Promise<never> { throw new Error('a follow never touches a user group'); }
-  async enableUserGroup(): Promise<never> { throw new Error('a follow never touches a user group'); }
+  async enableUserGroup(id: string) {
+    this.enabled.push(id);
+    return { id, name: 'Support', handle: 'support', disabled: false };
+  }
   async lookupChannel(): Promise<never> { throw new Error('not in this unit'); }
   async joinPublicChannel(): Promise<never> { throw new Error('not in this unit'); }
-  async openDirectConversation(userId: string) { return { id: `D_${userId}`, private: true, member: true, archived: false }; }
+  async openDirectConversation(userId: string) {
+    if (this.unreachable.has(userId)) throw new SlackTransportError('conversations.open', 'user_not_found');
+    return { id: `D_${userId}`, private: true, member: true, archived: false };
+  }
   async postMessage(input: { channelId: string; text: string; idempotencyKey?: string }) {
     if (!this.posted.some((message) => input.idempotencyKey !== undefined && message.idempotencyKey === input.idempotencyKey)) {
-      this.posted.push({ text: input.text, idempotencyKey: input.idempotencyKey });
+      this.posted.push({ text: input.text, idempotencyKey: input.idempotencyKey, channelId: input.channelId });
     }
     return { channelId: input.channelId, ts: `${this.posted.length}.0` };
   }
@@ -149,9 +160,11 @@ async function fixture(t: TestContext, options: { follows?: AgentAppFollows | nu
   const main = new FakeMainBot();
   const clock = { now: NOW };
   const armed: AgentAppSwitchJob[] = [];
+  /** Runs as each job is armed, as the state store runs its own jobs at once. */
+  const onArm: { run?: (job: AgentAppSwitchJob) => Promise<unknown> } = {};
   const service = new AgentSlackApps({
     env: ENV, stores: { config, settings }, host: HOST, transport: main, slack, keyring, now: () => clock.now,
-    armSwitch: async (job) => { armed.push(job); },
+    armSwitch: async (job) => { armed.push(job); await onArm.run?.(job); },
     publicOrigin: async () => 'https://chickpea.test',
   });
   const reconciler = new AgentPresenceReconciler({
@@ -164,7 +177,7 @@ async function fixture(t: TestContext, options: { follows?: AgentAppFollows | nu
     },
   });
   slack.log.length = 0;
-  return { config, settings, secrets, slack, main, clock, armed, service, reconciler };
+  return { config, settings, secrets, slack, main, clock, armed, onArm, service, reconciler };
 }
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
@@ -210,6 +223,7 @@ test('a saved name, handle and avatar arm one job, which brings the app to them 
 
   assert.equal(await run(f), 'done');
   assert.deepEqual(f.slack.log, ['export', 'update', 'setIcon']);
+  assert.deepEqual(f.main.enabled, [], 'a follow never touches a user group');
   const definition = f.slack.definitions.get(APP)!;
   assert.equal(definition.display_information.name, 'Helpdesk');
   assert.equal(definition.features.bot_user?.display_name, 'helpdesk');
@@ -324,17 +338,21 @@ test('with no token stored the app stays as it is, needs attention, the Owner is
   assert.deepEqual(agentSlackState((await support(f)).slackPresence!), { state: 'own_app' });
 });
 
-// Defect caught: a token Slack refuses at rotation treated as Slack being down, so the job retries it forever.
-test('a token Slack refuses needs attention once, like no token', async (t) => {
-  const f = await fixture(t);
-  f.clock.now = NOW + 13 * 3_600_000;
-  f.slack.refuseRotation = true;
-  await save(f, { name: 'Helpdesk' });
-  assert.equal(await run(f), 'done');
-  assert.deepEqual(agentSlackState((await support(f)).slackPresence!), { state: 'own_app', attention: 'config_token_needed' });
-  assert.equal(f.main.posted.length, 1);
-  assert.deepEqual(f.slack.log, []);
-});
+// Defect caught: a token Slack refuses at rotation, spent or revoked, treated as Slack being down, so the job retries
+// it until it holds as an update that did not go through, and nobody is asked for a token.
+for (const code of ['invalid_refresh_token', 'token_revoked', 'account_inactive']) {
+  test(`a token Slack refuses at rotation with ${code} needs attention once, like no token`, async (t) => {
+    const f = await fixture(t);
+    t.mock.method(console, 'warn', () => undefined);
+    f.clock.now = NOW + 13 * 3_600_000;
+    f.slack.refuseRotation = code;
+    await save(f, { name: 'Helpdesk' });
+    assert.equal(await run(f), 'done');
+    assert.deepEqual(agentSlackState((await support(f)).slackPresence!), { state: 'own_app', attention: 'config_token_needed' });
+    assert.equal(f.main.posted.length, 1);
+    assert.deepEqual(f.slack.log, []);
+  });
+}
 
 // Defects caught: a refused update retried in a loop, or reported as a token problem; a later rename never retried.
 test('an update Slack refuses needs attention with its own reason, is told once, and a later save tries again', async (t) => {
@@ -415,7 +433,7 @@ test('a crash after the definition and before the picture is finished by the nex
   await run(f);
   assert.equal(f.slack.icons.get(APP), 512);
   assert.deepEqual(await followsOf(f), (await today(f)).target);
-  assert.equal(agentAppFollowStep(appRecordOf((await support(f)).slackPresence) as never, (await today(f)).target), undefined);
+  assert.equal(agentAppFollowStep(appRecordOf((await support(f)).slackPresence) as never, (await today(f)).target, NOW), undefined);
 });
 
 // Defect caught: the state store's sweep reading more for a workspace without the feature, or without an Agent app.
@@ -439,7 +457,7 @@ test('the sweep reads nothing with the feature off, and with it on reads only wh
 });
 
 /** Other becomes a live app too, recorded before follows were kept, so it is due. */
-async function otherIsLive(f: Fixture): Promise<void> {
+async function otherIsLive(f: Fixture, installedBy = OWNER): Promise<void> {
   const other = await f.config.getAgent('agent_other');
   await f.config.updateAgent(other.id, {
     slackPresence: {
@@ -447,7 +465,7 @@ async function otherIsLive(f: Fixture): Promise<void> {
       avatar: other.slackPresence!.avatar,
       app: {
         state: 'active', at: NOW, app: { appId: APP2, clientId: '2.client' }, icon: 'default_avatar', botUserId: 'UBOT2',
-        installedAt: NOW, installedBy: OWNER, switchProgress: 'done',
+        installedAt: NOW, installedBy, switchProgress: 'done',
       },
       released: { userGroupId: 'SOTHER' },
     },
@@ -483,7 +501,7 @@ test('with no token, three saves tell the Owner once, and Try again clears it so
 // cause of what every app waits for.
 test('two live apps due with no token are one message naming neither, and a paste brings both to match', async (t) => {
   const f = await fixture(t);
-  await otherIsLive(f);
+  await otherIsLive(f, 'UOWNER2');
   assert.equal(await discardConfigurationToken(f.secrets, TEAM), 'discarded');
   await save(f, { name: 'Helpdesk' });
   await run(f);
@@ -507,7 +525,7 @@ test('two live apps due with no token are one message naming neither, and a past
   await f.service.continueSwitch('agent_other');
   assert.deepEqual([await stateOf(f), await stateOf(f, 'agent_other')], [{ state: 'own_app' }, { state: 'own_app' }]);
   assert.equal(f.slack.definitions.get(APP)?.display_information.name, 'Helpdesk');
-  assert.equal(f.main.posted.length, 2);
+  assert.deepEqual(f.main.posted.map((message) => message.channelId), ['D_UOWNER', 'D_UOWNER'], 'each told to one Owner only');
 });
 
 // Defects caught: a definition Slack keeps refusing told again on every later save; Try again that never tells again.
@@ -526,20 +544,27 @@ test('a refusal that stands through later saves is told once, and Try again clea
   assert.equal(f.main.posted.length, 2);
 });
 
-// Defects caught: an app deleted at Slack told to rename its Agent; a refusal that is not about the definition told to
-// change the Agent.
-test('an app gone at Slack tells no one and is not tried again; any other refusal says the update did not go through', async (t) => {
+// Defects caught: an app deleted at Slack, whose removal event never arrived, left recorded as live while its bot is
+// gone and its user group is off, so the Agent answers nowhere and nobody is told; an app gone at Slack told to
+// rename its Agent; a refusal that is not about the definition told to change the Agent.
+test('an app gone at Slack is removed as its removal event would have, so the Agent answers through its group; any other refusal says the update did not go through', async (t) => {
   const gone = await fixture(t);
   t.mock.method(console, 'warn', () => undefined);
   gone.slack.definitions.delete(APP);
   await save(gone, { name: 'Helpdesk' });
-  assert.equal(await run(gone), 'done');
-  assert.deepEqual(gone.main.posted, []);
-  assert.equal((await followsOf(gone))?.refused?.reason, 'app_not_found');
-  assert.deepEqual(await stateOf(gone), { state: 'own_app' }, 'nothing for an Owner to press: its removal is handled elsewhere');
+  assert.equal(await run(gone), 'not_live');
+  const agent = await support(gone);
+  assert.equal(agent.slackPresence?.kind, undefined, 'the Agent is back on its user group');
+  assert.equal(agent.slackPresence?.userGroupId, 'SSUPPORT');
+  assert.deepEqual(gone.main.enabled, ['SSUPPORT'], 'which is turned back on');
+  assert.deepEqual(gone.main.posted.map((message) => message.text), [
+    "Helpdesk's Slack app was removed from this workspace. People can still mention @\u2060support, and Helpdesk answers through Chickpea. Choose Add Helpdesk to Slack to add the app back.",
+  ], 'the Owner is told once');
+  assert.equal((await readAppSecrets(gone.secrets, APP))?.secrets.botToken, undefined, "the gone app's bot token is dropped");
   gone.slack.log.length = 0;
   await run(gone);
-  assert.deepEqual(gone.slack.log, []);
+  await gone.service.followAgent('agent_support');
+  assert.deepEqual([gone.slack.log, gone.main.posted.length], [[], 1], 'nothing more is asked of Slack, and nobody told again');
 
   const other = await fixture(t);
   other.slack.refuseUpdate = new SlackRefused('apps.manifest.update', 'restricted_action');
@@ -600,6 +625,84 @@ test("Slack not answering on the job's last try is held and told once, and only 
   await run(f);
   assert.deepEqual(await stateOf(f), { state: 'own_app' });
   assert.equal(f.slack.definitions.get(APP)?.display_information.name, 'Help desk');
+});
+
+// Defect caught: one Slack outage holding an app stale until a person acts, or a retry that tells the Owner again.
+test('an update held because Slack did not answer is armed again by the sweep once a day, told once, until it works', async (t) => {
+  const f = await fixture(t);
+  configureAgentSlackApps(HOST);
+  t.after(() => configureAgentSlackApps(undefined));
+  const rows: string[] = [];
+  const management = { putOutbox: async (row: ManagementReceiptOutboxRecord) => { rows.push(row.outboxId); return row; } };
+  const sweep = (at: number) => armUnfinishedAgentAppMoves({ config: f.config, management }, at, ENV);
+  await save(f, { name: 'Helpdesk' });
+  f.slack.unanswered = true;
+  await f.service.continueSwitch('agent_support', { finalAttempt: true, row: 1 });
+  assert.deepEqual(await stateOf(f), { state: 'own_app', attention: 'update_failed' });
+  assert.equal(f.main.posted.length, 1);
+
+  await sweep(NOW + FOLLOW_FAILED_RETRY_MS - 1);
+  assert.deepEqual(rows, [], 'not within the day');
+  f.clock.now = NOW + FOLLOW_FAILED_RETRY_MS;
+  await sweep(f.clock.now);
+  assert.equal(rows.length, 1, 'once the hold is a day old');
+  await f.service.continueSwitch('agent_support', { finalAttempt: true, row: 2 });
+  assert.deepEqual(await stateOf(f), { state: 'own_app', attention: 'update_failed' });
+  assert.equal(f.main.posted.length, 1, 'the same reason stands, so nobody is told again');
+  await sweep(f.clock.now + FOLLOW_FAILED_RETRY_MS - 1);
+  assert.equal(rows.length, 1, 'and the next try is a day after this one');
+
+  f.clock.now += FOLLOW_FAILED_RETRY_MS;
+  await sweep(f.clock.now);
+  assert.equal(rows.length, 2);
+  f.slack.unanswered = false;
+  await f.service.continueSwitch('agent_support', { row: 3 });
+  assert.equal(f.slack.definitions.get(APP)?.display_information.name, 'Helpdesk');
+  assert.deepEqual(await stateOf(f), { state: 'own_app' }, 'success clears the hold');
+  assert.equal((await followsOf(f))?.refused, undefined);
+
+  f.slack.refuseUpdate = new SlackRefused('apps.manifest.update', 'invalid_manifest');
+  await save(f, { name: 'Help desk' });
+  await f.service.continueSwitch('agent_support', { row: 4 });
+  assert.deepEqual(await stateOf(f), { state: 'own_app', attention: 'update_refused' });
+  await sweep(f.clock.now + 2 * FOLLOW_FAILED_RETRY_MS);
+  assert.equal(rows.length, 2, 'a definition Slack refused waits for a change, however old');
+});
+
+// Defect caught: the workspace's token message refused for good for the first Owner, recorded as told all the same,
+// so no Owner ever hears that a token is needed.
+test('when Slack will never take the token message for one Owner, the next Owner who allowed a live app is told, once', async (t) => {
+  const f = await fixture(t);
+  await otherIsLive(f, 'UOWNER2');
+  t.mock.method(console, 'warn', () => undefined);
+  assert.equal(await discardConfigurationToken(f.secrets, TEAM), 'discarded');
+  f.main.unreachable.add(OWNER);
+  await save(f, { name: 'Helpdesk' });
+  await run(f);
+  await f.service.continueSwitch('agent_other');
+  assert.deepEqual(f.main.posted.map((message) => message.channelId), ['D_UOWNER2']);
+  assert.deepEqual([await stateOf(f), await stateOf(f, 'agent_other')], [
+    { state: 'own_app', attention: 'config_token_needed' }, { state: 'own_app', attention: 'config_token_needed' },
+  ]);
+});
+
+// Defect caught: Try again arming one app's job while another app still held the token, so each job found the
+// other's hold, stayed quiet, and nobody was told.
+test('Try again clears every hold before it arms any job, so the next failure is told once', async (t) => {
+  const f = await fixture(t);
+  await otherIsLive(f);
+  assert.equal(await discardConfigurationToken(f.secrets, TEAM), 'discarded');
+  await save(f, { name: 'Helpdesk' });
+  await run(f);
+  await f.service.continueSwitch('agent_other');
+  assert.equal(f.main.posted.length, 1);
+
+  f.onArm.run = (job) => f.service.continueSwitch(job.agentId);
+  await f.service.retry('agent_support', OWNER);
+  assert.equal(f.main.posted.length, 2, 'the jobs run as they are armed, and the first tells');
+  assert.deepEqual([await stateOf(f), await stateOf(f, 'agent_other')], [
+    { state: 'own_app', attention: 'config_token_needed' }, { state: 'own_app', attention: 'config_token_needed' },
+  ]);
 });
 
 // Defect caught: every arm walking one store call per settled row this app's follow ever left.

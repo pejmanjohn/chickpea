@@ -33,9 +33,11 @@ export const ACCESS_TOKEN_MARGIN_MS = 5 * 60_000;
 /** A rotation claim older than this is taken over. */
 export const ROTATION_CLAIM_MS = 60_000;
 const LOST_CLAIM_REREADS = 3;
+const LOST_CLAIM_WAIT_MS = 1_000;
 /** Slack's answer to a rotation whose refresh token is spent or revoked: the only one that ends the stored pair. */
 const DEAD_REFRESH_TOKEN = 'invalid_refresh_token';
-const LOST_CLAIM_WAIT_MS = 1_000;
+/** How Slack refuses a configuration token itself, on a rotation or an ordinary call: a token is needed. */
+export const TOKEN_REFUSALS: ReadonlySet<string> = new Set(['invalid_auth', 'not_authed', 'token_expired', 'token_revoked', 'account_inactive']);
 const REFRESH_TOKEN = /^xoxe-1-[A-Za-z0-9._-]{8,}$/;
 
 /** The workspace has no usable configuration token; the Owner pastes again. */
@@ -420,7 +422,9 @@ async function freshAccessToken(d: SecretDeps, teamId: string): Promise<string> 
 /**
  * The claim holder rotates; a spent refresh token means another rotator won,
  * or the pair is dead. Only Slack saying the refresh token is no longer valid
- * deletes the pair: any other refusal, a rate limit among them, leaves it, and
+ * deletes the pair. Slack refusing the token itself asks for a token and
+ * keeps the pair, its claim released so every caller hears the same. Any
+ * other refusal, a rate limit among them, leaves the pair and its claim, and
  * is Slack not answering, so the caller retries once the claim lapses.
  */
 async function rotateHolding(
@@ -436,12 +440,18 @@ async function rotateHolding(
   } catch (error) {
     if (!(error instanceof SlackRefused)) throw error;
     logSlackRefusal('rotate', {}, error);
-    if (error.code !== DEAD_REFRESH_TOKEN) throw new SlackUnavailable('tooling.tokens.rotate', error.code);
+    const refusedToken = TOKEN_REFUSALS.has(error.code);
+    if (!refusedToken && error.code !== DEAD_REFRESH_TOKEN) throw new SlackUnavailable('tooling.tokens.rotate', error.code);
     const latest = await readPair(d, teamId);
     if (latest && latest.pair.refreshToken !== pair.refreshToken && usable(latest.pair, now)) {
       return latest.pair.accessToken;
     }
-    if (latest) await d.credentials.deleteEncryptedCredentialRevision(configurationTokenKey(teamId), latest.revision);
+    if (latest && refusedToken) {
+      const { rotatingSince: _claim, ...unclaimed } = latest.pair;
+      await writePair(d, teamId, unclaimed, latest.revision);
+    } else if (latest) {
+      await d.credentials.deleteEncryptedCredentialRevision(configurationTokenKey(teamId), latest.revision);
+    }
     throw new ConfigTokenNeeded(teamId);
   }
   await writePair(d, teamId, {

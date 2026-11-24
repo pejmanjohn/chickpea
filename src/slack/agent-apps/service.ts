@@ -108,6 +108,7 @@ import {
   type ConfigurationTokenStatus,
   LostRevision,
   type SecretDeps,
+  TOKEN_REFUSALS,
   configurationTokenStatus,
   deleteAppSecrets,
   discardConfigurationToken,
@@ -290,8 +291,6 @@ export const OLDER_APPS_LACK = 'channels:join';
 const APP_LIMIT_REFUSALS = new Set(['managed_app_limit_reached', 'service_limits_exceeded']);
 /** How Slack refuses a user-group change for want of a permission. */
 const PERMISSION_REFUSALS = new Set(['permission_denied', 'missing_scope', 'not_allowed']);
-/** How Slack refuses a configuration token's access token itself. */
-const TOKEN_REFUSALS = new Set(['invalid_auth', 'not_authed', 'token_expired', 'token_revoked', 'account_inactive']);
 
 /** One run of an Agent app's job: whether it is the row's last try, and the row's number when the drain runs it. */
 interface FollowRun {
@@ -783,15 +782,20 @@ export class AgentSlackApps {
       botUserId: presence.app.botUserId,
     });
     if (outcome !== 'end') return 'ignored';
+    return await this.removedAtSlack(agent, appId) ? 'ended' : 'ignored';
+  }
+
+  /** Slack removed this live app: its bot token goes and the record moves to removed, for the job to restore. */
+  private async removedAtSlack(agent: CustomAgentConfig, appId: string): Promise<CustomAgentConfig | undefined> {
     const stored = await readOwnAppSecrets(this.secrets, appId, agent.id, 'end');
     if (stored.kind === 'own' && stored.secrets.botToken) {
       const { clientSecret, signingSecret } = stored.secrets;
       await writeAppSecrets(this.secrets, appId, agent.id, { clientSecret, signingSecret }, stored.revision);
     }
     const removed = await this.commit(agent, { type: 'app_removed', at: this.now() });
-    if (removed.outcome !== 'applied') return 'ignored';
+    if (removed.outcome !== 'applied') return undefined;
     await this.armSwitch(removed.agent);
-    return 'ended';
+    return removed.agent;
   }
 
   /**
@@ -930,7 +934,7 @@ export class AgentSlackApps {
         continue;
       }
       const follow = await this.followOf(agent, presence.app.app.appId);
-      const followStep = agentAppFollowStep(presence.app, follow.target);
+      const followStep = agentAppFollowStep(presence.app, follow.target, this.now());
       if (!followStep) return 'done';
       agent = await this.followSteps[followStep](agent, presence, follow, run);
     }
@@ -1078,10 +1082,12 @@ export class AgentSlackApps {
    * nothing and tells no one. An Owner is told only of a refusal the record
    * does not already hold, so later edits while it stands tell no one; and a
    * missing token, which is the workspace's, is told once for every app,
-   * naming none. The Owner who allowed the app is told first, under a key a
-   * rerun repeats, then the refusal is recorded. An app gone at Slack is its
-   * removal's to tell, and the app's own record refusing is the operator's,
-   * logged where it was read.
+   * naming none, to the first Owner who allowed a live app that Slack lets
+   * Chickpea message. The Owner is told first, under a key a rerun repeats,
+   * then the refusal is recorded. An app gone at Slack, which passed its own
+   * record's check, is removed at Slack, as its removal event would have
+   * said; app IDs are never reused. The app's own record refusing is the
+   * operator's, logged where it was read.
    */
   private async refuseFollow(
     agent: CustomAgentConfig,
@@ -1093,20 +1099,36 @@ export class AgentSlackApps {
     const latest = await this.deps.stores.config.getAgent(agent.id);
     const presence = latest.slackPresence;
     if (!agentAppIsLive(presence) || presence.app.app.appId !== appId) return latest;
+    if (reason === 'app_not_found') return await this.removedAtSlack(latest, appId) ?? this.deps.stores.config.getAgent(agent.id);
     const kind = await this.followMessage(presence, reason);
     if (kind) {
-      try {
-        await this.message(kind, latest, presence.app.installedBy, `agent-app-follow:${latest.id}:${appId}:${reason}:${latest.revision}`);
-      } catch (error) {
-        const refused = error instanceof SlackTransportError && !error.retryable;
-        if (!refused && !run.finalAttempt) throw error;
-        console.warn({
-          event: 'chickpea.agent_app.follow_owner_not_told', agentId: latest.id, appId,
-          error: error instanceof SlackTransportError ? error.code : error instanceof Error ? error.name : 'unknown',
-        });
+      const owners = kind === 'follow_token_needed' ? await this.liveAppOwners(presence.app.installedBy) : [presence.app.installedBy];
+      for (const owner of owners) {
+        try {
+          await this.message(kind, latest, owner, `agent-app-follow:${latest.id}:${appId}:${reason}:${latest.revision}:${owner}`);
+          break;
+        } catch (error) {
+          const refused = error instanceof SlackTransportError && !error.retryable;
+          if (!refused && !run.finalAttempt) throw error;
+          console.warn({
+            event: 'chickpea.agent_app.follow_owner_not_told', agentId: latest.id, appId,
+            error: error instanceof SlackTransportError ? error.code : error instanceof Error ? error.name : 'unknown',
+          });
+          // Slack will never take it for this Owner, and once the hold is recorded no other app tells anyone.
+          if (!refused) break;
+        }
       }
     }
     return this.recordFollow(latest, appId, (follows) => ({ ...follows, refused: { ...target, reason, at: this.now() } }), run);
+  }
+
+  /** `first`, then each other Owner who allowed a live app, once each. */
+  private async liveAppOwners(first: string): Promise<string[]> {
+    const owners = new Set([first]);
+    for (const agent of await this.deps.stores.config.listAgents()) {
+      if (agentAppIsLive(agent.slackPresence)) owners.add(agent.slackPresence.app.installedBy);
+    }
+    return [...owners];
   }
 
   /** What the Owner is told of a follow's refusal, if anything. */
@@ -1154,27 +1176,34 @@ export class AgentSlackApps {
   private async followAgain(agent: CustomAgentConfig): Promise<CustomAgentConfig> {
     const presence = agent.slackPresence;
     if (agentAppIsLive(presence) && presence.app.follows?.refused?.reason === 'config_token_needed') {
-      await this.unrefuseFollows(['config_token_needed'], agent.id);
+      const cleared = await this.unrefuseFollows(['config_token_needed']);
+      return cleared.find((candidate) => candidate.id === agent.id) ?? agent;
     }
-    return this.unrefuseFollow(agent);
+    const cleared = await this.unrefusedFollow(agent);
+    await this.armSwitch(cleared);
+    return cleared;
   }
 
-  /** Every other live app whose follow holds one of `reasons` is tried again. */
-  private async unrefuseFollows(reasons: readonly AgentAppFollowRefusal[], except?: string): Promise<void> {
+  /**
+   * Every live app whose follow holds one of `reasons` is tried again. Every
+   * hold is cleared before any job is armed, so no job finds another app's
+   * hold and stays quiet for it.
+   */
+  private async unrefuseFollows(reasons: readonly AgentAppFollowRefusal[]): Promise<CustomAgentConfig[]> {
+    const cleared: CustomAgentConfig[] = [];
     for (const agent of await this.deps.stores.config.listAgents()) {
       const presence = agent.slackPresence;
       const reason = agentAppIsLive(presence) ? presence.app.follows?.refused?.reason : undefined;
-      if (agent.id !== except && reason && reasons.includes(reason)) await this.unrefuseFollow(agent);
+      if (reason && reasons.includes(reason)) cleared.push(await this.unrefusedFollow(agent));
     }
+    for (const agent of cleared) await this.armSwitch(agent);
+    return cleared;
   }
 
-  private async unrefuseFollow(agent: CustomAgentConfig): Promise<CustomAgentConfig> {
+  private async unrefusedFollow(agent: CustomAgentConfig): Promise<CustomAgentConfig> {
     const presence = agent.slackPresence;
-    if (agentAppIsLive(presence) && presence.app.follows?.refused) {
-      agent = await this.recordFollow(agent, presence.app.app.appId, unrefusedFollows);
-    }
-    await this.armSwitch(agent);
-    return agent;
+    if (!agentAppIsLive(presence) || !presence.app.follows?.refused) return agent;
+    return this.recordFollow(agent, presence.app.app.appId, unrefusedFollows);
   }
 
   /**
@@ -1367,7 +1396,7 @@ export class AgentSlackApps {
     const presence = agent.slackPresence;
     if (!agentAppIsLive(presence)) return false;
     try {
-      return agentAppFollowStep(presence.app, (await this.followOf(agent, presence.app.app.appId)).target) !== undefined;
+      return agentAppFollowStep(presence.app, (await this.followOf(agent, presence.app.app.appId)).target, this.now()) !== undefined;
     } catch (error) {
       console.warn({ event: 'chickpea.agent_app.follow_not_compared', agentId: agent.id, error: error instanceof Error ? error.name : 'unknown' });
       return false;

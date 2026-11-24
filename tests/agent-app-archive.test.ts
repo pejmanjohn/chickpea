@@ -9,7 +9,7 @@ import { type AgentAppLifecycle, type AttachedAgentApp, type CustomAgentConfig, 
 import { asUserGroup } from './helpers/user-group-presence.ts';
 import type { AgentSlackAppsHost } from '../src/slack/agent-apps/host.ts';
 import { AgentSlackApps, type AgentAppTransport } from '../src/slack/agent-apps/service.ts';
-import { deleteAppSecrets, readAppSecrets, saveConfigurationToken, writeAppSecrets } from '../src/slack/agent-apps/secrets.ts';
+import { deleteAppSecrets, hasConfigurationToken, readAppSecrets, saveConfigurationToken, writeAppSecrets } from '../src/slack/agent-apps/secrets.ts';
 import { type AgentAppSlackApi, SlackRefused } from '../src/slack/agent-apps/slack-api.ts';
 import { AgentPresenceError } from '../src/slack/agent-presence/errors.ts';
 import { AgentPresenceReconciler } from '../src/slack/agent-presence/reconciler.ts';
@@ -236,6 +236,19 @@ test('without a configuration token the definition is left for the Owner, who is
   assert.deepEqual(f.retirements, ['uninstalled_left_definition']);
   assert.equal(await readAppSecrets(f.secrets, APP.appId), undefined);
   assert.equal(archived.slackPresence?.userGroupId, 'S1');
+});
+
+// Defect caught: a token Slack says is revoked read as Slack not answering, so the archive was refused on every try.
+test('a configuration token Slack says is revoked ends the archive as a missing one does, and the token is kept', async (t) => {
+  const f = await fixture(t);
+  f.clock.now = NOW + 13 * 3_600_000;
+  f.slack.rotate = async () => { throw new SlackRefused('tooling.tokens.rotate', 'token_revoked'); };
+  const archived = await f.reconciler.archive('agent_support');
+  assert.equal(archived.lifecycle, 'archived');
+  assert.deepEqual(f.slack.deletes, []);
+  assert.deepEqual(f.transport.posted.map((m) => m.text), [ARCHIVED_LEFT]);
+  assert.deepEqual(f.retirements, ['uninstalled_left_definition']);
+  assert.equal(await hasConfigurationToken(f.secrets, TEAM), true, 'only a spent refresh token deletes the pair');
 });
 
 // Defect caught: at tenant end, with Chickpea's own bot already gone, an app whose definition was left reported as

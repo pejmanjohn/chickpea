@@ -285,10 +285,13 @@ export type AgentAppSwitchProgress = 'live' | 'group_pending' | 'bring_in_pendin
  * Why bringing a live app to match its Agent stopped: no usable configuration
  * token; Slack refused the definition's content (`update_refused`), refused
  * something else, or kept not answering (`update_failed`); the app is gone at
- * Slack; or the app's own record would not let Chickpea touch it. It holds for
- * the Agent as it was then, so the app is tried again once the Agent changes,
- * a token is pasted, or an Owner asks. A missing token holds whatever the
- * Agent becomes: only a token, or an Owner asking, can change that.
+ * Slack (`app_not_found`, written only by an earlier build: the app's removal
+ * is committed instead now); or the app's own record would not let Chickpea
+ * touch it. It holds for the Agent as it was then, so the app is tried again
+ * once the Agent changes, a token is pasted, or an Owner asks; an update that
+ * did not go through is also tried again once it is a day old. A missing
+ * token holds whatever the Agent becomes: only a token, or an Owner asking,
+ * can change that.
  */
 export type AgentAppFollowRefusal = AgentAppFollowAttention | 'app_not_found' | 'record_refused';
 

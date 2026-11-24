@@ -530,7 +530,7 @@ export async function armUnfinishedAgentAppMoves(
     if (agentAppIsLive(presence)) {
       try {
         follow ??= (await import('./service.ts')).agentAppFollow;
-        followDue = agentAppFollowStep(presence.app, follow(agent, presence.app.app.appId, host, installationId).target) !== undefined;
+        followDue = agentAppFollowStep(presence.app, follow(agent, presence.app.app.appId, host, installationId).target, at) !== undefined;
       } catch (error) {
         // One Agent whose definition cannot be worked out never stops the sweep for the rest, or its own pending move.
         console.warn({ event: 'chickpea.agent_app.follow_not_compared', agentId: agent.id, error: error instanceof Error ? error.name : 'unknown' });
