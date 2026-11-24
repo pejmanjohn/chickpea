@@ -5,14 +5,16 @@
  * delivery that verifies can still name any member as its sender. A
  * message, mention, edit or delete it delivers is therefore read back from
  * Slack on the app's own bot token first, and goes on only when Slack holds
- * that message, in that conversation, from that person, with that text.
+ * that message, in that conversation and thread, from that person. What goes
+ * on is Slack's copy: the delivery's text, rich text and files are never
+ * read, so an edit Slack already holds is admitted as edited.
  * Loaded only for an Agent app's delivery.
  */
 import { isTransientSlackApiError, slackMessageAt } from '../credentials.ts';
-import { preserveSlackRichTextLinks } from '../rich-text-links.ts';
 import { SlackTransportError } from '../transport/types.ts';
 
-export type AgentAppMessageCheck = { confirmed: true } | { confirmed: false; reason: string };
+/** `event` is what admission reads in the delivery's place. */
+export type AgentAppMessageCheck = { confirmed: true; event: Message } | { confirmed: false; reason: string };
 
 type Message = Record<string, unknown>;
 
@@ -46,13 +48,10 @@ export async function confirmAgentAppMessage(
     : event.type === 'message' && event.subtype === 'message_changed' ? record(event.message) : event;
   const author = deleted ? previous?.user : claimed?.user;
   // The app's own bot's posts and their stream updates: whoever holds its secrets can already post as it.
-  if (author === bot.botUserId) return { confirmed: true };
+  if (author === bot.botUserId) return { confirmed: true, event };
   const ts = deleted ? (event.deleted_ts ?? previous?.ts) : claimed?.ts;
   if (typeof ts !== 'string') return refused('malformed');
   const threadTs = (deleted ? previous : claimed)?.thread_ts;
-  if (event.type === 'app_mention' && !String(claimed?.text ?? '').includes(`<@${bot.botUserId}`)) {
-    return refused('not_a_mention');
-  }
 
   const read = await slackMessageAt(bot.botToken, {
     channelId, ts, ...(typeof threadTs === 'string' ? { threadTs } : {}),
@@ -67,13 +66,25 @@ export async function confirmAgentAppMessage(
     return refused(code);
   }
   const held = read.message;
-  if (deleted) return held && held.subtype !== 'tombstone' ? refused('still_in_slack') : { confirmed: true };
+  if (deleted) return held && held.subtype !== 'tombstone' ? refused('still_in_slack') : { confirmed: true, event };
   if (!held || !claimed) return refused('not_in_slack');
   if (held.user !== claimed.user) return refused('other_sender');
   if (threadOf(held) !== threadOf(claimed)) return refused('other_thread');
-  if (readable(held) !== readable(claimed)) return refused('other_text');
-  if (fileIds(held) !== fileIds(claimed)) return refused('other_files');
-  return { confirmed: true };
+  if (event.type === 'app_mention' && !String(held.text ?? '').includes(`<@${bot.botUserId}`)) return refused('not_a_mention');
+
+  // A top-level message carries no `thread_ts` in its event, and Slack's copy gains one with its first reply.
+  const { thread_ts: _thread, ...copy } = held;
+  const message = typeof claimed.thread_ts === 'string' ? { ...copy, thread_ts: claimed.thread_ts } : copy;
+  // Of the delivery, only what kind of event it is and where it happened go on. An edit's earlier text stays the
+  // delivery's: it only decides whether Slack's copy counts as changed.
+  const { type, channel_type, event_ts } = event;
+  const where = { type, channel: channelId, channel_type, event_ts };
+  return {
+    confirmed: true,
+    event: claimed === event
+      ? { ...message, ...where }
+      : { ...where, subtype: event.subtype, ts: event.ts, message, previous_message: event.previous_message },
+  };
 }
 
 function record(value: unknown): Message | undefined {
@@ -83,14 +94,4 @@ function record(value: unknown): Message | undefined {
 /** A thread's parent carries its own ts as `thread_ts` in Slack's copy, and none in its event. */
 function threadOf(message: Message): unknown {
   return message.thread_ts ?? message.ts;
-}
-
-/** The text admission reads: Slack's fallback text with the links of its rich text. */
-function readable(message: Message): string {
-  return preserveSlackRichTextLinks(typeof message.text === 'string' ? message.text : undefined, message.blocks);
-}
-
-function fileIds(message: Message): string {
-  const files = Array.isArray(message.files) ? message.files : [];
-  return files.map((file) => String(record(file)?.id)).join(',');
 }

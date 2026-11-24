@@ -873,9 +873,12 @@ function handleAgentAppSlackEvents(
       await processSlackStopButton(payload as unknown as SlackEventFixture, platformEnv, execution);
       return;
     }
-    if (eventType !== 'member_joined_channel' && !await agentAppMessageConfirmed((payload as { event?: unknown }).event, bot, handoff.appId)) return;
+    const delivered = (payload as { event?: unknown }).event;
+    // A message goes on as Slack holds it, never as it was delivered.
+    const event = eventType === 'member_joined_channel' ? delivered : await agentAppMessageConfirmed(delivered, bot, handoff.appId);
+    if (!event) return;
     await processSlackEvent(
-      payload as unknown as SlackEventFixture,
+      { ...payload, event } as unknown as SlackEventFixture,
       platformEnv,
       execution,
       undefined,
@@ -887,19 +890,21 @@ function handleAgentAppSlackEvents(
 
 /**
  * A message an Agent app delivers names its sender, and whoever holds the
- * app's secrets can name anyone: it goes on only once Slack shows the same
- * message (sender.ts). One line, with no content, for each it stops; a read
- * Slack does not answer is logged and thrown, so the delivery is retried.
+ * app's secrets can name anyone: it goes on only once Slack shows that
+ * message from that person, and as Slack's copy of it (sender.ts). Undefined
+ * for one it stops, with one line and no content; a read Slack does not
+ * answer is logged and thrown, so the delivery is retried.
  */
-async function agentAppMessageConfirmed(event: unknown, bot: AgentAppBotCredentials, appId: string): Promise<boolean> {
+async function agentAppMessageConfirmed(event: unknown, bot: AgentAppBotCredentials, appId: string): Promise<Record<string, unknown> | undefined> {
   const warn = (reason: string) => console.warn(JSON.stringify({
     component: 'agent_apps', event: 'delivery_not_confirmed', appId, reason,
   }));
   const { confirmAgentAppMessage } = await import('../slack/agent-apps/sender.ts');
   try {
     const check = await confirmAgentAppMessage(event, bot);
-    if (!check.confirmed) warn(check.reason);
-    return check.confirmed;
+    if (check.confirmed) return check.event;
+    warn(check.reason);
+    return undefined;
   } catch (error) {
     warn(error instanceof SlackTransportError ? error.code : 'unavailable');
     throw error;
