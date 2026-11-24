@@ -3030,7 +3030,7 @@ async function addRequestedAgentToChannel(
           (input.gateway ?? createGatewayDeploymentClient(platformEnv)).publishAvatar(candidate),
         updateAgent: (agentId, patch, revision) => stores.config.updateAgent(agentId, patch, revision),
       });
-      const agentApps = agentAppPresenceHooks(platformEnv);
+      const agentApps = agentAppPresenceHooks(platformEnv, stores.settings);
       const published = await new AgentPresenceReconciler({
         config: stores.config,
         transport,
@@ -3342,7 +3342,7 @@ function privateChannelSetupService(execution: PrivateChannelSetupExecution): Pr
       requireAgentChannelPublication(
         current.principal, await stores.config.getAgent(agentId), current.routing.channelMember,
       );
-      const agentApps = agentAppPresenceHooks(execution.platformEnv);
+      const agentApps = agentAppPresenceHooks(execution.platformEnv, stores.settings);
       return new AgentPresenceReconciler({
         config: stores.config,
         transport,
