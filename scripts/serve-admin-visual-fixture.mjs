@@ -766,6 +766,8 @@ function closeServer(server) {
  * page follows only slack.com: pressing it in a browser opens Slack's real
  * sign-in page, so stop the navigation rather than sign in.
  */
+const STOPPED_BEFORE_APP = new Set(['create_refused', 'slack_busy', 'ambiguous_create', 'config_token_needed']);
+
 async function visualAgentSlackApps(store) {
   const { configureAgentSlackApps } = await loadTsModule('src/slack/agent-apps/host.ts');
   const { SlackUnavailable } = await loadTsModule('src/slack/agent-apps/slack-api.ts');
@@ -786,7 +788,13 @@ async function visualAgentSlackApps(store) {
       case 'creating': return { ...presence, app: { ...app, state: 'creating' } };
       case 'waiting_for_allow': return { ...presence, app: { ...app, state: 'awaiting_consent' } };
       case 'cancelling': return { ...presence, app: { ...app, state: 'uninstalling' } };
-      case 'needs_attention': return { ...presence, app: { ...app, state: 'needs_attention', reason: reason ?? 'create_refused', resume: 'create' } };
+      case 'needs_attention': {
+        // A start that stopped before Slack made any app holds no app; Cancel withdraws it.
+        const { app: _made, icon: _icon, ...unmade } = app;
+        return STOPPED_BEFORE_APP.has(reason ?? 'create_refused')
+          ? { ...presence, app: { ...unmade, state: 'needs_attention', reason: reason ?? 'create_refused', resume: 'creating' } }
+          : { ...presence, app: { ...app, state: 'needs_attention', reason, resume: 'created' } };
+      }
       case 'switching':
       case 'own_app':
         return {
@@ -856,7 +864,12 @@ async function visualAgentSlackApps(store) {
     },
     cancel: async (agentId) => {
       await agent(agentId);
-      const now = states.get(agentId);
+      const now = states.get(agentId) ?? '';
+      const [slackState, reason] = now.split(':');
+      if (slackState === 'needs_attention' && STOPPED_BEFORE_APP.has(reason ?? 'create_refused')) {
+        states.delete(agentId);
+        return { kind: 'cancelled', agent: await agent(agentId), app: reason === 'ambiguous_create' ? 'left_for_owner' : 'none' };
+      }
       if (now !== 'waiting_for_allow' && now !== 'cancelling') return { kind: 'not_waiting' };
       const next = nextOutcome.get(agentId);
       nextOutcome.delete(agentId);
