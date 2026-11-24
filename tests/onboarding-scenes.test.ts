@@ -17,6 +17,7 @@ test('each onboarding stage has its scene: Chickpea setting up, coding, chatting
   assert.equal(scene('choose_model'), 'setting-up');
   assert.equal(scene('choose_provider', false), 'own-model');
   assert.equal(scene('choose_model', false), 'own-model');
+  assert.equal(scene('slack_apps'), 'slack-apps');
   assert.equal(scene('connect_github'), 'github');
   assert.equal(scene('connect_github', true, true), 'github-connected');
   assert.equal(scene('try'), 'try');

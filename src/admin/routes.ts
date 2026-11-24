@@ -1,5 +1,5 @@
 import { planDependencies, planStatus, preparePlanConnection, pollPlanHandoff, completePlanHandoff, confirmPlanConnection, cancelPlanConnection, disconnectPlan, resolvePlanSession } from '../chatgpt-plan/connection.ts';
-import { agentAppPresenceHooks, agentDmPlacementFacts, agentSlackAppsHost } from '../slack/agent-apps/index.ts';
+import { agentAppPresenceHooks, agentDmPlacementFacts, agentSlackAppsHost, readAgentSlackAppsSetting } from '../slack/agent-apps/index.ts';
 import {
   type AgentSlackAppAdminDeps,
   createAgentSlackAppAdminRoutes,
@@ -281,6 +281,7 @@ import {
   readOnboardingJourney,
   selectOnboardingProvider,
   settleOnboardingGithubStep,
+  settleOnboardingSlackAppsStep,
   startOnboardingTry,
   type OnboardingProviderId,
   type OnboardingSnapshot,
@@ -10834,6 +10835,19 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const onboardingGithubConnectPath = async (c: Context): Promise<string | null> =>
     deploymentServesManyInstallations(c.env as PlatformEnv | undefined) ? hostedGithubConnectPath() : null;
 
+  // Serving many installations, onboarding offers Slack apps (optional) after
+  // the model where the host offers each Agent its own Slack app, and only to
+  // the Owner signed in as themselves; standalone never.
+  const onboardingSlackAppsOffered = (c: Context): boolean =>
+    deploymentServesManyInstallations(c.env as PlatformEnv | undefined) &&
+    agentSlackAppsHost() !== undefined && isOwnerSession(principalByContext.get(c));
+
+  // Slack keeps no answer for a workspace's plan: an Agent it refused a handle
+  // because the plan is free is Chickpea's only record of it.
+  const slackFreePlanKnown = async (c: Context): Promise<boolean> =>
+    (await store(c).listUserAgents()).some((agent) => agent.lifecycle !== 'archived' &&
+      agent.slackPresence?.health === 'needs_attention' && agent.slackPresence.errorCode === 'paid_plan_required');
+
   const onboardingResponse = async (c: Context, snapshot: OnboardingSnapshot): Promise<Response> => {
     c.header('Cache-Control', 'no-store');
     return c.json(await onboardingView(c, snapshot));
@@ -10905,11 +10919,26 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           snapshot = raced;
         }
       }
+      let slackAppsStepOpen = snapshot.journey.state === 'active' && snapshot.journey.slackAppsStepAt === undefined &&
+        onboardingSlackAppsOffered(c);
+      // An Owner who already turned the setting on, here or under Destinations, has done the step.
+      if (slackAppsStepOpen && (await readAgentSlackAppsSetting(settings(c))).mode === 'own_app') {
+        try {
+          snapshot = await settleOnboardingSlackAppsStep(settings(c), snapshot.revision, { githubStepNotOffered: !githubConnectPath });
+        } catch (error) {
+          const raced = await readOnboardingJourney(settings(c));
+          if (!raced) throw error;
+          snapshot = raced;
+        }
+        slackAppsStepOpen = snapshot.journey.state === 'active' && snapshot.journey.slackAppsStepAt === undefined;
+      }
       const stage = snapshot.journey.state === 'complete'
         ? 'complete'
+        : slackAppsStepOpen ? 'slack_apps'
         : githubConnectPath && snapshot.journey.githubStepAt === undefined ? 'connect_github' : 'try';
       return {
         ...githubStep,
+        ...(stage === 'slack_apps' && await slackFreePlanKnown(c) ? { slackFreePlan: true } : {}),
         stage,
         revision: snapshot.revision,
         agentId: journey.agentId ?? null,
@@ -11098,6 +11127,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       slackUserId: actor.slackUserId,
       githubStepNotOffered: deploymentServesManyInstallations(c.env as PlatformEnv | undefined) &&
         !await onboardingGithubConnectPath(c),
+      slackAppsStepNotOffered: deploymentServesManyInstallations(c.env as PlatformEnv | undefined) &&
+        !onboardingSlackAppsOffered(c),
     });
     return onboardingResponse(c, started);
   };
@@ -11183,6 +11214,33 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         return c.json({ error: 'onboarding_try_required' }, 409);
       }
       return onboardingResponse(c, await settleOnboardingGithubStep(settings(c), snapshot.revision));
+    } catch (error) {
+      return internalError(c, error);
+    }
+  });
+
+  // Slack apps (optional): Set it up's accepted token, or Skip for now, moves
+  // the journey on. The setting itself changes only through its own API.
+  app.post('/admin/api/onboarding/slack-apps', async (c) => {
+    const parsed = v.safeParse(onboardingCompleteSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    try {
+      if (!deploymentServesManyInstallations(c.env as PlatformEnv | undefined) || !agentSlackAppsHost()) {
+        return c.json({ error: 'not_found' }, 404);
+      }
+      if (!onboardingSlackAppsOffered(c)) return c.json({ error: 'forbidden' }, 403);
+      const snapshot = await readOnboardingJourney(settings(c));
+      if (!snapshot) return c.json({ error: 'onboarding_not_found' }, 404);
+      if (snapshot.revision !== parsed.output.expectedRevision) {
+        return c.json({ error: 'onboarding_changed' }, 409);
+      }
+      if (snapshot.journey.state === 'complete') return onboardingResponse(c, snapshot);
+      if (!snapshot.journey.tryStartedAt) {
+        return c.json({ error: 'onboarding_try_required' }, 409);
+      }
+      return onboardingResponse(c, await settleOnboardingSlackAppsStep(settings(c), snapshot.revision, {
+        githubStepNotOffered: !await onboardingGithubConnectPath(c),
+      }));
     } catch (error) {
       return internalError(c, error);
     }

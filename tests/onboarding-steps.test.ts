@@ -4,6 +4,7 @@ import { test, type TestContext } from 'node:test';
 import { hostedSignUpOnboardingSteps, onboardingSteps } from '../src/admin/onboarding-steps.ts';
 import { configureHostedGithub, configureHostedGithubConnect } from '../src/config/hosted-github.ts';
 import { configurePlatformBilling, type PlatformBillingPort } from '../src/config/platform-billing.ts';
+import { configureAgentSlackApps } from '../src/slack/agent-apps/host.ts';
 
 const labels = (steps: ReadonlyArray<{ label: string }>) => steps.map((step) => step.label);
 const ids = (steps: ReadonlyArray<{ id: string }>) => steps.map((step) => step.id);
@@ -68,4 +69,17 @@ test('a GitHub App that cannot be read leaves out the GitHub step instead of fai
   assert.deepEqual(labels(await hostedSignUpOnboardingSteps()), ['Add to Slack', 'Try Chickpea']);
   configureHostedGithubConnect(undefined);
   assert.deepEqual(labels(await hostedSignUpOnboardingSteps()), ['Add to Slack', 'Try Chickpea']);
+});
+
+test('hosted offers Slack apps (optional) after the model and before Connect GitHub; standalone never', async (t) => {
+  assert.deepEqual(labels(onboardingSteps({ selfHosted: false, onChickpeaModels: false, githubOffered: true, slackAppsOffered: true })),
+    ['Add to Slack', 'Choose provider', 'Choose model', 'Slack apps', 'Connect GitHub', 'Try Chickpea']);
+  assert.deepEqual(notes(onboardingSteps({ selfHosted: false, onChickpeaModels: true, githubOffered: false, slackAppsOffered: true })),
+    ['Your workspace', 'Optional', 'Say hi']);
+  assert.deepEqual(ids(onboardingSteps({ selfHosted: true, onChickpeaModels: false, githubOffered: true, slackAppsOffered: true })), ['slack', 'provider', 'model', 'try']);
+  host(t, { billing: false, app: () => APP });
+  configureAgentSlackApps({ requestUrls: () => ({ events: 'https://h/e', interactions: 'https://h/i' }), redirectUri: 'https://h/cb', allowUrl: () => 'https://h/allow' });
+  t.after(() => configureAgentSlackApps(undefined));
+  assert.deepEqual(labels(await hostedSignUpOnboardingSteps()),
+    ['Add to Slack', 'Choose provider', 'Choose model', 'Slack apps', 'Connect GitHub', 'Try Chickpea'], 'the person signing up is the Owner');
 });
