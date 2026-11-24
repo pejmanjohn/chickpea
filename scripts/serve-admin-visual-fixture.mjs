@@ -753,6 +753,9 @@ function closeServer(server) {
   });
 }
 
+/** The attention reasons that stop a start before Slack made any app. */
+const STOPPED_BEFORE_APP = new Set(['create_refused', 'slack_busy', 'ambiguous_create', 'config_token_needed']);
+
 /**
  * Agents in Slack, for looking at Admin's section and token page: the port
  * is installed and the service is an in-memory stand-in. A paste of a token
@@ -766,8 +769,6 @@ function closeServer(server) {
  * page follows only slack.com: pressing it in a browser opens Slack's real
  * sign-in page, so stop the navigation rather than sign in.
  */
-const STOPPED_BEFORE_APP = new Set(['create_refused', 'slack_busy', 'ambiguous_create', 'config_token_needed']);
-
 async function visualAgentSlackApps(store) {
   const { configureAgentSlackApps } = await loadTsModule('src/slack/agent-apps/host.ts');
   const { SlackUnavailable } = await loadTsModule('src/slack/agent-apps/slack-api.ts');
