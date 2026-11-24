@@ -40,6 +40,8 @@ export interface AgentAppPresenceHooks {
   bringBotIn(agent: CustomAgentConfig, channel: { id: string; private: boolean }): Promise<AgentAppBot | undefined>;
   /** Whether the workspace's Slack apps setting is `own_app`: a new Agent then waits for its own app instead of a user group. */
   ownAppMode(): Promise<boolean>;
+  /** Arms the job that brings a live app to match its Agent after a saved change; asks nothing of Slack and never throws. */
+  follow(agent: CustomAgentConfig): Promise<void>;
 }
 
 /** A live app's bot after publishing: in the Channel, with a transport that posts as it, or left out. */
@@ -470,7 +472,10 @@ export class AgentPresenceReconciler {
       throw new AgentPresenceError('slack_operation_failed', 'Archived Agents cannot be reconciled.');
     }
     const presence = requiredPresence(agent);
-    if (presence.kind === 'agent_app') return agent;
+    if (presence.kind === 'agent_app') {
+      await this.dependencies.agentApps?.follow(agent);
+      return agent;
+    }
     const normalizedHandle = normalizeAgentHandle(presence.requestedHandle || agent.name);
     agent = await config.updateAgent(
       agent.id,

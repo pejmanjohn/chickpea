@@ -36,6 +36,7 @@ class FakeSlack implements AgentAppSlackApi {
   refuseUninstall: SlackRefused | undefined;
   async rotate(): Promise<never> { throw new Error('not in this unit'); }
   async create(): Promise<never> { throw new Error('not in this unit'); }
+  async definedBotScopes(): Promise<never> { throw new Error('not in this unit'); }
   async update(): Promise<never> { throw new Error('not in this unit'); }
   async setIcon(): Promise<never> { throw new Error('not in this unit'); }
   async exchange(input: { clientId: string; clientSecret: string; code: string; redirectUri: string }) {
@@ -52,6 +53,7 @@ class FakeSlack implements AgentAppSlackApi {
     return 'removed' as const;
   }
   async delete(): Promise<never> { throw new Error('not in this unit'); }
+  async botInstalled(): Promise<never> { throw new Error('not in this unit'); }
 }
 
 interface Posted { channelId: string; text: string; idempotencyKey: string | undefined }

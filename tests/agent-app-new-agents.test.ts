@@ -115,6 +115,7 @@ async function fixture(t: TestContext, mode: 'shared' | 'own_app') {
       retire: async (agent) => agent,
       bringBotIn: async () => undefined,
       ownAppMode: async () => (await readAgentSlackAppsSetting(settings)).mode === 'own_app',
+      follow: async () => undefined,
     },
   });
   return { config, settings, slack, reconciler };

@@ -63,6 +63,7 @@ const LAZY_MODULES: Record<string, string> = {
   'src/management/setup-routes.ts': "a setup link's or Admin's first request (app.ts, admin/routes.ts)",
   'src/management/connect-routes.ts': "a connect page's first request (app.ts)",
   'src/slack/agent-apps/admin-routes.ts': "an Agent app's token page, in Admin (admin/routes.ts)",
+  'src/slack/agent-apps/service.ts': "an Agent app's first press, delivery or job, or a state store's sweep finding a live app (slack/agent-apps/live.ts)",
   'src/admin/page.ts': "an Admin page's first render (admin/routes.ts, slack/agent-apps/admin-routes.ts)",
   'src/management/connector-landing-page.ts': 'a connect page or a setup link (management/connect-routes.ts, management/setup-routes.ts)',
   'src/config/connector-logos.ts': 'an Admin page or a connect page (admin/page.ts, management/connector-landing-page.ts)',

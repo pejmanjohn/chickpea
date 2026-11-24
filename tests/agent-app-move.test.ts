@@ -76,8 +76,10 @@ class FakeSlack implements AgentAppSlackApi {
       return { appId: `A0APP${n}`, clientId: `${n}.client`, clientSecret: `client-secret-${n}`, signingSecret: `signing-secret-${n}` };
     });
   }
+  definedBotScopes() { return this.calls.through('export', async () => [...AGENT_APP_BOT_SCOPES]); }
   update() { return this.calls.through('update', async () => undefined); }
   setIcon() { return this.calls.through('setIcon', async () => undefined); }
+  async botInstalled(): Promise<never> { throw new Error('not in this unit'); }
   exchange(input: { clientId: string; code: string }) {
     return this.calls.through('exchange', async () => {
       if (this.exchanged.includes(input.code)) throw new SlackRefused('oauth.v2.access', 'invalid_code');
@@ -274,7 +276,7 @@ async function fixture(
   });
   const reconciler = new AgentPresenceReconciler({
     config, transport: main as unknown as SlackTransport, announce: null, now: () => clock.now,
-    agentApps: { retire: async (current) => (await service.retire(current)).agent, bringBotIn: async () => undefined, ownAppMode: async () => false },
+    agentApps: { retire: async (current) => (await service.retire(current)).agent, bringBotIn: async () => undefined, ownAppMode: async () => false, follow: async () => undefined },
   });
   return { config, settings, secrets, slack, main, bot, calls, clock, armed, store, permission, service, reconciler };
 }

@@ -14,6 +14,9 @@ import type { EncryptedCredentialStore, SettingsStore } from '../../config/setti
 import type { PlatformEnv } from '../../config/state-backend.ts';
 import type { ConfigStore } from '../../config/store.ts';
 import {
+  type AgentAppFollowRefusal,
+  type AgentAppFollowTarget,
+  type AgentAppFollows,
   type AgentAppIcon,
   type AgentAppLifecycle,
   type AgentChannelGrant,
@@ -43,7 +46,6 @@ import {
   slackManifestFingerprint,
   type SlackAppCreateManifest,
   type SlackAppManifest,
-  type SlackAppRequestUrls,
 } from '../app-manifest.ts';
 import { sha256Hex } from '../../security/digest.ts';
 import { loadCredentialKeyring } from '../credential-keyring.ts';
@@ -61,6 +63,7 @@ import {
   type AgentAppSwitchJob,
   type AgentAppTransition,
   CREATE_SETTLE_MS,
+  agentAppFollowStep,
   agentAppIsLive,
   agentAppMoveJob,
   agentAppRecord,
@@ -107,6 +110,7 @@ import {
   type ConfigurationTokenStatus,
   LostRevision,
   type SecretDeps,
+  TOKEN_REFUSALS,
   configurationTokenStatus,
   deleteAppSecrets,
   discardConfigurationToken,
@@ -283,7 +287,7 @@ const GROUP_ALREADY_RELEASED = new Set(['already_disabled', 'no_such_subteam']);
  * without it. Its bot then cannot join a Channel the Agent is added to, and
  * is reported as left out there.
  */
-const OLDER_APPS_LACK = 'channels:join';
+export const OLDER_APPS_LACK = 'channels:join';
 /**
  * How Slack refuses a create once the workspace has every app its plan
  * allows (ten on the free plan). Not yet seen live: `managed_app_limit_reached`
@@ -293,6 +297,54 @@ const OLDER_APPS_LACK = 'channels:join';
 const APP_LIMIT_REFUSALS = new Set(['managed_app_limit_reached', 'service_limits_exceeded']);
 /** How Slack refuses a user-group change for want of a permission. */
 const PERMISSION_REFUSALS = new Set(['permission_denied', 'missing_scope', 'not_allowed']);
+
+/** One run of an Agent app's job: whether it is the row's last try, and the row's number when the drain runs it. */
+interface FollowRun {
+  finalAttempt: boolean;
+  row?: number;
+}
+
+/** What Chickpea would make an Agent's live app today: its whole definition, and the target a follow compares. */
+export interface AgentAppFollow {
+  manifest: SlackAppManifest;
+  target: AgentAppFollowTarget;
+}
+
+/**
+ * The definition Chickpea makes for an Agent's app, Request URLs included,
+ * and the Agent's avatar revision. Pure, so the state store's sweep can tell
+ * a live app that must be brought to match without reading anything more.
+ */
+export function agentAppFollow(
+  agent: CustomAgentConfig,
+  appId: string,
+  host: AgentSlackAppsHost,
+  installationId: string,
+): AgentAppFollow {
+  const manifest = buildSlackAppManifest({ kind: 'agent_app', urls: host.requestUrls(installationId, appId), ...manifestIntent(agent, host) });
+  return { manifest, target: { manifestFingerprint: slackManifestFingerprint(manifest), avatarRevision: agent.slackPresence?.avatar.revision ?? 0 } };
+}
+
+/** The longest start of `text` within `max` UTF-16 units that ends between characters, never inside an emoji. */
+function wholeCharacters(text: string, max: number): string {
+  let kept = '';
+  for (const character of text) {
+    if (kept.length + character.length > max) break;
+    kept += character;
+  }
+  return kept;
+}
+
+function manifestIntent(agent: CustomAgentConfig, host: AgentSlackAppsHost): AgentAppManifestIntent {
+  return {
+    appName: wholeCharacters(agent.name, SLACK_APP_NAME_MAX_LENGTH),
+    botDisplayName: agent.slackPresence?.normalizedHandle ?? agent.id,
+    description: wholeCharacters(agent.description?.trim() || `${agent.name} Agent`, SLACK_APP_DESCRIPTION_MAX_LENGTH),
+    redirectUri: host.redirectUri,
+    scopes: AGENT_APP_BOT_SCOPES,
+    events: AGENT_APP_BOT_EVENTS,
+  };
+}
 
 export class AgentSlackApps {
   private readonly now: () => number;
@@ -421,9 +473,9 @@ export class AgentSlackApps {
 
   /**
    * An Owner chose Try again or Finish setting up: resume where the record
-   * says, then advance. A live app whose switch has steps left has its job
-   * armed again, and so does a removed app's group, which Slack may now let
-   * Chickpea turn back on.
+   * says, then advance. A live app whose switch has steps left, or that Slack
+   * would not bring to match its Agent, has its job armed again, and so does
+   * a removed app's group, which Slack may now let Chickpea turn back on.
    */
   async retry(agentId: string, ownerSlackUserId: string): Promise<CustomAgentConfig> {
     const { config } = this.deps.stores;
@@ -434,10 +486,7 @@ export class AgentSlackApps {
     if (presence?.kind === 'agent_app' && presence.released?.enableRefused) {
       agent = await config.updateAgent(agentId, { slackPresence: { ...presence, released: unrefused(presence.released) } }, agent.revision);
     }
-    if (app.state === 'active' || restorePending(agent.slackPresence)) {
-      await this.armSwitch(agent);
-      return agent;
-    }
+    if (app.state === 'active' || restorePending(agent.slackPresence)) return this.followAgain(agent);
     if (app.state !== 'needs_attention') return (await this.advance(agentId)).agent;
     return (await this.tryAgain(agent, app, ownerSlackUserId)).agent;
   }
@@ -601,7 +650,8 @@ export class AgentSlackApps {
     }
     if (app?.state === 'needs_attention' && app.reason === 'config_token_needed') return { kind: 'token_needed' };
     if (app?.state === 'needs_attention') return { kind: 'needs_attention', agent };
-    if (app?.state === 'active') return { kind: 'already_own_app', agent };
+    // A live app Slack would not bring to match its Agent is tried again.
+    if (app?.state === 'active') return { kind: 'already_own_app', agent: app.follows?.refused ? await this.followAgain(agent) : agent };
     return { kind: 'creating', agent };
   }
 
@@ -741,15 +791,20 @@ export class AgentSlackApps {
       botUserId: presence.app.botUserId,
     });
     if (outcome !== 'end') return 'ignored';
+    return await this.removedAtSlack(agent, appId) ? 'ended' : 'ignored';
+  }
+
+  /** Slack removed this live app: its bot token goes and the record moves to removed, for the job to restore. */
+  private async removedAtSlack(agent: CustomAgentConfig, appId: string): Promise<CustomAgentConfig | undefined> {
     const stored = await readOwnAppSecrets(this.secrets, appId, agent.id, 'end');
     if (stored.kind === 'own' && stored.secrets.botToken) {
       const { clientSecret, signingSecret } = stored.secrets;
       await writeAppSecrets(this.secrets, appId, agent.id, { clientSecret, signingSecret }, stored.revision);
     }
     const removed = await this.commit(agent, { type: 'app_removed', at: this.now() });
-    if (removed.outcome !== 'applied') return 'ignored';
+    if (removed.outcome !== 'applied') return undefined;
     await this.armSwitch(removed.agent);
-    return 'ended';
+    return removed.agent;
   }
 
   /**
@@ -812,12 +867,18 @@ export class AgentSlackApps {
     return rows;
   }
 
-  /** Paste once per workspace; the Owner who pasted it is kept with it. */
+  /**
+   * Paste once per workspace; the Owner who pasted it is kept with it. Every
+   * live app that waited for a token, or whose update did not go through, is
+   * brought to match its Agent again.
+   */
   async pasteConfigurationToken(
     refreshToken: string,
     pastedBy: string,
   ): Promise<'saved' | 'not_refresh_token' | 'rejected' | 'other_workspace'> {
-    return saveConfigurationToken(this.secrets, (await this.installation()).teamId, refreshToken, pastedBy);
+    const saved = await saveConfigurationToken(this.secrets, (await this.installation()).teamId, refreshToken, pastedBy);
+    if (saved === 'saved') await this.unrefuseFollows(['config_token_needed', 'update_failed']);
+    return saved;
   }
 
   /** A stored pair that cannot be opened is no token: the Owner pastes a new one. */
@@ -857,14 +918,16 @@ export class AgentSlackApps {
 
   /**
    * The move job, the one driver of an Agent's move to and from its own app:
-   * the switch steps a live app still owes, or a removed app's restore. Each
+   * the switch steps a live app still owes, or a removed app's restore; then,
+   * for a live app, what brings it to match its Agent. Each
    * step is recorded by compare-and-set before the next begins, so a rerun
    * from any point finishes it and repeats nothing that was recorded. Throws
    * when Slack may answer later, so the job retries; Slack's refusal of a
    * step is not retried. On the job's last try the Owner's message is given
    * up, and the switch still finishes.
    */
-  async continueSwitch(agentId: string, options: { finalAttempt?: boolean } = {}): Promise<'done' | 'not_live'> {
+  async continueSwitch(agentId: string, options: { finalAttempt?: boolean; row?: number } = {}): Promise<'done' | 'not_live'> {
+    const run: FollowRun = { finalAttempt: options.finalAttempt ?? false, ...(options.row !== undefined ? { row: options.row } : {}) };
     let agent = await this.deps.stores.config.getAgent(agentId);
     for (let guard = 0; guard < MAX_STEPS_PER_RUN; guard += 1) {
       const presence = agent.slackPresence;
@@ -874,9 +937,15 @@ export class AgentSlackApps {
       }
       if (!agentAppIsLive(presence)) return 'not_live';
       const step = pendingSwitchStep(presence.app);
-      if (!step) return 'done';
-      const done = await this.switchSteps[step](agent, presence, options.finalAttempt ?? false);
-      agent = await this.recordSwitch(agent, step, done);
+      if (step) {
+        const done = await this.switchSteps[step](agent, presence, options.finalAttempt ?? false);
+        agent = await this.recordSwitch(agent, step, done);
+        continue;
+      }
+      const follow = await this.followOf(agent, presence.app.app.appId);
+      const followStep = agentAppFollowStep(presence.app, follow.target, this.now());
+      if (!followStep) return 'done';
+      agent = await this.followSteps[followStep](agent, presence, follow, run);
     }
     throw Object.assign(new Error('The Agent app move did not settle.'), { name: 'agent_app_move_unsettled' });
   }
@@ -957,6 +1026,229 @@ export class AgentSlackApps {
       return { next: 'done' };
     },
   };
+
+  /**
+   * What brings a live app to match its Agent, each step recorded before the
+   * next: its definition, sent with the bot scopes its definition in Slack
+   * already holds, so no permission changes without an Owner's Allow; then its
+   * picture. Only an app whose own record names this Agent is touched. A
+   * refusal is recorded for this target; Slack not answering throws, so the
+   * job retries, until its last try holds it as a refusal too.
+   */
+  private readonly followSteps: Record<
+    'definition' | 'picture',
+    (agent: CustomAgentConfig, presence: LiveAgentApp, follow: AgentAppFollow, run: FollowRun) => Promise<CustomAgentConfig>
+  > = {
+    definition: async (agent, presence, follow, run) => {
+      const { appId } = presence.app.app;
+      if ((await readOwnAppSecrets(this.secrets, appId, agent.id, 'update')).kind !== 'own') {
+        return this.refuseFollow(agent, appId, follow.target, 'record_refused', run);
+      }
+      const { teamId } = await this.installation();
+      try {
+        await withConfigurationToken(this.secrets, teamId, async (token) => {
+          const granted = await this.slack.definedBotScopes(token, appId);
+          await this.slack.update(token, appId, withBotScopes(follow.manifest, granted));
+        });
+      } catch (error) {
+        const refusal = followRefusal(error, run.finalAttempt);
+        if (!refusal) throw error;
+        if (error instanceof SlackRefused) {
+          logSlackRefusal(error.method === 'apps.manifest.export' ? 'export' : 'update', { agentId: agent.id, appId }, error);
+        }
+        return this.refuseFollow(agent, appId, follow.target, refusal, run);
+      }
+      const { manifestFingerprint } = follow.target;
+      return this.recordFollow(agent, appId, (follows) => ({ ...unrefusedFollows(follows), manifestFingerprint }), run);
+    },
+
+    picture: async (agent, presence, follow, run) => {
+      const { appId } = presence.app.app;
+      if ((await readOwnAppSecrets(this.secrets, appId, agent.id, 'icon')).kind !== 'own') {
+        return this.refuseFollow(agent, appId, follow.target, 'record_refused', run);
+      }
+      const { teamId } = await this.installation();
+      let icon: AgentAppIcon;
+      try {
+        // An avatar that cannot be read now is retried, never replaced by the default picture.
+        const picture = await this.icon(agent, presence, { readFailure: 'throw' });
+        icon = picture.icon;
+        await withConfigurationToken(this.secrets, teamId, (token) => this.slack.setIcon(token, appId, picture.png));
+      } catch (error) {
+        const refusal = followRefusal(error, run.finalAttempt);
+        if (!refusal) throw error;
+        if (error instanceof SlackRefused) logSlackRefusal('icon', { agentId: agent.id, appId }, error);
+        return this.refuseFollow(agent, appId, follow.target, refusal, run);
+      }
+      const { avatarRevision } = follow.target;
+      return this.recordFollow(agent, appId, (follows) => ({ ...unrefusedFollows(follows), avatarRevision }), run, icon);
+    },
+  };
+
+  /**
+   * A follow that cannot go on for this target. The Agent is read again, so a
+   * removal, an archive or a new app that landed while Slack answered records
+   * nothing and tells no one. An Owner is told only of a refusal the record
+   * does not already hold, so later edits while it stands tell no one; and a
+   * missing token, which is the workspace's, is told once for every app,
+   * naming none, to the first Owner who allowed a live app that Slack lets
+   * Chickpea message. The Owner is told first, under a key a rerun repeats,
+   * then the refusal is recorded. An app the configuration token cannot find,
+   * which passed its own record's check, is removed at Slack, as its removal
+   * event would have said, only once Slack refuses the app's own bot token:
+   * the token is one person's, and may not see an app another Owner's token
+   * made. A bot Slack accepts holds the update as one that did not go
+   * through. The app's own record refusing is the operator's, logged where it
+   * was read.
+   */
+  private async refuseFollow(
+    agent: CustomAgentConfig,
+    appId: string,
+    target: AgentAppFollowTarget,
+    reason: AgentAppFollowRefusal,
+    run: FollowRun,
+  ): Promise<CustomAgentConfig> {
+    const latest = await this.deps.stores.config.getAgent(agent.id);
+    const presence = latest.slackPresence;
+    if (!agentAppIsLive(presence) || presence.app.app.appId !== appId) return latest;
+    if (reason === 'app_not_found') {
+      if (!await this.botInstalled(latest, appId, run.finalAttempt)) {
+        return await this.removedAtSlack(latest, appId) ?? this.deps.stores.config.getAgent(agent.id);
+      }
+      return this.refuseFollow(latest, appId, target, 'update_failed', run);
+    }
+    const kind = await this.followMessage(presence, reason);
+    if (kind) {
+      const owners = kind === 'follow_token_needed' ? await this.liveAppOwners(presence.app.installedBy) : [presence.app.installedBy];
+      for (const owner of owners) {
+        try {
+          await this.message(kind, latest, owner, `agent-app-follow:${latest.id}:${appId}:${reason}:${latest.revision}:${owner}`);
+          break;
+        } catch (error) {
+          const refused = error instanceof SlackTransportError && !error.retryable;
+          if (!refused && !run.finalAttempt) throw error;
+          console.warn({
+            event: 'chickpea.agent_app.follow_owner_not_told', agentId: latest.id, appId,
+            error: error instanceof SlackTransportError ? error.code : error instanceof Error ? error.name : 'unknown',
+          });
+          // Slack will never take it for this Owner, and once the hold is recorded no other app tells anyone.
+          if (!refused) break;
+        }
+      }
+    }
+    return this.recordFollow(latest, appId, (follows) => ({ ...follows, refused: { ...target, reason, at: this.now() } }), run);
+  }
+
+  /**
+   * Whether Slack still accepts this app's own bot token. Slack not answering,
+   * or no bot token to ask, throws for the job to retry; on its last try the
+   * app counts as installed, so nothing is removed.
+   */
+  private async botInstalled(agent: CustomAgentConfig, appId: string, finalAttempt: boolean): Promise<boolean> {
+    try {
+      const stored = await readOwnAppSecrets(this.secrets, appId, agent.id, 'end');
+      if (stored.kind !== 'own' || !stored.secrets.botToken) {
+        throw Object.assign(new Error('No bot token to ask Slack about.'), { name: 'agent_app_bot_token_unread' });
+      }
+      return await this.slack.botInstalled(stored.secrets.botToken);
+    } catch (error) {
+      if (finalAttempt) return true;
+      throw error;
+    }
+  }
+
+  /** `first`, then each other Owner who allowed a live app, once each. */
+  private async liveAppOwners(first: string): Promise<string[]> {
+    const owners = new Set([first]);
+    for (const agent of await this.deps.stores.config.listAgents()) {
+      if (agentAppIsLive(agent.slackPresence)) owners.add(agent.slackPresence.app.installedBy);
+    }
+    return [...owners];
+  }
+
+  /** What the Owner is told of a follow's refusal, if anything. */
+  private async followMessage(presence: LiveAgentApp, reason: AgentAppFollowRefusal): Promise<AgentAppMessageKind | undefined> {
+    if (reason === 'config_token_needed') {
+      const held = (await this.deps.stores.config.listAgents()).some((agent) =>
+        agentAppIsLive(agent.slackPresence) && agent.slackPresence.app.follows?.refused?.reason === 'config_token_needed');
+      return held ? undefined : 'follow_token_needed';
+    }
+    if (reason !== 'update_refused' && reason !== 'update_failed') return undefined;
+    return presence.app.follows?.refused?.reason === reason ? undefined : reason;
+  }
+
+  /**
+   * Record what a follow step did by compare-and-set, onto the app it was
+   * done to, with the job row that did it; another app, or none live,
+   * records nothing.
+   */
+  private async recordFollow(
+    agent: CustomAgentConfig,
+    appId: string,
+    next: (follows: AgentAppFollows | undefined) => AgentAppFollows,
+    run?: FollowRun,
+    icon?: AgentAppIcon,
+    attempt = 0,
+  ): Promise<CustomAgentConfig> {
+    const presence = agent.slackPresence;
+    if (!agentAppIsLive(presence) || presence.app.app.appId !== appId) return agent;
+    const follows = { ...next(presence.app.follows), ...(run?.row !== undefined ? { row: run.row } : {}) };
+    const app = { ...presence.app, follows, ...(icon ? { icon } : {}) };
+    try {
+      return await this.deps.stores.config.updateAgent(agent.id, { slackPresence: normalizeAgentAppPresence({ ...presence, app }) }, agent.revision);
+    } catch (error) {
+      if (!(error instanceof AgentRevisionConflictError) || attempt >= MAX_COMMIT_RETRIES) throw error;
+      return this.recordFollow(await this.deps.stores.config.getAgent(agent.id), appId, next, run, icon, attempt + 1);
+    }
+  }
+
+  /**
+   * An Owner asked again (Try again, or Start on a live app): drop the
+   * refusal its follow holds and arm its job. A missing token is the
+   * workspace's, so asking again on one app asks again on every app that
+   * waits for it, and the next failure is told again, once.
+   */
+  private async followAgain(agent: CustomAgentConfig): Promise<CustomAgentConfig> {
+    const presence = agent.slackPresence;
+    if (agentAppIsLive(presence) && presence.app.follows?.refused?.reason === 'config_token_needed') {
+      const cleared = await this.unrefuseFollows(['config_token_needed']);
+      return cleared.find((candidate) => candidate.id === agent.id) ?? agent;
+    }
+    const cleared = await this.unrefusedFollow(agent);
+    await this.armSwitch(cleared);
+    return cleared;
+  }
+
+  /**
+   * Every live app whose follow holds one of `reasons` is tried again. Every
+   * hold is cleared before any job is armed, so no job finds another app's
+   * hold and stays quiet for it.
+   */
+  private async unrefuseFollows(reasons: readonly AgentAppFollowRefusal[]): Promise<CustomAgentConfig[]> {
+    const cleared: CustomAgentConfig[] = [];
+    for (const agent of await this.deps.stores.config.listAgents()) {
+      const presence = agent.slackPresence;
+      const reason = agentAppIsLive(presence) ? presence.app.follows?.refused?.reason : undefined;
+      if (reason && reasons.includes(reason)) cleared.push(await this.unrefusedFollow(agent));
+    }
+    for (const agent of cleared) await this.armSwitch(agent);
+    return cleared;
+  }
+
+  private async unrefusedFollow(agent: CustomAgentConfig): Promise<CustomAgentConfig> {
+    const presence = agent.slackPresence;
+    if (!agentAppIsLive(presence) || !presence.app.follows?.refused) return agent;
+    return this.recordFollow(agent, presence.app.app.appId, unrefusedFollows);
+  }
+
+  /**
+   * An Agent's name, handle, description or avatar was saved: arm the job
+   * that brings its live app to match, when it does not. Nothing is asked of
+   * Slack here; a failed read of the Agent throws, for the caller to log.
+   */
+  async followAgent(agentId: string): Promise<void> {
+    await this.armSwitch(await this.deps.stores.config.getAgent(agentId));
+  }
 
   /** The live app's own bot, or none when its record is not this Agent's or holds no token. */
   private async switchBot(agent: CustomAgentConfig, presence: LiveAgentApp): Promise<AgentAppBotTransport | undefined> {
@@ -1118,22 +1410,34 @@ export class AgentSlackApps {
   }
 
   /**
-   * Arm the job for an Agent whose move has steps left. A failure is logged,
-   * not thrown: the state store's sweep arms it again, and so does the
-   * Owner's Finish setting up.
+   * Arm the job for an Agent whose move has steps left, or whose live app
+   * does not match it. A failure is logged, not thrown: the state store's
+   * sweep arms it again, and so does the Owner's Finish setting up.
    */
   private async armSwitch(agent: CustomAgentConfig): Promise<void> {
     const app = appRecordOf(agent.slackPresence);
     const appId = app && agentAppRecord(app)?.appId;
     try {
       const { teamId } = await this.installation();
-      const job = agentAppMoveJob(agent.id, agent.slackPresence, teamId);
+      const job = agentAppMoveJob(agent.id, agent.slackPresence, teamId, await this.followDue(agent));
       if (job) await this.deps.armSwitch(job);
     } catch (error) {
       console.warn({
         event: 'chickpea.agent_app.switch_not_armed', agentId: agent.id, ...(appId ? { appId } : {}),
         error: error instanceof Error ? error.name : 'unknown',
       });
+    }
+  }
+
+  /** Whether a live app does not match its Agent; one that cannot be worked out is left to the sweep, and its move is armed all the same. */
+  private async followDue(agent: CustomAgentConfig): Promise<boolean> {
+    const presence = agent.slackPresence;
+    if (!agentAppIsLive(presence)) return false;
+    try {
+      return agentAppFollowStep(presence.app, (await this.followOf(agent, presence.app.app.appId)).target, this.now()) !== undefined;
+    } catch (error) {
+      console.warn({ event: 'chickpea.agent_app.follow_not_compared', agentId: agent.id, error: error instanceof Error ? error.name : 'unknown' });
+      return false;
     }
   }
 
@@ -1276,8 +1580,8 @@ export class AgentSlackApps {
         };
       }
       if (record.kind !== 'own') return { event: { type: 'record_refused', at: run.now } };
-      const { teamId, installationId } = await this.installation();
-      const manifest = this.manifest(run.agent, this.deps.host.requestUrls(installationId, app.appId));
+      const { teamId } = await this.installation();
+      const { manifest, target } = await this.followOf(run.agent, app.appId);
       try {
         await withConfigurationToken(this.secrets, teamId, (token) => this.slack.update(token, app.appId, manifest));
       } catch (error) {
@@ -1289,7 +1593,7 @@ export class AgentSlackApps {
         if (error instanceof SlackUnavailable) return 'wait';
         throw error;
       }
-      return { event: { type: 'urls_set', at: run.now } };
+      return { event: { type: 'urls_set', at: run.now, manifestFingerprint: target.manifestFingerprint } };
     },
 
     set_icon: async (run) => {
@@ -1306,7 +1610,7 @@ export class AgentSlackApps {
         else if (!(error instanceof ConfigTokenNeeded || error instanceof SlackUnavailable)) throw error;
         return { event: { type: 'icon_set', at: run.now, icon: 'not_set' } };
       }
-      return { event: { type: 'icon_set', at: run.now, icon } };
+      return { event: { type: 'icon_set', at: run.now, icon, avatarRevision: run.presence.avatar.revision } };
     },
 
     post_allow_dm: async (run) => {
@@ -1406,32 +1710,30 @@ export class AgentSlackApps {
   }
 
   private createManifest(agent: CustomAgentConfig): SlackAppCreateManifest {
-    return agentAppCreateManifest(this.manifestIntent(agent));
+    return agentAppCreateManifest(manifestIntent(agent, this.deps.host));
   }
 
-  private manifest(agent: CustomAgentConfig, urls: SlackAppRequestUrls): SlackAppManifest {
-    return buildSlackAppManifest({ kind: 'agent_app', urls, ...this.manifestIntent(agent) });
+  private async followOf(agent: CustomAgentConfig, appId: string): Promise<AgentAppFollow> {
+    return agentAppFollow(agent, appId, this.deps.host, (await this.installation()).installationId);
   }
 
-  private manifestIntent(agent: CustomAgentConfig): AgentAppManifestIntent {
-    return {
-      appName: agent.name.slice(0, SLACK_APP_NAME_MAX_LENGTH),
-      botDisplayName: this.names(agent).handle,
-      description: (agent.description?.trim() || `${agent.name} Agent`).slice(0, SLACK_APP_DESCRIPTION_MAX_LENGTH),
-      redirectUri: this.deps.host.redirectUri,
-      scopes: AGENT_APP_BOT_SCOPES,
-      events: AGENT_APP_BOT_EVENTS,
-    };
-  }
-
-  /** The Agent's avatar when it is a square PNG Slack accepts; its 512 px default otherwise. */
-  private async icon(agent: CustomAgentConfig, presence: AgentPresenceBase): Promise<{ png: Uint8Array<ArrayBuffer>; icon: AgentAppIcon }> {
-    const asset = await readAgentAvatarAsset({
+  /**
+   * The Agent's avatar when it is a square PNG Slack accepts; its 512 px
+   * default otherwise. An avatar that cannot be read is the default too,
+   * unless `readFailure` is `throw`.
+   */
+  private async icon(
+    agent: CustomAgentConfig,
+    presence: AgentPresenceBase,
+    options: { readFailure: 'default' | 'throw' } = { readFailure: 'default' },
+  ): Promise<{ png: Uint8Array<ArrayBuffer>; icon: AgentAppIcon }> {
+    const read = readAgentAvatarAsset({
       settings: this.deps.stores.settings,
       agentId: agent.id,
       revision: presence.avatar.revision,
       avatar: presence.avatar,
-    }).catch(() => undefined);
+    });
+    const asset = options.readFailure === 'throw' ? await read : await read.catch(() => undefined);
     if (asset?.contentType === 'image/png' && pngIsSlackIcon(asset.bytes)) {
       return { png: new Uint8Array(asset.bytes), icon: 'agent_avatar' };
     }
@@ -1456,7 +1758,7 @@ export class AgentSlackApps {
   ): Promise<{ channelId: string; ts: string }> {
     const names = this.names(agent);
     const linked: readonly AgentAppMessageKind[] = [
-      'config_token_needed', 'permission_needed', 'app_removed_permission', 'handle_taken',
+      'config_token_needed', 'permission_needed', 'app_removed_permission', 'handle_taken', 'update_refused', 'follow_token_needed',
     ];
     const origin = linked.includes(kind)
       ? await this.deps.publicOrigin?.()
@@ -1722,4 +2024,31 @@ function pngIsSlackIcon(bytes: Uint8Array): boolean {
   const width = view.getUint32(16);
   const height = view.getUint32(20);
   return width === height && width >= ICON_MIN_PX && width <= ICON_MAX_PX;
+}
+
+/**
+ * A follow's refusal, or undefined when Slack may answer later and the job
+ * retries. Only Slack refusing the definition itself is the Agent's to
+ * change; on the job's last try, Slack not answering is held as well.
+ */
+function followRefusal(error: unknown, finalAttempt: boolean): Exclude<AgentAppFollowRefusal, 'record_refused'> | undefined {
+  if (error instanceof ConfigTokenNeeded) return 'config_token_needed';
+  if (error instanceof SlackRefused && error.code !== 'ratelimited') {
+    if (TOKEN_REFUSALS.has(error.code)) return 'config_token_needed';
+    if (error.code === 'app_not_found') return 'app_not_found';
+    return error.method === 'apps.manifest.update' && error.code === 'invalid_manifest' ? 'update_refused' : 'update_failed';
+  }
+  return finalAttempt ? 'update_failed' : undefined;
+}
+
+function unrefusedFollows(follows: AgentAppFollows | undefined): AgentAppFollows {
+  const { refused: _refused, ...rest } = follows ?? {};
+  return rest;
+}
+
+/** `manifest` asking for exactly the bot scopes Slack granted, whatever Chickpea's definition asks for today. */
+function withBotScopes(manifest: SlackAppManifest, granted: readonly string[]): SlackAppManifest {
+  const result = structuredClone(manifest);
+  result.oauth_config.scopes.bot = [...granted];
+  return result;
 }

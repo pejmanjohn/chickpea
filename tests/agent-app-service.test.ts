@@ -93,6 +93,7 @@ class FakeSlack implements AgentAppSlackApi {
       return created;
     });
   }
+  definedBotScopes() { return this.calls.through('export', async () => [...AGENT_APP_BOT_SCOPES]); }
   update(_token: string, appId: string, manifest: SlackAppManifest) {
     return this.calls.through('update', async () => {
       refuseLikeSlack('apps.manifest.update', manifest);
@@ -109,6 +110,7 @@ class FakeSlack implements AgentAppSlackApi {
   }
   async exchange(): Promise<never> { throw new Error('not in this unit'); }
   async uninstall(): Promise<never> { throw new Error('not in this unit'); }
+  async botInstalled(): Promise<never> { throw new Error('not in this unit'); }
   delete(_token: string, appId: string) {
     return this.calls.through('delete', async () => {
       if (this.refuseDelete) throw this.refuseDelete;
@@ -649,6 +651,30 @@ test('a spent configuration token stops the sequence and sends the Owner to the 
     'https://core.test/admin/destinations/slack/connection/token', 'https://cloud.test/slack/agent-apps/add/agent_support',
   ], 'Continue is the hand-off link, which goes on once the token is pasted');
   assert.deepEqual(f.slack.manifests, []);
+});
+
+// Defects caught: a configuration token Slack says is revoked read as Slack not answering, so Start waited and then
+// said Slack may have made an app, and Cancel answered that Slack was unavailable on every press.
+test('a configuration token Slack says is revoked asks for a token at Start, and Cancel ends with the app left for the Owner', async (t) => {
+  const revoked = async (): Promise<never> => { throw new SlackRefused('tooling.tokens.rotate', 'token_revoked'); };
+  const start = await fixture(t);
+  start.clock.now = NOW + 13 * 3_600_000;
+  start.slack.rotate = revoked;
+  await start.service.start('agent_support', OWNER);
+  const app = await appOf(start);
+  assert.equal(app?.state === 'needs_attention' && app.reason, 'config_token_needed');
+  assert.deepEqual(start.slack.manifests, []);
+  assert.equal(await start.service.hasConfigurationToken(), true, 'the pair is kept');
+
+  const cancel = await fixture(t);
+  await cancel.service.start('agent_support', OWNER);
+  assert.equal((await appOf(cancel))?.state, 'awaiting_consent');
+  cancel.clock.now = NOW + 13 * 3_600_000;
+  cancel.slack.rotate = revoked;
+  const cancelled = await cancel.service.cancel('agent_support', OWNER);
+  assert.equal(cancelled.kind === 'cancelled' && cancelled.app, 'left_for_owner');
+  assert.equal(await appOf(cancel), undefined);
+  assert.match(cancel.transport.posted.at(-1)?.text ?? '', /^Chickpea couldn't delete the Slack app it made for Support/);
 });
 
 test('a refused create logs its step, Agent, code and pointers for the operator; the Owner sees only Try again', async (t) => {

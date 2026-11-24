@@ -1,5 +1,5 @@
 {
-  "scenario": "ef939864e899fbf0ae8f352dd3fe48718b9238a9410c8363609c81c0e3b5016c",
+  "scenario": "b3e6c22def2cdf7565ec7bc39bb1ce1fc7a0a7b3d20950423a6e2fd3909a8357",
   "contract": {
     "schemaVersion": 12,
     "schemaMarker": "agent-first-v1",
@@ -41,7 +41,7 @@
       "config_agents.mcp_servers_json": 1,
       "config_agents.repositories_json": 1,
       "config_agents.skills_json": 1,
-      "config_agents.slack_presence_json": 4,
+      "config_agents.slack_presence_json": 5,
       "config_agents.website_logins_json": 1,
       "config_connection_accounts.identity_json": 1,
       "config_connection_accounts.policy_json": 6,
@@ -169,7 +169,7 @@
             "creator_membership_id": "\"membership_scenario_member\"",
             "edit_policy": "\"all_workspace_members\"",
             "configuration_generation": "2",
-            "slack_presence_json": "{\"app\":{\"app\":{\"appId\":\"A0SCENARIOCON\",\"clientId\":\"1000000000.3000000000\"},\"at\":1792080000000,\"botUserId\":\"U0SCENARIOCON\",\"icon\":\"agent_avatar\",\"installedAt\":1792080000000,\"installedBy\":\"membership_scenario_owner\",\"state\":\"active\",\"switchProgress\":\"group_pending\"},\"avatar\":{\"generatedSeedHistory\":[{\"seed\":\"chickpea-avatar-v1:04:agent_scenario_concierge\",\"throughRevision\":1}],\"kind\":\"uploaded\",\"revision\":2,\"url\":\"https://assets.example.com/avatars/concierge-2.png\"},\"desiredState\":\"active\",\"health\":\"healthy\",\"kind\":\"agent_app\",\"normalizedHandle\":\"scenario-concierge\",\"observedAt\":1792080000000,\"released\":{\"answers\":true,\"desiredState\":\"active\",\"health\":\"healthy\",\"userGroupId\":\"S0SCENARIOCON\"},\"requestedHandle\":\"scenario-concierge\"}",
+            "slack_presence_json": "{\"app\":{\"app\":{\"appId\":\"A0SCENARIOCON\",\"clientId\":\"1000000000.3000000000\"},\"at\":1792080000000,\"botUserId\":\"U0SCENARIOCON\",\"follows\":{\"avatarRevision\":1,\"manifestFingerprint\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"refused\":{\"at\":1792080000000,\"avatarRevision\":1,\"manifestFingerprint\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"reason\":\"update_failed\"},\"row\":2},\"icon\":\"agent_avatar\",\"installedAt\":1792080000000,\"installedBy\":\"membership_scenario_owner\",\"state\":\"active\",\"switchProgress\":\"group_pending\"},\"avatar\":{\"generatedSeedHistory\":[{\"seed\":\"chickpea-avatar-v1:04:agent_scenario_concierge\",\"throughRevision\":1}],\"kind\":\"uploaded\",\"revision\":2,\"url\":\"https://assets.example.com/avatars/concierge-2.png\"},\"desiredState\":\"active\",\"health\":\"healthy\",\"kind\":\"agent_app\",\"normalizedHandle\":\"scenario-concierge\",\"observedAt\":1792080000000,\"released\":{\"answers\":true,\"desiredState\":\"active\",\"health\":\"healthy\",\"userGroupId\":\"S0SCENARIOCON\"},\"requestedHandle\":\"scenario-concierge\"}",
             "archived_at": "null",
             "model": "null",
             "skills_json": "[]",

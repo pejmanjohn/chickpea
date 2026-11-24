@@ -32,7 +32,7 @@ export class SlackRefused extends Error {
   }
 }
 
-export type AgentAppSlackStep = 'rotate' | 'release_handle' | 'create' | 'update' | 'icon' | 'exchange' | 'uninstall' | 'delete' | 'invite' | 'join' | 'restore_handle';
+export type AgentAppSlackStep = 'rotate' | 'release_handle' | 'create' | 'export' | 'update' | 'icon' | 'exchange' | 'uninstall' | 'delete' | 'invite' | 'join' | 'restore_handle';
 
 /** One structured line per Slack refusal in an Agent app's lifecycle; for the operator, never the customer. */
 export function logSlackRefusal(
@@ -95,11 +95,15 @@ export interface AgentAppSlackApi {
   rotate(refreshToken: string): Promise<RotatedConfigurationToken>;
   /** Throws AmbiguousEffect when Slack's answer is unknown and SlackRefused when it said no. */
   create(token: string, manifest: SlackAppCreateManifest): Promise<CreatedAgentApp>;
+  /** The bot scopes the app's own definition in Slack holds, from its exported manifest. */
+  definedBotScopes(token: string, appId: string): Promise<string[]>;
   update(token: string, appId: string, manifest: SlackAppManifest): Promise<void>;
   setIcon(token: string, appId: string, png: Uint8Array<ArrayBuffer>): Promise<void>;
   exchange(input: { clientId: string; clientSecret: string; code: string; redirectUri: string }): Promise<AgentAppGrant>;
   uninstall(input: { clientId: string; clientSecret: string; botToken: string }): Promise<'removed' | 'absent'>;
   delete(token: string, appId: string): Promise<'deleted' | 'absent'>;
+  /** auth.test with an app's own bot token: false when Slack refuses it as revoked, inactive or invalid. */
+  botInstalled(botToken: string): Promise<boolean>;
 }
 
 export interface AgentAppSlackApiOptions {
@@ -196,6 +200,16 @@ export function createAgentAppSlackApi(options: AgentAppSlackApiOptions = {}): A
       }
     },
 
+    async definedBotScopes(token, appId) {
+      const payload = settled('apps.manifest.export', await call('apps.manifest.export', form({ app_id: appId }, token)));
+      const scopes = asRecord(asRecord(asRecord(payload.manifest).oauth_config).scopes).bot;
+      // An Agent app always holds bot scopes: an empty list is no answer, and sending it back would drop them all.
+      if (!Array.isArray(scopes) || scopes.length === 0 || !scopes.every((scope) => typeof scope === 'string' && scope.trim() !== '')) {
+        throw new SlackUnavailable('apps.manifest.export', 'invalid_slack_response');
+      }
+      return scopes;
+    },
+
     async update(token, appId, manifest) {
       settled('apps.manifest.update', await call('apps.manifest.update', json(token, { app_id: appId, manifest }), manifest));
     },
@@ -251,6 +265,13 @@ export function createAgentAppSlackApi(options: AgentAppSlackApiOptions = {}): A
       if (answer.kind === 'refused' && answer.code === 'app_not_found') return 'absent';
       settled('apps.manifest.delete', answer);
       return 'deleted';
+    },
+
+    async botInstalled(botToken) {
+      const answer = await call('auth.test', form({}, botToken));
+      if (answer.kind === 'refused' && BOT_GONE.has(answer.code)) return false;
+      settled('auth.test', answer);
+      return true;
     },
   };
 }

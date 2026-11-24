@@ -281,19 +281,57 @@ export interface AgentAppConsent {
  */
 export type AgentAppSwitchProgress = 'live' | 'group_pending' | 'bring_in_pending' | 'owner_told' | 'done';
 
+/**
+ * Why bringing a live app to match its Agent stopped: no usable configuration
+ * token; Slack refused the definition's content (`update_refused`), refused
+ * something else, or kept not answering (`update_failed`); the app is gone at
+ * Slack (`app_not_found`, written only by an earlier build: the app's removal
+ * is committed instead now); or the app's own record would not let Chickpea
+ * touch it. It holds for the Agent as it was then, so the app is tried again
+ * once the Agent changes, a token is pasted, or an Owner asks; an update that
+ * did not go through is also tried again once it is a day old. A missing
+ * token holds whatever the Agent becomes: only a token, or an Owner asking,
+ * can change that.
+ */
+export type AgentAppFollowRefusal = AgentAppFollowAttention | 'app_not_found' | 'record_refused';
+
+/** The refusals an Owner can act on, shown beside a live app that keeps answering. */
+export type AgentAppFollowAttention = 'config_token_needed' | 'update_refused' | 'update_failed';
+
+/** One Agent as its app in Slack shows it: the fingerprint of the definition Chickpea makes for it, and its avatar revision. */
+export interface AgentAppFollowTarget {
+  manifestFingerprint: string;
+  avatarRevision: number;
+}
+
+/**
+ * What the app in Slack was last brought to match: the definition, once
+ * Slack took it, and the avatar revision whose picture it set; a refusal
+ * with the target it was refused for; and the number of the job row that
+ * last ran it, where arming its next job starts counting. An app recorded
+ * without it, or without a field, is brought to match on the next run.
+ */
+export interface AgentAppFollows {
+  manifestFingerprint?: string;
+  avatarRevision?: number;
+  refused?: AgentAppFollowTarget & { reason: AgentAppFollowRefusal; at: number };
+  row?: number;
+}
+
 export type AgentAppLifecycle =
   | { state: 'releasing_handle'; at: number; startedBy: string }
   /** Written before the create call, which has no idempotency key. */
   | { state: 'creating'; at: number; startedBy: string; manifestFingerprint: string }
   | { state: 'created'; at: number; startedBy: string; app: AgentAppRecord }
-  | { state: 'urls_set'; at: number; startedBy: string; app: AgentAppRecord }
-  | { state: 'icon_set'; at: number; startedBy: string; app: AgentAppRecord; icon: AgentAppIcon }
+  | { state: 'urls_set'; at: number; startedBy: string; app: AgentAppRecord; follows?: AgentAppFollows }
+  | { state: 'icon_set'; at: number; startedBy: string; app: AgentAppRecord; icon: AgentAppIcon; follows?: AgentAppFollows }
   | {
       state: 'awaiting_consent';
       at: number;
       startedBy: string;
       app: AgentAppRecord;
       icon: AgentAppIcon;
+      follows?: AgentAppFollows;
       /**
        * The "ready, choose Allow" message, posted only when no press sent the Owner's browser to Slack's Allow screen
        * (a Try again pressed in Slack). Nothing reads it.
@@ -313,6 +351,7 @@ export type AgentAppLifecycle =
       switchProgress?: AgentAppSwitchProgress;
       /** The switch finished without the Owner's result message: Slack refused it, or every try failed. */
       ownerNotTold?: true;
+      follows?: AgentAppFollows;
     }
   | { state: 'uninstalling'; at: number; startedBy: string; app: AgentAppRecord; botUserId?: string; next: 'uninstall' | 'delete' }
   | {

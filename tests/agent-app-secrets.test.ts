@@ -22,7 +22,7 @@ import {
   withConfigurationToken,
   writeAppSecrets,
 } from '../src/slack/agent-apps/secrets.ts';
-import { SlackRefused } from '../src/slack/agent-apps/slack-api.ts';
+import { SlackRefused, SlackUnavailable } from '../src/slack/agent-apps/slack-api.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import type { CredentialKeyring } from '../src/slack/secret-envelope.ts';
 
@@ -137,7 +137,8 @@ test('a stale claim is taken over, and a held one is waited on three times', asy
   assert.equal(await withConfigurationToken(d, TEAM, async (token) => token), 'xoxe.xoxp-1-access-2');
   assert.deepEqual(d.rotations, [PASTED, 'xoxe-1-refresh-1']);
 
-  // A live claim nobody finishes is re-read three times, then the Owner is asked.
+  // A live claim nobody finishes is re-read three times, then reads as Slack not answering: the token is not known to
+  // be bad, so the caller retries and nobody is asked for a new one.
   now = now + TWELVE_HOURS;
   const holder = fixture(t, { settings: d.settings, keyring: d.keyring, now: () => now });
   let reads = 0;
@@ -146,10 +147,46 @@ test('a stale claim is taken over, and a held one is waited on three times', asy
   await new Promise((resolve) => setImmediate(resolve));
   const waiter = fixture(t, { settings: d.settings, keyring: d.keyring, now: () => now });
   waiter.sleep = async () => { reads += 1; };
-  await assert.rejects(() => withConfigurationToken(waiter, TEAM, async () => 'unused'), ConfigTokenNeeded);
+  await assert.rejects(() => withConfigurationToken(waiter, TEAM, async () => 'unused'), (error: unknown) =>
+    error instanceof SlackUnavailable && error.reason === 'rotation_claimed');
   assert.equal(reads, 3);
   assert.deepEqual(waiter.rotations, []);
+  assert.equal(await hasConfigurationToken(d, TEAM), true, 'the pair is kept');
 });
+
+// Defects caught: a rate-limited rotation, or any refusal that is not a spent refresh token, deleting the customer's
+// token and asking an Owner for a new one, when the next try would have worked.
+for (const code of ['ratelimited', 'request_timeout', 'invalid_arguments']) {
+  test(`a rotation Slack answers ${code} keeps the pair, reads as Slack not answering, and the next try rotates it`, async (t) => {
+    let now = NOW;
+    const d = fixture(t, { now: () => now });
+    assert.equal(await saveConfigurationToken(d, TEAM, PASTED), 'saved');
+    now = NOW + TWELVE_HOURS;
+    d.refuse = code;
+    await assert.rejects(() => withConfigurationToken(d, TEAM, async () => 'unused'), (error: unknown) =>
+      error instanceof SlackUnavailable && error.reason === code);
+    assert.equal(await hasConfigurationToken(d, TEAM), true, 'the pair is kept');
+    delete d.refuse;
+    now += ROTATION_CLAIM_MS;
+    assert.equal(await withConfigurationToken(d, TEAM, async (token) => token), 'xoxe.xoxp-1-access-3', 'once the claim lapses');
+  });
+}
+
+// Defects caught: a token Slack says is dead read as Slack not answering, so every caller waits forever and nobody is
+// asked for a token; or the pair deleted for it; or its claim left standing, so the next caller reads Slack not answering.
+for (const code of ['token_revoked', 'invalid_auth', 'account_inactive']) {
+  test(`a rotation Slack answers ${code} asks for a token at once, for every caller, and keeps the pair`, async (t) => {
+    let now = NOW;
+    const d = fixture(t, { now: () => now });
+    assert.equal(await saveConfigurationToken(d, TEAM, PASTED, 'UOWNER'), 'saved');
+    now = NOW + TWELVE_HOURS;
+    d.refuse = code;
+    await assert.rejects(() => withConfigurationToken(d, TEAM, async () => 'unused'), ConfigTokenNeeded);
+    await assert.rejects(() => withConfigurationToken(d, TEAM, async () => 'unused'), ConfigTokenNeeded, 'the claim is released');
+    assert.deepEqual(d.rotations, [PASTED, 'xoxe-1-refresh-1', 'xoxe-1-refresh-1']);
+    assert.deepEqual(await configurationTokenStatus(d, TEAM), { stored: true, pastedBy: 'UOWNER', pastedAt: NOW }, 'the pair is kept');
+  });
+}
 
 test('a spent pair with no newer one asks the Owner again and is forgotten', async (t) => {
   let now = NOW;

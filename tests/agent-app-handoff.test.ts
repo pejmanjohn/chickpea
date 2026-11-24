@@ -55,6 +55,7 @@ class FakeSlack implements AgentAppSlackApi {
     this.created.push(manifest.display_information.name);
     return { appId: `A0APP${n}`, clientId: `${n}.client`, clientSecret: `client-secret-${n}`, signingSecret: `signing-secret-${n}` };
   }
+  async definedBotScopes() { return [...AGENT_APP_BOT_SCOPES]; }
   async update(_token: string, _appId: string, manifest: Parameters<AgentAppSlackApi['update']>[2]) {
     refuseLikeSlack('apps.manifest.update', manifest);
   }
@@ -65,6 +66,7 @@ class FakeSlack implements AgentAppSlackApi {
   }
   async uninstall() { return 'removed' as const; }
   async delete() { return 'deleted' as const; }
+  async botInstalled(): Promise<never> { throw new Error('not in this unit'); }
 }
 
 interface Fixture {

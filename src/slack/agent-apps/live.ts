@@ -19,11 +19,12 @@ import { createDirectSlackTransport } from '../transport/direct.ts';
 import { SlackTransportError, type SlackTransport } from '../transport/types.ts';
 import { ownerUserGroupToken } from '../user-group-authority.ts';
 import { createSlackWebClient } from '../web-client.ts';
+import { installationScopeOf } from '../../config/installation-scope.ts';
 import { appRecordOf, type CustomAgentConfig } from '../../config/types.ts';
 import type { SlackSpeaker } from '../speaker.ts';
 import { agentSlackAppsHost, type AgentAppRetirement, type AgentSlackAppIngress, type AgentSlackAppsHost } from './host.ts';
 import { FINISH_APP_ACTION, START_APP_ACTION, TRY_AGAIN_ACTION } from './pages.ts';
-import { type AgentAppSwitchJob, agentAppIsLive, agentAppMoveJob, agentAppRecord } from './lifecycle.ts';
+import { type AgentAppSwitchJob, agentAppFollowStep, agentAppIsLive, agentAppMoveJob, agentAppRecord } from './lifecycle.ts';
 import { readOwnAppSecrets, type SecretDeps } from './secrets.ts';
 import { readAgentSlackAppsSetting } from './setting.ts';
 import type { AgentAppTransport, AgentSlackApps } from './service.ts';
@@ -246,6 +247,15 @@ export function agentAppPresenceHooks(
     async ownAppMode() {
       return (await readAgentSlackAppsSetting(settings ?? getSettingsStore(env))).mode === 'own_app';
     },
+    async follow(agent) {
+      if (!agentAppIsLive(agent.slackPresence)) return;
+      try {
+        await (await liveAgentSlackApps(env, host)).followAgent(agent.id);
+      } catch (error) {
+        // The sweep arms it later.
+        console.warn({ event: 'chickpea.agent_app.follow_not_armed', agentId: agent.id, error: error instanceof Error ? error.name : 'unknown' });
+      }
+    },
     async bringBotIn(agent, channel) {
       const presence = agent.slackPresence;
       if (!agentAppIsLive(presence)) return undefined;
@@ -409,7 +419,7 @@ export async function liveAgentSlackApps(
     host,
     transport: mainBotTransport(credentials, settings),
     armSwitch: (job) => armAgentAppSwitch(management, job, Date.now()),
-    publicOrigin: () => resolveSlackPublicUrl(env, resolved.settings, resolved.identity),
+    publicOrigin: () => resolveSlackPublicUrl(env, local?.settings ?? resolved.settings, identity),
     userGroupPermissionMissing: async () => hostedSlackUpdateGrantsUserGroupToken() && !(await credentials()).userGroupToken,
     placeInSlack: async (agentId) => {
       const resolved = await credentials();
@@ -453,19 +463,27 @@ export function agentAppSwitchOutbox(job: AgentAppSwitchJob, at: number, rearm =
   };
 }
 
+/** The number `agentAppSwitchOutbox` gave a row: an app ID never ends in `:` and digits, so no suffix is the first row. */
+export function agentAppSwitchRow(outboxId: string): number {
+  const suffix = /:(\d+)$/.exec(outboxId);
+  return suffix ? Number(suffix[1]) : 0;
+}
+
 /**
  * Arm the job for an Agent app whose move has steps left. The outbox keeps a
  * row it already has, settled or not, so a row that settled without finishing
  * (every attempt failed, or it ran before the step was due) is followed by a
  * new one. A row still waiting or running is left alone: one app never has
  * two unsettled jobs, and the one it has runs whatever the presence owes.
+ * Counting starts at the row that last ran the app's follow, so an arm costs
+ * a call or two however many rows earlier syncs left.
  */
 export async function armAgentAppSwitch(
   management: Pick<AppStores['management'], 'putOutbox'>,
   job: AgentAppSwitchJob,
   at: number,
 ): Promise<void> {
-  for (let rearm = 0; ; rearm += 1) {
+  for (let rearm = job.firstRow ?? 0; ; rearm += 1) {
     const row = await management.putOutbox(agentAppSwitchOutbox(job, at, rearm));
     if (row.status !== 'delivered' && row.status !== 'failed') return;
   }
@@ -480,30 +498,51 @@ export async function continueAgentAppSwitch(
   env: PlatformEnv | undefined,
   job: ManagementAgentAppSwitchJob,
   local?: AgentAppStores,
-  options: { finalAttempt?: boolean } = {},
+  options: { finalAttempt?: boolean; outboxId?: string } = {},
 ): Promise<{ deliveryRef: string }> {
   const host = agentSlackAppsHost();
   if (!host) throw Object.assign(new Error('Agent apps are not served here.'), { name: 'agent_apps_unavailable' });
-  const outcome = await (await liveAgentSlackApps(env, host, local)).continueSwitch(job.agentId, options);
+  const outcome = await (await liveAgentSlackApps(env, host, local)).continueSwitch(job.agentId, {
+    finalAttempt: options.finalAttempt ?? false,
+    ...(options.outboxId ? { row: agentAppSwitchRow(options.outboxId) } : {}),
+  });
   return { deliveryRef: `agent_app_switch:${outcome}` };
 }
 
 /**
  * The state store's sweep: arm the job of every Agent whose move has a step
  * left and no job to run it, so a move cut off before its job was armed, or
- * whose job spent every try, finishes without a person. Arming leaves a
- * waiting or running row alone, so a sweep never starts a second run.
+ * whose job spent every try, finishes without a person; and of every live
+ * app that does not match its Agent, as one made before Chickpea's
+ * definition last changed. Whether it matches is worked out from the Agent
+ * alone, so the sweep reads nothing more. Arming leaves a waiting or running
+ * row alone, so a sweep never starts a second run.
  */
 export async function armUnfinishedAgentAppMoves(
   stores: { config: Pick<AppStores['config'], 'listAgents' | 'listWorkspaceInstallations'>; management: Pick<AppStores['management'], 'putOutbox'> },
   at: number,
+  env: PlatformEnv | undefined,
 ): Promise<void> {
-  if (!agentSlackAppsHost()) return;
+  const host = agentSlackAppsHost();
+  if (!host) return;
   const workspace = (await stores.config.listWorkspaceInstallations())[0];
   if (!workspace) return;
   const teamId = workspace.teamId ?? workspace.workspaceId;
+  const installationId = installationScopeOf(env)?.installationId ?? workspace.workspaceId;
+  let follow: typeof import('./service.ts').agentAppFollow | undefined;
   for (const agent of await stores.config.listAgents()) {
-    const job = agentAppMoveJob(agent.id, agent.slackPresence, teamId);
+    const presence = agent.slackPresence;
+    let followDue = false;
+    if (agentAppIsLive(presence)) {
+      try {
+        follow ??= (await import('./service.ts')).agentAppFollow;
+        followDue = agentAppFollowStep(presence.app, follow(agent, presence.app.app.appId, host, installationId).target, at) !== undefined;
+      } catch (error) {
+        // One Agent whose definition cannot be worked out never stops the sweep for the rest, or its own pending move.
+        console.warn({ event: 'chickpea.agent_app.follow_not_compared', agentId: agent.id, error: error instanceof Error ? error.name : 'unknown' });
+      }
+    }
+    const job = agentAppMoveJob(agent.id, presence, teamId, followDue);
     if (job) await armAgentAppSwitch(stores.management, job, at);
   }
 }

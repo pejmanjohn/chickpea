@@ -1453,6 +1453,7 @@ function bringingIn(bot: Pick<SlackTransport, 'postMessage'>): AgentAppPresenceH
     async retire() { throw new Error('publish retires nothing'); },
     async bringBotIn() { return { placement: 'in_channel', transport: bot }; },
     ownAppMode: async () => false,
+    follow: async () => undefined,
   };
 }
 
