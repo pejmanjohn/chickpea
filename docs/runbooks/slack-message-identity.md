@@ -280,11 +280,19 @@ Home.
   configuration token, and gives the handle back to the Agent's user group,
   disabled. Restoring the Agent brings the handle back. When Slack refuses the
   uninstall, the archive is refused too. Without a stored token, the app's
-  definition stays and the Owner is told to delete it in Your Apps.
+  definition stays and the Owner is told to delete it in Your Apps. Slack
+  refuses a delete of an app that no longer exists with `no_permission`, so a
+  refused delete is checked with the app's export: when Slack answers
+  `app_not_found`, the Owner is told Chickpea could not find the app, not
+  that it is left to delete.
 - When someone removes the app in Slack (`app_uninstalled`, or
   `tokens_revoked` naming its bot), only that Agent's app ends: its bot token
   is dropped and the Owner is told, and Allow adds it back. The workspace's
-  installation and other Agents are unchanged.
+  installation and other Agents are unchanged. The user group the app
+  released is renamed to the Agent's current name and handle before it is
+  turned back on, since a rename made while the app held the handle never
+  reached it. If Slack refuses the handle, the group keeps the one it has, and
+  the Owner's message names that one.
 - When a tenant ends, the host retires every Agent app before the workspace's
   own uninstall and records each outcome. Retiring an app needs only that
   app's own credentials and the configuration token, so it goes on when the
