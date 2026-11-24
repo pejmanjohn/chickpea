@@ -28,7 +28,6 @@ import { withHostedSlackApp } from '../src/slack/hosted-slack-app.ts';
 import type { SlackInstallationExecutionContext } from '../src/slack/installation-execution.ts';
 import { invalidateSlackInstallationCredentialCache, writeHostedSlackBotCredentials } from '../src/slack/installation-credentials.ts';
 import { stopNodeTurnRelay } from '../src/slack/node-turn-relay.ts';
-import { escapeMrkdwn } from '../src/slack/ui/text.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 import { withDirectSlackInstall } from './helpers/direct-slack-install.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
@@ -221,7 +220,7 @@ test("a self-hosted gateway install has no port: the Owner's App Home is today's
   await resolvesAsInstallation(undefined, stores, realmReads);
 });
 
-test("a hosted installation with the switch off is today's; only with it on does the Owner's App Home offer the app", async (t) => {
+test("a hosted installation with the switch off is today's, and with it on an Owner's App Home is unchanged until an Agent has an app", async (t) => {
   await stopNodeTurnRelay();
   isolateStores(t);
   const previousFetch = globalThis.fetch;
@@ -283,10 +282,10 @@ test("a hosted installation with the switch off is today's; only with it on does
   assert.deepEqual(realmReads, []);
 
   configureAgentSlackApps(HOST);
-  const offered = await openHome() ?? '';
-  assert.ok(offered.includes(escapeMrkdwn('Give @support its own Slack app')), "the Owner's App Home offers the app once the port is installed");
-  assert.ok(offered.includes('"url":"https://hosted.example/admin/agents/agent_support/slack-app"'), "the offer links to this installation's token page");
+  const ported = await openHome() ?? '';
+  assert.equal(ported, await todaysHome(stores), 'starting is in Admin, never the Home tab');
+  assert.deepEqual(realmReads, [], 'and the Home tab reads nothing of the feature');
   configureAgentSlackApps(undefined);
-  assert.equal(await openHome(), await todaysHome(stores), 'turning the switch off takes the offer away again');
+  assert.equal(await openHome(), await todaysHome(stores));
   await resolvesAsInstallation(env, stores, realmReads);
 });

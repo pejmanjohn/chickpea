@@ -53,7 +53,10 @@ function agent(id: string, kind: CustomAgentConfig['kind'], slackPresence: Agent
   };
 }
 
-async function service(t: TestContext, options: { token?: boolean; now?: number; permissionMissing?: boolean } = {}) {
+async function service(
+  t: TestContext,
+  options: { token?: boolean; now?: number; permissionMissing?: boolean; onRead?: (what: string) => void } = {},
+) {
   const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => { config.close(); settings.close(); });
@@ -61,52 +64,30 @@ async function service(t: TestContext, options: { token?: boolean; now?: number;
   await config.ensureWorkspaceInstallation({ workspaceId: TEAM, teamId: TEAM, transportMode: 'direct', defaultAgentId: support.id, runtimeContract: 'chickpea-v1' });
   const keyring = generateCredentialKeyring('k1');
   if (options.token) await saveConfigurationToken({ credentials: settings, keyring, slack }, TEAM, 'xoxe-1-pasted-token-0000');
+  const read = options.onRead ?? (() => undefined);
+  const watched = Object.assign(Object.create(settings) as SqliteSettingsStore, {
+    getEncryptedCredentialRevision: (key: string) => { read(key); return settings.getEncryptedCredentialRevision(key); },
+  });
   return new AgentSlackApps({
-    env: ENV, stores: { config, settings }, host: HOST, transport, slack, keyring, armSwitch: async () => undefined,
-    now: () => options.now ?? NOW, publicOrigin: async () => 'https://core.test/',
-    userGroupPermissionMissing: async () => options.permissionMissing ?? false,
+    env: ENV, stores: { config, settings: watched }, host: HOST, transport, slack, keyring, armSwitch: async () => undefined,
+    now: () => options.now ?? NOW, publicOrigin: async () => { read('origin'); return 'https://core.test/'; },
+    userGroupPermissionMissing: async () => { read('permission'); return options.permissionMissing ?? false; },
   });
 }
 
 const text = (blocks: readonly object[]) => (blocks[0] as { elements: Array<{ text: string }> }).elements[0]!.text;
 const button = (blocks: readonly object[], index = 0) => (blocks[index] as { elements: Array<{ text: { text: string }; url?: string; action_id: string; value?: string }> }).elements[0]!;
 
-test('an Owner sees a link to the token page without a token, and a click button with one; nobody else sees anything', async (t) => {
-  const agents = [agent('agent_support', 'user', presence()), agent(CHICKPEA_AGENT_ID, 'system', presence())];
-  const noToken = await (await service(t)).homeRows(agents, { role: 'owner' });
-  assert.deepEqual([...noToken.keys()], ['agent_support'], "the system Agent's row shows nothing");
-  const offer = button(noToken.get('agent_support')!);
-  assert.equal(offer.text.text, escapeMrkdwn('Give @support its own Slack app'));
-  assert.equal(offer.url, 'https://core.test/admin/agents/agent_support/slack-app');
-
-  const withToken = await (await service(t, { token: true })).homeRows(agents, { role: 'owner' });
-  const click = button(withToken.get('agent_support')!);
-  assert.equal(click.url, undefined, 'with a token the button is a plain click');
-  assert.equal(click.action_id, START_APP_ACTION);
-  assert.equal(click.value, 'agent_support');
-
-  for (const role of ['admin', 'member', undefined]) {
-    assert.equal((await (await service(t, { token: true })).homeRows(agents, { role })).size, 0, `${role ?? 'a guest'} sees nothing`);
-  }
-});
-
-test("without the Owner's user-group permission the offer becomes a line that sends the Owner to Admin's update", async (t) => {
+test('no Agent is offered its own Slack app from the Home tab, and an Agent with no app record reads nothing', async (t) => {
   const groupless: AgentSlackPresence = { requestedHandle: 'billing', normalizedHandle: 'billing', desiredState: 'unpublished', health: 'unpublished', avatar: { kind: 'generated', revision: 1, seed: 'b' } };
-  const agents = [agent('agent_support', 'user', presence()), agent('agent_billing', 'user', groupless)];
-  for (const token of [false, true]) {
-    const rows = await (await service(t, { token, permissionMissing: true })).homeRows(agents, { role: 'owner' });
-    const blocks = rows.get('agent_support')!;
-    assert.equal(text(blocks), escapeMrkdwn('Chickpea needs one more Slack permission to give @support its own Slack app. In Chickpea Admin, choose Update in Slack.'));
-    const link = button(blocks, 1);
-    assert.equal(link.text.text, 'Open Chickpea');
-    assert.equal(link.url, 'https://core.test/admin');
-    assert.equal(blocks.length, 2, 'no Give button');
-    assert.equal(button(rows.get('agent_billing')!).text.text, escapeMrkdwn('Give @billing its own Slack app'),
-      'an Agent with no user group to free is still offered the app');
+  const agents = [agent('agent_support', 'user', presence()), agent('agent_billing', 'user', groupless), agent(CHICKPEA_AGENT_ID, 'system', presence())];
+  for (const options of [{}, { token: true }, { permissionMissing: true }]) {
+    const reads: string[] = [];
+    const svc = await service(t, { ...options, onRead: (what) => reads.push(what) });
+    const rows = await svc.homeRows(agents, { role: 'owner' });
+    assert.equal(rows.size, 0, `no start row (${JSON.stringify(options)})`);
+    assert.deepEqual(reads, [], 'neither the token nor the permission is read');
   }
-  const held = await (await service(t, { token: true })).homeRows(agents, { role: 'owner' });
-  assert.equal(button(held.get('agent_support')!).action_id, START_APP_ACTION, 'with the permission the Owner can start again');
-  assert.equal((await (await service(t, { permissionMissing: true })).homeRows(agents, { role: 'admin' })).size, 0, 'only Owners see it');
 });
 
 test('each state reads as its own line, and a sequence stopped for two minutes offers Finish setting up', async (t) => {

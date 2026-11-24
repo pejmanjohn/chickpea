@@ -1,16 +1,18 @@
-import type {
-  ActiveAgentApp,
-  AgentSlackPresence,
-  AgentAppAttention,
-  AgentAppIcon,
-  AgentAppLifecycle,
-  AgentAppPresence,
-  AgentAppRecord,
-  AgentAppResume,
-  AgentAppSwitchProgress,
-  AgentPresenceDesiredState,
-  AgentPresenceHealth,
-  AttachedAgentApp,
+import {
+  AWAITING_OWN_APP,
+  type ActiveAgentApp,
+  type AgentSlackPresence,
+  type AgentAppAttention,
+  type AgentAppIcon,
+  type AgentAppLifecycle,
+  type AgentAppPresence,
+  type AgentAppRecord,
+  type AgentAppResume,
+  type AgentAppSwitchProgress,
+  type AgentPresenceDesiredState,
+  type AgentPresenceHealth,
+  type AttachedAgentApp,
+  appRecordOf,
 } from '../../config/types.ts';
 
 export { agentAppIsLive } from '../../config/types.ts';
@@ -48,6 +50,8 @@ export type AgentAppEvent =
   | { type: 'consent_undone'; at: number; owner: string }
   | { type: 'app_removed'; at: number }
   | { type: 'archive'; at: number; hasBotToken: boolean }
+  /** An Owner's Cancel before Allow: allowed only while the app waits for Allow, so a record that went live is never cancelled. */
+  | { type: 'cancel'; at: number; hasBotToken: boolean }
   | { type: 'uninstalled'; at: number }
   | { type: 'uninstall_refused'; at: number }
   /** Slack never answered the uninstall of a live app, so it is still installed. */
@@ -118,6 +122,35 @@ export function agentAppMoveJob(agentId: string, presence: AgentSlackPresence | 
     return { agentId, appId: presence.app.app.appId, teamId, ownerSlackUserId: presence.app.startedBy };
   }
   return undefined;
+}
+
+/**
+ * Where an Agent stands in Slack, as an Owner chooses what to do next:
+ * answering through Chickpea's user group, not in Slack yet, or somewhere on
+ * the way to, or at, its own app.
+ */
+export type AgentSlackState =
+  | { state: 'user_group' | 'not_in_slack' | 'creating' | 'waiting_for_allow' | 'cancelling' | 'switching' | 'own_app' }
+  | { state: 'needs_attention'; reason: AgentAppAttention };
+
+export function agentSlackState(presence: AgentSlackPresence): AgentSlackState {
+  const app = appRecordOf(presence);
+  const unattached = (): AgentSlackState => ({ state: presence.errorCode === AWAITING_OWN_APP ? 'not_in_slack' : 'user_group' });
+  if (!app) return unattached();
+  switch (app.state) {
+    case 'awaiting_consent':
+      return { state: 'waiting_for_allow' };
+    case 'active':
+      return { state: pendingSwitchStep(app) ? 'switching' : 'own_app' };
+    case 'needs_attention':
+      return { state: 'needs_attention', reason: app.reason };
+    case 'uninstalling':
+      // On a user group's presence this is a Cancel's removal, finished by the next Cancel or Start; the group answers
+      // throughout. An archive's uninstall of a live app is passing.
+      return { state: presence.kind === 'agent_app' ? 'switching' : 'cancelling' };
+    default:
+      return { state: 'creating' };
+  }
 }
 
 /** A `creating` record Slack never answered within the settle window; nothing creates again until Try again. */
@@ -250,6 +283,16 @@ export function transition(app: AgentAppLifecycle, event: AgentAppEvent): AgentA
         next: event.hasBotToken ? 'uninstall' : 'delete',
       };
     }
+    case 'cancel':
+      return app.state === 'awaiting_consent'
+        ? {
+            state: 'uninstalling',
+            at,
+            startedBy: app.startedBy,
+            app: app.app,
+            next: event.hasBotToken ? 'uninstall' : 'delete',
+          }
+        : WRONG_STATE;
     case 'uninstalled':
       return app.state === 'uninstalling' && app.next === 'uninstall' ? { ...app, at, next: 'delete' } : WRONG_STATE;
     case 'uninstall_refused':
