@@ -2623,20 +2623,22 @@ test("a schedule created, changed and run in an app Agent's own DM gets its reac
   assert.deepEqual((await h.stores.management.claimDueOutbox(Date.now() + 60_000, 10, Date.now() + 90_000)), [], 'every receipt was delivered');
 }));
 
-test("schedule receipts in a Channel or a DM Chickpea's bot is in come from Chickpea's bot as before; only a group DM it is not in gets the app's bot", async (t) => withHarness(t, async (h) => {
+test("schedule receipts in a Channel or a DM Chickpea's bot is in come from Chickpea's bot as before; only a Channel or group DM it is not in gets the app's bot", async (t) => withHarness(t, async (h) => {
   const relay = await nodeRelay(h);
   await scheduleAction(h, 'channel_changed', 'C1', '1900004710.000100', CHANGED, { pendingFirst: true });
   await scheduleAction(h, 'chickpea_dm_created', CHICKPEA_DM, '1900004710.000200', SAVED);
   await scheduleAction(h, 'finance_channel_ran', 'C1', '1900004710.000300', RUN_FAILED, { agentId: 'agent_finance' });
   await scheduleAction(h, 'group_dm_ran', 'G1', '1900004710.000400', RUN_FAILED);
+  await scheduleAction(h, 'private_channel_ran', 'CPRIV', '1900004710.000500', RUN_FAILED);
   await relay.drain();
   assert.deepEqual(scheduleReceipts(h, '1900004710.000100'), [['chat.postMessage', 'C1', AS_CHICKPEA], ['chat.postMessage', 'C1', AS_CHICKPEA]],
     "a Channel both bots are in keeps Chickpea's bot");
   assert.deepEqual(scheduleReceipts(h, '1900004710.000200'), [['reactions.add', CHICKPEA_DM, AS_CHICKPEA]], "Chickpea's own DM");
   assert.deepEqual(scheduleReceipts(h, '1900004710.000300'), [['chat.postMessage', 'C1', AS_CHICKPEA]], 'a user-group Agent');
   assert.deepEqual(scheduleReceipts(h, '1900004710.000400'), [['chat.postMessage', 'G1', OWN_BOT]], 'a group DM only the app\'s bot is in');
+  assert.deepEqual(scheduleReceipts(h, '1900004710.000500'), [['chat.postMessage', 'CPRIV', OWN_BOT]], 'a private Channel only the app\'s bot is in');
   assert.deepEqual(personaOnAppToken(h), []);
-}, { notMemberOf: { [MAIN_BOT]: ['G1'] } }));
+}, { privateChannels: ['CPRIV'], notMemberOf: { [MAIN_BOT]: ['G1', 'CPRIV'] } }));
 
 test("a user-group Agent's schedule receipt asks Slack nothing more, and without the port nothing is read for it", async (t) => withHarness(t, async (h) => {
   const env = withHostedSlackApp(h.base, MAIN_APP);
