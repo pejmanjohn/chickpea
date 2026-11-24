@@ -537,6 +537,7 @@ test('add_agent_to_channel keeps the Channel waiting for an Agent not in Slack y
     agentId: 'agent_research', channelId: 'C_SUPPORT', idempotencyKey: 'add-waiting',
   }));
   assert.equal(added.status, 'done');
+  assert.equal(added.summary, "Research isn't in Slack yet, so it doesn't answer in the Channel yet.", 'never "now answers in the Channel"');
   assert.ok(added.warnings.includes('Research joins #support once a workspace Owner adds it to Slack.'), JSON.stringify(added.warnings));
   assert.deepEqual((await f.config.listAgentChannelGrants(teamId, 'C_SUPPORT')).map(({ status }) => status), ['pending']);
 });

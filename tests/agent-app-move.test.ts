@@ -114,8 +114,11 @@ class FakeMainBot implements AgentAppTransport {
   }
   /** People who left a Channel, as `channel:user`; everyone else is in each Channel. */
   readonly left = new Set<string>();
+  /** Channels whose members Slack refuses to list, as it does for one it will not show this bot. */
+  readonly membersRefused = new Set<string>();
   async channelHasMember(channelId: string, userId: string) {
     const channel = CHANNELS.get(channelId);
+    if (this.membersRefused.has(channelId)) throw new SlackTransportError('conversations.members', 'fetch_members_failed');
     if (!channel || (channel.private && !this.in.has(channelId))) throw new SlackTransportError('conversations.members', 'channel_not_found');
     return !this.left.has(`${channelId}:${userId}`);
   }
@@ -979,6 +982,33 @@ test('an Agent born as its own app gets every Channel it was added to while wait
   assert.equal((await presenceOf(f))?.errorCode, undefined, 'in Slack now');
   await f.service.continueSwitch('agent_support');
   assert.deepEqual(f.bot.joined.sort(), ['CDEALS', 'CSALES'], 'a rerun repeats nothing');
+});
+
+// Defects caught: Slack refusing to say who is in one waiting Channel stopping the whole switch on every run, so the
+// new app joins no Channel and its Owner is never told.
+test('a waiting Channel whose members Slack refuses to list stays waiting, and the switch still finishes', async (t) => {
+  const f = await fixture(t, { userGroupId: undefined, grants: [] });
+  const created = await f.config.getAgent('agent_support');
+  await f.config.updateAgent(created.id, {
+    creatorMembershipId: 'm_creator',
+    slackPresence: { ...created.slackPresence!, desiredState: 'active', errorCode: AWAITING_OWN_APP },
+  }, created.revision);
+  for (const channelId of ['CSALES', 'CDEALS']) {
+    await f.config.putChannel({ workspaceId: TEAM, channelId, lifecycle: 'active' }, 0);
+    await f.config.putAgentChannelGrant({
+      workspaceId: TEAM, channelId, agentId: 'agent_support', status: 'pending', createdByMembershipId: 'm_creator', channelIsPrivate: false,
+    }, 0);
+  }
+  f.main.membersRefused.add('CDEALS');
+
+  assert.equal((await f.service.start('agent_support', OWNER)).kind, 'started');
+  await allow(f);
+  assert.equal(await f.service.continueSwitch('agent_support'), 'done');
+
+  const grants = Object.fromEntries((await f.config.listAgentChannelGrants()).map((grant) => [grant.channelId, grant.status]));
+  assert.deepEqual(grants, { CDEALS: 'pending', CSALES: 'active' });
+  assert.deepEqual(f.bot.joined, ['CSALES']);
+  assert.match(ownerMessages(f).join('\n'), /It joined <#CSALES>\./);
 });
 
 // Defects caught: an app-limit refusal shown as a broken app that needs attention, or the Agent left with a record.

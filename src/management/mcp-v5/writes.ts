@@ -373,7 +373,12 @@ export async function addAgentToChannel(
       }];
     },
   });
-  return changeResult(deps, context, result, { agentId: input.agentId });
+  // A Channel kept for an Agent not in Slack yet is not answered in yet; the outcome's warning says when it will be.
+  const waitingName = await notInSlackYet(deps, context, input.agentId);
+  return changeResult(deps, context, result, {
+    agentId: input.agentId,
+    ...(waitingName ? { summary: `${waitingName} isn't in Slack yet, so it doesn't answer in the Channel yet.` } : {}),
+  });
 }
 
 /** The server reads the Channel's revision: the preview is the whole new setting. */
