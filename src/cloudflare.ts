@@ -3843,7 +3843,7 @@ async function drainCloudflareManagementReceipts(
     wake: (request) => admitSetupWake(request, env, localHostAddressedAdmission(stores, env)),
     // An Agent app's switch job posts nothing itself: its drain runs the switch, against this store's own rows.
     deliver: (record) => isAgentAppSwitchJob(record.receipt)
-      ? continueAgentAppSwitch(env, record.receipt, agentAppStores, { finalAttempt: isFinalOutboxAttempt(record) })
+      ? continueAgentAppSwitch(env, record.receipt, agentAppStores, { finalAttempt: isFinalOutboxAttempt(record), outboxId: record.outboxId })
       : deliverManagementReceiptToSlack(record, {
         identity: stores.identity as unknown as IdentityStore,
         env,

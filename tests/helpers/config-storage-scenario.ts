@@ -284,6 +284,12 @@ const AGENTS: ReadonlyArray<readonly [AgentCreateInput, string, firstAsk?: strin
         installedAt: SCENARIO_NOW - HOUR,
         installedBy: OWNER,
         switchProgress: 'group_pending',
+        follows: {
+          manifestFingerprint: 'sha256:' + '1'.repeat(64),
+          avatarRevision: 1,
+          refused: { manifestFingerprint: 'sha256:' + '2'.repeat(64), avatarRevision: 1, reason: 'update_failed', at: SCENARIO_NOW - HOUR },
+          row: 2,
+        },
       },
       released: { userGroupId: 'S0SCENARIOCON', desiredState: 'active', health: 'healthy', answers: true },
     },

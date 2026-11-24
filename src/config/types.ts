@@ -283,11 +283,17 @@ export type AgentAppSwitchProgress = 'live' | 'group_pending' | 'bring_in_pendin
 
 /**
  * Why bringing a live app to match its Agent stopped: no usable configuration
- * token, Slack refused the change, or the app's own record would not let
- * Chickpea touch it. It holds for the Agent as it was then, so the app is
- * tried again once the Agent changes, a token is pasted, or an Owner asks.
+ * token; Slack refused the definition's content (`update_refused`), refused
+ * something else, or kept not answering (`update_failed`); the app is gone at
+ * Slack; or the app's own record would not let Chickpea touch it. It holds for
+ * the Agent as it was then, so the app is tried again once the Agent changes,
+ * a token is pasted, or an Owner asks. A missing token holds whatever the
+ * Agent becomes: only a token, or an Owner asking, can change that.
  */
-export type AgentAppFollowRefusal = 'config_token_needed' | 'update_refused' | 'record_refused';
+export type AgentAppFollowRefusal = AgentAppFollowAttention | 'app_not_found' | 'record_refused';
+
+/** The refusals an Owner can act on, shown beside a live app that keeps answering. */
+export type AgentAppFollowAttention = 'config_token_needed' | 'update_refused' | 'update_failed';
 
 /** One Agent as its app in Slack shows it: the fingerprint of the definition Chickpea makes for it, and its avatar revision. */
 export interface AgentAppFollowTarget {
@@ -297,14 +303,16 @@ export interface AgentAppFollowTarget {
 
 /**
  * What the app in Slack was last brought to match: the definition, once
- * Slack took it, and the avatar revision whose picture it set; and a refusal
- * with the target it was refused for. An app recorded without it, or without
- * a field, is brought to match on the next run.
+ * Slack took it, and the avatar revision whose picture it set; a refusal
+ * with the target it was refused for; and the number of the job row that
+ * last ran it, where arming its next job starts counting. An app recorded
+ * without it, or without a field, is brought to match on the next run.
  */
 export interface AgentAppFollows {
   manifestFingerprint?: string;
   avatarRevision?: number;
   refused?: AgentAppFollowTarget & { reason: AgentAppFollowRefusal; at: number };
+  row?: number;
 }
 
 export type AgentAppLifecycle =

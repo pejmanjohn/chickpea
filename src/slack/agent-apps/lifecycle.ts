@@ -3,7 +3,7 @@ import {
   type ActiveAgentApp,
   type AgentSlackPresence,
   type AgentAppAttention,
-  type AgentAppFollowRefusal,
+  type AgentAppFollowAttention,
   type AgentAppFollowTarget,
   type AgentAppIcon,
   type AgentAppLifecycle,
@@ -125,6 +125,8 @@ export interface AgentAppSwitchJob {
   appId: string;
   teamId: string;
   ownerSlackUserId: string;
+  /** The row that last ran this app's follow: every row before it has settled, so arming starts there. */
+  firstRow?: number;
 }
 
 /**
@@ -141,7 +143,8 @@ export function agentAppMoveJob(
   if (presence?.kind !== 'agent_app') return undefined;
   const { app } = presence;
   if (app.state === 'active' && (pendingSwitchStep(app) || followDue)) {
-    return { agentId, appId: app.app.appId, teamId, ownerSlackUserId: app.installedBy };
+    const firstRow = app.follows?.row;
+    return { agentId, appId: app.app.appId, teamId, ownerSlackUserId: app.installedBy, ...(firstRow !== undefined ? { firstRow } : {}) };
   }
   if (restorePending(presence) && presence.app.app) {
     return { agentId, appId: presence.app.app.appId, teamId, ownerSlackUserId: presence.app.startedBy };
@@ -151,15 +154,23 @@ export function agentAppMoveJob(
 
 /**
  * The step that brings a live app to match its Agent: its definition, then
- * its picture. Nothing while a refusal holds for this same target.
+ * its picture. Nothing while a refusal holds: for this same target, or a
+ * missing token for any.
  */
 export function agentAppFollowStep(app: ActiveAgentApp, target: AgentAppFollowTarget): 'definition' | 'picture' | undefined {
   const { follows } = app;
   const refused = follows?.refused;
+  if (refused?.reason === 'config_token_needed') return undefined;
   if (refused?.manifestFingerprint === target.manifestFingerprint && refused.avatarRevision === target.avatarRevision) return undefined;
   if (follows?.manifestFingerprint !== target.manifestFingerprint) return 'definition';
   if (follows?.avatarRevision !== target.avatarRevision) return 'picture';
   return undefined;
+}
+
+/** The refusal a live app's follow holds that an Owner can act on; the others are the operator's, or the app's removal's. */
+export function followAttention(app: ActiveAgentApp): AgentAppFollowAttention | undefined {
+  const reason = app.follows?.refused?.reason;
+  return reason === 'config_token_needed' || reason === 'update_refused' || reason === 'update_failed' ? reason : undefined;
 }
 
 /**
@@ -168,9 +179,11 @@ export function agentAppFollowStep(app: ActiveAgentApp, target: AgentAppFollowTa
  * the way to, or at, its own app.
  */
 export type AgentSlackState =
-  | { state: 'user_group' | 'not_in_slack' | 'creating' | 'waiting_for_allow' | 'cancelling' | 'switching' | 'own_app' }
+  | { state: 'user_group' | 'not_in_slack' | 'creating' | 'waiting_for_allow' | 'cancelling' | 'switching' }
+  /** `attention` when Slack would not bring the live app to match its Agent; it keeps answering under what it last took. */
+  | { state: 'own_app'; attention?: AgentAppFollowAttention }
   /** `cancellable` when the start stopped before Slack made any app, so Cancel withdraws it. */
-  | { state: 'needs_attention'; reason: AgentAppAttention | Exclude<AgentAppFollowRefusal, 'record_refused'>; cancellable?: true };
+  | { state: 'needs_attention'; reason: AgentAppAttention; cancellable?: true };
 
 export function agentSlackState(presence: AgentSlackPresence): AgentSlackState {
   const app = appRecordOf(presence);
@@ -184,9 +197,8 @@ export function agentSlackState(presence: AgentSlackPresence): AgentSlackState {
       return { state: 'waiting_for_allow' };
     case 'active': {
       if (pendingSwitchStep(app)) return { state: 'switching' };
-      // A live app Slack would not bring to match its Agent still answers, under what it last took.
-      const refused = app.follows?.refused?.reason;
-      return refused && refused !== 'record_refused' ? { state: 'needs_attention', reason: refused } : { state: 'own_app' };
+      const attention = followAttention(app);
+      return attention ? { state: 'own_app', attention } : { state: 'own_app' };
     }
     case 'needs_attention':
       // A Cancel's removal Slack refused to finish reads as the Cancel it is; the next Cancel or Start picks it up.

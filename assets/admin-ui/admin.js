@@ -5385,8 +5385,6 @@
         return { text: "Slack didn't finish " + name + "'s app. Choose Try again. If it keeps happening, check that your workspace allows new apps.", actions: [tryAgain] };
       case "urls_refused":
         return { text: "Slack didn't finish connecting " + name + "'s app to Chickpea. Wait a minute, then choose Try again.", actions: [tryAgain] };
-      case "update_refused":
-        return { text: "Slack didn't accept the changes to " + name + ", so its Slack app still shows its earlier name, handle or picture. " + name + " keeps answering. Change " + name + ", then choose Try again.", actions: [tryAgain] };
       case "slack_busy":
         return { text: "Slack is limiting how fast apps are set up. Wait a minute, then choose Try again.", actions: [tryAgain] };
       case "app_removed":
@@ -5395,6 +5393,21 @@
         return { text: "Removing " + name + "'s Slack app didn't finish. Choose Try again.", actions: [tryAgain] };
       default:
         return { text: name + "'s Slack app needs your attention. Open your messages with Chickpea for details.", actions: [] };
+    }
+  }
+
+  // A live app Slack would not bring to match its Agent: it keeps answering,
+  // so the row stays with the Agents that have their own app.
+  function slackAppsFollowAttention(agent) {
+    var name = agent.name;
+    var tryAgain = { label: "Try again", action: "slack-apps-start" };
+    switch (agent.slack.attention) {
+      case "config_token_needed":
+        return { text: "Chickpea needs a Slack token to update " + name + "'s Slack app. " + name + " keeps answering.", actions: [{ label: "Add a token", action: "slack-apps-token-open" }] };
+      case "update_refused":
+        return { text: "Slack didn't accept the changes to " + name + ", so its Slack app still shows its earlier name, handle or description. " + name + " keeps answering. Change " + name + ", then choose Try again.", actions: [tryAgain] };
+      default:
+        return { text: "Chickpea couldn't update " + name + "'s Slack app with its latest name, handle or picture. " + name + " keeps answering. Choose Try again.", actions: [tryAgain] };
     }
   }
 
@@ -5449,6 +5462,11 @@
       actions = attention.actions.map(function (button) { return slackAppsButtonHtml(agent, button); }).join("");
       // A start that stopped before Slack made any app can be withdrawn.
       if (agent.slack.cancellable) actions += slackAppsButtonHtml(agent, { label: "Cancel", action: "slack-apps-cancel", link: true });
+    } else if (stateName === "own_app" && agent.slack.attention) {
+      rowClass = " needs-attention";
+      var followAttention = slackAppsFollowAttention(agent);
+      sub = '<p class="slack-apps-row-note">' + esc(followAttention.text) + '</p>';
+      actions = followAttention.actions.map(function (button) { return slackAppsButtonHtml(agent, button); }).join("");
     } else if (stateName === "own_app") {
       actions = '<span class="slack-apps-own"><span class="dot"></span>Its own Slack app</span>';
     }

@@ -23,7 +23,7 @@ interface Row {
   name: string;
   handle: string;
   avatarUrl: string | null;
-  slack: { state: string; reason?: string; cancellable?: boolean };
+  slack: { state: string; reason?: string; attention?: string; cancellable?: boolean };
   channels: Array<{ id: string; name: string | null; private: boolean; status: string }>;
 }
 
@@ -572,6 +572,31 @@ test('each needs-attention reason reads as one sentence with the action that fix
     assert.deepEqual([...actions.matchAll(/>([^<>]+)<\/(?:button|a)>/g)].map((match) => match[1]), labels, reason);
     if (labels.includes('Try again')) assert.match(actions, /data-action="slack-apps-start" data-agent="agent_ops" aria-label="Try again, Ops"/, reason);
   }
+});
+
+// Defects caught: a live app whose update Slack refused listed as still answering through the Chickpea app, or told it
+// is unfinished.
+test('a live app Slack would not update stays with the Agents that have their own app, with one true sentence and its action', async () => {
+  const live = (id: string, name: string, attention: string) => row(id, name, name.toLowerCase(), 'own_app', { slack: { state: 'own_app', attention } });
+  const page = await harness({ api: apiState({ agents: [
+    row('agent_sales', 'Sales Desk', 'sales-desk', 'user_group'),
+    live('agent_token', 'Billing', 'config_token_needed'),
+    live('agent_refused', 'Helpdesk', 'update_refused'),
+    live('agent_failed', 'Legal', 'update_failed'),
+  ] }) });
+  const html = page.html();
+  const text = page.text();
+  const own = html.indexOf('>With their own Slack app<');
+  const chickpea = html.indexOf('>Still answering through the Chickpea app<');
+  assert.ok(own > chickpea && chickpea > 0);
+  for (const name of ['Billing', 'Helpdesk', 'Legal']) assert.ok(html.indexOf(`>${name}<`) > own, `${name} is listed as its own app`);
+  assert.match(text, /Chickpea needs a Slack token to update Billing&#39;s Slack app\. Billing keeps answering\./);
+  assert.match(html, /data-action="slack-apps-token-open" data-agent="agent_token"[^>]*>Add a token</);
+  assert.match(text, /Slack didn&#39;t accept the changes to Helpdesk, so its Slack app still shows its earlier name, handle or description\. Helpdesk keeps answering\. Change Helpdesk, then choose Try again\./);
+  assert.match(html, /data-action="slack-apps-start" data-agent="agent_refused"[^>]*>Try again</);
+  assert.match(text, /Chickpea couldn&#39;t update Legal&#39;s Slack app with its latest name, handle or picture\. Legal keeps answering\. Choose Try again\./);
+  assert.match(html, /data-action="slack-apps-start" data-agent="agent_failed"[^>]*>Try again</);
+  assert.doesNotMatch(text, /to finish|config_token_needed|update_refused|update_failed/);
 });
 
 test("a needs-attention row's Try again calls Start, which picks the record up where it stopped", async () => {

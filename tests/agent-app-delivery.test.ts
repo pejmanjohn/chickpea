@@ -86,6 +86,7 @@ import type { RoutineDefinition, RoutineRun, RoutineScheduleActionResult } from 
 import { recordDeliveredSlackAgentMessage } from '../src/slack/public-context.ts';
 import { SLACK_READ_MESSAGES, SlackReadError } from '../src/slack/reading/errors.ts';
 import { slackReadingService } from '../src/slack/reading/tools.ts';
+import { generatedAgentAvatarPng } from '../src/slack/agent-presence/avatar-assets.ts';
 import { AgentPresenceReconciler } from '../src/slack/agent-presence/reconciler.ts';
 import { AGENT_APP_BOT_SCOPES } from '../src/slack/scopes.ts';
 import { createDirectSlackTransport } from '../src/slack/transport/direct.ts';
@@ -464,7 +465,7 @@ async function drainMoves(h: Harness): Promise<string[]> {
         // The store's own rows, as its drain passes them: the main bot's credentials are read from these, not through the env.
         const local = { ...h.stores, settings: getSettingsStore(h.base) };
         const delivered = await continueAgentAppSwitch(h.base, record.receipt as ManagementAgentAppSwitchJob, local, {
-          finalAttempt: isFinalOutboxAttempt(record),
+          finalAttempt: isFinalOutboxAttempt(record), outboxId: record.outboxId,
         });
         refs.push(delivered.deliveryRef);
         return delivered;
@@ -495,9 +496,48 @@ test("a renamed Agent's own app is renamed by its job, armed at the save and run
   ], 'the picture is unchanged, so only the definition is sent');
   const renamed = await h.stores.config.getAgent('agent_support');
   const app = await appOf(h.stores);
-  assert.deepEqual(app?.state === 'active' && app.follows, agentAppFollow(renamed, AGENT_APP, HOST, 'inst_tenant_a').target);
+  assert.deepEqual(app?.state === 'active' && app.follows, { ...agentAppFollow(renamed, AGENT_APP, HOST, 'inst_tenant_a').target, row: 0 });
   await armUnfinishedAgentAppMoves(h.stores, Date.now(), h.base);
   assert.deepEqual(await drainMoves(h), [], 'an app that matches its Agent is armed no more');
+}));
+
+/** The rows of Support's app's job, each with its status. */
+async function supportJobRows(h: Harness): Promise<string[]> {
+  const rows: string[] = [];
+  for (let rearm = 0; rearm < 5; rearm += 1) {
+    const id = `agent_app_switch:agent_support:${AGENT_APP}${rearm ? `:${rearm}` : ''}`;
+    const row = await h.stores.management.getOutboxForOperation(id);
+    if (row) rows.push(`${rearm}:${row.status}`);
+  }
+  return rows;
+}
+
+// Defects caught: Admin's avatar upload or Agent edit never reaching a live app's job, or calling Slack inside the
+// request that saved it.
+test("Admin's avatar upload and Agent edit each arm one job for a live app, and call Slack only from the drain", async (t) => withHarness(t, async (h) => {
+  const rotated = { accessToken: 'xoxe.xoxp-1-config-access', refreshToken: 'xoxe-1-config-refresh', teamId: TEAM, expiresAt: Date.now() + 12 * 3_600_000 };
+  assert.equal(await saveConfigurationToken({ ...h.secrets(), slack: { rotate: async () => rotated } }, TEAM, 'xoxe-1-pasted-token-0000'), 'saved');
+  const admin = await ownerAdmin(h);
+  const png = Buffer.from(await generatedAgentAvatarPng('a new picture'));
+  const uploaded = await admin('/admin/api/agents/agent_support/avatar', {
+    method: 'PUT', body: JSON.stringify({ contentType: 'image/png', base64: png.toString('base64') }),
+  });
+  assert.equal(uploaded.status, 200, await uploaded.clone().text());
+  assert.deepEqual(h.calls, [], 'the upload asks nothing of Slack');
+  assert.deepEqual(await supportJobRows(h), ['0:pending'], 'one job');
+  assert.deepEqual(await drainMoves(h), ['agent_app_switch:done']);
+  assert.deepEqual(h.calls.map(({ method }) => method), ['apps.icon.set']);
+
+  h.calls.length = 0;
+  const agent = await h.stores.config.getAgent('agent_support');
+  const edited = await admin('/admin/api/agents/agent_support', {
+    method: 'PATCH', body: JSON.stringify({ expectedRevision: agent.revision, name: 'Helpdesk' }),
+  });
+  assert.equal(edited.status, 200, await edited.clone().text());
+  assert.deepEqual(h.calls, [], 'the edit asks nothing of Slack');
+  assert.deepEqual(await supportJobRows(h), ['0:delivered', '1:pending'], 'one more job, after the one that ran');
+  assert.deepEqual(await drainMoves(h), ['agent_app_switch:done']);
+  assert.deepEqual(h.calls.map(({ method }) => method), ['apps.manifest.export', 'apps.manifest.update']);
 }));
 
 async function appOf(stores: AppStores): Promise<AgentAppLifecycle | undefined> {

@@ -4591,8 +4591,10 @@
     },
     "AgentAppFollowRefusal": {
       "union": [
+        "\"app_not_found\"",
         "\"config_token_needed\"",
         "\"record_refused\"",
+        "\"update_failed\"",
         "\"update_refused\""
       ]
     },
@@ -4607,7 +4609,8 @@
             "manifestFingerprint": "string",
             "reason": "#AgentAppFollowRefusal"
           }
-        }
+        },
+        "row?": "number"
       }
     },
     "AgentAppIcon": {
