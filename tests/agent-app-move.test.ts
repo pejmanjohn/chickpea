@@ -789,7 +789,7 @@ test('Remove App turns the released group back on, then hands the handle back to
   const app = appRecordOf(presence);
   assert.deepEqual(app?.state === 'needs_attention' && [app.reason, app.app?.appId], ['app_removed', 'A0APP1'], 'the removed app stays attached');
   assert.deepEqual(ownerMessages(f).slice(1), [REMOVED_BACK], 'the Owner is told once');
-  assert.equal(f.calls.log.includes('updateUserGroup'), false, "a group that has the Agent's name and handle is not renamed");
+  assert.equal(f.calls.log.some((call: string) => call === 'updateUserGroup'), false, "a group that has the Agent's name and handle is not renamed");
   assert.equal(speakerFor(presence, { kind: 'chickpea_dm' }).kind, 'chickpea_as_agent');
 
   f.calls.log.length = 0;

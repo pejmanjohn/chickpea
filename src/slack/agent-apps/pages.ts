@@ -35,7 +35,9 @@ export interface AgentAppLinks {
 export type AgentAppMessageKind =
   | 'allow'
   | 'archived_left'
+  | 'archived_not_found'
   | 'cancel_left'
+  | 'cancel_not_found'
   | 'cancel_unfinished'
   | 'archived_installed'
   | 'permission_needed'
@@ -188,10 +190,22 @@ const DM_COPY = {
       `${name} is archived and its Slack app is removed from this workspace. Chickpea couldn't delete the app itself, so delete ${name} in Your Apps in Slack.`,
     buttons: () => [yourApps],
   },
+  /** Slack refused the delete and says the app does not exist, as when someone already deleted it in Slack. */
+  archived_not_found: {
+    text: ({ name }) =>
+      `${name} is archived. Chickpea couldn't find its Slack app to delete it. If ${name} still appears in Your Apps in Slack, you can delete it there.`,
+    buttons: () => [yourApps],
+  },
   /** An Owner cancelled before Allow and Chickpea could not delete the app it had created. */
   cancel_left: {
     text: ({ name }) =>
       `Chickpea couldn't delete the Slack app it made for ${name}, so delete ${name} in Your Apps in Slack. ${name} keeps answering as it did before.`,
+    buttons: () => [yourApps],
+  },
+  /** An Owner cancelled before Allow, and Slack refused the delete and says the app it made does not exist. */
+  cancel_not_found: {
+    text: ({ name }) =>
+      `Chickpea couldn't find the Slack app it made for ${name} to delete it. If ${name} still appears in Your Apps in Slack, you can delete it there. ${name} keeps answering as it did before.`,
     buttons: () => [yourApps],
   },
   /** An Owner cancelled before Allow and Slack refused to uninstall the app; the next Cancel or Try again picks it up. */

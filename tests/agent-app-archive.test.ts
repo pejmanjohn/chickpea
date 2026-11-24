@@ -28,34 +28,45 @@ const HOST: AgentSlackAppsHost = {
 };
 const ENV = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_a' });
 const ARCHIVED_LEFT = "Support is archived and its Slack app is removed from this workspace. Chickpea couldn't delete the app itself, so delete Support in Your Apps in Slack.";
+const ARCHIVED_NOT_FOUND = "Support is archived. Chickpea couldn't find its Slack app to delete it. If Support still appears in Your Apps in Slack, you can delete it there.";
 const ARCHIVED_INSTALLED = "Support is archived. Chickpea couldn't remove its Slack app from this workspace, so delete Support in Your Apps in Slack.";
 const WAITING: AttachedAgentApp = {
   state: 'awaiting_consent', at: NOW, startedBy: 'UOWNER', app: APP, icon: 'agent_avatar', allowDm: { channelId: 'D_UOWNER', ts: '1.0' },
 };
 const LIVE: AgentAppLifecycle = { state: 'active', at: NOW, app: APP, icon: 'agent_avatar', botUserId: 'UBOT', installedAt: NOW, installedBy: 'UOWNER' };
 
+/**
+ * Slack's app APIs. An app someone already deleted in Slack is answered as Slack answered for one: its bot token is
+ * gone, a delete of it is refused `no_permission`, and its export is `app_not_found`.
+ */
 class FakeSlack implements AgentAppSlackApi {
   rotations = 0;
   uninstalls: Array<{ clientId: string; clientSecret: string; botToken: string }> = [];
   deletes: Array<{ token: string; appId: string }> = [];
   refuseUninstall: string | undefined;
   refuseDelete: string | undefined;
+  deletedInSlack = false;
   async rotate() {
     this.rotations += 1;
     return { accessToken: `xoxe.xoxp-1-access-${this.rotations}`, refreshToken: `xoxe-1-refresh-${this.rotations}`, teamId: TEAM, expiresAt: NOW + 12 * 3_600_000 };
   }
   async create(): Promise<never> { throw new Error('not in this unit'); }
-  async definedBotScopes(): Promise<never> { throw new Error('not in this unit'); }
+  async definedBotScopes() {
+    if (this.deletedInSlack) throw new SlackRefused('apps.manifest.export', 'app_not_found');
+    return ['chat:write'];
+  }
   async update(): Promise<never> { throw new Error('not in this unit'); }
   async setIcon(): Promise<never> { throw new Error('not in this unit'); }
   async exchange(): Promise<never> { throw new Error('not in this unit'); }
   async botInstalled(): Promise<never> { throw new Error('not in this unit'); }
   async uninstall(input: { clientId: string; clientSecret: string; botToken: string }) {
+    if (this.deletedInSlack) return 'absent' as const;
     if (this.refuseUninstall) throw new SlackRefused('apps.uninstall', this.refuseUninstall);
     this.uninstalls.push(input);
     return 'removed' as const;
   }
   async delete(token: string, appId: string) {
+    if (this.deletedInSlack) throw new SlackRefused('apps.manifest.delete', 'no_permission');
     if (this.refuseDelete) throw new SlackRefused('apps.manifest.delete', this.refuseDelete);
     this.deletes.push({ token, appId });
     return 'deleted' as const;
@@ -395,6 +406,29 @@ test("an attached app whose delete Slack refuses is left for the Owner, who is t
   assert.deepEqual(f.retirements, ['uninstalled_left_definition']);
   assert.deepEqual(f.transport.posted.map((message) => message.text), [ARCHIVED_LEFT]);
   assert.equal(capture.length, 1);
+});
+
+// Defect caught: an Owner told an app is still in Your Apps and asked to delete it there, when someone had already
+// deleted it in Slack and Slack refused Chickpea's delete because it no longer exists.
+test('an app already deleted in Slack is archived with a message that says Chickpea could not find it, never that it is left to delete', async (t) => {
+  const f = await fixture(t);
+  f.slack.deletedInSlack = true;
+  const capture = captureSlackRefusals(t);
+  const archived = await f.reconciler.archive('agent_support');
+  assert.equal(archived.lifecycle, 'archived');
+  assert.deepEqual(capture.map(({ step, code }) => [step, code]), [['delete', 'no_permission']]);
+  assert.deepEqual(f.transport.posted.map((message) => message.text), [ARCHIVED_NOT_FOUND]);
+  assert.equal(await readAppSecrets(f.secrets, APP.appId), undefined);
+});
+
+// Defect caught: the not-found message sent for a delete Slack refused for an app it says still exists.
+test('a delete Slack refuses for an app it says exists still asks the Owner to delete it in Your Apps', async (t) => {
+  const f = await fixture(t);
+  f.slack.refuseDelete = 'no_permission';
+  captureSlackRefusals(t);
+  const archived = await f.reconciler.archive('agent_support');
+  assert.equal(archived.lifecycle, 'archived');
+  assert.deepEqual(f.transport.posted.map((message) => message.text), [ARCHIVED_LEFT]);
 });
 
 // Defects caught: the double-start guard reading the presence's kind, so a second start of an Agent whose app is

@@ -1682,6 +1682,7 @@ export class AgentSlackApps {
       // left for the Owner, and the record, if any, is left as it is. An app that was live was not uninstalled either.
       const stillInstalled = record.kind !== 'own' && Boolean(botUserId);
       let left = record.kind !== 'own';
+      let notFound = false;
       if (record.kind === 'own') {
         const { teamId } = await this.installation();
         try {
@@ -1692,11 +1693,14 @@ export class AgentSlackApps {
           if (error instanceof SlackRefused && error.code === 'ratelimited') return 'wait';
           if (!(error instanceof ConfigTokenNeeded || error instanceof SlackRefused)) throw error;
           left = true;
+          if (error instanceof SlackRefused) notFound = await this.appNotFound(teamId, app.appId);
         }
         await deleteAppSecrets(this.secrets, app.appId, record.revision);
       }
       if (left) this.leftForOwner.set(run.agent.id, stillInstalled ? 'left_for_owner' : 'uninstalled_left_definition');
-      const message = cancelRemoval(run) ? 'cancel_left' : stillInstalled ? 'archived_installed' : 'archived_left';
+      const message = cancelRemoval(run)
+        ? notFound ? 'cancel_not_found' : 'cancel_left'
+        : stillInstalled ? 'archived_installed' : notFound ? 'archived_not_found' : 'archived_left';
       // What happened to the app is already committed: a message Chickpea's bot cannot send (at tenant end it is often
       // gone) changes nothing about it.
       const tell = async () => {
@@ -1712,6 +1716,22 @@ export class AgentSlackApps {
       return { event: { type: 'deleted', at: run.now }, ...(left ? { after: tell } : {}) };
     },
   };
+
+  /**
+   * Whether Slack says the app does not exist. Slack refuses a delete of an
+   * app that no longer exists as it may refuse one of an app it will not let
+   * this token delete, so the export, which names a missing app, tells them
+   * apart. Any other answer is not proof the app is gone.
+   */
+  private async appNotFound(teamId: string, appId: string): Promise<boolean> {
+    try {
+      await withConfigurationToken(this.secrets, teamId, (token) => this.slack.definedBotScopes(token, appId));
+      return false;
+    } catch (error) {
+      if (!(error instanceof SlackRefused || error instanceof SlackUnavailable || error instanceof ConfigTokenNeeded)) throw error;
+      return error instanceof SlackRefused && error.code === 'app_not_found';
+    }
+  }
 
   /** Apply `event` to the Agent's record; a lost compare-and-set re-reads and re-applies when the state still allows it. */
   private async commit(
