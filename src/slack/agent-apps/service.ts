@@ -1426,9 +1426,7 @@ export class AgentSlackApps {
       ? kept ? handleNeedsAttention(restoredPresence(presence), kept, this.now()) : restoredPresence(presence)
       : normalizeAgentAppPresence({ ...presence, released: { ...released, enableRefused: true } });
     try {
-      return await this.deps.stores.config.updateAgent(
-        agent.id, { slackPresence, ...(groupBack && kept ? { lifecycle: 'needs_attention' as const } : {}) }, agent.revision,
-      );
+      return await this.deps.stores.config.updateAgent(agent.id, { slackPresence }, agent.revision);
     } catch (error) {
       // Another writer moved the record after the enable was sent: the driver reads it again and repeats the step.
       if (!(error instanceof AgentRevisionConflictError)) throw error;

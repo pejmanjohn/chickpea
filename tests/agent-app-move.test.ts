@@ -851,12 +851,11 @@ test("a handle Slack refuses the restored group leaves it the handle it has, whi
   assert.deepEqual(refusals.map(({ step, code }) => [step, code]), [['restore_handle', 'handle_already_exists']]);
   assert.equal(ownerMessages(f).at(-1), HANDLE_KEPT);
   assert.equal(ownerMessages(f).length, 2, 'the switch result, then this one, once');
-  const agent = await f.config.getAgent('agent_support');
-  const presence = agent.slackPresence;
+  const presence = await presenceOf(f);
   assert.deepEqual(presence && [presence.kind, presence.requestedHandle, presence.normalizedHandle, answeringUserGroupId(presence)],
     [undefined, 'helpdesk', 'helpdesk', 'S1'], 'the group answers, and the Agent keeps the handle it stores');
-  assert.deepEqual([agent.lifecycle, presence?.desiredState, presence?.health, presence?.errorCode, presence?.handleSuggestions],
-    ['needs_attention', 'active', 'needs_attention', 'handle_collision', ['helpdesk-team', 'helpdesk-2', 'helpdesk-3']]);
+  assert.deepEqual([presence?.desiredState, presence?.health, presence?.errorCode, presence?.handleSuggestions],
+    ['active', 'needs_attention', 'handle_collision', ['helpdesk-team', 'helpdesk-2', 'helpdesk-3']]);
   assert.deepEqual(appRecordOf(presence)?.state, 'needs_attention', 'the removed app stays attached, for Add to Slack');
 
   // The job is safe to repeat: nothing is renamed, turned on or told again, and the group is never turned off.
