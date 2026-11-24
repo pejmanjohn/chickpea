@@ -1,5 +1,5 @@
 import type { ConfigStore } from '../config/store.ts';
-import { appRecordOf, type CustomAgentConfig } from '../config/types.ts';
+import { answeringUserGroupId, appRecordOf, type CustomAgentConfig } from '../config/types.ts';
 import { agentSlackAppsHost } from './agent-apps/host.ts';
 
 /** The bot user an Agent's own Slack app posts as. */
@@ -26,13 +26,14 @@ function appBotUserId(agent: Pick<CustomAgentConfig, 'slackPresence'>): string |
 }
 
 /**
- * How a person addresses an Agent in Slack, for an exact command: its user
- * group, or its own app's bot while the host serves Agent apps.
+ * How a person addresses an Agent in Slack, for an exact command: the user
+ * group that answers for it (a released group while it still answers), or its
+ * own app's bot while the host serves Agent apps.
  */
 export function agentSlackAddress(
   agent: Pick<CustomAgentConfig, 'slackPresence'> | undefined,
 ): { agentUserGroupId?: string; agentBotUserId?: string } {
-  const userGroupId = agent?.slackPresence?.userGroupId;
+  const userGroupId = answeringUserGroupId(agent?.slackPresence);
   const botUserId = agent && agentSlackAppsHost() ? appBotUserId(agent) : undefined;
   return { ...(userGroupId ? { agentUserGroupId: userGroupId } : {}), ...(botUserId ? { agentBotUserId: botUserId } : {}) };
 }

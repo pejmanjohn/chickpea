@@ -149,7 +149,7 @@ test('a valid callback activates the app, stores the bot token, arms the switch,
   assert.equal((await readAppSecrets(f.secrets, APP.appId))?.secrets.botToken, 'xoxb-agent');
   assert.equal(app?.state === 'active' && app.switchProgress, 'group_pending', 'the switch is left to its job');
   assert.deepEqual(f.posted, [], 'the callback tells nobody: the switch job does, once it is done');
-  assert.deepEqual(f.armed, [{ agentId: 'agent_support', appId: APP.appId, installedAt: NOW, teamId: TEAM, ownerSlackUserId: OWNER }]);
+  assert.deepEqual(f.armed, [{ agentId: 'agent_support', appId: APP.appId, teamId: TEAM, ownerSlackUserId: OWNER }]);
   const presence = (await f.config.getAgent('agent_support')).slackPresence;
   assert.equal(presence?.health, 'healthy');
   assert.equal(presence?.desiredState, 'active');

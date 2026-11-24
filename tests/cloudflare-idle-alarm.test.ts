@@ -124,6 +124,7 @@ function newProbe(costs: PartCosts, duringDrain?: (armAt: (at: number) => void) 
     return {};
   };
   let gatewayDrains = 0;
+  let moveSweeps = 0;
   const timers = new ScriptedTimers(() => clock);
   const ProbeClass = vm.runInNewContext(compiled, {
     Date: { now: () => clock },
@@ -143,6 +144,7 @@ function newProbe(costs: PartCosts, duringDrain?: (armAt: (at: number) => void) 
     createPlatformProductTelemetry: () => ({}),
     localSettingsStore: () => ({}),
     localGatewayAppStores: () => ({ config: {} }),
+    armUnfinishedAgentAppMoves: async () => { moveSweeps += 1; },
     slackTurnExecutor: (env: Record<string, unknown>) => slackTurnExecutor(env, {}),
     MAX_TURN_DRAIN_BATCH: 16,
     ALARM_PENDING_PER_THREAD: 4,
@@ -184,6 +186,8 @@ function newProbe(costs: PartCosts, duringDrain?: (armAt: (at: number) => void) 
     blocksEviction: () => timers.blocksEviction(),
     /** How many times the alarm drained the gateway inbox, admitting turns. */
     gatewayDrains: () => gatewayDrains,
+    /** How many times the alarm re-armed unfinished Agent app moves. */
+    moveSweeps: () => moveSweeps,
     /** The platform fires the alarm: it is cleared, then alarm() runs. */
     async fire() {
       alarm = null;
@@ -651,10 +655,12 @@ test('idle firings run the retention sweep once per interval, not once per tick'
   store.advance(KEEP_WARM_TICK_MS);
   await store.fire();
   assert.equal(store.sweeps(), 1, 'a tick 20 s later skips the sweep');
+  assert.equal(store.moveSweeps(), 1, 'and with it the sweep for unfinished Agent app moves');
   assert.equal(store.records[1]?.retentionMs, 0, 'a skipped sweep reads 0');
   store.advance(RETENTION_SWEEP_INTERVAL_MS);
   await store.fire();
   assert.equal(store.sweeps(), 2, 'the interval re-opens it');
+  assert.equal(store.moveSweeps(), 2, 'which runs once per retention sweep');
   assert.equal(store.records[2]?.retentionMs, 300);
 });
 

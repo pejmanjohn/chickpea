@@ -14,6 +14,7 @@ import {
 import { agentRoutineDeletion } from '../src/routines/store.ts';
 import type { AgentSlackAppsHost } from '../src/slack/agent-apps/host.ts';
 import { AgentSlackApps, type AgentAppTransport } from '../src/slack/agent-apps/service.ts';
+import { agentAppMoveJob } from '../src/slack/agent-apps/lifecycle.ts';
 import { readAppSecrets, saveConfigurationToken, writeAppSecrets } from '../src/slack/agent-apps/secrets.ts';
 import type { AgentAppBotTransport, AgentAppSwitchJob } from '../src/slack/agent-apps/service.ts';
 import { type AgentAppSlackApi, SlackRefused } from '../src/slack/agent-apps/slack-api.ts';
@@ -21,6 +22,7 @@ import { AgentPresenceReconciler } from '../src/slack/agent-presence/reconciler.
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { AGENT_APP_BOT_SCOPES } from '../src/slack/scopes.ts';
 import { SlackTransportError, type SlackChannel, type SlackTransport, type SlackUserGroup } from '../src/slack/transport/types.ts';
+import { speakerFor } from '../src/slack/speaker.ts';
 import { escapeMrkdwn } from '../src/slack/ui/text.ts';
 
 const NOW = 1_800_000_000_000;
@@ -209,6 +211,7 @@ async function fixture(
   const clock = { now: NOW };
   const armed: AgentAppSwitchJob[] = [];
   const store = { config, crashOnSwitch: false };
+  const permission = { missing: false };
   const service = new AgentSlackApps({
     env: ENV,
     stores: {
@@ -227,12 +230,14 @@ async function fixture(
     host: HOST, transport: main, slack, keyring, now: () => clock.now,
     appBot: (botToken) => bot.forToken(botToken),
     armSwitch: async (job) => { armed.push(job); },
+    userGroupPermissionMissing: async () => permission.missing,
+    publicOrigin: async () => 'https://chickpea.test',
   });
   const reconciler = new AgentPresenceReconciler({
     config, transport: main as unknown as SlackTransport, announce: null, now: () => clock.now,
     agentApps: { retire: async (current) => (await service.retire(current)).agent, bringBotIn: async () => undefined },
   });
-  return { config, settings, secrets, slack, main, bot, calls, clock, armed, store, service, reconciler };
+  return { config, settings, secrets, slack, main, bot, calls, clock, armed, store, permission, service, reconciler };
 }
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
@@ -307,7 +312,7 @@ test('Allow makes the app live beside its still-answering group and arms the swi
   assert.equal(agentAppIsLive(presence), true, 'and a mention of its bot does too');
   assert.equal(progressOf(presence), 'group_pending');
   assert.equal((await readAppSecrets(f.secrets, 'A0APP1'))?.secrets.botToken, 'xoxb-agent-1');
-  assert.deepEqual(f.armed, [{ agentId: 'agent_support', appId: 'A0APP1', installedAt: NOW, teamId: TEAM, ownerSlackUserId: OWNER }]);
+  assert.deepEqual(f.armed, [{ agentId: 'agent_support', appId: 'A0APP1', teamId: TEAM, ownerSlackUserId: OWNER }]);
   assert.deepEqual(ownerMessages(f), []);
 });
 
@@ -618,3 +623,290 @@ test('an app retired before the switch turned its group off hands back the group
     [undefined, 'S1', 'active', 'healthy', undefined]);
   assert.equal(f.main.groups.get('S1')?.disabled, false);
 });
+
+const UNINSTALLED = { event: { type: 'app_uninstalled' } };
+const REMOVED_BACK = escapeMrkdwn("Support's Slack app was removed from this workspace. People can still mention @support, and Support answers through Chickpea. Choose Allow to add the app back.");
+const REMOVED_UNREACHABLE = escapeMrkdwn("Support's Slack app was removed from this workspace, so people can't mention @support for now. Support still answers through Chickpea in its threads and in messages with Chickpea.");
+
+/** A move through Allow and the whole switch: the app live and holding the handle, the group off. */
+async function switched(f: Fixture): Promise<void> {
+  await f.service.start('agent_support', OWNER);
+  await allow(f);
+  assert.equal(await f.service.continueSwitch('agent_support'), 'done');
+}
+
+/** Hold the main bot's next disable at `point` (before Slack acts, or after it confirmed) until released. */
+function holdDisable(f: Fixture, point: 'before_slack' | 'after_slack') {
+  const disable = f.main.disableUserGroup.bind(f.main);
+  let release!: () => void;
+  let reached!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const atHold = new Promise<void>((resolve) => { reached = resolve; });
+  let first = true;
+  f.main.disableUserGroup = async (id) => {
+    if (!first) return disable(id);
+    first = false;
+    if (point === 'before_slack') { reached(); await held; return disable(id); }
+    const done = await disable(id);
+    reached();
+    await held;
+    return done;
+  };
+  return { release, atHold };
+}
+
+function releasedOf(presence: AgentSlackPresence | undefined) {
+  return presence?.kind === 'agent_app' ? presence.released : undefined;
+}
+
+// Defect caught: a disable Slack confirmed while the app was being removed dropped from the record, which then says
+// the group answers when Slack has turned it off.
+test('a disable Slack confirmed while Remove App landed is recorded as off, whatever the app did meanwhile', async (t) => {
+  const f = await fixture(t);
+  await f.service.start('agent_support', OWNER);
+  await allow(f);
+  const hold = holdDisable(f, 'after_slack');
+  const enable = f.main.enableUserGroup.bind(f.main);
+  f.main.enableUserGroup = async () => { throw new SlackTransportError('usergroups.enable', 'ratelimited'); };
+  const run = f.service.continueSwitch('agent_support');
+  await hold.atHold;
+  assert.equal(await f.service.end('A0APP1', UNINSTALLED), 'ended');
+  assert.equal(releasedOf(await presenceOf(f))?.answers, true, 'Remove App landed before the disable was recorded');
+  hold.release();
+  await assert.rejects(run, SlackTransportError, 'the restore that follows waits for Slack');
+  assert.equal(f.main.groups.get('S1')?.disabled, true);
+  assert.equal(releasedOf(await presenceOf(f))?.answers, false, 'the record says what Slack did: the group is off');
+  assert.equal(answeringUserGroupId(await presenceOf(f)), undefined);
+
+  f.main.enableUserGroup = enable;
+  await f.service.continueSwitch('agent_support');
+  assert.equal(f.main.groups.get('S1')?.disabled, false);
+  assert.equal(answeringUserGroupId(await presenceOf(f)), 'S1');
+});
+
+// Defect caught: a disable that reaches Slack after a restore turned the group back on, leaving Slack's group off while
+// the record says it answers.
+test('a disable that reaches Slack after the restore turned the group back on is undone, and the Owner is told once', async (t) => {
+  const f = await fixture(t);
+  await f.service.start('agent_support', OWNER);
+  await allow(f);
+  const hold = holdDisable(f, 'before_slack');
+  const run = f.service.continueSwitch('agent_support');
+  await hold.atHold;
+  await f.service.end('A0APP1', UNINSTALLED);
+  await f.service.continueSwitch('agent_support');
+  assert.equal(answeringUserGroupId(await presenceOf(f)), 'S1', 'the restore finished first');
+  hold.release();
+  await run;
+  assert.equal(f.main.groups.get('S1')?.disabled, false, 'Slack has the group on');
+  const presence = await presenceOf(f);
+  assert.deepEqual(presence && [presence.kind, answeringUserGroupId(presence), appRecordOf(presence)?.state], [undefined, 'S1', 'needs_attention']);
+  assert.deepEqual(ownerMessages(f), [REMOVED_BACK]);
+});
+
+// Defects caught: Remove App leaving the Agent with its group off and no working mention; the presence returned to
+// its group before Slack confirmed it is on; the removed app's record lost, so Allow cannot add it back.
+test('Remove App turns the released group back on, then hands the handle back to it with the removed app attached', async (t) => {
+  const f = await fixture(t);
+  await switched(f);
+  f.armed.length = 0;
+  f.calls.log.length = 0;
+  assert.equal(await f.service.end('A0APP1', UNINSTALLED), 'ended');
+  assert.deepEqual(f.calls.log, [], 'the lifecycle event does nothing in Slack itself');
+  assert.deepEqual(f.armed, [{ agentId: 'agent_support', appId: 'A0APP1', teamId: TEAM, ownerSlackUserId: OWNER }], 'it arms the move job');
+  assert.equal(releasedOf(await presenceOf(f))?.userGroupId, 'S1', 'until Slack confirms, the app holds the handle');
+
+  assert.equal(await f.service.continueSwitch('agent_support'), 'not_live');
+  assert.equal(f.main.groups.get('S1')?.disabled, false);
+  const presence = await presenceOf(f);
+  assert.equal(presence?.kind, undefined, 'a user-group presence again');
+  assert.equal(answeringUserGroupId(presence), 'S1', 'a mention of @support routes to Support');
+  assert.deepEqual(presence && [presence.desiredState, presence.health], ['active', 'healthy']);
+  const app = appRecordOf(presence);
+  assert.deepEqual(app?.state === 'needs_attention' && [app.reason, app.app?.appId], ['app_removed', 'A0APP1'], 'the removed app stays attached');
+  assert.deepEqual(ownerMessages(f).slice(1), [REMOVED_BACK], 'the Owner is told once');
+  assert.equal(speakerFor(presence, { kind: 'chickpea_dm' }).kind, 'chickpea_as_agent');
+
+  f.calls.log.length = 0;
+  await f.service.continueSwitch('agent_support');
+  assert.deepEqual(f.calls.log, [], 'a finished restore does nothing again');
+  assert.equal(agentAppMoveJob('agent_support', presence, TEAM), undefined, 'and leaves nothing for the sweep');
+
+  // Allow adds the same app back, and the switch turns the group off again.
+  assert.equal((await allow(f)).status, 303);
+  assert.equal(await f.service.continueSwitch('agent_support'), 'done');
+  assert.equal(agentAppIsLive(await presenceOf(f)), true);
+  assert.deepEqual(f.slack.created, ['A0APP1'], 'no second app');
+  assert.equal(f.main.groups.get('S1')?.disabled, true);
+});
+
+// Defects caught: a refused re-enable retried forever or told on every try; the Owner left without the button or the
+// pointer that fixes it; the Agent not answering through Chickpea meanwhile.
+test('a re-enable Slack refuses leaves the Agent answering through Chickpea, tells the Owner once with Allow and Update in Slack, and waits for an Owner', async (t) => {
+  const f = await fixture(t);
+  await switched(f);
+  await f.service.end('A0APP1', UNINSTALLED);
+  f.main.ownerPermission = false;
+  f.permission.missing = true;
+  t.mock.method(console, 'warn', () => undefined);
+  assert.equal(await f.service.continueSwitch('agent_support'), 'not_live');
+  const presence = await presenceOf(f);
+  assert.equal(presence?.kind, 'agent_app', 'the group is not handed the handle while Slack has it off');
+  assert.deepEqual(releasedOf(presence), { userGroupId: 'S1', desiredState: 'active', health: 'healthy', answers: false, enableRefused: true });
+  assert.equal(speakerFor(presence, { kind: 'chickpea_dm' }).kind, 'chickpea_as_agent', "it answers in Chickpea's DM");
+  assert.equal(speakerFor(presence, { kind: 'channel', appBotIsMember: true, chickpeaBotIsMember: true }).kind, 'chickpea_as_agent', 'and in threads where Chickpea is');
+  const told = f.main.posted.slice(-1)[0]!;
+  assert.match(told.text, new RegExp(escapeRegExp(REMOVED_UNREACHABLE)));
+  assert.match(told.text, /Update in Slack/);
+  assert.equal(ownerMessages(f).length, 2, 'the switch result, then this one');
+  assert.equal(agentAppMoveJob('agent_support', presence, TEAM), undefined, 'the sweep arms nothing for it');
+  f.calls.log.length = 0;
+  await f.service.continueSwitch('agent_support');
+  assert.deepEqual(f.calls.log, [], 'nothing loops');
+
+  // The Owner adds the permission, then chooses Try again.
+  f.main.ownerPermission = true;
+  f.permission.missing = false;
+  f.armed.length = 0;
+  await f.service.retry('agent_support', OWNER);
+  assert.equal(f.armed.length, 1, 'Try again arms the restore');
+  await f.service.continueSwitch('agent_support');
+  assert.equal(f.main.groups.get('S1')?.disabled, false);
+  assert.equal(answeringUserGroupId(await presenceOf(f)), 'S1');
+  assert.equal(ownerMessages(f).at(-1), REMOVED_BACK);
+});
+
+// Defect caught: the mark of a refused restore kept on the app an Owner then allowed again, so that app's next removal
+// armed no job, turned no group on and told no one.
+test('a restore Slack refused does not stop the next one: Allow adds the app back, and its next removal is restored and told', async (t) => {
+  const f = await fixture(t);
+  await switched(f);
+  await f.service.end('A0APP1', UNINSTALLED);
+  f.main.ownerPermission = false;
+  f.permission.missing = true;
+  t.mock.method(console, 'warn', () => undefined);
+  await f.service.continueSwitch('agent_support');
+  assert.equal(releasedOf(await presenceOf(f))?.enableRefused, true);
+
+  assert.equal((await allow(f)).status, 303);
+  assert.equal(await f.service.continueSwitch('agent_support'), 'done');
+  assert.equal(releasedOf(await presenceOf(f))?.enableRefused, undefined, 'the refusal went with the removal it followed');
+
+  f.main.ownerPermission = true;
+  f.permission.missing = false;
+  f.clock.now += 60_000;
+  f.armed.length = 0;
+  assert.equal(await f.service.end('A0APP1', UNINSTALLED), 'ended');
+  assert.equal(f.armed.length, 1, 'the second removal arms its restore');
+  await f.service.continueSwitch('agent_support');
+  assert.equal(f.main.groups.get('S1')?.disabled, false);
+  assert.equal(answeringUserGroupId(await presenceOf(f)), 'S1');
+  assert.equal(ownerMessages(f).at(-1), REMOVED_BACK);
+});
+
+// Defect caught: a refused re-enable recorded as a group that no longer answers when Slack never turned it off (its
+// disable was refused the same way), so mentions of a group people still see stop routing and the Owner is told
+// they can't mention it.
+test('a refused re-enable of a group Slack never turned off leaves it answering, and the Owner is told people can still mention it', async (t) => {
+  const f = await fixture(t);
+  await f.service.start('agent_support', OWNER);
+  await allow(f);
+  f.main.ownerPermission = false;
+  f.permission.missing = true;
+  t.mock.method(console, 'warn', () => undefined);
+  assert.equal(await f.service.continueSwitch('agent_support'), 'done');
+  assert.equal(answeringUserGroupId(await presenceOf(f)), 'S1', 'the refused disable left the group answering');
+
+  await f.service.end('A0APP1', UNINSTALLED);
+  assert.equal(await f.service.continueSwitch('agent_support'), 'not_live');
+  assert.equal(f.main.groups.get('S1')?.disabled, false, 'Slack still has the group on');
+  const presence = await presenceOf(f);
+  assert.equal(presence?.kind, 'agent_app', 'Slack confirmed nothing, so the handle is not handed back');
+  assert.equal(answeringUserGroupId(presence), 'S1', 'and a mention of @support still routes to Support');
+  assert.equal(ownerMessages(f).at(-1), REMOVED_BACK);
+  assert.equal(agentAppMoveJob('agent_support', presence, TEAM), undefined, 'the sweep arms nothing for it');
+});
+
+test('the Owner message for a refused re-enable carries Allow, Open Chickpea and Try again', async (t) => {
+  const f = await fixture(t);
+  await switched(f);
+  await f.service.end('A0APP1', UNINSTALLED);
+  f.main.ownerPermission = false;
+  f.permission.missing = true;
+  t.mock.method(console, 'warn', () => undefined);
+  const posts: unknown[] = [];
+  const post = f.main.postMessage.bind(f.main);
+  f.main.postMessage = async (input) => { posts.push(input); return post(input); };
+  await f.service.continueSwitch('agent_support');
+  const actions = (posts[0] as { blocks: Array<{ type: string; elements?: Array<{ text: { text: string }; url?: string; action_id: string }> }> })
+    .blocks.find((block) => block.type === 'actions');
+  assert.deepEqual(actions?.elements?.map((button) => button.text.text), ['Allow Support in Slack', 'Open Chickpea', 'Try again']);
+  assert.equal(actions?.elements?.[1]?.url, 'https://chickpea.test/admin');
+});
+
+test('Remove App of an Agent that never had a user group gives back its handle-less presence, with the app attached', async (t) => {
+  const f = await fixture(t, { userGroupId: undefined });
+  await switched(f);
+  await f.service.end('A0APP1', UNINSTALLED);
+  f.calls.log.length = 0;
+  await f.service.continueSwitch('agent_support');
+  assert.equal(f.calls.log.some((name) => name.endsWith('UserGroup')), false, 'no group to turn on');
+  const presence = await presenceOf(f);
+  assert.deepEqual(presence && [presence.kind, presence.userGroupId, presence.desiredState, appRecordOf(presence)?.state],
+    [undefined, undefined, 'unpublished', 'needs_attention']);
+  assert.equal(ownerMessages(f).at(-1), `${REMOVED_UNREACHABLE} ${escapeMrkdwn('Choose Allow to add the app back.')}`);
+});
+
+// Defects caught: a Remove App whose restore was never armed, or spent its tries, left for a person; a restore armed
+// again by the sweep after Slack refused it, so it loops and tells the Owner again.
+test('the move job a presence still owes: a switch with steps left, or a removed app whose group is not back', async (t) => {
+  const f = await fixture(t);
+  await f.service.start('agent_support', OWNER);
+  assert.equal(agentAppMoveJob('agent_support', await presenceOf(f), TEAM), undefined, 'waiting for Allow owes nothing');
+  await allow(f);
+  const job = { agentId: 'agent_support', appId: 'A0APP1', teamId: TEAM, ownerSlackUserId: OWNER };
+  assert.deepEqual(agentAppMoveJob('agent_support', await presenceOf(f), TEAM), job, 'a switch with steps left');
+  await f.service.continueSwitch('agent_support');
+  assert.equal(agentAppMoveJob('agent_support', await presenceOf(f), TEAM), undefined, 'a finished switch');
+  await f.service.end('A0APP1', UNINSTALLED);
+  assert.deepEqual(agentAppMoveJob('agent_support', await presenceOf(f), TEAM), job, 'a removed app whose group is not back');
+});
+
+// Defects caught: the Owner's result message, refused by Slack, retried until the job fails, so the switch stops one
+// step short for good; and the Home row then hiding what the message would have said.
+test("a result message Slack refuses is given up with one operator line, the switch finishes, and the Owner's Home row says what it would have", async (t) => {
+  const f = await fixture(t);
+  await f.service.start('agent_support', OWNER);
+  await allow(f);
+  f.main.openDirectConversation = async () => { throw new SlackTransportError('conversations.open', 'user_not_found'); };
+  const lines: unknown[] = [];
+  t.mock.method(console, 'warn', (line: unknown) => { lines.push(line); });
+  assert.equal(await f.service.continueSwitch('agent_support'), 'done');
+  const presence = await presenceOf(f);
+  assert.equal(progressOf(presence), 'done');
+  assert.equal(f.main.groups.get('S1')?.disabled, true);
+  assert.deepEqual(f.bot.joined.sort(), ['CDEALS', 'CSALES']);
+  assert.deepEqual(lines, [{ event: 'chickpea.agent_app.switch_owner_not_told', agentId: 'agent_support', appId: 'A0APP1', error: 'user_not_found' }]);
+  const row = JSON.stringify((await f.service.homeRows([await f.config.getAgent('agent_support')], { role: 'owner' })).get('agent_support'));
+  assert.ok(row.includes(JSON.stringify(`${OPENING} In <#GPRIV> ${THROUGH_CHICKPEA}`).slice(1, -1)), row);
+  assert.doesNotMatch(row, /agent_app_finish/);
+});
+
+test("a result message that keeps failing is retried by the job, and given up on its last try so the switch still finishes", async (t) => {
+  const f = await fixture(t);
+  await f.service.start('agent_support', OWNER);
+  await allow(f);
+  f.main.postMessage = async () => { throw new SlackTransportError('chat.postMessage', 'ratelimited'); };
+  await assert.rejects(() => f.service.continueSwitch('agent_support'), SlackTransportError);
+  assert.equal(progressOf(await presenceOf(f)), 'owner_told');
+  t.mock.method(console, 'warn', () => undefined);
+  assert.equal(await f.service.continueSwitch('agent_support', { finalAttempt: true }), 'done');
+  assert.equal(progressOf(await presenceOf(f)), 'done');
+  const row = JSON.stringify((await f.service.homeRows([await f.config.getAgent('agent_support')], { role: 'owner' })).get('agent_support'));
+  assert.match(row, /is now its own Slack app/);
+});
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+

@@ -7,6 +7,7 @@ export {
   agentAppPlacementFacts,
   agentAppPresenceHooks,
   agentDmPlacementFacts,
+  armUnfinishedAgentAppMoves,
   continueAgentAppSwitch,
   handleAgentAppHomeAction,
   ownBotClient,

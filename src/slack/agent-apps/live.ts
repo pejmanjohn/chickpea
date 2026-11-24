@@ -23,9 +23,9 @@ import { appRecordOf, type CustomAgentConfig } from '../../config/types.ts';
 import type { SlackSpeaker } from '../speaker.ts';
 import { agentSlackAppsHost, type AgentAppRetirement, type AgentSlackAppIngress, type AgentSlackAppsHost } from './host.ts';
 import { FINISH_APP_ACTION, START_APP_ACTION, TRY_AGAIN_ACTION } from './pages.ts';
-import { agentAppIsLive, agentAppRecord } from './lifecycle.ts';
+import { type AgentAppSwitchJob, agentAppIsLive, agentAppMoveJob, agentAppRecord } from './lifecycle.ts';
 import { readOwnAppSecrets, type SecretDeps } from './secrets.ts';
-import type { AgentAppSwitchJob, AgentAppTransport, AgentSlackApps } from './service.ts';
+import type { AgentAppTransport, AgentSlackApps } from './service.ts';
 import { createAgentAppSlackApi, logSlackRefusal } from './slack-api.ts';
 import { loadCredentialKeyring } from '../credential-keyring.ts';
 import { slackPlatformErrorCode } from '../errors.ts';
@@ -384,13 +384,13 @@ export async function liveAgentSlackApps(
 }
 
 /**
- * The switch job as an outbox row: one per app install, so a second Allow of
- * the same install arms nothing new, and the drain that claims it runs the
- * switch's remaining steps. `rearm` numbers the rows that follow one that
- * settled with the switch unfinished.
+ * The move's job as an outbox row, numbered per Agent app, so one app's
+ * switch and its restore after a Remove App share one sequence and never run
+ * side by side; the drain that claims it runs the steps the presence still
+ * owes. `rearm` numbers the rows that follow one that settled.
  */
 export function agentAppSwitchOutbox(job: AgentAppSwitchJob, at: number, rearm = 0): ManagementReceiptOutboxRecord {
-  const outboxId = `agent_app_switch:${job.agentId}:${job.appId}:${job.installedAt}${rearm ? `:${rearm}` : ''}`;
+  const outboxId = `agent_app_switch:${job.agentId}:${job.appId}${rearm ? `:${rearm}` : ''}`;
   return {
     outboxId,
     operationId: outboxId,
@@ -405,11 +405,11 @@ export function agentAppSwitchOutbox(job: AgentAppSwitchJob, at: number, rearm =
 }
 
 /**
- * Arm the switch job for an install whose switch has steps left. The outbox
- * keeps a row it already has, settled or not, so a row that settled without
- * finishing the switch (every attempt failed, or it ran while the app was not
- * live) is followed by a new one. A row still waiting or running is left
- * alone: one install never has two unsettled jobs.
+ * Arm the job for an Agent app whose move has steps left. The outbox keeps a
+ * row it already has, settled or not, so a row that settled without finishing
+ * (every attempt failed, or it ran before the step was due) is followed by a
+ * new one. A row still waiting or running is left alone: one app never has
+ * two unsettled jobs, and the one it has runs whatever the presence owes.
  */
 export async function armAgentAppSwitch(
   management: Pick<AppStores['management'], 'putOutbox'>,
@@ -422,16 +422,41 @@ export async function armAgentAppSwitch(
   }
 }
 
-/** The drain's run of one switch job. Without the port it fails and is retried: nothing here can drive an Agent app. */
+/**
+ * The drain's run of one move job. Without the port it fails and is retried:
+ * nothing here can drive an Agent app. `finalAttempt` is the outbox's last
+ * try, after which the Owner's message is given up rather than the move.
+ */
 export async function continueAgentAppSwitch(
   env: PlatformEnv | undefined,
   job: ManagementAgentAppSwitchJob,
   local?: AgentAppStores,
+  options: { finalAttempt?: boolean } = {},
 ): Promise<{ deliveryRef: string }> {
   const host = agentSlackAppsHost();
   if (!host) throw Object.assign(new Error('Agent apps are not served here.'), { name: 'agent_apps_unavailable' });
-  const outcome = await (await liveAgentSlackApps(env, host, local)).continueSwitch(job.agentId);
+  const outcome = await (await liveAgentSlackApps(env, host, local)).continueSwitch(job.agentId, options);
   return { deliveryRef: `agent_app_switch:${outcome}` };
+}
+
+/**
+ * The state store's sweep: arm the job of every Agent whose move has a step
+ * left and no job to run it, so a move cut off before its job was armed, or
+ * whose job spent every try, finishes without a person. Arming leaves a
+ * waiting or running row alone, so a sweep never starts a second run.
+ */
+export async function armUnfinishedAgentAppMoves(
+  stores: { config: Pick<AppStores['config'], 'listAgents' | 'listWorkspaceInstallations'>; management: Pick<AppStores['management'], 'putOutbox'> },
+  at: number,
+): Promise<void> {
+  if (!agentSlackAppsHost()) return;
+  const workspace = (await stores.config.listWorkspaceInstallations())[0];
+  if (!workspace) return;
+  const teamId = workspace.teamId ?? workspace.workspaceId;
+  for (const agent of await stores.config.listAgents()) {
+    const job = agentAppMoveJob(agent.id, agent.slackPresence, teamId);
+    if (job) await armAgentAppSwitch(stores.management, job, at);
+  }
 }
 
 /**

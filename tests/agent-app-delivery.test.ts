@@ -20,11 +20,13 @@ import {
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import type { EncryptedCredentialStore } from '../src/config/settings-store.ts';
 import { closeNodeStateStores, getSettingsStore, resolveStores, type AppStores, type PlatformEnv } from '../src/config/state-backend.ts';
-import { AWAITING_OWN_APP, type AgentAppLifecycle, type CustomAgentConfig } from '../src/config/types.ts';
+import { AWAITING_OWN_APP, type AgentAppLifecycle, type CustomAgentConfig, appRecordOf } from '../src/config/types.ts';
 import { createLiveWorkspaceManagementService } from '../src/management/live-service.ts';
 import { deliverManagementReceiptToSlack, formatManagementSetupReceipt } from '../src/management/receipts.ts';
 import { invokeWorkspaceManagementTool } from '../src/management/tool-adapter.ts';
-import type { ManagementActorContext } from '../src/management/types.ts';
+import { drainManagementReceiptOutbox, isAgentAppSwitchJob, isFinalOutboxAttempt } from '../src/management/receipts.ts';
+import type { ManagementStore } from '../src/management/store.ts';
+import type { ManagementActorContext, ManagementAgentAppSwitchJob } from '../src/management/types.ts';
 import {
   type AgentSlackAppsHost,
   agentSlackAppIngress,
@@ -36,6 +38,8 @@ import {
 import {
   agentAppBotCredentials,
   agentAppPresenceHooks,
+  armUnfinishedAgentAppMoves,
+  continueAgentAppSwitch,
   createAgentSlackAppRoutes,
   withAgentAppExecution,
 } from '../src/slack/agent-apps/index.ts';
@@ -113,6 +117,8 @@ interface SlackCall { method: string; token: string | undefined; body: URLSearch
 interface Harness {
   stores: AppStores;
   calls: SlackCall[];
+  /** The user groups Slack has turned off. */
+  groupsOff: Set<string>;
   base: PlatformEnv;
   delivery: PlatformEnv;
   installedAt: number;
@@ -223,6 +229,8 @@ async function withHarness(
   await writeAppSecrets(secrets(), AGENT_APP, support.id, { clientSecret: 'client-secret', signingSecret: AGENT_SECRET, botToken: AGENT_BOT }, null);
 
   const calls: SlackCall[] = [];
+  // Support's app holds its handle, so its released group is off in Slack.
+  const groupsOff = new Set(['SSUPPORT']);
   const outside = new Map(Object.entries(options.notMemberOf ?? {}).map(([token, channels]) => [token, new Set(channels)]));
   // Who posted each message, so an edit by another token is refused as Slack refuses it.
   const posters = new Map<string, string | undefined>();
@@ -271,6 +279,15 @@ async function withHarness(
     const edited = body.get('ts');
     if (method === 'chat.update' && edited && posters.has(`${channel} ${edited}`) && posters.get(`${channel} ${edited}`) !== token) {
       return Response.json({ ok: false, error: 'cant_update_message' });
+    }
+    // As in Slack, a user group is turned off or on once; a second time is refused as already so.
+    if (method === 'usergroups.enable' || method === 'usergroups.disable') {
+      const id = body.get('usergroup') ?? '';
+      const disable = method === 'usergroups.disable';
+      if (groupsOff.has(id) === disable) return Response.json({ ok: false, error: disable ? 'already_disabled' : 'already_enabled' });
+      if (disable) groupsOff.add(id);
+      else groupsOff.delete(id);
+      return Response.json({ ok: true, usergroup: { id, name: id, handle: id.slice(1).toLowerCase(), is_disabled: disable } });
     }
     if (method === 'conversations.join') outside.get(token ?? '')?.delete(channel);
     if (method === 'conversations.invite') {
@@ -339,7 +356,7 @@ async function withHarness(
   };
   const delivery = withAgentSlackAppHandoff(base, { kind: 'delivery', agentId: support.id, appId: AGENT_APP, signingSecret: AGENT_SECRET });
   await run({
-    stores, calls, base, delivery, installedAt, hostedRevision, secrets, ownerMembershipId: owner.membership.id,
+    stores, calls, base, delivery, groupsOff, installedAt, hostedRevision, secrets, ownerMembershipId: owner.membership.id,
     async deliver(kind, body, options = {}) {
       const raw = kind === 'events' ? JSON.stringify(body) : new URLSearchParams({ payload: JSON.stringify(body) }).toString();
       if (!options.settle) return signed(`/channels/slack/agent-apps/${kind}`, raw, options.secret ?? AGENT_SECRET, options.env ?? delivery);
@@ -406,6 +423,31 @@ async function pendingTurn(stores: AppStores, matches: (job: PendingTurnJob) => 
   return undefined;
 }
 
+/**
+ * Run the move jobs in the state store's outbox as its alarm does, through the real outbox and drain, until none is
+ * due; returns each settled job's delivery reference.
+ */
+async function drainMoves(h: Harness): Promise<string[]> {
+  const refs: string[] = [];
+  for (let pass = 0; pass < 10; pass += 1) {
+    const drained = await drainManagementReceiptOutbox({
+      management: h.stores.management as unknown as ManagementStore,
+      deliver: async (record) => {
+        assert.equal(isAgentAppSwitchJob(record.receipt), true, 'only move jobs are due');
+        // The store's own rows, as its drain passes them: the main bot's credentials are read from these, not through the env.
+        const local = { ...h.stores, settings: getSettingsStore(h.base) };
+        const delivered = await continueAgentAppSwitch(h.base, record.receipt as ManagementAgentAppSwitchJob, local, {
+          finalAttempt: isFinalOutboxAttempt(record),
+        });
+        refs.push(delivered.deliveryRef);
+        return delivered;
+      },
+    });
+    if (drained.delivered + drained.retried + drained.failed === 0) break;
+  }
+  return refs;
+}
+
 async function appOf(stores: AppStores): Promise<AgentAppLifecycle | undefined> {
   const presence = (await stores.config.getAgent('agent_support')).slackPresence;
   return presence?.kind === 'agent_app' ? presence.app : undefined;
@@ -450,7 +492,7 @@ test("an interaction is served the same way and runs with the Agent's client", a
   assert.ok(h.calls.every((call) => call.token === AGENT_BOT), "every call the click makes is the Agent's");
 }));
 
-test('an app_uninstalled ends only that Agent app: the bot token goes, the Owner is told, the installation and other Agents stand', async (t) => withHarness(t, async (h) => {
+test('an app_uninstalled ends only that Agent app: the bot token goes, its group comes back, the Owner is told, the installation and other Agents stand', async (t) => withHarness(t, async (h) => {
   assert.deepEqual(await agentSlackAppIngress(h.base, AGENT_APP), { agentId: 'agent_support', teamId: TEAM, signingSecret: AGENT_SECRET });
   assert.equal(await agentSlackAppIngress(h.base, 'A0UNKNOWN'), undefined);
 
@@ -469,14 +511,61 @@ test('an app_uninstalled ends only that Agent app: the bot token goes, the Owner
   assert.equal((await readAppSecrets(h.secrets(), AGENT_APP))?.secrets.botToken, undefined, 'the bot token is dropped');
   assert.notEqual((await h.stores.config.getWorkspaceInstallation(TEAM))?.health, 'revoked', 'the installation stands');
   assert.equal((await h.stores.config.getAgent('agent_finance')).slackPresence?.userGroupId, 'SFINANCE', 'other Agents untouched');
-  const removedDm = h.calls.find((call) => call.method === 'chat.postMessage');
-  assert.equal(removedDm?.token, MAIN_BOT, 'the Owner hears it from Chickpea');
-  assert.match(removedDm?.body.get('text') ?? '', /removed from this workspace/);
+  assert.equal(h.calls.some((call) => call.method === 'chat.postMessage'), false, 'the event itself tells no one');
+
+  // The state store's drain runs the move job the event armed: the group back on, then the Owner told.
+  assert.deepEqual(await drainMoves(h), ['agent_app_switch:not_live']);
+  assert.equal(h.groupsOff.has('SSUPPORT'), false, 'the released group is on again');
+  assert.equal(h.calls.find((call) => call.method === 'usergroups.enable')?.body.get('usergroup'), 'SSUPPORT');
+  const presence = (await h.stores.config.getAgent('agent_support')).slackPresence;
+  assert.deepEqual(presence && [presence.kind, presence.userGroupId, presence.health], [undefined, 'SSUPPORT', 'healthy'], 'the group holds the handle again');
+  assert.equal(appRecordOf(presence)?.state, 'needs_attention', 'with the removed app attached');
+  const removedDm = h.calls.filter((call) => call.method === 'chat.postMessage');
+  assert.equal(removedDm.length, 1, 'the Owner is told once');
+  assert.equal(removedDm[0]?.token, MAIN_BOT, 'the Owner hears it from Chickpea');
+  assert.equal(removedDm[0]?.body.get('text'), escapeMrkdwn(
+    "Support's Slack app was removed from this workspace. People can still mention @support, and Support answers through Chickpea. Choose Allow to add the app back.",
+  ));
   assert.equal(await agentSlackAppIngress(h.base, AGENT_APP) !== undefined, true, 'the app record is still known to the ingress while it waits for Allow');
+  assert.deepEqual(await drainMoves(h), [], 'nothing is left to run');
 
   assert.equal(await endAgentSlackApp(h.base, AGENT_APP, dmEvent({}, { type: 'app_uninstalled' })), 'ignored', 'ending twice changes nothing');
   assert.equal((await h.deliver('events', dmEvent())).status, 200);
   assert.equal(h.calls.filter((call) => call.token === AGENT_BOT).length, 0, 'a removed app runs nothing as its bot');
+}));
+
+// Defects caught: a switch cut off between making the app live and arming its job, left for a person; a job the drain
+// cannot run in the state store (no port, the main bot unreadable from inside it); a sweep that arms a second job.
+test("a switch whose job was never armed is found by the state store's sweep and run by its drain to done, through the real stores", async (t) => withHarness(t, async (h) => {
+  const agent = await h.stores.config.getAgent('agent_support');
+  const live = agent.slackPresence!.kind === 'agent_app' ? agent.slackPresence!.app : undefined;
+  assert.equal(live?.state, 'active');
+  h.groupsOff.delete('SSUPPORT');
+  // As Allow leaves it when the Worker stops before the job is armed: the app live, its group still answering.
+  await h.stores.config.updateAgent(agent.id, {
+    slackPresence: {
+      ...agent.slackPresence!, kind: 'agent_app', app: { ...live!, switchProgress: 'group_pending' },
+      released: { userGroupId: 'SSUPPORT', desiredState: 'active', health: 'healthy', answers: true },
+    },
+  } as never, agent.revision);
+  assert.deepEqual(await drainMoves(h), [], 'no job was armed');
+
+  await armUnfinishedAgentAppMoves(h.stores, Date.now());
+  await armUnfinishedAgentAppMoves(h.stores, Date.now());
+  assert.deepEqual(await drainMoves(h), ['agent_app_switch:done'], 'the sweep armed one job, and the drain ran it');
+  const presence = (await h.stores.config.getAgent('agent_support')).slackPresence;
+  const app = presence?.kind === 'agent_app' ? presence.app : undefined;
+  assert.equal(app?.state === 'active' && app.switchProgress, 'done');
+  assert.equal(presence?.kind === 'agent_app' && presence.released?.answers, false);
+  assert.equal(h.groupsOff.has('SSUPPORT'), true, 'the group is off in Slack');
+  const disable = h.calls.find((call) => call.method === 'usergroups.disable');
+  assert.equal(disable?.token, MAIN_BOT, "the disable uses the main bot's credentials, read inside the store");
+  const told = h.calls.filter((call) => call.method === 'chat.postMessage');
+  assert.equal(told.length, 1);
+  assert.match(told[0]?.body.get('text') ?? '', /Support is now its own Slack app/);
+
+  await armUnfinishedAgentAppMoves(h.stores, Date.now());
+  assert.deepEqual(await drainMoves(h), [], 'a finished switch is armed no more');
 }));
 
 test('ingress facts for an app whose secrets cannot be opened are none, and logged; a store outage still throws', async (t) => withHarness(t, async (h) => {
@@ -1107,10 +1196,13 @@ test("a tenant's end retires an Agent app with its own credentials when the host
   assert.equal(await readAppSecrets(h.secrets(), AGENT_APP), undefined);
 }, { lostHostedBot: true }));
 
-test("a tenant's end that cannot tell the Owner about a left app still uninstalls it and names it for the Owner", async (t) => withHarness(t, async (h) => {
+// Defect caught: with Chickpea's bot gone, an uninstalled app whose definition was left reported as still installed,
+// because the Owner's message failed after the outcome was committed.
+test("a tenant's end that cannot tell the Owner about a left app still uninstalls it and reports what happened to it", async (t) => withHarness(t, async (h) => {
   await hostedBotIsLost(h);
+  t.mock.method(console, 'warn', () => undefined);
 
-  assert.deepEqual(await retireAgentSlackApps(h.base), [{ agentId: 'agent_support', outcome: 'left_for_owner' }]);
+  assert.deepEqual(await retireAgentSlackApps(h.base), [{ agentId: 'agent_support', outcome: 'uninstalled_left_definition' }]);
   assert.deepEqual(h.calls.map(({ method, token }) => [method, token]), [['apps.uninstall', AGENT_BOT]],
     'the app is uninstalled with its own bot; without a configuration token its definition stays, and the Owner cannot be messaged');
 }, { lostHostedBot: true }));

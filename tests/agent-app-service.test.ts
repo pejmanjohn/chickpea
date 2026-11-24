@@ -401,7 +401,9 @@ test('a crash after any external call reruns to the same end with one create and
   }
 });
 
-test('a record without secrets older than a minute deletes nothing, creates again, and tells the Owner an unused app may remain', async (t) => {
+// Defect caught: the Owner told after a second create that Slack "may have created" an app and to delete any they don't
+// recognize, which can lead them to delete the app they are about to allow.
+test('a record without secrets older than a minute deletes nothing, creates again, and tells the Owner which of the two apps to keep', async (t) => {
   const f = await fixture(t);
   f.crashRealmWriteOnce = true;
   await assert.rejects(() => f.service.start('agent_support', OWNER), Crash);
@@ -417,7 +419,9 @@ test('a record without secrets older than a minute deletes nothing, creates agai
   assert.equal(app?.state === 'awaiting_consent' && app.app.appId, 'A0APP2');
   assert.deepEqual(f.signingSecretsAtUpdate, ['signing-secret-2'], 'only the recreated app, with its secret stored, gets its URLs');
   const [mayRemain, allowDm] = f.transport.posted;
-  assert.match(mayRemain?.text ?? '', /Slack may have created an app for Support, but Chickpea didn.+t hear back\. Open Your Apps in Slack and delete any Support app you don.+t recognize/);
+  assert.equal(mayRemain?.text, escapeMrkdwn(
+    "Chickpea made a second Support app in Slack because it lost track of the first. Keep the one you allow from Chickpea's next message; after you allow it, Your Apps in Slack shows it as installed. Delete the other Support app there.",
+  ));
   assert.equal(mayRemain?.channelId, `D_${OWNER}`);
   assert.deepEqual(buttonUrls(mayRemain!), ['https://api.slack.com/apps']);
   assert.match(allowDm?.text ?? '', /Support.+s Slack app is ready/);
