@@ -32,7 +32,7 @@ import { slackPendingExternalShare } from '../slack/transport/shared.ts';
 import { resolvePrivateAgentAccess } from '../slack/agent-access.ts';
 import { agentDmPlacementFacts, isAgentAppDm, withAgentAppExecution } from '../slack/agent-apps/index.ts';
 import { agentSlackAppsHost } from '../slack/agent-apps/host.ts';
-import { agentAppIsLive } from '../config/types.ts';
+import { agentAppIsLive, appRecordOf } from '../config/types.ts';
 import type { SlackSpeaker } from '../slack/speaker.ts';
 import type { SlackContextSelf } from '../slack/thread-context.ts';
 import { createDirectSlackTransportFromWebClient } from '../slack/transport/direct.ts';
@@ -221,13 +221,15 @@ export async function resolveRoutineRuntimeAccess(
     agentId,
     speaker: { kind: 'own_bot', botUserId: appBotUserId },
   });
-  const appRecord = presence?.kind === 'agent_app' && 'app' in presence.app ? presence.app.app : undefined;
-  const siblings = (speaking: string): Pick<RoutineRuntimeAccess, 'siblingBots'> => presence?.kind === 'agent_app'
+  // A removed app's record still names its app, so its bot's earlier posts stay the Agent's own.
+  const appLifecycle = appRecordOf(presence);
+  const appRecord = appLifecycle && 'app' in appLifecycle ? appLifecycle.app : undefined;
+  const siblings = (speaking: string): Pick<RoutineRuntimeAccess, 'siblingBots'> => appLifecycle
     ? {
         siblingBots: {
           siblingBotUserIds: [
             installationBotUserId,
-            ...('botUserId' in presence.app && presence.app.botUserId ? [presence.app.botUserId] : []),
+            ...('botUserId' in appLifecycle && appLifecycle.botUserId ? [appLifecycle.botUserId] : []),
           ].filter((id) => id !== speaking),
           ...(appRecord ? { siblingAppIds: [appRecord.appId] } : {}),
         },
