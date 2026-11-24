@@ -249,7 +249,10 @@ export type AgentAppHomeRow =
   | { kind: 'active' }
   /** Live, and the Owner never got the switch's result message: the row says what it would have. */
   | { kind: 'active_untold'; report: AgentAppSwitchReport }
-  | { kind: 'attention' };
+  | { kind: 'attention' }
+  /** An Owner's Cancel is deleting the app Chickpea made; the Agent answers as it did before. */
+  | { kind: 'removing' }
+  | { kind: 'removing_stalled' };
 
 const HOME_COPY = {
   setting_up: ({ handle }: AgentAppNames) => `Setting up @${handle}'s own Slack app.`,
@@ -257,6 +260,8 @@ const HOME_COPY = {
   waiting: ({ handle }: AgentAppNames) => `@${handle}'s Slack app is ready to add. Open your messages with Chickpea to allow it.`,
   active: ({ handle }: AgentAppNames) => `@${handle} has its own Slack app. People can message @${handle} directly.`,
   attention: ({ handle }: AgentAppNames) => `@${handle}'s Slack app needs your attention. Open your messages with Chickpea for details.`,
+  removing: ({ handle }: AgentAppNames) => `Removing the Slack app Chickpea made for @${handle}.`,
+  removing_stalled: ({ handle }: AgentAppNames) => `Removing the Slack app Chickpea made for @${handle} stopped partway.`,
 } satisfies Record<Exclude<AgentAppHomeRow['kind'], 'active_untold'>, (names: AgentAppNames) => string>;
 
 /** The Owner's App Home line under an Agent, with its one control. */
@@ -268,6 +273,7 @@ export function agentAppHomeBlocks(row: AgentAppHomeRow, names: AgentAppNames, a
   const text = row.kind === 'active_untold' ? agentAppSwitchedMessage(names, row.report).text : escapeMrkdwn(HOME_COPY[row.kind](names));
   const line = { type: 'context', elements: [{ type: 'mrkdwn', text }] };
   if (row.kind === 'stalled') return [line, button('Finish setting up', { action_id: FINISH_APP_ACTION, value: agentId })];
+  if (row.kind === 'removing_stalled') return [line, button('Finish removing', { action_id: FINISH_APP_ACTION, value: agentId })];
   return [line];
 }
 

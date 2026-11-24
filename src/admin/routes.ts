@@ -11871,6 +11871,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.get('/admin/profiles/*', (c) => c.notFound());
   app.route('/', createAgentSlackAppAdminRoutes({
     actor: agentActor,
+    identity,
     ...(options.agentSlackApps ? { service: options.agentSlackApps } : {}),
   }));
 

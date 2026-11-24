@@ -44,6 +44,7 @@ function fixture(t: TestContext, options: { keyring?: CredentialKeyring; setting
   const settings = options.settings ?? new SqliteSettingsStore(':memory:');
   if (!options.settings) t.after(() => settings.close());
   const rotations: string[] = [];
+  const spent = new Set<string>();
   const fixtureState: Fixture = {
     settings,
     rotations,
@@ -57,6 +58,9 @@ function fixture(t: TestContext, options: { keyring?: CredentialKeyring; setting
         if (fixtureState.slow) await new Promise((resolve) => setImmediate(resolve));
         rotations.push(refreshToken);
         if (fixtureState.refuse) throw new SlackRefused('tooling.tokens.rotate', fixtureState.refuse);
+        // Slack refuses a refresh token it already rotated.
+        if (spent.has(refreshToken)) throw new SlackRefused('tooling.tokens.rotate', 'invalid_refresh_token');
+        spent.add(refreshToken);
         const n = rotations.length;
         return {
           accessToken: `xoxe.xoxp-1-access-${n}`,
@@ -208,26 +212,47 @@ test('who pasted the token, and when, is kept through every rotation', async (t)
   assert.deepEqual(await configurationTokenStatus(d, TEAM), { stored: true, pastedBy: 'UOWNER', pastedAt: NOW });
 });
 
-test('removing the token while a rotation lands spends and deletes the rotated pair, and never says removed while a pair stays', async (t) => {
+test('removing the token when the removal rotates first: the rotation is refused, forgets the pair, and the removal is discarded', async (t) => {
   const d = fixture(t);
   assert.equal(await saveConfigurationToken(d, TEAM, PASTED), 'saved');
   const rotator: SecretDeps = { ...d, now: () => NOW + TWELVE_HOURS };
   let rotations = 1;
   d.credentials = Object.assign(Object.create(d.settings) as SqliteSettingsStore, {
     async deleteEncryptedCredentialRevision(key: string, expected: string) {
-      // A rotation commits a new pair between the removal's read and its delete.
-      if (rotations-- > 0) await withConfigurationToken(rotator, TEAM, async () => 'rotated');
+      // The removal already spent the stored refresh token; a rotation claims the pair before the removal deletes it.
+      if (rotations-- > 0) await assert.rejects(() => withConfigurationToken(rotator, TEAM, async () => 'rotated'), ConfigTokenNeeded);
       return d.settings.deleteEncryptedCredentialRevision(key, expected);
     },
   });
   assert.equal(await discardConfigurationToken(d, TEAM), 'discarded');
-  assert.equal(await d.settings.getEncryptedCredentialRevision(configurationTokenKey(TEAM)), undefined, 'the rotated pair is gone too');
-  assert.deepEqual(d.rotations.slice(1), ['xoxe-1-refresh-1', 'xoxe-1-refresh-1', 'xoxe-1-refresh-3'],
-    'the removal spent the pair it read, the rotation spent it too, and the removal spent the pair the rotation wrote');
+  assert.equal(await d.settings.getEncryptedCredentialRevision(configurationTokenKey(TEAM)), undefined, 'nothing is stored');
+  assert.deepEqual(d.rotations.slice(1), ['xoxe-1-refresh-1', 'xoxe-1-refresh-1'],
+    'the removal spent the stored refresh token, and Slack refused the rotation that came second');
+});
 
+test('removing the token when a rotation rotates first: the removal spends the newer pair and says unconfirmed; a pair that keeps changing is reported', async (t) => {
+  const d = fixture(t);
   assert.equal(await saveConfigurationToken(d, TEAM, PASTED), 'saved');
+  const rotator: SecretDeps = { ...d, now: () => NOW + TWELVE_HOURS };
+  let rotations = 1;
+  const removal: SecretDeps = {
+    ...d,
+    slack: {
+      async rotate(refreshToken) {
+        // A rotation lands between the removal's read of the pair and its own rotation.
+        if (rotations-- > 0) await withConfigurationToken(rotator, TEAM, async () => 'rotated');
+        return d.slack.rotate(refreshToken);
+      },
+    },
+  };
+  assert.equal(await discardConfigurationToken(removal, TEAM), 'unconfirmed', 'the first rotation was refused, so the answer stays cautious');
+  assert.equal(await d.settings.getEncryptedCredentialRevision(configurationTokenKey(TEAM)), undefined, 'the newer pair is gone too');
+  assert.deepEqual(d.rotations.slice(1), ['xoxe-1-refresh-1', 'xoxe-1-refresh-1', 'xoxe-1-refresh-2'],
+    'the rotation spent the stored token, Slack refused the removal its spent token, and the removal spent the newer one');
+
+  assert.equal(await saveConfigurationToken(d, TEAM, 'xoxe-1-pasted-again-token-000'), 'saved');
   rotations = Infinity;
-  await assert.rejects(() => discardConfigurationToken(d, TEAM), LostRevision);
+  await assert.rejects(() => discardConfigurationToken(removal, TEAM), LostRevision);
   assert.ok(await d.settings.getEncryptedCredentialRevision(configurationTokenKey(TEAM)), 'a pair that keeps changing is reported, not called removed');
 });
 

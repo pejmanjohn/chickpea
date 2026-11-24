@@ -14,9 +14,9 @@ import type { AuthPrincipal } from '../../auth/types.ts';
 import { UnknownAgentError } from '../../config/errors.ts';
 import type { PlatformEnv } from '../../config/state-backend.ts';
 import type { AgentChannelGrant, CustomAgentConfig } from '../../config/types.ts';
+import type { IdentityStore } from '../../identity/types.ts';
 import { requestOrigin } from '../../http/request-origin.ts';
 import { agentAvatarInstallation, agentAvatarUrlForPresentation } from '../agent-presence/avatar-assets.ts';
-import { AgentPresenceError } from '../agent-presence/errors.ts';
 import { agentSlackAppsHost, type AgentSlackAppsHost } from './host.ts';
 import { type AgentSlackState, agentSlackState } from './lifecycle.ts';
 import { liveAgentSlackApps } from './live.ts';
@@ -37,6 +37,8 @@ const OLD_TOKEN_PAGE_PATH = '/admin/agents/:agentId/slack-app';
 
 export interface AgentSlackAppAdminDeps {
   actor(c: Context): Promise<{ principal: AuthPrincipal; slackUserId: string; slackTeamId: string }>;
+  /** Where each change is recorded as an audit event. */
+  identity(c: Context): IdentityStore;
   /** Test seam: the service for an env; live stores and the main bot otherwise. */
   service?: (env: PlatformEnv | undefined, host: AgentSlackAppsHost) => Promise<AgentSlackApps>;
 }
@@ -71,6 +73,14 @@ const settingJson = (setting: AgentSlackAppsSetting) => ({
   mode: setting.mode, changedBy: setting.changedBy ?? null, changedAt: setting.changedAt ?? null,
 });
 
+/** The audit action each change is recorded under. */
+type SlackAppsAuditAction =
+  | 'agent_apps.mode_changed'
+  | 'agent_apps.token_pasted'
+  | 'agent_apps.token_removed'
+  | 'agent_apps.started'
+  | 'agent_apps.cancelled';
+
 /**
  * Routes, each Owner-only (an Owner signed in as themselves, never a token)
  * and 404 without the port; changes carry Admin's JSON request protection:
@@ -80,26 +90,46 @@ const settingJson = (setting: AgentSlackAppsSetting) => ({
  * - `PUT /admin/api/slack-apps/mode` `{ mode: 'shared' | 'own_app' }` → `{ setting }`.
  * - `PUT /admin/api/slack-apps/token` `{ refreshToken }` → `{ token }`; 400 `{ error: 'not_refresh_token' | 'rejected' |
  *   'other_workspace' }`; 503 `{ error: 'slack_down' }`.
- * - `DELETE /admin/api/slack-apps/token` → `{ token: { stored: false }, slackMayStillAccept }`.
+ * - `DELETE /admin/api/slack-apps/token` → `{ token: { stored: false }, removed: 'discarded' | 'unconfirmed' | 'none' }`.
  * - `POST /admin/api/slack-apps/agents/:agentId/start` → 200 `{ next: 'authorize', authorizeUrl, agent }`; 202
  *   `{ next: 'creating', agent }`; 409 `{ error: 'token_needed' | 'permission_needed' }` or
- *   `{ error: 'needs_attention' | 'already_own_app', agent }`; 404.
- * - `POST /admin/api/slack-apps/agents/:agentId/cancel` → `{ agent }`; 409 `{ error: 'not_waiting' }`; 503
- *   `{ error: 'slack_unavailable' }`; 404.
+ *   `{ error: 'needs_attention' | 'already_own_app' | 'cancelling', agent }`; 404.
+ * - `POST /admin/api/slack-apps/agents/:agentId/cancel` → `{ agent, app: 'deleted' | 'left_for_owner' }`; 409
+ *   `{ error: 'not_waiting' }`; 503 `{ error: 'slack_unavailable' }`; 404.
+ *
+ * Each change is recorded as an audit event; a failed record is logged and never fails the request.
  */
 export function createAgentSlackAppAdminRoutes(deps: AgentSlackAppAdminDeps): Hono {
   const app = new Hono();
   const service = deps.service ?? liveAgentSlackApps;
 
   const owner = async (c: Context): Promise<
-    | { ok: true; apps: AgentSlackApps; slackUserId: string }
+    | { ok: true; apps: AgentSlackApps; slackUserId: string; principal: AuthPrincipal }
     | { ok: false; response: Response }
   > => {
     const host = agentSlackAppsHost();
     if (!host) return { ok: false, response: c.json({ error: 'not_found' }, 404) };
     const actor = await deps.actor(c);
     if (!isOwnerSession(actor.principal)) return { ok: false, response: c.json({ error: 'forbidden' }, 403) };
-    return { ok: true, apps: await service(c.env as PlatformEnv | undefined, host), slackUserId: actor.slackUserId };
+    return {
+      ok: true, apps: await service(c.env as PlatformEnv | undefined, host), slackUserId: actor.slackUserId, principal: actor.principal,
+    };
+  };
+
+  /** `reasonCode` is an outcome or a mode, never anything taken from a token. */
+  const audit = async (c: Context, principal: AuthPrincipal, action: SlackAppsAuditAction, reasonCode?: string): Promise<void> => {
+    await deps.identity(c).recordAuthAudit({
+      event: 'authorization',
+      outcome: 'success',
+      action,
+      correlationId: principal.correlationId,
+      authenticatorKind: principal.authenticatorKind,
+      userId: principal.userId,
+      membershipId: principal.membershipId,
+      ...(reasonCode ? { reasonCode } : {}),
+    }).catch(() => {
+      console.warn(JSON.stringify({ component: 'agent_apps', event: 'audit_unavailable', action }));
+    });
   };
 
   const rowOf = async (c: Context, apps: AgentSlackApps, agent: CustomAgentConfig) => agentRow(c, agent, await apps.agentChannelGrants());
@@ -122,7 +152,9 @@ export function createAgentSlackAppAdminRoutes(deps: AgentSlackAppAdminDeps): Ho
     if (!gated.ok) return gated.response;
     const parsed = v.safeParse(modeSchema, await readJson(c, MAX_BODY_BYTES));
     if (!parsed.success) return invalidRequest(c);
-    return c.json({ setting: settingJson(await gated.apps.setMode(parsed.output.mode, gated.slackUserId)) });
+    const { setting, changed } = await gated.apps.setMode(parsed.output.mode, gated.slackUserId);
+    if (changed) await audit(c, gated.principal, 'agent_apps.mode_changed', setting.mode);
+    return c.json({ setting: settingJson(setting) });
   });
 
   app.put(`${API}/token`, async (c) => {
@@ -138,6 +170,7 @@ export function createAgentSlackAppAdminRoutes(deps: AgentSlackAppAdminDeps): Ho
       return c.json({ error: 'slack_down' }, 503);
     }
     if (saved !== 'saved') return c.json({ error: saved }, 400);
+    await audit(c, gated.principal, 'agent_apps.token_pasted');
     return c.json({ token: await gated.apps.configurationToken() });
   });
 
@@ -145,7 +178,8 @@ export function createAgentSlackAppAdminRoutes(deps: AgentSlackAppAdminDeps): Ho
     const gated = await owner(c);
     if (!gated.ok) return gated.response;
     const removed = await gated.apps.removeConfigurationToken();
-    return c.json({ token: { stored: false }, slackMayStillAccept: removed === 'unconfirmed' });
+    await audit(c, gated.principal, 'agent_apps.token_removed', removed);
+    return c.json({ token: { stored: false }, removed });
   });
 
   app.post(`${API}/agents/:agentId/start`, async (c) => {
@@ -153,6 +187,7 @@ export function createAgentSlackAppAdminRoutes(deps: AgentSlackAppAdminDeps): Ho
     if (!gated.ok) return gated.response;
     const { apps } = gated;
     const pressed = await known(() => apps.press(c.req.param('agentId'), gated.slackUserId));
+    if (pressed && pressed.kind !== 'not_eligible') await audit(c, gated.principal, 'agent_apps.started', pressed.kind);
     switch (pressed?.kind) {
       case 'authorize':
         return c.json({ next: 'authorize', authorizeUrl: pressed.url, agent: await rowOf(c, apps, pressed.agent) });
@@ -160,6 +195,7 @@ export function createAgentSlackAppAdminRoutes(deps: AgentSlackAppAdminDeps): Ho
         return c.json({ next: 'creating', agent: await rowOf(c, apps, pressed.agent) }, 202);
       case 'needs_attention':
       case 'already_own_app':
+      case 'cancelling':
         return c.json({ error: pressed.kind, agent: await rowOf(c, apps, pressed.agent) }, 409);
       case 'token_needed':
       case 'permission_needed':
@@ -173,16 +209,20 @@ export function createAgentSlackAppAdminRoutes(deps: AgentSlackAppAdminDeps): Ho
     const gated = await owner(c);
     if (!gated.ok) return gated.response;
     const { apps } = gated;
-    let cancelled;
-    try {
-      cancelled = await known(() => apps.cancel(c.req.param('agentId')));
-    } catch (error) {
-      if (!(error instanceof AgentPresenceError)) throw error;
-      return c.json({ error: 'slack_unavailable' }, 503);
+    const cancelled = await known(() => apps.cancel(c.req.param('agentId')));
+    if (cancelled && cancelled.kind !== 'not_eligible') {
+      await audit(c, gated.principal, 'agent_apps.cancelled', cancelled.kind === 'cancelled' ? cancelled.app : cancelled.kind);
     }
-    if (cancelled?.kind === 'cancelled') return c.json({ agent: await rowOf(c, apps, cancelled.agent) });
-    if (cancelled?.kind === 'not_waiting') return c.json({ error: 'not_waiting' }, 409);
-    return c.json({ error: 'not_found' }, 404);
+    switch (cancelled?.kind) {
+      case 'cancelled':
+        return c.json({ agent: await rowOf(c, apps, cancelled.agent), app: cancelled.app });
+      case 'unfinished':
+        return c.json({ error: 'slack_unavailable' }, 503);
+      case 'not_waiting':
+        return c.json({ error: 'not_waiting' }, 409);
+      default:
+        return c.json({ error: 'not_found' }, 404);
+    }
   });
 
   // The token page moved into Admin; an older link, such as one in a DM, lands there.
