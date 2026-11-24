@@ -160,8 +160,8 @@ test('Agent creation shows the model a call both validators accept, and says how
     type: 'toolCall', id: 'synthetic', name: 'apply_workspace_changes', arguments: args,
   });
   const agent = {
-    id: 'demo_alpha', name: 'Demo Alpha', description: 'Answers short questions.', requestedHandle: 'demo-alpha',
-    instructions: 'Answer in one sentence.', enabled: true, skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    id: 'demo_alpha', name: 'Demo Alpha', description: 'Looks up train times.', requestedHandle: 'demo-alpha',
+    instructions: 'Give the next departure.', enabled: true, skills: [], mcpServers: [], apiConnections: [], repositories: [],
   };
   // The first-ask shape Pi refused on hosted staging: a tool allowlist on the Agent itself.
   assert.throws(
