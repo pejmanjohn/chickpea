@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { AWAITING_OWN_APP, type AgentSlackPresence } from '../src/config/types.ts';
+import { configureAgentSlackApps } from '../src/slack/agent-apps/host.ts';
+import { writeAgentSlackAppsSetting } from '../src/slack/agent-apps/setting.ts';
 import {
   PRIVATE_CHANNEL_SETUP_ADD_ACTION,
   PRIVATE_CHANNEL_SETUP_AGAIN_ACTION,
@@ -27,8 +30,9 @@ interface SlackScene {
  * gets the setup card, with the given Agents (each the owner's, off Slack).
  */
 async function withPrivateSetup(
-  agents: ReadonlyArray<{ id: string; name: string; handle: string }>,
+  agents: ReadonlyArray<{ id: string; name: string; handle: string; slackPresence?: AgentSlackPresence }>,
   run: (setup: DirectSlackInstall & { scene: SlackScene; setupId: string }) => Promise<void>,
+  before?: (install: DirectSlackInstall) => Promise<void>,
 ): Promise<void> {
   const scene: SlackScene = { members: ['U1', 'UBOT'], replace: 'ok', channelLookupFails: false, archived: false };
   const groups: Array<Record<string, unknown>> = [];
@@ -60,12 +64,13 @@ async function withPrivateSetup(
     },
   }, async (install) => {
     process.env.SLACK_TAG_PUBLIC_URL = ORIGIN;
+    await before?.(install);
     for (const agent of agents) {
       await install.stores.config.createAgent({
         id: agent.id, name: agent.name, instructions: 'Help.', enabled: true, lifecycle: 'active',
         creatorMembershipId: install.ownerMembershipId, editPolicy: 'creator_and_admins',
         skills: [], mcpServers: [], apiConnections: [], repositories: [],
-        slackPresence: { requestedHandle: agent.handle, normalizedHandle: agent.handle, desiredState: 'unpublished',
+        slackPresence: agent.slackPresence ?? { requestedHandle: agent.handle, normalizedHandle: agent.handle, desiredState: 'unpublished',
           health: 'unpublished', avatar: { kind: 'generated', revision: 1, seed: agent.handle } },
       });
     }
@@ -371,5 +376,37 @@ test('an unexpected failure before the claim answers beside the card, which stil
     const retry = addClick(setupId, OPS.id);
     await deliver('interactions', retry.payload);
     assert.equal((await replacedAt(calls, retry.responseUrl)).text, CONFIRMATION, 'the same card adds the Agent on the next click');
+  });
+});
+
+// Defects caught: choosing an Agent not in Slack yet on the card told the inviter to retry in Admin, where Retry does
+// nothing for it, and recorded the setup as a failed publication, though the Channel was kept for it.
+test('choosing an Agent not in Slack yet keeps the Channel for it, and the card says it joins once an Owner adds it to Slack', async (t) => {
+  configureAgentSlackApps({ requestUrls: () => ({ events: '', interactions: '' }), redirectUri: '', allowUrl: () => '' });
+  t.after(() => configureAgentSlackApps(undefined));
+  const waiting = {
+    ...OPS,
+    slackPresence: {
+      requestedHandle: 'ops', normalizedHandle: 'ops', desiredState: 'active', health: 'pending',
+      avatar: { kind: 'generated', revision: 1, seed: 'ops' }, errorCode: AWAITING_OWN_APP,
+    } satisfies AgentSlackPresence,
+  };
+  await withPrivateSetup([waiting], async ({ calls, deliver, stores, setupId }) => {
+    const click = addClick(setupId, OPS.id);
+    assert.equal((await deliver('interactions', click.payload)).status, 200);
+    const replaced = await replacedAt(calls, click.responseUrl);
+    const joins = 'Ops joins this channel once a workspace Owner adds it to Slack.';
+    assert.equal(replaced.text, joins);
+    assert.deepEqual(buttons(replaced.blocks).map(({ text }) => text.text), ['Add another Agent', 'Open Chickpea']);
+    assert.deepEqual((await stores.config.listAgentChannelGrants('T1', 'C1')).map(({ status }) => status), ['pending'], 'the Channel waits for Ops');
+    const intent = await stores.management.getPrivateChannelSetupIntent(setupId);
+    assert.deepEqual([intent?.status, intent?.failureCode], ['completed', undefined], 'never a failed publication');
+    assert.equal(calls.some(({ method }) => method === 'usergroups.create'), false, 'no user group is made');
+
+    const again = addClick(setupId, OPS.id);
+    await deliver('interactions', again.payload);
+    assert.equal((await replacedAt(calls, again.responseUrl)).text, joins, 'a second click says the same');
+  }, async (install) => {
+    await writeAgentSlackAppsSetting(install.stores.settings, { mode: 'own_app', changedBy: 'U1', changedAt: Date.now() });
   });
 });

@@ -55,7 +55,11 @@ function principal(role: AuthPrincipal['role'], machine = false): AuthPrincipal 
 
 function people(audits: RecordIdentityAuthAuditInput[], auditFails: () => boolean): IdentityStore {
   return {
-    getMembership: async (id: string) => ({ id, userId: id.replace('membership_', 'user_'), status: 'active' }),
+    // `membership_owner` and `membership_admin` hold those roles, as `principal` names them; anyone else is a Member.
+    getMembership: async (id: string) => ({
+      id, userId: id.replace('membership_', 'user_'), status: 'active',
+      role: id === 'membership_owner' ? 'owner' : id === 'membership_admin' ? 'admin' : 'member',
+    }),
     getUser: async (id: string) => ({ id, displayName: id, slackUserId: id.replace('user_', 'U').toUpperCase(), slackTeamId: TEAM }),
     recordAuthAudit: async (input: RecordIdentityAuthAuditInput) => {
       if (auditFails() && input.action.startsWith('agent_apps.')) throw new Error('audit store unavailable');
@@ -241,7 +245,7 @@ async function adminApp(t: TestContext, options: {
       if (!options.slack) return;
       await presence().placeInSlack(agentId, (membershipId) => memberInSlack(identity, membershipId));
     },
-    memberSlackUserId: async (membershipId) => (await memberInSlack(identity, membershipId))?.slackUserId,
+    memberInSlack: async (membershipId) => memberInSlack(identity, membershipId),
   });
   /** The reconciler as Admin builds it, on the same Slack. */
   const presence = () => new AgentPresenceReconciler({
@@ -709,6 +713,48 @@ test('after Allow, a private creator Channel is granted and named as answering t
   assert.deepEqual([f.slack.joined, [...f.slack.appBotIn]], [[], []], 'nobody joins a private Channel by themselves');
   assert.match(f.owner.texts.at(-1)!, /In <#CSALES> it keeps answering through Chickpea until someone there adds it\./);
   assert.equal(f.owner.texts.at(-1)!.includes('COLD'), false);
+});
+
+/**
+ * Bea, a Member, adds the waiting Newbie to #deals while anyone may edit it; then only its creator and Admins may.
+ * An add by Bea now would be refused, so her Channel must not be completed for her.
+ */
+async function memberAddThenPolicyNarrowed(f: Awaited<ReturnType<typeof ownAppWorkspace>>): Promise<void> {
+  f.slack.channel('CDEALS', { members: ['UBEA'] });
+  await f.owner.config.createAgent({
+    ...agent('agent_new', 'Newbie', notInSlack('newbie')), creatorMembershipId: CREATOR, editPolicy: 'all_workspace_members', model: 'local-stub/newbie',
+  });
+  await f.owner.presence().publish({
+    workspaceId: TEAM, agentId: 'agent_new', channelId: 'CDEALS', actorMembershipId: 'membership_bea', actorSlackUserId: 'UBEA',
+  });
+  assert.equal((await grantOf(f.owner, 'CDEALS'))?.status, 'pending');
+  const open = await f.owner.config.getAgent('agent_new');
+  await f.owner.config.updateAgent(open.id, { editPolicy: 'creator_and_admins' }, open.revision);
+}
+
+// Defects caught: a waiting Channel made active at Allow for a writer who may no longer edit the Agent, which an add by
+// them at that moment would be refused.
+test('after Allow, a waiting Channel whose writer may no longer edit the Agent stays waiting and is not named', async (t) => {
+  const f = await ownAppWorkspace(t);
+  await memberAddThenPolicyNarrowed(f);
+
+  await addToSlack(f.owner, 'agent_new');
+  assert.equal((await grantOf(f.owner, 'CDEALS'))?.status, 'pending', 'kept, for an Owner to remove or add themselves');
+  assert.deepEqual([f.slack.joined, [...f.slack.appBotIn]], [[], []], 'nobody joins');
+  assert.equal(f.owner.texts.at(-1)!.includes('CDEALS'), false);
+});
+
+// Defects caught: back to shared publishing a waiting Channel for a writer who may no longer edit the Agent.
+test('back to shared leaves waiting a Channel whose writer may no longer edit the Agent', async (t) => {
+  const f = await ownAppWorkspace(t);
+  await memberAddThenPolicyNarrowed(f);
+
+  const off = await f.owner.request(`${API}/mode`, f.owner.json('PUT', { mode: 'shared' }));
+  assert.deepEqual((await off.json() as { waiting: unknown[] }).waiting, []);
+  assert.deepEqual(f.slack.created, ['newbie'], 'the Agent is placed');
+  assert.equal((await grantOf(f.owner, 'CDEALS'))?.status, 'pending', 'its Channel is not');
+  assert.deepEqual(f.slack.joined, []);
+  assert.equal((await f.owner.config.getAgent('agent_new')).slackPresence?.errorCode, undefined, 'and nothing is recorded on the Agent');
 });
 
 // Defects caught: a waiting Channel made active at Allow for someone who has since left it.

@@ -6,7 +6,9 @@
  * when the state still allows it; it never repeats the effect.
  */
 import { AgentRevisionConflictError, UnknownAgentError } from '../../config/errors.ts';
+import { canEditAgent } from '../../auth/permissions.ts';
 import { AgentPresenceError } from '../agent-presence/errors.ts';
+import type { MemberInSlack } from '../agent-presence/reconciler.ts';
 import { installationScopeOf } from '../../config/installation-scope.ts';
 import type { EncryptedCredentialStore, SettingsStore } from '../../config/settings-store.ts';
 import type { PlatformEnv } from '../../config/state-backend.ts';
@@ -158,8 +160,8 @@ export interface AgentSlackAppsDeps {
    * after the workspace went back to `shared`.
    */
   placeInSlack?: (agentId: string) => Promise<void>;
-  /** An active member's Slack user ID, for the check that whoever added a waiting Channel is still in it. */
-  memberSlackUserId: (membershipId: string) => Promise<string | undefined>;
+  /** An active member in Slack, for the check that whoever added a waiting Channel may still add it. */
+  memberInSlack: (membershipId: string) => Promise<MemberInSlack | undefined>;
   now?: () => number;
 }
 
@@ -871,8 +873,8 @@ export class AgentSlackApps {
   /**
    * An Agent that was not in Slack yet, so released no group: each Channel it
    * was added to meanwhile waited as a pending grant, and ends as an add to it
-   * would, checked again now: whoever added it is still an active member and
-   * still in the Channel, or it stays waiting. Chickpea's bot joins a public
+   * would, checked again now: whoever added it is still an active member who
+   * may edit the Agent and is still in the Channel, or it stays waiting. Chickpea's bot joins a public
    * one it is not in, so replies in the Agent's threads there need no
    * mention; a private one is granted where Chickpea's bot already is; an
    * archived one's grant is dropped.
@@ -888,8 +890,8 @@ export class AgentSlackApps {
         await config.deleteAgentChannelGrant(grant.workspaceId, grant.channelId, agent.id);
         continue;
       }
-      const writer = await this.deps.memberSlackUserId(grant.createdByMembershipId);
-      if (!writer || !await inChannel(this.deps.transport, grant.channelId, writer)) continue;
+      const writer = await this.deps.memberInSlack(grant.createdByMembershipId);
+      if (!writer || !canEditAgent(writer, agent) || !await inChannel(this.deps.transport, grant.channelId, writer.slackUserId)) continue;
       if (!channel.private && !channel.member) {
         try {
           await this.deps.transport.joinPublicChannel(grant.channelId);

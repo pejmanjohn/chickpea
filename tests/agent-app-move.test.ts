@@ -268,8 +268,8 @@ async function fixture(
     armSwitch: async (job) => { armed.push(job); },
     userGroupPermissionMissing: async () => permission.missing,
     publicOrigin: async () => 'https://chickpea.test',
-    // Each membership's Slack user, except one no longer active.
-    memberSlackUserId: async (membershipId) => membershipId === 'm_gone' ? undefined : `U_${membershipId}`,
+    // Each membership's Slack user, as an Admin, except one no longer active.
+    memberInSlack: async (membershipId) => membershipId === 'm_gone' ? undefined : { membershipId, slackUserId: `U_${membershipId}`, role: 'admin' },
   });
   const reconciler = new AgentPresenceReconciler({
     config, transport: main as unknown as SlackTransport, announce: null, now: () => clock.now,

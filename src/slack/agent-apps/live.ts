@@ -427,9 +427,9 @@ export async function liveAgentSlackApps(
       });
       await reconciler.placeInSlack(agentId, (membershipId) => memberInSlack(identity, membershipId));
     },
-    memberSlackUserId: async (membershipId) => {
+    memberInSlack: async (membershipId) => {
       const { memberInSlack } = await import('../agent-presence/reconciler.ts');
-      return (await memberInSlack(identity, membershipId))?.slackUserId;
+      return memberInSlack(identity, membershipId);
     },
   });
 }

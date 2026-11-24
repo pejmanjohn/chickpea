@@ -1,5 +1,6 @@
 import type { ConfigStore } from '../../config/store.ts';
-import type { IdentityStore } from '../../identity/types.ts';
+import { canEditAgent } from '../../auth/permissions.ts';
+import type { IdentityStore, OrganizationRole } from '../../identity/types.ts';
 import {
   AWAITING_OWN_APP,
   type AgentChannelGrant,
@@ -301,13 +302,19 @@ async function repairMentionedAgentUserGroupOnce(
 }
 
 /** An active member as a person in Slack, for the publish of a Channel they added; undefined when unknown. */
+export interface MemberInSlack {
+  membershipId: string;
+  slackUserId: string;
+  role: OrganizationRole;
+}
+
 export async function memberInSlack(
   identity: Pick<IdentityStore, 'getMembership' | 'getUser'>,
   membershipId: string,
-): Promise<{ membershipId: string; slackUserId: string } | undefined> {
+): Promise<MemberInSlack | undefined> {
   const membership = await identity.getMembership(membershipId);
   const user = membership?.status === 'active' ? await identity.getUser(membership.userId) : undefined;
-  return user ? { membershipId, slackUserId: user.slackUserId } : undefined;
+  return user && membership ? { membershipId, slackUserId: user.slackUserId, role: membership.role } : undefined;
 }
 
 export class AgentPresenceReconciler {
@@ -642,11 +649,12 @@ export class AgentPresenceReconciler {
    * for its own app its group, then finish each Channel it was added to
    * meanwhile with the publish of whoever added it, as the add would have
    * ended in that mode. A Channel whose publish fails, or whose writer is no
-   * longer an active member, stays pending; the group stands.
+   * longer an active member or may no longer edit the Agent, stays pending;
+   * the group stands.
    */
   async placeInSlack(
     agentId: string,
-    writerInSlack: (membershipId: string) => Promise<{ membershipId: string; slackUserId: string } | undefined>,
+    writerInSlack: (membershipId: string) => Promise<MemberInSlack | undefined>,
   ): Promise<CustomAgentConfig> {
     let agent = await this.retry(agentId);
     if (!agent.slackPresence?.userGroupId) return agent;
@@ -655,7 +663,7 @@ export class AgentPresenceReconciler {
     for (const grant of waited) {
       try {
         const writer = await writerInSlack(grant.createdByMembershipId);
-        if (!writer) continue;
+        if (!writer || !canEditAgent(writer, agent)) continue;
         agent = (await this.publish({
           workspaceId: grant.workspaceId,
           agentId,
