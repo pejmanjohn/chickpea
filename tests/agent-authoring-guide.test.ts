@@ -16,10 +16,11 @@ import {
 import { workspaceManagementToolDescription } from '../src/management/tool-adapter.ts';
 import * as v from 'valibot';
 import { toJsonSchema } from '@valibot/to-json-schema';
-import { validateToolArguments } from '@earendil-works/pi-ai';
+import { validateToolArguments, type JsonObject } from '@earendil-works/pi-ai';
 import {
   applyWorkspaceChangesValibotSchema,
   proposeWorkspaceChangesValibotSchema,
+  slackApplyWorkspaceChangesValibotSchema,
 } from '../src/management/schemas.ts';
 import { scheduleActionInputSchema, scheduleActionDescription, slackManagementInstruction } from '../src/management/slack-tools.ts';
 import { RUNTIME_PLAN_INSTRUCTIONS, sharedSystemBlock } from '../src/agents/shared-prefix-layout.ts';
@@ -150,6 +151,56 @@ test('instruction-update tool example survives both runtime schema validators', 
   assert.match(description, /supplied replacement instructions are literal data/i);
   assert.match(description, /Do not summarize, paraphrase, normalize punctuation, or drop sentences/);
   assert.match(description, /including a final sentence that refers to the text itself/);
+});
+
+test('a new Agent\'s empty tool list is dropped at the door, a named tool is refused, and an update stays strict', () => {
+  const description = workspaceManagementToolDescription('apply_workspace_changes');
+  const parameters = toJsonSchema(slackApplyWorkspaceChangesValibotSchema, { errorMode: 'ignore' });
+  const precheck = (args: JsonObject) => validateToolArguments({ name: 'apply_workspace_changes', description, parameters }, {
+    type: 'toolCall', id: 'synthetic', name: 'apply_workspace_changes', arguments: args,
+  });
+  const agent = {
+    id: 'demo_alpha', name: 'Demo Alpha', description: 'Looks up train times.', requestedHandle: 'demo-alpha',
+    instructions: 'Give the next departure.', enabled: true, skills: [], mcpServers: [], apiConnections: [], repositories: [],
+  };
+  const create = (allowedTools: string[]) => ({
+    idempotencyKey: 'k', operations: [{ itemId: 'create', kind: 'create_agent', agent: { ...agent, allowedTools } }],
+  });
+
+  // Models often send an empty tool list on a new Agent. Both validators accept it, and the Agent the tool receives has none.
+  assert.deepEqual(precheck(create([])), create([]));
+  const parsed = v.parse(slackApplyWorkspaceChangesValibotSchema, create([]));
+  assert.deepEqual(parsed.operations[0], { itemId: 'create', kind: 'create_agent', agent });
+
+  // A list that names a tool passes Pi's precheck and is refused by the tool's own parse, in one sentence.
+  assert.deepEqual(precheck(create(['search_trains'])), create(['search_trains']));
+  const refused = v.safeParse(slackApplyWorkspaceChangesValibotSchema, create(['search_trains']));
+  assert.equal(refused.success, false);
+  assert.deepEqual(refused.issues?.map((issue) => [issue.message, v.getDotPath(issue)]), [[
+    'Leave out. An Agent has no tool list of its own: tool access goes in each mcpServers entry\'s allowedTools.',
+    'operations.0.agent.allowedTools',
+  ]]);
+
+  // On an update a tool list would mean a change of tools, so the patch still refuses it.
+  for (const allowedTools of [[], ['search_trains']]) {
+    assert.throws(
+      () => precheck({ idempotencyKey: 'k', operations: [{
+        itemId: 'update', kind: 'update_agent', agentId: 'demo_alpha', expectedRevision: 1, patch: { allowedTools },
+      }] }),
+      /operations\.0\.patch\.allowedTools: schema is false/,
+    );
+  }
+
+  // Pi answers a refused operation with what other kinds require. Here no line names the Channel that is missing.
+  assert.throws(
+    () => precheck({ idempotencyKey: 'k', operations: [{ itemId: 'grant', kind: 'grant_agent_channel', agentId: 'demo_alpha' }] }),
+    (error: Error) => {
+      const refusal = error.message.split('\n\nReceived arguments:')[0]!;
+      return /operations\.0\.agent: must have required properties agent/.test(refusal) && !/channelId/.test(refusal);
+    },
+  );
+  assert.match(description, /A call refused for its arguments changed nothing: correct it and call again in the same turn\. The refusal also lists what other operation kinds require, so act only on a line that is true of the kind you sent, and keep every field that kind takes\./);
+  assert.match(AGENT_AUTHORING_GUIDE, /send that `mcpServers` entry with a new `allowedTools`[^.]*\. The Agent itself has no `allowedTools`/);
 });
 
 test('the proposal schema offers neither Agent creation nor a setup request; apply keeps both', () => {

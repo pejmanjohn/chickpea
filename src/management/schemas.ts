@@ -36,6 +36,7 @@ const workspaceModelDescription = 'A model from inspect_workspace modelCatalog: 
 const workspaceModelEffortDescription = 'Chat and coding only, one of the model\'s efforts in modelCatalog. Omit to run the model\'s standard effort.';
 const workspaceModelRevisionDescription = 'The role\'s revision from inspect_workspace workspaceModels; 0 when it was never set.';
 const agentImageModelDescription = 'An image model from inspect_workspace modelCatalog.image. null follows the Workspace image model.';
+const agentAllowedToolsDescription = 'Leave out. An Agent has no tool list of its own: tool access goes in each mcpServers entry\'s allowedTools.';
 const connectionGuideDescription = 'Plain-text notes the Agent that owns this connection reads as a skill: endpoints, request quirks, draft versus live writes, and the scope each action needs. Never a key or token. Omit to remove.';
 
 /** The skill shapes recipes.ts checks a portable recipe's skills against. */
@@ -135,7 +136,23 @@ const vAgentFields = {
   apiConnections: va(vApiConnection, 50),
   repositories: va(vRepository, 100),
 };
-const vAgent = v.strictObject({ id: vAgentId, ...vAgentFields });
+/**
+ * Models often put an empty tool list on a new Agent. The door drops an empty
+ * list and refuses one that names a tool. The emptiness rule is a check, not
+ * maxLength, so the model-facing JSON Schema cannot carry it: Pi's precheck lets
+ * the list through and Flue's parse refuses it with this field's one sentence.
+ */
+const vAgent = v.pipe(
+  v.strictObject({
+    id: vAgentId,
+    ...vAgentFields,
+    allowedTools: v.pipe(
+      v.optional(v.pipe(v.array(v.string()), v.check((tools) => tools.length === 0, agentAllowedToolsDescription))),
+      v.description(agentAllowedToolsDescription),
+    ),
+  }),
+  v.transform(({ allowedTools: _unused, ...agent }) => agent),
+);
 const vAgentPatch = v.strictObject({
   name: v.optional(vAgentFields.name),
   description: vAgentFields.description,

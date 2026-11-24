@@ -1,12 +1,16 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createHash } from 'node:crypto';
-import type { FlueObservation } from '@flue/runtime';
+import { ToolInputValidationError, type FlueObservation } from '@flue/runtime';
+import { validateToolArguments } from '@earendil-works/pi-ai';
+import { toJsonSchema } from '@valibot/to-json-schema';
+import * as v from 'valibot';
 
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { agentRoutineDeletion } from '../src/routines/store.ts';
 import { AGENT_AUTHORING_GUIDE_VERSION } from '../src/management/agent-authoring/index.ts';
 import { exportWorkspaceRecipe } from '../src/management/recipes.ts';
+import { slackApplyWorkspaceChangesValibotSchema } from '../src/management/schemas.ts';
 import {
   agentAuthoringArtifactClass,
   emitManagementMetric,
@@ -64,6 +68,61 @@ test('tool failure logs retain correlation and safe validation fields, not conte
   assert.deepEqual(early.fields, ['guideVersion', 'operations', 'patch']);
   assert.deepEqual(early.validationCodes, ['additional_properties', 'const']);
   for (const value of SECRET_CORPUS) assert.ok(!lines[1]!.includes(value));
+});
+
+test('a refused apply call leaves one event naming the field, never an argument', () => {
+  const tool = 'PRIVATE_TOOL_SENTINEL';
+  const agent = {
+    id: 'demo_alpha', name: 'PRIVATE_INSTRUCTION_SENTINEL', instructions: 'PRIVATE_MEMORY_SENTINEL', enabled: true,
+    skills: [], mcpServers: [], apiConnections: [], repositories: [], allowedTools: [tool],
+  };
+  const observation = (rest: Partial<Extract<FlueObservation, { type: 'tool' }>>): Extract<FlueObservation, { type: 'tool' }> => ({
+    v: 3, eventIndex: 1, timestamp: '2026-11-24T00:00:00Z', type: 'tool', toolName: 'apply_workspace_changes',
+    toolCallId: 'call_apply', isError: true, durationMs: 0, ...rest,
+  });
+
+  // A new Agent that names a tool passes Pi's precheck; the tool's own parse refuses it.
+  const created = v.safeParse(slackApplyWorkspaceChangesValibotSchema, {
+    idempotencyKey: 'k', operations: [{ itemId: 'create', kind: 'create_agent', agent }],
+  });
+  assert.equal(created.success, false);
+  const parseError = new ToolInputValidationError({
+    tool: 'apply_workspace_changes',
+    issues: created.issues!.map((issue) => ({ message: issue.message, path: issue.path!.map((item) => item.key as string | number) })),
+  });
+
+  // An update that carries the field is refused by Pi's precheck, before the tool runs.
+  const update = { idempotencyKey: 'k', operations: [{
+    itemId: 'update', kind: 'update_agent', agentId: 'demo_alpha', expectedRevision: 1, patch: { allowedTools: [tool] },
+  }] };
+  const parameters = toJsonSchema(slackApplyWorkspaceChangesValibotSchema, { errorMode: 'ignore' });
+  let precheckRefusal = '';
+  try {
+    validateToolArguments({ name: 'apply_workspace_changes', description: '', parameters },
+      { type: 'toolCall', id: 'call_apply', name: 'apply_workspace_changes', arguments: update });
+  } catch (error) {
+    precheckRefusal = (error as Error).message;
+  }
+  assert.match(precheckRefusal, /^Validation failed for tool "apply_workspace_changes":\n/);
+
+  for (const [refusal, errorType] of [
+    [observation({
+      args: agent,
+      errorInfo: { name: parseError.name, type: parseError.type, message: parseError.message, meta: parseError.meta! },
+    }), 'ToolInputValidationError'],
+    [observation({ args: update, result: { content: [{ type: 'text', text: precheckRefusal }] } }),
+      'schema_validation'],
+  ] as const) {
+    const lines: string[] = [];
+    emitManagementToolFailure(refusal, { info: (line) => lines.push(JSON.stringify(line)) });
+    assert.equal(lines.length, 1);
+    const payload = JSON.parse(lines[0]!);
+    assert.equal(payload.event, 'tool.validation_failure');
+    assert.equal(payload.tool, 'apply_workspace_changes');
+    assert.equal(payload.errorType, errorType);
+    assert.ok(payload.fields.includes('allowedTools'), payload.fields);
+    for (const value of [tool, ...SECRET_CORPUS]) assert.ok(!lines[0]!.includes(value));
+  }
 });
 
 test('management telemetry accepts only content-free dimensions', () => {
