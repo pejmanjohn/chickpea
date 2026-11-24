@@ -182,7 +182,8 @@ test('opening the hand-off page creates nothing, for an Owner, for anyone else, 
   assert.match(html, /<form id="agent-app-press" method="post">/, 'the page presses by posting to its own address');
   const nonce = page.headers.get('content-security-policy')?.match(/'nonce-([a-f0-9]+)'/)?.[1];
   assert.ok(nonce && html.includes(`<script nonce="${nonce}">document.forms['agent-app-press'].submit();</script>`), 'and submits it by itself');
-  assert.match(page.headers.get('content-security-policy') ?? '', /form-action 'self' https:\/\/slack\.com/, 'its answer may go on to Slack');
+  assert.match(page.headers.get('content-security-policy') ?? '', /form-action 'self' https:\/\/slack\.com https:\/\/\*\.slack\.com;/,
+    "its answer may go on to Slack, and to the workspace's own address Slack redirects to");
   assert.equal(page.headers.get('cache-control'), 'no-store');
   assert.deepEqual(primary(html), { label: 'Continue to Slack', href: undefined }, 'Continue is the same press');
 

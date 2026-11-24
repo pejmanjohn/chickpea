@@ -44,7 +44,8 @@ interface Card {
 }
 
 const STEPS = [{ label: 'Slack token', note: 'Once per workspace' }, { label: 'Create app' }, { label: 'Allow in Slack' }];
-const SLACK_ORIGIN = 'https://slack.com';
+/** Slack's authorize address, and the workspace's own address it redirects a signed-in person to. */
+const SLACK_ORIGINS = 'https://slack.com https://*.slack.com';
 
 function card(spec: Card): Response {
   const lines = spec.lines
@@ -77,9 +78,9 @@ function pageHeaders(nonce: string | undefined): Headers {
     'referrer-policy': 'no-referrer',
     'x-content-type-options': 'nosniff',
     'x-frame-options': 'DENY',
-    // The press answers with a redirect to Slack, which a browser checks against form-action.
+    // The press answers with a redirect to Slack. Chromium checks every hop of that redirect against form-action.
     'content-security-policy': `default-src 'none'; script-src 'self'${nonce ? ` 'nonce-${nonce}'` : ''}; style-src 'unsafe-inline'; ` +
-      `font-src 'self'; img-src 'self' https: data:; form-action 'self' ${SLACK_ORIGIN}; base-uri 'none'; frame-ancestors 'none'`,
+      `font-src 'self'; img-src 'self' https: data:; form-action 'self' ${SLACK_ORIGINS}; base-uri 'none'; frame-ancestors 'none'`,
   });
 }
 

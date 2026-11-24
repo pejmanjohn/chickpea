@@ -773,6 +773,7 @@ async function visualAgentSlackApps(store) {
     requestUrls: () => ({ events: 'https://visual.test/e', interactions: 'https://visual.test/i' }),
     redirectUri: 'https://visual.test/callback',
     allowUrl: (agentId) => `https://visual.test/allow/${agentId}`,
+    addUrl: (agentId) => `https://visual.test/add/${agentId}`,
   });
   let setting = { mode: 'shared' };
   let token = { stored: false };
