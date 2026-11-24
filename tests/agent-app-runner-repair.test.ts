@@ -221,9 +221,11 @@ test("a user-group Agent's cut-off reply is finished by Chickpea's bot under the
     persona: { name: 'Finance', avatarUrl: 'https://chickpea.example/assets/agents/finance/avatar/1', avatarRevision: 1 },
   };
   cutOffReply(presentations(storage), 'run_finance', 'C1', persona);
-  const stub = { slackOwnBotRun: async () => ({ ok: true, value: null }) };
+  const read: string[] = [];
+  const stub = { slackOwnBotRun: async (id: string) => { read.push(id); return { ok: true, value: null }; } };
   const { calls, asked } = await runnerRepair(storage, stub);
   assert.deepEqual(asked, [undefined]);
+  assert.deepEqual(read, [], 'the state store is asked nothing about a run no Agent app spoke');
   assert.deepEqual(calls.filter((call) => call.method === 'chat.postMessage').map((call) => [call.token, call.channel, call.text, call.username]),
     [[MAIN_BOT, 'C1', PART_TWO, 'Finance']]);
   assert.equal((presentations(storage).get('run_finance') as SlackRunPresentationV3).repairRequired, false);
