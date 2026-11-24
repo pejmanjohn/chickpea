@@ -245,7 +245,7 @@ interface Advanced {
  * next Cancel or Start finishes.
  */
 export type AgentAppCancelOutcome =
-  | { kind: 'cancelled'; agent: CustomAgentConfig; app: 'deleted' | 'left_for_owner' | 'none' }
+  | { kind: 'cancelled'; agent: CustomAgentConfig; app: 'deleted' | 'left_for_owner' | 'not_found' | 'none' }
   | { kind: 'unfinished'; agent: CustomAgentConfig }
   | { kind: 'not_waiting' }
   | { kind: 'not_eligible' };
@@ -367,9 +367,10 @@ export class AgentSlackApps {
   private facts: Promise<{ teamId: string; installationId: string }> | undefined;
   /**
    * Agents whose app the delete step left for the Owner: uninstalled with its definition kept (Slack refused, or no
-   * configuration token), or still installed because no record proves the app is theirs.
+   * configuration token), not found by Slack when it refused the delete, or still installed because no record proves
+   * the app is theirs.
    */
-  private readonly leftForOwner = new Map<string, 'uninstalled_left_definition' | 'left_for_owner'>();
+  private readonly leftForOwner = new Map<string, 'uninstalled_left_definition' | 'not_found' | 'left_for_owner'>();
 
   constructor(private readonly deps: AgentSlackAppsDeps) {
     this.now = deps.now ?? Date.now;
@@ -706,7 +707,7 @@ export class AgentSlackApps {
     const left = this.leftForOwner.get(agentId);
     this.leftForOwner.delete(agentId);
     if (appRecordOf(settled.slackPresence)) return { kind: 'unfinished', agent: settled };
-    return { kind: 'cancelled', agent: settled, app: left ? 'left_for_owner' : 'deleted' };
+    return { kind: 'cancelled', agent: settled, app: left === 'not_found' ? left : left ? 'left_for_owner' : 'deleted' };
   }
 
   /** Slack's callback, forwarded untouched: exchange the code with the app's own credentials and validate the grant. */
@@ -846,7 +847,8 @@ export class AgentSlackApps {
     if (!after) {
       const left = this.leftForOwner.get(agent.id);
       this.leftForOwner.delete(agent.id);
-      return { agent: settled, outcome: left ?? 'removed' };
+      // An app Slack could not find may still exist where this token cannot see it, so tenant end records it as left.
+      return { agent: settled, outcome: left === 'not_found' ? 'uninstalled_left_definition' : left ?? 'removed' };
     }
     if (agentAppIsLive(presence) && after.state === 'uninstalling' && after.next === 'uninstall') {
       await this.commit(settled, { type: 'uninstall_unanswered', at: this.now(), restore: presence.app });
@@ -1728,7 +1730,7 @@ export class AgentSlackApps {
         }
         await deleteAppSecrets(this.secrets, app.appId, record.revision);
       }
-      if (left) this.leftForOwner.set(run.agent.id, stillInstalled ? 'left_for_owner' : 'uninstalled_left_definition');
+      if (left) this.leftForOwner.set(run.agent.id, stillInstalled ? 'left_for_owner' : notFound ? 'not_found' : 'uninstalled_left_definition');
       const message = cancelRemoval(run)
         ? notFound ? 'cancel_not_found' : 'cancel_left'
         : stillInstalled ? 'archived_installed' : notFound ? 'archived_not_found' : 'archived_left';

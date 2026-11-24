@@ -695,7 +695,7 @@ test('a Cancel whose app was already deleted in Slack tells the Owner Chickpea c
   f.slack.deletedInSlack = true;
   captureSlackRefusals(t);
   const cancelled = await f.service.cancel('agent_support', OWNER);
-  assert.equal(cancelled.kind, 'cancelled');
+  assert.deepEqual(cancelled.kind === 'cancelled' && cancelled.app, 'not_found', 'Admin says the same as the message');
   assert.equal(await appOf(f), undefined);
   assert.equal(f.transport.posted.at(-1)?.text, escapeMrkdwn(
     "Chickpea couldn't find the Slack app it made for Support to delete it. If Support still appears in Your Apps in Slack, you can delete it there. Support keeps answering as it did before.",
