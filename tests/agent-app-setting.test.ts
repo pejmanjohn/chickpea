@@ -93,6 +93,8 @@ interface SlackScript {
   update?: 'unanswered' | undefined;
   delete?: 'unanswered' | 'refused' | undefined;
   uninstall?: 'refused' | 'answered' | undefined;
+  /** Slack's answer to the next create, as an `ok: false` code. */
+  createRefusal?: string | undefined;
   exchange?: AgentAppSlackApi['exchange'] | undefined;
   now: number;
   auditFails: boolean;
@@ -190,6 +192,7 @@ async function adminApp(t: TestContext, options: {
     },
     create: async (_token, manifest) => {
       refuseLikeSlack('apps.manifest.create', manifest);
+      if (script.createRefusal) throw new SlackRefused('apps.manifest.create', script.createRefusal);
       script.created += 1;
       return { appId: `A0APP${script.created}`, clientId: `${script.created}.client`, clientSecret: 'cs', signingSecret: 'ss' };
     },
@@ -840,6 +843,23 @@ test("Admin refuses a Channel add for an Agent not in Slack yet with nothing to 
   const back = await f.owner.config.getAgent('agent_old');
   assert.equal(back.lifecycle, 'active', 'the restore stands, and is not archived again');
   assert.deepEqual([back.slackPresence?.errorCode, back.slackPresence?.desiredState], [AWAITING_OWN_APP, 'active'], 'it is not in Slack yet');
+});
+
+// Defects caught: a resumed create Slack refused for the app limit answered 202 creating for an Agent nothing creates.
+test('a Start that resumes a stopped record and meets the app limit answers app_limit, with nothing left behind', async (t) => {
+  const owner = await adminApp(t);
+  assert.equal((await owner.request(`${API}/token`, owner.json('PUT', { refreshToken: PASTED }))).status, 200);
+  owner.script.createRefusal = 'internal_error';
+  const first = await owner.request(`${API}/agents/agent_support/start`, owner.json('POST', {}));
+  assert.equal(first.status, 409);
+  assert.equal((await first.json() as { error: string }).error, 'needs_attention');
+
+  owner.script.createRefusal = 'managed_app_limit_reached';
+  const second = await owner.request(`${API}/agents/agent_support/start`, owner.json('POST', {}));
+  assert.equal(second.status, 409);
+  assert.deepEqual(await second.json(), { error: 'app_limit' });
+  assert.equal((await owner.config.getAgent('agent_support')).slackPresence?.app, undefined, 'no record is left');
+  assert.equal(owner.script.created, 0);
 });
 
 /** Start for agent_support with a stored token, up to Allow. */

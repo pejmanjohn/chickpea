@@ -51,7 +51,12 @@ class SlackGroups implements SlackTransport {
   async openDirectConversation(userId: string) { return { id: `D_${userId}`, private: true, member: true, archived: false }; }
   async joinPublicChannel(channelId: string) { this.joined.push(channelId); return { ...this.channel, id: channelId, member: true }; }
   async lookupUserGroup(id: string) { return this.groups.find((group) => group.id === id); }
-  async listUserGroups() { return this.groups.map((group) => ({ ...group })); }
+  /** Slack's answer to the next list of groups, when it refuses one. */
+  listRefusal: string | undefined;
+  async listUserGroups() {
+    if (this.listRefusal) throw new SlackTransportError('usergroups.list', this.listRefusal);
+    return this.groups.map((group) => ({ ...group }));
+  }
   async createUserGroup(input: { name: string; handle: string; description?: string }) {
     if (this.groups.some((group) => group.handle === input.handle)) throw new SlackTransportError('usergroups.create', 'name_already_exists');
     const group: SlackUserGroup = { id: `S${this.groups.length + 1}`, name: input.name, handle: input.handle, disabled: false, updatedAt: NOW / 1_000 };
@@ -230,6 +235,25 @@ test('turning the setting back off gives a waiting Agent its user group', async 
   assert.deepEqual(f.slack.created, ['support']);
   assert.equal(agent.slackPresence?.errorCode, undefined, 'no longer waiting');
   assert.deepEqual(agentSlackState(agent.slackPresence!), { state: 'user_group' });
+});
+
+// Defects caught: a failed Retry erasing the not-in-Slack-yet marker, so the Agent's instructions name a handle that
+// reaches no one, the read says it answers through a group it does not have, and back to shared skips it.
+test('a Retry that fails leaves an Agent not in Slack yet exactly that', async (t) => {
+  const f = await fixture(t, 'own_app');
+  await f.config.createAgent(newAgent('agent_support', 'Support'));
+  await f.reconciler.retry('agent_support');
+  for (const refusal of ['ratelimited', 'name_already_exists']) {
+    f.slack.listRefusal = refusal;
+    await assert.rejects(f.reconciler.retry('agent_support'), AgentPresenceError);
+    const agent = await f.config.getAgent('agent_support');
+    assert.equal(agent.slackPresence?.errorCode, AWAITING_OWN_APP, refusal);
+    assert.deepEqual(agentSlackState(agent.slackPresence!), { state: 'not_in_slack' });
+    assert.doesNotMatch(runtimeIdentityInstruction({ workspaceId: TEAM, channelId: 'D1', agent }), /handle is/);
+  }
+  f.slack.listRefusal = undefined;
+  await writeAgentSlackAppsSetting(f.settings, { mode: 'shared', changedBy: 'UOWNER', changedAt: NOW });
+  assert.equal((await f.reconciler.retry('agent_support')).slackPresence?.userGroupId, 'S1', 'back to shared still finds it');
 });
 
 test('an Agent not in Slack yet is told its name and no handle', () => {
