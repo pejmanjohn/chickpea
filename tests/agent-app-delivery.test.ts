@@ -4704,3 +4704,17 @@ test("a file on a mention of an Agent app's bot that Chickpea's bot answers, whe
   assert.deepEqual([job.assignment.agentId, job.turn.speaker], SUPPORT_THROUGH_CHICKPEA);
   assert.deepEqual(await filesGiven(h, job), { status: 'complete', seen: ['order-12.txt'], readers: [['files.info', MAIN_BOT], ['files.download', MAIN_BOT]] });
 }, { notMemberOf: { [AGENT_BOT]: ['C1'] } }));
+
+// Mutation proof: reading through the installation when the app's bot can no longer answer reads the file as Chickpea's bot.
+test("a file on a run that speaks as an Agent app's bot is not read once that app can no longer answer, even where Chickpea's bot could read it", async (t) => withHarness(t, async (h) => {
+  const ts = `${Math.floor(Date.now() / 1_000)}.000950`;
+  const text = `<@${AGENT_BOT_USER}> how many boxes?`;
+  h.hold('C1', { user: 'U1', text, ts, files: [boxesFile('F0ENDEDBOXES')] });
+  const { app } = channelMessage(ts, text);
+  assert.equal((await h.deliver('events', { ...app, event: { ...app.event, files: [boxesFile('F0ENDEDBOXES')] } }, { settle: true, forged: true })).status, 200);
+  const [job] = await turnsOn(h, ts);
+  assert.ok(job);
+  assert.deepEqual(job.turn.speaker, SUPPORT_BOT);
+  await setSupportApp(h, { state: 'needs_attention', at: Date.now(), startedBy: 'U1', reason: 'app_removed', resume: 'icon_set', app: { appId: AGENT_APP, clientId: '1.client' } });
+  assert.deepEqual(await filesGiven(h, job), { status: 'failed', seen: [], readers: [] }, 'no bot reads it, so the run says it could not');
+}));

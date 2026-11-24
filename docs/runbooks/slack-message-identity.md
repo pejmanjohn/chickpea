@@ -86,7 +86,11 @@ every Agent's Slack context reads them as an Agent's, not an app's. Its Slack
 reading tools read as the run's bot. The app's bot reads the Channels it is in,
 and a Channel it is not in is refused with a note that its own app is missing
 there. A run answered through Chickpea's bot reads as Chickpea's bot, so it
-can read the thread it answers in. Other Agents ask it by its
+can read the thread it answers in. A run reads the files shared with it as the
+same bot (the attachment analysis, `read_slack_file` and image inputs): a file
+in the app's own DM, or in a private Channel only its bot is in, is visible to
+that bot alone. A run whose app's bot can no longer answer reads no file; it
+never reads one as Chickpea's bot instead. Other Agents ask it by its
 bot user (`<@U…>`) instead of a user group. A person's Channel message that
 mentions its bot beside other Agents is answered by each, once, in the order
 named, as long as each Agent's own bot is in the Channel (see
