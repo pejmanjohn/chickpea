@@ -341,6 +341,7 @@ export class SlackAgentViewPresentation {
     | 'effect_capable'
     | 'relay_setup_failed'
     | undefined;
+  private sessionStartFailureLogged = false;
 
   constructor(private readonly options: AgentViewPresentationOptions) {}
 
@@ -674,6 +675,14 @@ export class SlackAgentViewPresentation {
       return true;
     } catch (error) {
       const certainty = slackEffectOutcome(error);
+      // Without this start Slack shows no working indicator and no Stop control, and nothing else says why.
+      if (!this.sessionStartFailureLogged) {
+        this.sessionStartFailureLogged = true;
+        console.warn(
+          `[chickpea] Slack agents.sessions.setStatus processing ${certainty} for ${presentation.owner.kind}: ` +
+          safeSlackErrorCode(error),
+        );
+      }
       await this.recordAgentSessionReceipt(operationId, certainty);
       if (certainty === 'failed' && isPermanentAgentSessionRejection(error)) {
         await this.markAgentSessionUnavailable(operationId);

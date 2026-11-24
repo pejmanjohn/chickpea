@@ -58,6 +58,7 @@ function harness(input: {
   persona?: { name: string; avatarUrl: string; avatarRevision: number };
   owner?:
     | { kind: 'selected_agent'; persona: { name: string; avatarUrl: string; avatarRevision: number } }
+    | { kind: 'agent_app'; agentName: string }
     | { kind: 'chickpea' };
   wait?: (milliseconds: number) => Promise<void>;
   /** Host answer release on, with this hold. */
@@ -1682,6 +1683,27 @@ test('V3 marks a permanently unsupported native processing surface unavailable',
       stored?.schemaVersion === 3 ? stored.agentSession.disposition : undefined,
       'unavailable',
     );
+  } finally {
+    h.db.close();
+  }
+});
+
+// Defect caught: Slack refusing an Agent app's own bot the session start left no trace, so a Stop control that never
+// showed could not be told from one Slack never offered.
+test("a refused native processing start logs the method, the run's owner and Slack's code, once", async (t) => {
+  const warnings: string[] = [];
+  t.mock.method(console, 'warn', (...values: unknown[]) => { warnings.push(values.join(' ')); });
+  const h = harness({
+    schemaVersion: 3,
+    owner: { kind: 'agent_app', agentName: 'Support' },
+    sessionError: { code: ErrorCode.PlatformError, data: { error: 'not_allowed_token_type' } },
+  });
+  try {
+    assert.equal(await h.presentation.beginAgentSessionProcessing(), false);
+    assert.equal(await h.presentation.beginAgentSessionProcessing(), false);
+    assert.deepEqual(warnings, [
+      '[chickpea] Slack agents.sessions.setStatus processing failed for agent_app: not_allowed_token_type',
+    ]);
   } finally {
     h.db.close();
   }
