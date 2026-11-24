@@ -44,6 +44,12 @@ export interface AgentSlackAppAdminDeps {
    * recovery that names the cause, and the rest go on.
    */
   placeInSlack(c: Context, agentIds: readonly string[]): Promise<void>;
+  /**
+   * Whether the state store runs this request's code. It makes every Agent
+   * asked for in Slack, and a deploy leaves it on the code before for
+   * minutes, which may not know the mode at all.
+   */
+  stateStoreCurrent(c: Context): Promise<boolean>;
   /** Where each change is recorded as an audit event. */
   identity(c: Context): IdentityStore;
   /** Test seam: the service for an env; live stores and the main bot otherwise. */
@@ -96,7 +102,8 @@ type SlackAppsAuditAction =
  *   { stored: true, pastedBy, pastedAt }, agents: SlackAppsAgentRow[] }`.
  * - `PUT /admin/api/slack-apps/mode` `{ mode: 'shared' | 'own_app' }` → `{ setting }`; with `shared`, every such PUT
  *   also gives each Agent in Slack nowhere a user group and answers `{ setting, waiting: SlackAppsAgentRow[] }`, the
- *   Agents still not in Slack after it, so pressing again repairs a reconcile that stopped partway.
+ *   Agents still not in Slack after it, so pressing again repairs a reconcile that stopped partway. Turning
+ *   `own_app` on answers 503 `{ error: 'updating' }` while the state store still runs the code before a deploy.
  * - `PUT /admin/api/slack-apps/token` `{ refreshToken }` → `{ token }`; 400 `{ error: 'not_refresh_token' | 'rejected' |
  *   'other_workspace' }`; 503 `{ error: 'slack_down' }`.
  * - `DELETE /admin/api/slack-apps/token` → `{ token: { stored: false }, removed: 'discarded' | 'unconfirmed' | 'none' }`.
@@ -164,6 +171,11 @@ export function createAgentSlackAppAdminRoutes(deps: AgentSlackAppAdminDeps): Ho
     if (!gated.ok) return gated.response;
     const parsed = v.safeParse(modeSchema, await readJson(c, MAX_BODY_BYTES));
     if (!parsed.success) return invalidRequest(c);
+    // Turned on while the store runs older code, the setting would promise what the next Agent made in Slack never gets.
+    if (parsed.output.mode === 'own_app' && (await gated.apps.setting()).mode !== 'own_app' && !await deps.stateStoreCurrent(c)) {
+      c.header('Retry-After', '60');
+      return c.json({ error: 'updating' }, 503);
+    }
     const { setting, changed } = await gated.apps.setMode(parsed.output.mode, gated.slackUserId);
     if (changed) await audit(c, gated.principal, 'agent_apps.mode_changed', setting.mode);
     if (setting.mode !== 'shared') return c.json({ setting: settingJson(setting) });

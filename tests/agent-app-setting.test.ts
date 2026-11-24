@@ -175,7 +175,7 @@ function slackWorkspace() {
 
 async function adminApp(t: TestContext, options: {
   role?: AuthPrincipal['role']; machine?: boolean; port?: boolean; permissionMissing?: boolean;
-  slack?: ReturnType<typeof slackWorkspace>;
+  slack?: ReturnType<typeof slackWorkspace>; env?: Record<string, unknown>;
 } = {}) {
   const config = new SqliteConfigStore(':memory:', agentRoutineDeletion, { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
@@ -270,7 +270,7 @@ async function adminApp(t: TestContext, options: {
     ...testAdminAuthority(TOKEN, undefined, identity, principal(options.role ?? 'owner', options.machine)),
   });
   const request = (path: string, init: RequestInit = {}, headers: Record<string, string> = {}) =>
-    app.request(path, { ...init, headers: { ...testAdminHeaders(TOKEN), ...(init.headers as Record<string, string> | undefined), ...headers } }, HOSTED);
+    app.request(path, { ...init, headers: { ...testAdminHeaders(TOKEN), ...(init.headers as Record<string, string> | undefined), ...headers } }, options.env ?? HOSTED);
   const json = (method: string, body?: unknown): RequestInit => ({
     method, ...(body === undefined ? {} : { body: JSON.stringify(body) }), headers: { 'content-type': 'application/json' },
   });
@@ -381,6 +381,60 @@ test('an Owner turns the mode on and off; a bad mode, or the mode already stored
     ['agent_apps.mode_changed', 'own_app'],
     ['agent_apps.mode_changed', 'shared'],
   ], 'one record per change, none for the mode already stored');
+});
+
+/**
+ * A Cloudflare deployment serving Worker version `v2`, whose installation's
+ * state store answers with the version it runs: `v1` until a deploy reaches
+ * it, or nothing at all when its call fails.
+ */
+function deployedOn(store: { serving: string | Error }) {
+  const asked: string[] = [];
+  const env = scopeInstallationEnv({
+    CHICKPEA_TENANCY: 'installation',
+    CF_VERSION_METADATA: { id: 'v2' },
+    TAG_STATE: {
+      getByName: (name: string) => ({
+        threadRunnerTurn: async (op: { kind: string }) => {
+          asked.push(`${name} ${op.kind}`);
+          if (store.serving instanceof Error) throw store.serving;
+          return { ok: true, value: store.serving };
+        },
+      }),
+    },
+  }, { installationId: 'inst_a' });
+  return { env, asked };
+}
+
+test('each new Agent is not made its own Slack app while the state store that makes Agents in Slack runs the code before a deploy', async (t) => {
+  const store: { serving: string | Error } = { serving: 'v1' };
+  const deployed = deployedOn(store);
+  const owner = await adminApp(t, { env: deployed.env });
+
+  // The token page, after the token is saved, turns the setting on: refused while Agents made in Slack would ignore it.
+  const early = await owner.request(`${API}/mode`, owner.json('PUT', { mode: 'own_app' }));
+  assert.equal(early.status, 503);
+  assert.equal(early.headers.get('retry-after'), '60');
+  assert.deepEqual(await early.json(), { error: 'updating' });
+  assert.deepEqual(await readAgentSlackAppsSetting(owner.settings), { mode: 'shared' });
+  assert.deepEqual(owner.audits(), []);
+  assert.ok(deployed.asked.length > 0 && deployed.asked.every((line) => line.includes('inst_a') && line.endsWith(' servingVersion')),
+    `the installation's own store is asked: ${deployed.asked.join(', ')}`);
+
+  store.serving = new Error('TagStateStore does not implement threadRunnerTurn');
+  assert.equal((await owner.request(`${API}/mode`, owner.json('PUT', { mode: 'own_app' }))).status, 503, 'a store that cannot say is not taken as current');
+
+  store.serving = 'v2';
+  const on = await owner.request(`${API}/mode`, owner.json('PUT', { mode: 'own_app' }));
+  assert.equal(on.status, 200);
+  assert.deepEqual(await readAgentSlackAppsSetting(owner.settings), { mode: 'own_app', changedBy: OWNER, changedAt: NOW });
+
+  // The next deploy: a setting already on stays on, and turning it off is never held back.
+  store.serving = 'v1';
+  assert.equal((await owner.request(`${API}/mode`, owner.json('PUT', { mode: 'own_app' }))).status, 200);
+  const off = await owner.request(`${API}/mode`, owner.json('PUT', { mode: 'shared' }));
+  assert.equal(off.status, 200);
+  assert.equal((await readAgentSlackAppsSetting(owner.settings)).mode, 'shared');
 });
 
 test('setting the default mode on a workspace that never chose one stores nothing', async (t) => {
