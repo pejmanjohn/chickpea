@@ -365,32 +365,6 @@ test('a rotation Slack refuses or does not answer still deletes the stored copy,
   }
 });
 
-test("the old token page's removal says what each removal did, and claims nothing when no token is held", async (t) => {
-  const page = '/admin/api/agents/agent_support/slack-app/token';
-  const sentence = async (response: Response) => /<p>([^<]*)<\/p>/.exec(await response.text())?.[1]?.replaceAll('&#39;', "'");
-  const owner = await adminApp(t);
-  assert.equal((await owner.request(`${API}/token`, owner.json('PUT', { refreshToken: PASTED }))).status, 200);
-  assert.equal(await sentence(await owner.request(page, owner.form({ action: 'remove' }))),
-    'Chickpea deleted its copy of your configuration token and retired that token at Slack.');
-  assert.equal(await sentence(await owner.request(page, owner.form({ action: 'remove' }))),
-    'Chickpea holds no configuration token for this workspace.');
-
-  assert.equal((await owner.request(`${API}/token`, owner.json('PUT', { refreshToken: PASTED_AGAIN }))).status, 200);
-  owner.script.rotate = async () => { throw new SlackUnavailable('tooling.tokens.rotate', 'network_error'); };
-  assert.equal(await sentence(await owner.request(page, owner.form({ action: 'remove' }))),
-    "Chickpea deleted its copy of your configuration token, but Slack didn't confirm the token stopped working, so Slack may still accept it.");
-  assert.equal(await sentence(await owner.request(page, owner.form({ action: 'remove' }))),
-    'Chickpea holds no configuration token for this workspace.', 'a removal resubmitted after an unconfirmed one is no assurance');
-  assert.deepEqual(owner.audits().map((audit) => [audit.action, audit.reasonCode]), [
-    ['agent_apps.token_pasted', undefined],
-    ['agent_apps.token_removed', 'discarded'],
-    ['agent_apps.token_removed', 'none'],
-    ['agent_apps.token_pasted', undefined],
-    ['agent_apps.token_removed', 'unconfirmed'],
-    ['agent_apps.token_removed', 'none'],
-  ]);
-});
-
 test('a token pasted over a stored one retires the stored one at Slack before the new one is kept', async (t) => {
   const owner = await adminApp(t);
   assert.equal((await owner.request(`${API}/token`, owner.json('PUT', { refreshToken: PASTED }))).status, 200);

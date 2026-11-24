@@ -753,6 +753,132 @@ function closeServer(server) {
   });
 }
 
+/**
+ * Agents in Slack, for looking at Admin's section and token page: the port
+ * is installed and the service is an in-memory stand-in. A paste of a token
+ * containing `access`, `other`, `bad` or `down` gets Slack's refusal of that
+ * kind; `/__admin_visual_fixture/agent-apps/:agentId/:state` sets one Agent's
+ * Slack state (`allow` finishes a move as Slack's Allow would). A state of
+ * `next:<outcome>` instead sets how that Agent's next press or Cancel answers
+ * (`creating`, `left_for_owner`, `unfinished`), and
+ * `next:unconfirmed` or `next:none` how the next token removal answers.
+ * Start returns a slack.com address with a made-up client ID, because the
+ * page follows only slack.com: pressing it in a browser opens Slack's real
+ * sign-in page, so stop the navigation rather than sign in.
+ */
+async function visualAgentSlackApps(store) {
+  const { configureAgentSlackApps } = await loadTsModule('src/slack/agent-apps/host.ts');
+  const { SlackUnavailable } = await loadTsModule('src/slack/agent-apps/slack-api.ts');
+  configureAgentSlackApps({
+    requestUrls: () => ({ events: 'https://visual.test/e', interactions: 'https://visual.test/i' }),
+    redirectUri: 'https://visual.test/callback',
+    allowUrl: (agentId) => `https://visual.test/allow/${agentId}`,
+  });
+  let setting = { mode: 'shared' };
+  let token = { stored: false };
+  const states = new Map([['agent_customer', 'not_in_slack']]);
+  const nextOutcome = new Map();
+  const presenceFor = (presence, slackState, reason) => {
+    const app = { app: { appId: 'A0VISUAL', clientId: '1.c' }, icon: 'agent_avatar', at: 1, startedBy: 'UVISUALOWNER' };
+    switch (slackState) {
+      case 'not_in_slack': return { ...presence, desiredState: 'active', health: 'pending', errorCode: 'awaiting_own_app' };
+      case 'creating': return { ...presence, app: { ...app, state: 'creating' } };
+      case 'waiting_for_allow': return { ...presence, app: { ...app, state: 'awaiting_consent' } };
+      case 'cancelling': return { ...presence, app: { ...app, state: 'uninstalling' } };
+      case 'needs_attention': return { ...presence, app: { ...app, state: 'needs_attention', reason: reason ?? 'create_refused', resume: 'create' } };
+      case 'switching':
+      case 'own_app':
+        return {
+          ...presence, kind: 'agent_app', released: { userGroupId: 'SVISUAL' },
+          app: { ...app, state: 'active', botUserId: 'UBOT', installedAt: 1, installedBy: 'UVISUALOWNER', switchProgress: slackState === 'switching' ? 'bring_in_pending' : 'done' },
+        };
+      default: return presence;
+    }
+  };
+  const agents = async () => (await store.listAgents())
+    .filter((agent) => agent.kind === 'user' && agent.lifecycle !== 'archived' && agent.lifecycle !== 'draft' && agent.slackPresence)
+    .map((agent) => {
+      const [slackState, reason] = (states.get(agent.id) ?? 'user_group').split(':');
+      return { ...agent, slackPresence: presenceFor(agent.slackPresence, slackState, reason) };
+    });
+  const agent = async (agentId) => {
+    const found = (await agents()).find((candidate) => candidate.id === agentId);
+    if (!found) {
+      const { UnknownAgentError } = await loadTsModule('src/config/errors.ts');
+      throw new UnknownAgentError(agentId);
+    }
+    return found;
+  };
+  const service = {
+    setting: async () => setting,
+    setMode: async (mode, changedBy) => {
+      if (setting.mode === mode) return { setting, changed: false };
+      setting = { mode, changedBy, changedAt: Date.now() };
+      return { setting, changed: true };
+    },
+    configurationToken: async () => token,
+    pasteConfigurationToken: async (refreshToken, pastedBy) => {
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 1200));
+      if (!refreshToken.startsWith('xoxe-') || refreshToken.includes('access')) return 'not_refresh_token';
+      if (refreshToken.includes('down')) throw new SlackUnavailable('tooling.tokens.rotate', 'visual');
+      if (refreshToken.includes('other')) return 'other_workspace';
+      if (refreshToken.includes('bad')) return 'rejected';
+      token = { stored: true, pastedBy, pastedAt: Date.now() };
+      return 'saved';
+    },
+    removeConfigurationToken: async () => {
+      const held = token.stored;
+      const removed = nextOutcome.get('token') ?? 'discarded';
+      nextOutcome.delete('token');
+      token = { stored: false };
+      return held ? removed : 'none';
+    },
+    userAgents: agents,
+    agentChannelGrants: async () => store.listAgentChannelGrants(),
+    press: async (agentId) => {
+      const current = await agent(agentId);
+      if (!token.stored) return { kind: 'token_needed' };
+      const now = states.get(agentId) ?? 'user_group';
+      if (now === 'own_app') return { kind: 'already_own_app', agent: current };
+      if (now === 'cancelling') {
+        states.delete(agentId);
+        return { kind: 'cancelling', agent: await agent(agentId) };
+      }
+      const next = nextOutcome.get(agentId);
+      nextOutcome.delete(agentId);
+      if (next === 'creating') {
+        states.set(agentId, 'creating');
+        return { kind: 'creating', agent: await agent(agentId) };
+      }
+      states.set(agentId, 'waiting_for_allow');
+      return { kind: 'authorize', url: `https://slack.com/oauth/v2/authorize?client_id=visual&state=${agentId}`, agent: await agent(agentId) };
+    },
+    cancel: async (agentId) => {
+      await agent(agentId);
+      const now = states.get(agentId);
+      if (now !== 'waiting_for_allow' && now !== 'cancelling') return { kind: 'not_waiting' };
+      const next = nextOutcome.get(agentId);
+      nextOutcome.delete(agentId);
+      if (next === 'unfinished') {
+        states.set(agentId, 'cancelling');
+        return { kind: 'unfinished' };
+      }
+      states.delete(agentId);
+      return { kind: 'cancelled', agent: await agent(agentId), app: next === 'left_for_owner' ? 'left_for_owner' : 'deleted' };
+    },
+  };
+  return {
+    service,
+    set(agentId, slackState) {
+      if (slackState.startsWith('next:')) {
+        const outcome = slackState.slice('next:'.length);
+        nextOutcome.set(outcome === 'unconfirmed' || outcome === 'none' ? 'token' : agentId, outcome);
+      } else if (slackState === 'allow') states.set(agentId, 'own_app');
+      else states.set(agentId, slackState);
+    },
+  };
+}
+
 /** Start one disposable, loopback-only real Admin fixture. */
 export async function startAdminVisualFixture(options = {}) {
   const host = options.host ?? DEFAULT_HOST;
@@ -1153,11 +1279,19 @@ export async function startAdminVisualFixture(options = {}) {
       const body = await c.res.json();
       c.res = Response.json({ ...body, identity: { version: '0.1.0', sourceCommit: 'a'.repeat(40) }, deployment: 'cloudflare' });
     });
+    const agentSlackApps = options.agentSlackApps ? await visualAgentSlackApps(store) : undefined;
+    if (agentSlackApps) {
+      app.get('/__admin_visual_fixture/agent-apps/:agentId/:state', (c) => {
+        agentSlackApps.set(c.req.param('agentId'), c.req.param('state'));
+        return c.redirect('/admin/destinations/slack/connection', 302);
+      });
+    }
     const managedConnectionProviders = options.notionSignIns
       ? visualNotionProviders(await loadTsModule('src/connections/managed.ts'))
       : undefined;
     app.route('/', createAdminRoutes({
       ...(managedConnectionProviders ? { managedConnectionProviders } : {}),
+      ...(agentSlackApps ? { agentSlackApps: async () => agentSlackApps.service } : {}),
       updateFetch: async () => new Response('', { status: 404 }),
       store,
       settings,
@@ -1261,6 +1395,7 @@ function parseCliArgs(args) {
     else if (value === '--sandbox-state') parsed.sandboxState = args[++index];
     else if (value === '--principal-role') parsed.principalRole = args[++index];
     else if (value === '--notion-sign-ins') parsed.notionSignIns = true;
+    else if (value === '--agent-slack-apps') parsed.agentSlackApps = true;
     else throw new Error(`Unknown argument: ${value}`);
   }
   return parsed;

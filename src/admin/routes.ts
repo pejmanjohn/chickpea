@@ -1,9 +1,8 @@
 import { planDependencies, planStatus, preparePlanConnection, pollPlanHandoff, completePlanHandoff, confirmPlanConnection, cancelPlanConnection, disconnectPlan, resolvePlanSession } from '../chatgpt-plan/connection.ts';
-import { agentAppPresenceHooks, agentDmPlacementFacts } from '../slack/agent-apps/index.ts';
+import { agentAppPresenceHooks, agentDmPlacementFacts, agentSlackAppsHost } from '../slack/agent-apps/index.ts';
 import {
   type AgentSlackAppAdminDeps,
   createAgentSlackAppAdminRoutes,
-  isAgentSlackAppTokenApiPath,
 } from '../slack/agent-apps/admin-routes.ts';
 import { ChannelDirectoryCache } from '../slack/channel-directory-cache.ts';
 import { apiOAuthLifecycleDependencies } from '../connections/api-oauth-lifecycle.ts';
@@ -6683,6 +6682,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return c.html(renderAdminPage({
       usageAdminUi: usageAdminUi(c),
       installationOwner: isOwnerSession(principal),
+      agentSlackAppsOffered: agentSlackAppsHost() !== undefined && isOwnerSession(principal),
       browserSetupOffered: standalone,
       websiteLoginsOffered: standalone || hostedWebsiteLoginsOffered(),
       websiteLoginsRemoveOnly: !standalone && hostedBrowserConfigured() && !hostedWebsiteLoginsOffered(),
@@ -11884,14 +11884,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.route('/', createAgentSlackAppAdminRoutes({
     actor: agentActor,
     identity,
-    getAgent: async (c, agentId) => {
-      try {
-        return await store(c).getAgent(agentId);
-      } catch (error) {
-        if (error instanceof UnknownAgentError) return undefined;
-        throw error;
-      }
-    },
     ...(options.agentSlackApps ? { service: options.agentSlackApps } : {}),
   }));
 
@@ -13039,7 +13031,7 @@ function machinePrincipalAllowed(c: Context): boolean {
 }
 
 function isHumanAuthFormMutation(c: Context): boolean {
-  return c.req.method === 'POST' && (c.req.path === '/admin/logout' || isAgentSlackAppTokenApiPath(c.req.path));
+  return c.req.method === 'POST' && c.req.path === '/admin/logout';
 }
 
 async function inspectionWithinSignal(

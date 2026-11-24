@@ -44,7 +44,7 @@ const MEMBER = {
   team_id: 'T1', deleted: false, is_bot: false, is_app_user: false,
   is_restricted: false, is_ultra_restricted: false, is_stranger: false,
 };
-const NOT_FOUND = [404, 404, 404, 404, 404, 404];
+const NOT_FOUND = [404, 404, 404, 404, 404];
 
 const groupPresence: AgentSlackPresence = {
   requestedHandle: 'support', normalizedHandle: 'support', desiredState: 'active', health: 'healthy',
@@ -76,7 +76,7 @@ async function todaysHome(stores: AppStores): Promise<string> {
   return JSON.stringify(agentDirectoryAppHome([await stores.config.getAgent('agent_support')], { unavailableNotice: false }));
 }
 
-/** The four Core paths and the two Admin paths, each as an Owner would reach it. */
+/** The four Core paths and the older Admin token page, each as an Owner would reach it. */
 async function agentAppPathStatuses(env: PlatformEnv | undefined, stores: AppStores): Promise<number[]> {
   const core = await Promise.all([
     app.request('/channels/slack/agent-apps/events', { method: 'POST', body: '{}' }, env),
@@ -88,10 +88,6 @@ async function agentAppPathStatuses(env: PlatformEnv | undefined, stores: AppSto
   const owner = testAdminHeaders(ADMIN_TOKEN);
   const pages = await Promise.all([
     admin.request('/admin/agents/agent_support/slack-app', { headers: owner }, env),
-    admin.request('/admin/api/agents/agent_support/slack-app/token', {
-      method: 'POST', body: 'action=paste&refreshToken=xoxe-1-x',
-      headers: { ...owner, 'content-type': 'application/x-www-form-urlencoded' },
-    }, env),
   ]);
   return [...core, ...pages].map((response) => response.status);
 }

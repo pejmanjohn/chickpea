@@ -77,7 +77,7 @@ import {
   agentAppSwitchedMessage,
   archiveRefusedCopy,
   consentPage,
-  tokenPagePath,
+  TOKEN_PAGE_PATH,
   unnamedExpiredPage,
 } from './pages.ts';
 import {
@@ -1154,7 +1154,7 @@ export class AgentSlackApps {
     const links: AgentAppLinks = {
       agentId: agent.id,
       allowUrl: this.deps.host.allowUrl(agent.id),
-      ...(origin ? { tokenPageUrl: tokenPageUrl(origin, agent.id), adminUrl: adminUrl(origin) } : {}),
+      ...(origin ? { tokenPageUrl: tokenPageUrl(origin), adminUrl: adminUrl(origin) } : {}),
     };
     const message = agentAppMessage(kind, names, links);
     const dm = await this.deps.transport.openDirectConversation(slackUserId);
@@ -1175,8 +1175,8 @@ export class AgentSlackApps {
   }
 }
 
-function tokenPageUrl(origin: string, agentId: string): string {
-  return `${origin.replace(/\/+$/, '')}${tokenPagePath(agentId)}`;
+function tokenPageUrl(origin: string): string {
+  return `${origin.replace(/\/+$/, '')}${TOKEN_PAGE_PATH}`;
 }
 
 function adminUrl(origin: string): string {
