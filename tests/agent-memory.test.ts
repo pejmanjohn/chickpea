@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { parseMemoryCommand } from '../src/memory/commands.ts';
-import { agentMemoryPromptBlock } from '../src/memory/runtime.ts';
+import { agentMemoryPromptBlock, handleMemoryCommand } from '../src/memory/runtime.ts';
 import { MemoryStoreLogic, SqliteMemoryStateStore } from '../src/memory/store.ts';
 import { MemoryStateError } from '../src/memory/types.ts';
 import { renderMemoryContent } from '../src/memory/validation.ts';
@@ -196,4 +196,40 @@ test('Agent memory bounds retained idempotency receipts per Agent', () => {
   } finally {
     db.close();
   }
+});
+
+// Defect caught: a `!memory` command addressed to a moving Agent's released group, which still answers until Slack
+// turns it off, not taken as a command, so it reaches the Agent as an ordinary message.
+test("a memory command addressed to a released user group that still answers is the Agent's command", async () => {
+  const handled = async (answers: boolean) => {
+    const replies: string[] = [];
+    const result = await handleMemoryCommand({
+      turn: {
+        workspaceId: 'T1', channelId: 'C1', eventId: `Ev_${String(answers)}`, userId: 'U1', text: '<!subteam^S0MOVING|@moving> !memory list',
+        messageTs: '1.0001', threadTs: '1.0001', source: 'app_mention', contextMode: 'channel_history',
+      },
+      platformEnv: undefined,
+      client: {} as never,
+      presenter: { deliverFinal: async (text: string) => { replies.push(text); } } as never,
+      assignment: {
+        agent: {
+          id: 'agent_moving',
+          slackPresence: {
+            kind: 'agent_app', requestedHandle: 'moving', normalizedHandle: 'moving', desiredState: 'active', health: 'healthy',
+            avatar: { kind: 'generated', revision: 1, seed: 'moving' },
+            app: {
+              state: 'active', at: 1, app: { appId: 'A0MOVING', clientId: '1.client' }, icon: 'agent_avatar', botUserId: 'UMOVINGBOT',
+              installedAt: 1, installedBy: 'U1',
+            },
+            released: { userGroupId: 'S0MOVING', answers },
+          },
+        },
+      } as never,
+      // Every store refuses: the command is still the Agent's, and answers with the failure.
+      dependencies: { state: {} as never, config: {} as never, identity: {} as never },
+    });
+    return { result, replies: replies.length };
+  };
+  assert.deepEqual(await handled(true), { result: true, replies: 1 });
+  assert.deepEqual(await handled(false), { result: false, replies: 0 }, 'a group Slack turned off addresses nothing');
 });

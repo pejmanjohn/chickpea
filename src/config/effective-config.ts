@@ -146,6 +146,26 @@ export function runtimeIdentityInstruction(
   return parts.join(' ');
 }
 
+/**
+ * The config with its identity line naming the handle but not how Slack writes
+ * it. That form changes when the handle moves between the Agent's user group
+ * and its own app's bot, which changes nothing the Agent may do or is told to do.
+ */
+export function withPlainHandleIdentity(config: EffectiveSlackConfig): EffectiveSlackConfig {
+  const presence = config.agent.slackPresence;
+  if (presence?.kind === 'agent_app' || !presence?.userGroupId) return config;
+  const line = runtimeIdentityInstruction(config);
+  // The identity line follows the Agent's own instructions, so search from the end.
+  const at = config.instructions.lastIndexOf(line);
+  if (at < 0) return config;
+  const { userGroupId: _userGroupId, ...plain } = presence;
+  const plainLine = runtimeIdentityInstruction({ ...config, agent: { ...config.agent, slackPresence: plain } });
+  return {
+    ...config,
+    instructions: config.instructions.slice(0, at) + plainLine + config.instructions.slice(at + line.length),
+  };
+}
+
 type TeammateAssignment = Pick<ResolvedAssignment, 'teammates' | 'inAgentAppDm'> & {
   agent: Pick<CustomAgentConfig, 'kind'>;
 };

@@ -32,7 +32,7 @@ export class SlackRefused extends Error {
   }
 }
 
-export type AgentAppSlackStep = 'rotate' | 'release_handle' | 'create' | 'update' | 'icon' | 'exchange' | 'uninstall' | 'delete' | 'invite' | 'join';
+export type AgentAppSlackStep = 'rotate' | 'release_handle' | 'create' | 'update' | 'icon' | 'exchange' | 'uninstall' | 'delete' | 'invite' | 'join' | 'restore_handle';
 
 /** One structured line per Slack refusal in an Agent app's lifecycle; for the operator, never the customer. */
 export function logSlackRefusal(

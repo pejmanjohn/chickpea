@@ -1,5 +1,6 @@
 import type {
   ActiveAgentApp,
+  AgentSlackPresence,
   AgentAppAttention,
   AgentAppIcon,
   AgentAppLifecycle,
@@ -83,6 +84,40 @@ export function isRefusal(result: AgentAppTransition): result is AgentAppRefusal
 /** The switch step a live app still owes; undefined once the switch is done, as for a record stored before it was tracked. */
 export function pendingSwitchStep(app: AgentAppLifecycle): Exclude<AgentAppSwitchProgress, 'done'> | undefined {
   return app.state === 'active' && app.switchProgress && app.switchProgress !== 'done' ? app.switchProgress : undefined;
+}
+
+/**
+ * A presence whose app Slack removed while the app held the handle, so the
+ * group it released has not yet been turned back on: the driver's restore is
+ * due. One whose group Slack refused to turn on, the Owner told, waits for
+ * an Owner.
+ */
+export function restorePending(
+  presence: AgentSlackPresence | undefined,
+): presence is AgentAppPresence & { app: Extract<AgentAppLifecycle, { state: 'needs_attention' }> } {
+  return presence?.kind === 'agent_app' && presence.app.state === 'needs_attention' && presence.app.reason === 'app_removed' &&
+    presence.released?.enableRefused !== true;
+}
+
+/** The job that drives one Agent's move to or from its own Slack app, outside the request that started it. */
+export interface AgentAppSwitchJob {
+  agentId: string;
+  appId: string;
+  teamId: string;
+  ownerSlackUserId: string;
+}
+
+/** The job an Agent's move still owes: a live app's switch with steps left, or a removed app's restore. */
+export function agentAppMoveJob(agentId: string, presence: AgentSlackPresence | undefined, teamId: string): AgentAppSwitchJob | undefined {
+  if (presence?.kind !== 'agent_app') return undefined;
+  const { app } = presence;
+  if (app.state === 'active' && pendingSwitchStep(app)) {
+    return { agentId, appId: app.app.appId, teamId, ownerSlackUserId: app.installedBy };
+  }
+  if (restorePending(presence) && presence.app.app) {
+    return { agentId, appId: presence.app.app.appId, teamId, ownerSlackUserId: presence.app.startedBy };
+  }
+  return undefined;
 }
 
 /** A `creating` record Slack never answered within the settle window; nothing creates again until Try again. */
