@@ -22,6 +22,8 @@ interface SlackScene {
   members: string[];
   replace: 'ok' | 'refused' | 'unreachable' | 'redirect';
   channelLookupFails: boolean;
+  /** When set, Slack answers this many more channel lookups, then fails every one after. */
+  channelLookupsLeft?: number;
   archived: boolean;
 }
 
@@ -45,6 +47,7 @@ async function withPrivateSetup(
       }
       if (method === 'users.info') return { ok: true, user: slackUser(body.get('user') ?? '') };
       if (method === 'conversations.info') {
+        if (scene.channelLookupsLeft !== undefined && scene.channelLookupsLeft-- <= 0) return { ok: false, error: 'fatal_error' };
         if (scene.channelLookupFails) return { ok: false, error: 'fatal_error' };
         return { ok: true, channel: { id: body.get('channel'), name: 'private-lab', is_private: true, is_member: true, is_archived: scene.archived } };
       }
@@ -381,7 +384,7 @@ test('an unexpected failure before the claim answers beside the card, which stil
 
 // Defects caught: choosing an Agent not in Slack yet on the card told the inviter to retry in Admin, where Retry does
 // nothing for it, and recorded the setup as a failed publication, though the Channel was kept for it.
-test('choosing an Agent not in Slack yet keeps the Channel for it, and the card says it joins once an Owner adds it to Slack', async (t) => {
+test('choosing an Agent not in Slack yet keeps the Channel for it, and the card says it answers here through Chickpea once an Owner adds it to Slack', async (t) => {
   configureAgentSlackApps({ requestUrls: () => ({ events: '', interactions: '' }), redirectUri: '', allowUrl: () => '', addUrl: () => '' });
   t.after(() => configureAgentSlackApps(undefined));
   const waiting = {
@@ -395,7 +398,7 @@ test('choosing an Agent not in Slack yet keeps the Channel for it, and the card 
     const click = addClick(setupId, OPS.id);
     assert.equal((await deliver('interactions', click.payload)).status, 200);
     const replaced = await replacedAt(calls, click.responseUrl);
-    const joins = 'Ops joins this channel once a workspace Owner adds it to Slack.';
+    const joins = 'Once a workspace Owner adds Ops to Slack, it answers in this channel through Chickpea until someone in the channel adds it.';
     assert.equal(replaced.text, joins);
     assert.deepEqual(buttons(replaced.blocks).map(({ text }) => text.text), ['Add another Agent', 'Open Chickpea']);
     assert.deepEqual((await stores.config.listAgentChannelGrants('T1', 'C1')).map(({ status }) => status), ['pending'], 'the Channel waits for Ops');
@@ -406,6 +409,32 @@ test('choosing an Agent not in Slack yet keeps the Channel for it, and the card 
     const again = addClick(setupId, OPS.id);
     await deliver('interactions', again.payload);
     assert.equal((await replacedAt(calls, again.responseUrl)).text, joins, 'a second click says the same');
+  }, async (install) => {
+    await writeAgentSlackAppsSetting(install.stores.settings, { mode: 'own_app', changedBy: 'U1', changedAt: Date.now() });
+  });
+});
+
+// Defect caught: the first click's own answer for an Agent not in Slack yet was never checked on its own; a later
+// read of Slack stood in for it, so the click said the Channel waits only while Slack could still be read again.
+test('the first click that chooses an Agent not in Slack yet answers from its own publication, without reading Slack again', async (t) => {
+  configureAgentSlackApps({ requestUrls: () => ({ events: '', interactions: '' }), redirectUri: '', allowUrl: () => '', addUrl: () => '' });
+  t.after(() => configureAgentSlackApps(undefined));
+  const waiting = {
+    ...OPS,
+    slackPresence: {
+      requestedHandle: 'ops', normalizedHandle: 'ops', desiredState: 'active', health: 'pending',
+      avatar: { kind: 'generated', revision: 1, seed: 'ops' }, errorCode: AWAITING_OWN_APP,
+    } satisfies AgentSlackPresence,
+  };
+  await withPrivateSetup([waiting], async ({ calls, deliver, stores, scene, setupId }) => {
+    // Slack answers the click's check, the recheck before publication and the publication's own lookup, then stops.
+    scene.channelLookupsLeft = 3;
+    const click = addClick(setupId, OPS.id);
+    assert.equal((await deliver('interactions', click.payload)).status, 200);
+    assert.equal((await replacedAt(calls, click.responseUrl)).text,
+      'Once a workspace Owner adds Ops to Slack, it answers in this channel through Chickpea until someone in the channel adds it.');
+    const intent = await stores.management.getPrivateChannelSetupIntent(setupId);
+    assert.deepEqual([intent?.status, intent?.failureCode], ['completed', undefined], 'never a failed publication');
   }, async (install) => {
     await writeAgentSlackAppsSetting(install.stores.settings, { mode: 'own_app', changedBy: 'U1', changedAt: Date.now() });
   });

@@ -505,7 +505,7 @@ function publicationResult(agent: CustomAgentConfig): { agentId: string; handle:
 function waitingResult(agent: CustomAgentConfig): SetupPublication {
   return {
     kind: 'waiting', agentId: agent.id, handle: agentSnapshot(agent, undefined).handle,
-    message: joinsOnceInSlackMessage(agent, 'this channel'),
+    message: joinsOnceInSlackMessage(agent, 'this channel', true),
   };
 }
 

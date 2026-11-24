@@ -363,6 +363,26 @@ test('the list shows each Slack state with its action and never an internal iden
   }
 });
 
+// Defect caught: with the setting off, an Agent never published was listed as not in Slack yet with a control to give
+// it an app of its own, while every Agent answering through a user group was hidden.
+test('off, only Agents with an app of their own or one on its way are listed; on, one not in Slack yet keeps its control', async () => {
+  const agents = [
+    row('agent_new', 'Scout', 'scout', 'not_in_slack'),
+    row('agent_sales', 'Sales Desk', 'sales-desk', 'user_group', { channels: salesChannels }),
+    row('agent_ready', 'Helpdesk', 'helpdesk', 'waiting_for_allow'),
+    row('agent_support', 'Support', 'support', 'own_app'),
+  ];
+  const off = await harness({ api: apiState({ setting: { mode: 'shared', changedBy: null, changedAt: null }, agents }) });
+  assert.doesNotMatch(off.text(), /Not in Slack yet|Scout|Sales Desk/);
+  assert.doesNotMatch(off.html(), /data-agent="agent_new"/);
+  assert.match(off.html(), /data-action="slack-apps-start" data-agent="agent_ready"[^>]*>Add Helpdesk to Slack</);
+  assert.match(off.text(), /Support @support/);
+
+  const on = await harness({ api: apiState({ agents }) });
+  assert.match(on.html(), />Not in Slack yet</);
+  assert.match(on.html(), /data-action="slack-apps-start" data-agent="agent_new"[^>]*>Add Scout to Slack</);
+});
+
 test('the press sends the browser to the Allow URL Start returns, and the result shows once on return', async () => {
   const page = await harness({
     handle: (path) => path === '/admin/api/slack-apps/agents/agent_sales/start'

@@ -7293,7 +7293,11 @@ export class WorkspaceManagementService {
           // revision; report it so the next change targets the current revision.
           return {
             ...mutation,
-            ...(waiting ? { warning: joinsOnceInSlackMessage(published.agent, published.grant.channelLabel ? `#${published.grant.channelLabel}` : 'the Channel') } : {}),
+            ...(waiting ? { warning: joinsOnceInSlackMessage(
+              published.agent,
+              published.grant.channelLabel ? `#${published.grant.channelLabel}` : 'the Channel',
+              published.grant.channelIsPrivate === true,
+            ) } : {}),
             changed: [
               ...mutation.changed,
               { kind: 'agent', id: published.agent.id, revision: published.agent.revision },

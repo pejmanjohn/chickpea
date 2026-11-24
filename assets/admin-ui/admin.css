@@ -2311,7 +2311,9 @@ details[open].advanced summary::before {
 .where-channel-row:hover, .where-channel-row:focus-visible { background: #f4ead6; }
 .where-channel-row:focus-visible, .where-remove:focus-visible { outline: 2px solid var(--ember-press); outline-offset: -2px; }
 .where-channel-hash { color: var(--semantic-channel-fg); font-size: .9375rem; }
+.where-channel-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .where-channel-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.where-channel-status { color: var(--text-3); font-size: .65625rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .where-channel-open { color: var(--text-3); }
 .where-remove { align-items: center; background: transparent; border: 0; border-left: 1px solid var(--line); border-radius: 0; color: var(--text-3); cursor: pointer; display: inline-flex; justify-content: center; min-height: 42px; padding: 8px 11px; }
 .where-remove:hover { background: #eee3cd; color: var(--text); }

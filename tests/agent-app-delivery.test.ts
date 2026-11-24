@@ -3309,7 +3309,8 @@ test("in Chickpea's DM an app Agent named beside another, or asked, answers thro
   assert.deepEqual(h.calls.filter((call) => call.token === AGENT_BOT), [], "the app's token is not used");
 }, { refuse: { [`conversations.open ${AGENT_BOT}`]: 'account_inactive' } }));
 
-const NO_TEAMMATE_HERE = 'Teammates: no other Chickpea Agent can join this direct message, so you cannot ask a teammate anything here, and you never answer for one. When the person needs a teammate, name it without @ and tell them they can mention it in a channel or message it directly.';
+// Live, the Agent said only that a teammate cannot join and stopped; it must also say how to reach the teammate.
+const NO_TEAMMATE_HERE = 'Teammates: no other Chickpea Agent can join this direct message, so you cannot ask a teammate anything here, and you never answer for one. When the person asks for a teammate or needs one, never stop at saying it cannot join: in one or two sentences, name the teammate without @ and tell the person the two ways to reach it, by mentioning it in a channel it is in or by choosing Message next to it on Chickpea\'s Home tab in Slack.';
 
 test("in the app Agent's own DM a teammate the person names gets no turn, and Support is told by name that no teammate can join, so its reply asks nobody", async (t) => withHarness(t, async (h) => {
   for (const [ts, text] of [

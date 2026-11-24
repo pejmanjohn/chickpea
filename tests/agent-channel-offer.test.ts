@@ -3,7 +3,9 @@ import { test } from 'node:test';
 
 import { processGatewaySlackEnvelope, processGatewayUiAction } from '../src/channels/slack.ts';
 import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
-import type { CustomAgentConfig } from '../src/config/types.ts';
+import { AWAITING_OWN_APP, type CustomAgentConfig } from '../src/config/types.ts';
+import { configureAgentSlackApps } from '../src/slack/agent-apps/host.ts';
+import { writeAgentSlackAppsSetting } from '../src/slack/agent-apps/setting.ts';
 import { addAgentToChannel, parseAgentChannelAddClick } from '../src/slack/agent-channel-offer.ts';
 import { closeNodeStateStores, resolveStores } from '../src/config/state-backend.ts';
 import type { GatewayDeploymentClient } from '../src/slack/gateway/client.ts';
@@ -284,6 +286,52 @@ test('on a direct install, as hosted runs, the Add button adds the Agent through
     const grant = (await stores.config.listAgentChannelGrants('T1', 'C1')).find(({ agentId }) => agentId === LEGAL.id);
     assert.equal(grant?.status, 'active');
   });
+});
+
+// Defect caught: in a private Channel the person was told a waiting Agent "joins" it, though its bot is never brought
+// into a private Channel and it answers there through Chickpea until someone in the Channel adds it.
+test('the Add button for an Agent not in Slack yet says what happens in a private Channel, and keeps the public sentence', async (t) => {
+  configureAgentSlackApps({ requestUrls: () => ({ events: '', interactions: '' }), redirectUri: '', allowUrl: () => '', addUrl: () => '' });
+  t.after(() => configureAgentSlackApps(undefined));
+  for (const [isPrivate, said] of [
+    [true, 'Once a workspace Owner adds Legal to Slack, it answers in this channel through Chickpea until someone in the channel adds it.'],
+    [false, 'Legal joins this channel once a workspace Owner adds it to Slack.'],
+  ] as const) {
+    await withDirectSlackInstall({
+      answer: (method, body) => {
+        if (method === 'users.info') return { ok: true, user: slackUser(body.get('user') ?? 'U1') };
+        if (method === 'conversations.info') {
+          return { ok: true, channel: { id: 'C1', name: 'team', is_channel: !isPrivate, is_private: isPrivate, is_member: true, is_archived: false } };
+        }
+        if (method === 'conversations.members') return { ok: true, members: ['U1', 'UBOT'] };
+        return undefined;
+      },
+    }, async ({ stores, ownerMembershipId, calls, deliver }) => {
+      await writeAgentSlackAppsSetting(stores.settings, { mode: 'own_app', changedBy: 'U1', changedAt: Date.now() });
+      await stores.config.createAgent({
+        id: LEGAL.id, name: 'Legal', instructions: 'Help as Legal.', enabled: true, lifecycle: 'active',
+        creatorMembershipId: ownerMembershipId, editPolicy: 'creator_and_admins',
+        skills: [], mcpServers: [], apiConnections: [], repositories: [],
+        slackPresence: {
+          requestedHandle: 'legal', normalizedHandle: 'legal', desiredState: 'active', health: 'pending',
+          avatar: { kind: 'generated', revision: 1, seed: 'legal' }, errorCode: AWAITING_OWN_APP,
+        },
+      });
+      assert.equal((await deliver('interactions', {
+        type: 'block_actions', api_app_id: 'A1', team: { id: 'T1' }, user: { id: 'U1' },
+        channel: { id: 'C1' }, trigger_id: 'trigger1',
+        container: { type: 'message', channel_id: 'C1', message_ts: '1800000000.000200', is_ephemeral: true },
+        actions: [{ type: 'button', action_id: ADD_ACTION, block_id: ADD_ACTION, value: LEGAL.id, action_ts: '1800000001.000100' }],
+      })).status, 200);
+      let notice: URLSearchParams | undefined;
+      for (let tries = 0; tries < 200 && !notice; tries += 1) {
+        notice = calls.find(({ method }) => method === 'chat.postEphemeral')?.body;
+        if (!notice) await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.equal(notice?.get('text'), said, isPrivate ? 'private' : 'public');
+      assert.deepEqual((await stores.config.listAgentChannelGrants('T1', 'C1')).map(({ status }) => status), ['pending'], 'the Channel waits for Legal');
+    });
+  }
 });
 
 test('a clicker who is not in the Channel is refused before anything is published', async () => {

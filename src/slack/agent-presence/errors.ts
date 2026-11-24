@@ -92,11 +92,19 @@ export function agentOffError(agent: Pick<CustomAgentConfig, 'name'>): AgentPres
 
 /**
  * Adding an Agent not in Slack yet to a Channel keeps the Channel waiting for
- * it: the Agent joins once an Owner adds it to Slack. `channel` names the
- * Channel as the reader sees it: `#support`, or `this channel` inside it.
+ * it: the Agent joins once an Owner adds it to Slack. Its bot is never brought
+ * into a private Channel, so there it answers through Chickpea until someone
+ * in the Channel adds it. `channel` names the Channel as the reader sees it:
+ * `#support`, or `this channel` inside it.
  */
-export function joinsOnceInSlackMessage(agent: Pick<CustomAgentConfig, 'name'>, channel: string): string {
-  return `${agent.name} joins ${channel} once a workspace Owner adds it to Slack.`;
+export function joinsOnceInSlackMessage(
+  agent: Pick<CustomAgentConfig, 'name'>,
+  channel: string,
+  channelIsPrivate: boolean,
+): string {
+  return channelIsPrivate
+    ? `Once a workspace Owner adds ${agent.name} to Slack, it answers in ${channel} through Chickpea until someone in the channel adds it.`
+    : `${agent.name} joins ${channel} once a workspace Owner adds it to Slack.`;
 }
 
 const PAID_PLAN_ERRORS = new Set([

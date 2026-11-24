@@ -2295,7 +2295,10 @@ test("Admin refuses to create an Agent, or rename one, onto a handle another Age
     });
     const renamed = await rename('support', triage.revision);
     assert.equal(renamed.status, 400);
-    assert.deepEqual(await renamed.json(), { error: 'invalid_request', message: '@support is already in use.' });
+    // Free handles to choose from, as the management MCP offers for the same refusal.
+    assert.deepEqual(await renamed.json(), {
+      error: 'invalid_request', message: '@support is already in use.', suggestions: ['support-team', 'support-2', 'support-3'],
+    });
     assert.equal((await fixture.store.getAgent(triage.id)).slackPresence?.normalizedHandle, triage.slackPresence?.normalizedHandle);
 
     await fixture.store.updateAgent(holder.id, { lifecycle: 'archived' }, holder.revision);
@@ -6412,6 +6415,27 @@ test('Agent detail projects the live categorical DM audience without a roster', 
     assert.equal(await audience(), 'private_channel_members');
     transport.channel = { ...transport.channel, archived: true };
     assert.equal(await audience(), 'unavailable');
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test("the Channel list carries each grant's stored privacy, for a Channel Slack's list does not show", async () => {
+  const fixture = harness();
+  try {
+    const agent = await fixture.store.createAgent({
+      id: 'agent_lab', name: 'Lab', instructions: 'Help.', enabled: true, lifecycle: 'active', model: 'local-stub/admin-agent',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    await fixture.store.putChannel({ workspaceId: 'T_TEST', channelId: 'G_LAB', label: 'lab', lifecycle: 'active' });
+    await fixture.store.putAgentChannelGrant({
+      workspaceId: 'T_TEST', channelId: 'G_LAB', agentId: agent.id, status: 'pending',
+      createdByMembershipId: 'membership_test_owner', channelLabel: 'lab', channelIsPrivate: true,
+    });
+    const body = await (await fixture.app.request('http://localhost/admin/api/channels', { headers: auth() })).json() as Record<string, any>;
+    const lab = body.channels.find(({ channelId }: { channelId: string }) => channelId === 'G_LAB');
+    assert.deepEqual(lab.grants.map(({ channelIsPrivate }: { channelIsPrivate: unknown }) => channelIsPrivate), [true]);
   } finally {
     fixture.store.close();
     fixture.settings.close();

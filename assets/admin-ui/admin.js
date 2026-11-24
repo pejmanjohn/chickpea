@@ -5336,14 +5336,15 @@
   }
 
   // Not in Slack yet, still answering through Chickpea (with any move in
-  // progress), and moved, each under its own heading. Off, only Agents with a
-  // move under way or done are listed, so an Owner can finish or see them.
+  // progress), and moved, each under its own heading. Off, only Agents with an
+  // app of their own or one on its way are listed, so an Owner can finish or
+  // see them: one in no user group then is never offered an app of its own.
   function slackAppsListsHtml(agents, on) {
     var groups = { chickpea: [], notInSlack: [], own: [] };
     agents.forEach(function (agent) {
       var stateName = agent.slack && agent.slack.state;
       if (stateName === "own_app") groups.own.push(agent);
-      else if (stateName === "not_in_slack") groups.notInSlack.push(agent);
+      else if (stateName === "not_in_slack") { if (on) groups.notInSlack.push(agent); }
       else if (on || stateName !== "user_group") groups.chickpea.push(agent);
     });
     var list = function (titleText, rows) {
@@ -7338,9 +7339,10 @@
       var handle = agent && agent.slackPresence && agent.slackPresence.normalizedHandle;
       var waits = grant.status !== "active" && agentAwaitsOwnApp(agent);
       var status = grant.status === "active" ? "Active" : waits ? "Not in Slack yet" : "Needs attention";
+      // Slack's live answer wins; the grant's stored privacy stands in when Slack's list was not read.
       return '<div class="channel-agent-hero"><span class="agent-roster-icon variant-' + agentIconVariant(grant.agentId) + '" aria-hidden="true">' + icon("robot") + '</span>' +
         '<div class="channel-agent-copy"><span class="agent-kicker">Agent grant</span><h2>' + esc(name) + '</h2>' +
-        '<p class="channel-agent-intro">' + esc(waits ? joinsOnceInSlackText(agent, "this Channel") : handle ? "Mention @" + handle + " to start a thread with this Agent." : "Finish the Agent handle before using it in Slack.") + '</p>' +
+        '<p class="channel-agent-intro">' + esc(waits ? joinsOnceInSlackText(agent, "this Channel", channel.isPrivate === true || (channel.isPrivate == null && grant.channelIsPrivate === true)) : handle ? "Mention @" + handle + " to start a thread with this Agent." : "Finish the Agent handle before using it in Slack.") + '</p>' +
         '<span class="channel-agent-meta">' + esc(status) + ' · managed on the Agent</span></div>' +
         '<div class="channel-agent-actions"><button type="button" class="btn btn-soft btn-sm" data-action="open-profiles" data-agent="' + esc(grant.agentId) + '">View Agent</button></div></div>';
     }).join("");
@@ -11431,8 +11433,19 @@
   function profileGenericErrorHtml() {
     if (!state.profileError) return "";
     if (state.profileError === "Name is required." || state.profileError === "Agent instructions are required.") return "";
+    var offered = state.profileHandleSuggestions;
+    var handles = offered && offered.message === state.profileError ? offered.handles.map(function (handle) {
+      return '<button type="button" class="btn btn-soft btn-sm" data-action="profile-handle-suggestion" data-handle="' + esc(handle) + '">@' + esc(handle) + '</button>';
+    }).join(" ") : "";
     return '<div class="field-error" role="alert" aria-live="polite">' + esc(state.profileError) +
+      (handles ? ' Try one of these: ' + handles : '') +
       (state.profileConflict ? ' <button type="button" class="btn btn-soft btn-sm" data-action="reload-profile">Reload latest Agent</button>' : '') + '</div>';
+  }
+
+  // A handle another Agent holds is refused with suggestions to choose from instead.
+  function offerHandleSuggestions(error) {
+    var handles = error && error.payload && Array.isArray(error.payload.suggestions) ? error.payload.suggestions : [];
+    state.profileHandleSuggestions = handles.length ? { message: state.profileError, handles: handles } : null;
   }
 
   // ---- Create (card 10) ----------------------------------------------------
@@ -11579,9 +11592,12 @@
     var concrete = draft.id ? channelGrantsForAgent(draft.id) : [];
     var canEditChannels = !!draft.id && !readOnly && draft.lifecycle !== "archived";
     var channelRows = '<div class="where-list">';
+    var awaitsOwnApp = !!draft.id && agentAwaitsOwnApp(agentById(draft.id));
     concrete.forEach(function (assignment) {
       var label = normalizeChannelLabel(assignment.channelLabel) || assignment.channelId;
-      channelRows += '<div class="where-entry"><button type="button" class="where-channel-row" data-action="open-channel-from-profile" data-workspace="' + esc(assignment.workspaceId) + '" data-channel="' + esc(assignment.channelId) + '"><span class="where-channel-hash" aria-hidden="true">#</span><span class="where-channel-name">' + esc(label) + '</span><span class="where-channel-open" aria-hidden="true">&nearr;</span></button>' +
+      // A Channel waiting for this Agent says so, as on the Channel's own page and the Channels list.
+      var waiting = awaitsOwnApp && assignment.status !== "active" ? '<small class="where-channel-status">Not in Slack yet</small>' : "";
+      channelRows += '<div class="where-entry"><button type="button" class="where-channel-row" data-action="open-channel-from-profile" data-workspace="' + esc(assignment.workspaceId) + '" data-channel="' + esc(assignment.channelId) + '"><span class="where-channel-hash" aria-hidden="true">#</span><span class="where-channel-copy"><span class="where-channel-name">' + esc(label) + '</span>' + waiting + '</span><span class="where-channel-open" aria-hidden="true">&nearr;</span></button>' +
         (canEditChannels ? '<button type="button" class="where-remove" data-action="detach-channel" data-workspace="' + esc(assignment.workspaceId) + '" data-channel="' + esc(assignment.channelId) + '" data-label="' + esc(label) + '" aria-label="Remove this Agent from #' + esc(label) + '">' + icon("x-mark") + '</button>' : "") + '</div>';
     });
     channelRows += '</div>';
@@ -18218,6 +18234,12 @@
     if (action === "save-profile") { saveProfile(); }
     if (action === "agent-presence-retry") { retryAgentPresence(); }
     if (action === "agent-presence-handle") { saveHandleOnly(target.getAttribute("data-handle")); }
+    if (action === "profile-handle-suggestion" && state.profileDraft) {
+      state.profileDraft.handle = target.getAttribute("data-handle");
+      state.profileError = "";
+      markProfileDirty();
+      render();
+    }
     if (action === "reload-profile") { reloadProfile(); }
     if (action === "discard-profile") { discardProfile(); }
     if (action === "delete-profile") { deleteProfile(); }
@@ -19896,8 +19918,12 @@
     return !!(result && result.grant && result.grant.status !== "active" && agentAwaitsOwnApp(result.agent));
   }
 
-  function joinsOnceInSlackText(agent, channel) {
-    return ((agent && agent.name) || "This Agent") + " joins " + channel + " once a workspace Owner adds it to Slack.";
+  // Its bot is never brought into a private Channel: there it answers through Chickpea until someone there adds it.
+  function joinsOnceInSlackText(agent, channel, channelIsPrivate) {
+    var name = (agent && agent.name) || "This Agent";
+    return channelIsPrivate
+      ? "Once a workspace Owner adds " + name + " to Slack, it answers in " + channel + " through Chickpea until someone in the channel adds it."
+      : name + " joins " + channel + " once a workspace Owner adds it to Slack.";
   }
 
   function channelInviteWarning(channelName) {
@@ -19946,7 +19972,7 @@
       var channelName = normalizeChannelLabel((result && result.grant && result.grant.channelLabel) || label || channelId);
       state.addChannelWaits = channelAddWaits(result);
       state.addChannelInvite = state.addChannelWaits
-        ? joinsOnceInSlackText(agent, "#" + channelName)
+        ? joinsOnceInSlackText(agent, "#" + channelName, result.grant.channelIsPrivate === true)
         : result && result.grant && result.grant.status !== "active"
           ? channelInviteWarning(channelName)
           : result && result.appBot === "left_out" ? appBotLeftOutText(agent, channelName) : "";
@@ -21492,6 +21518,7 @@
         state.profileError = "This Agent is over the 1 MB save limit. Remove or shorten some skills, then save again.";
       } else {
         state.profileError = (error && (error.serverMessage || error.message)) || "Could not save this Agent.";
+        offerHandleSuggestions(error);
       }
       render();
       if (onFailed) onFailed();
@@ -21688,6 +21715,7 @@
         return;
       }
       state.profileError = (error && (error.serverMessage || error.message)) || "Slack could not finish this Agent handle.";
+      offerHandleSuggestions(error);
     }).finally(function () { finishProfilePresenceMutation(mutation); });
   }
 
@@ -21843,7 +21871,7 @@
       state.attachChannelSelected = "";
       state.attachError = "";
       state.attachNotice = channelAddWaits(result)
-        ? joinsOnceInSlackText(draft, "#" + label)
+        ? joinsOnceInSlackText(draft, "#" + label, result.grant.channelIsPrivate === true)
         : "Agent added to #" + label + "." +
           (result && result.appBot === "left_out" ? " " + appBotLeftOutText(draft, label) : "");
       return refreshData().then(function () {
