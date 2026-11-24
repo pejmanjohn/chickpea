@@ -128,7 +128,7 @@ async function fixture(
   if (options.token !== false) assert.equal(await saveConfigurationToken(secrets, TEAM, 'xoxe-1-pasted-token-0000'), 'saved');
   const transport = new FakeTransport();
   const clock = { now: NOW };
-  const service = new AgentSlackApps({ env: ENV, stores: { config, settings }, host: HOST, transport, slack, keyring, now: () => clock.now, armSwitch: async () => undefined, memberSlackUserId: async (id) => id });
+  const service = new AgentSlackApps({ env: ENV, stores: { config, settings }, host: HOST, transport, slack, keyring, now: () => clock.now, armSwitch: async () => undefined, memberInSlack: async (id) => ({ membershipId: id, slackUserId: id, role: 'owner' }) });
   /** What each finished retirement reported, as tenant end would see it. */
   const retirements: string[] = [];
   const reconciler = new AgentPresenceReconciler({

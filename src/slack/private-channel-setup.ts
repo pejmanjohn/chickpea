@@ -188,7 +188,13 @@ export function privateChannelSetupReply(
 ): SetupCardReply {
   switch (outcome.kind) {
     case 'completed':
-      return { kind: 'replace', message: setupConfirmation(outcome.handle, context), fallback: 'text' };
+      return {
+        kind: 'replace',
+        message: setupConfirmation(`Added @${outcome.handle} to this private channel. Mention @${outcome.handle} to start a conversation.`, context),
+        fallback: 'text',
+      };
+    case 'waiting':
+      return { kind: 'replace', message: setupConfirmation(outcome.message, context), fallback: 'text' };
     case 'in_progress':
       return { kind: 'notice', text: 'This Agent is being added. Click Add again in a moment to check.' };
     case 'choose':
@@ -237,8 +243,7 @@ function failedReply(error: unknown, context: SetupReplyContext): SetupCardReply
   }
 }
 
-function setupConfirmation(handle: string, context: SetupReplyContext): SetupCardMessage {
-  const text = `Added @${handle} to this private channel. Mention @${handle} to start a conversation.`;
+function setupConfirmation(text: string, context: SetupReplyContext): SetupCardMessage {
   const adminUrl = safeAdminUrl(context.adminUrl);
   const actions = [
     ...(context.againSetupId ? [againButton(context.againSetupId, 'Add another Agent',

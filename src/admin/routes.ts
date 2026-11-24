@@ -683,7 +683,7 @@ import {
   agentPresenceAnnouncements,
   type AgentPresenceAnnouncements,
 } from '../slack/agent-presence/announcements.ts';
-import { AgentPresenceReconciler, memberInSlack } from '../slack/agent-presence/reconciler.ts';
+import { AgentPresenceReconciler } from '../slack/agent-presence/reconciler.ts';
 import {
   resolvePrivateAgentAudience,
   type PrivateAgentAudience,
@@ -11954,9 +11954,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const actor = await agentActor(c);
       const transport = await agentSlackTransport(c, actor.slackTeamId);
       const reconciler = presenceReconciler(c, transport, presenceAnnouncements(c, transport));
+      const { placeInSlack } = await import('../slack/agent-presence/place-in-slack.ts');
       // The mode is already `shared`, so each Agent's failure is recorded on it, for its Retry; the rest go on.
       for (const agentId of agentIds) {
-        await reconciler.placeInSlack(agentId, (membershipId) => memberInSlack(identity(c), membershipId)).catch(() => undefined);
+        await placeInSlack({ reconciler, config: store(c), identity: identity(c) }, agentId).catch(() => undefined);
       }
     },
     ...(options.agentSlackApps ? { service: options.agentSlackApps } : {}),

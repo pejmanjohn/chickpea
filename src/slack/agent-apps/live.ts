@@ -414,18 +414,20 @@ export async function liveAgentSlackApps(
     placeInSlack: async (agentId) => {
       const resolved = await credentials();
       const hooks = agentAppPresenceHooks(env, settings);
-      const { AgentPresenceReconciler, memberInSlack } = await import('../agent-presence/reconciler.ts');
+      const [{ AgentPresenceReconciler }, { placeInSlack }] = await Promise.all([
+        import('../agent-presence/reconciler.ts'), import('../agent-presence/place-in-slack.ts'),
+      ]);
       const reconciler = new AgentPresenceReconciler({
         config,
         transport: createDirectSlackTransport(resolved.botToken ?? '', ownerUserGroupToken(resolved, settings)),
         announce: null,
         ...(hooks ? { agentApps: hooks } : {}),
       });
-      await reconciler.placeInSlack(agentId, (membershipId) => memberInSlack(identity, membershipId));
+      await placeInSlack({ reconciler, config, identity }, agentId);
     },
-    memberSlackUserId: async (membershipId) => {
-      const { memberInSlack } = await import('../agent-presence/reconciler.ts');
-      return (await memberInSlack(identity, membershipId))?.slackUserId;
+    memberInSlack: async (membershipId) => {
+      const { memberInSlack } = await import('../agent-presence/place-in-slack.ts');
+      return memberInSlack(identity, membershipId);
     },
   });
 }

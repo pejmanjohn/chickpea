@@ -254,7 +254,7 @@ async function fixture(
     now: () => clock.now, publicOrigin: async () => 'https://core.test',
     userGroupPermissionMissing: async () => f.permission.missing,
     armSwitch: async () => undefined,
-    memberSlackUserId: async (id) => id,
+    memberInSlack: async (id) => ({ membershipId: id, slackUserId: id, role: 'owner' }),
   });
   return f;
 }

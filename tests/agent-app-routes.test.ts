@@ -68,7 +68,7 @@ function fakeService(config: SqliteConfigStore, settings: SqliteSettingsStore, s
       postMessage: async (input) => { calls.push(`post:${input.channelId}`); return { channelId: input.channelId, ts: '1.0' }; },
     },
     userGroupPermissionMissing: async () => permissionMissing,
-    memberSlackUserId: async (id) => id,
+    memberInSlack: async (id) => ({ membershipId: id, slackUserId: id, role: 'owner' }),
   });
   return { service, calls };
 }

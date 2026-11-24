@@ -74,7 +74,7 @@ async function service(
     env: ENV, stores: { config, settings: watched }, host: HOST, transport, slack, keyring, armSwitch: async () => undefined,
     now: () => options.now ?? NOW, publicOrigin: async () => { read('origin'); return 'https://core.test/'; },
     userGroupPermissionMissing: async () => { read('permission'); return options.permissionMissing ?? false; },
-    memberSlackUserId: async (id) => id,
+    memberInSlack: async (id) => ({ membershipId: id, slackUserId: id, role: 'owner' }),
   });
 }
 

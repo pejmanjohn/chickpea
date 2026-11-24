@@ -115,7 +115,7 @@ async function fixture(t: TestContext, options: { token?: boolean; placed?: stri
   const service = new AgentSlackApps({
     env: ENV, stores: { config, settings }, host: HOST, slack, keyring, now: () => NOW,
     publicOrigin: async () => options.adminUnknown ? undefined : ORIGIN, armSwitch: async () => undefined,
-    memberSlackUserId: async (id) => id,
+    memberInSlack: async (id) => ({ membershipId: id, slackUserId: id, role: 'owner' }),
     ...(options.placed ? { placeInSlack: async (agentId: string) => { options.placed!.push(agentId); } } : {}),
     transport: {
       disableUserGroup: async (id) => ({ id, name: 'x', handle: 'x', disabled: true }),
