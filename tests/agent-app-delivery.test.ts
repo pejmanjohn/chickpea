@@ -3984,6 +3984,18 @@ test("a read Slack refuses for good is not made again, and tells nobody", async 
   assert.deepEqual(notConfirmed(warn).map((line) => (line as { reason: string }).reason), ['missing_scope']);
 }, { refuse: { [`conversations.history ${AGENT_BOT}`]: 'missing_scope' } }));
 
+test("a notice Slack will not take is asked for once and not again, and the delivery ends as it would have", async (t) => withHarness(t, async (h) => {
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  t.mock.method(console, 'error', () => undefined);
+  const ts = '1900010360.000100';
+  const { value: response, waitedMs } = await onSuiteClock(t, () => h.deliver('events', appDm(ts, { text: 'what did we refund?' }), { settle: true }));
+  assert.equal(response.ok, false, 'the delivery ends as a failure');
+  assert.ok(waitedMs >= 9_000 && waitedMs < 9_200, `no wait for the notice's own limit, ${waitedMs} ms`);
+  assert.equal(unreadNotices(h).length, 1, 'one post, which Slack limits, and no second');
+  assert.deepEqual(notConfirmed(warn).map((line) => (line as { reason: string }).reason), ['ratelimited'], "the line names the read's limit, as with a notice that posts");
+  assert.deepEqual(await h.stores.slackState.listPendingTurns!(), [], 'nothing is admitted');
+}, { rateLimited: [`conversations.history ${AGENT_BOT}`, `chat.postMessage ${AGENT_BOT}`] }));
+
 test("an edit an Agent app delivers steers its message's turn only when Slack holds the edited text", async (t) => withHarness(t, async (h) => {
   const warn = t.mock.method(console, 'warn', () => undefined);
   t.mock.method(console, 'info', () => undefined);
