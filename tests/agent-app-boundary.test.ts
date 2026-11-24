@@ -7,8 +7,9 @@ import { fileURLToPath } from 'node:url';
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const MODULE = join(ROOT, 'src', 'slack', 'agent-apps');
 // Admin's token page has its own entry: the reply path imports index.ts, and
-// Admin loads only on its first request (app.ts).
-const ENTRY_POINTS = new Set(['index.ts', 'host.ts', 'admin-routes.ts']);
+// Admin loads only on its first request (app.ts). So does the check that Slack
+// holds a message an Agent app delivered, which loads only for that delivery.
+const ENTRY_POINTS = new Set(['index.ts', 'host.ts', 'admin-routes.ts', 'sender.ts']);
 const SPECIFIER = /(?:\bfrom\s*|\bimport\s*\(\s*|^\s*import\s+)['"]([^'"]+)['"]/gm;
 
 function sourceFiles(directory: string): string[] {

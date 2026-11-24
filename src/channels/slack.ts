@@ -18,6 +18,7 @@ import {
   agentAppPresenceHooks,
   agentAppPostingBot,
   agentSlackAppsHost,
+  chickpeaBotIsMember,
   endAgentSlackApp,
   handleAgentAppHomeAction,
   ownBotClient,
@@ -320,6 +321,7 @@ import {
   encodeFormValues,
   FORM_VIEW_CALLBACK_ID,
   formErrorsText,
+  formFieldBlockId,
   formLayout,
   parseFormValues,
   readFormSubmission,
@@ -872,8 +874,14 @@ function handleAgentAppSlackEvents(
       await processSlackStopButton(payload as unknown as SlackEventFixture, platformEnv, execution);
       return;
     }
+    const delivered = (payload as { event?: unknown }).event;
+    // A message goes on as Slack holds it, never as it was delivered.
+    const event = eventType === 'member_joined_channel'
+      ? delivered
+      : await (await import('../slack/agent-apps/sender.ts')).agentAppMessageConfirmed(delivered, bot, handoff.appId);
+    if (!event) return;
     await processSlackEvent(
-      payload as unknown as SlackEventFixture,
+      { ...payload, event } as unknown as SlackEventFixture,
       platformEnv,
       execution,
       undefined,
@@ -903,6 +911,27 @@ function handleAgentAppSlackInteractions(
       execution, botUserId: bot.botUserId,
     };
     const uiAction = parseSlackUiBlockAction(payload);
+    const { agentAppCardRefused } = await import('../slack/agent-apps/sender.ts');
+    // A press inside a modal acts on nothing. Any other must be on a card this app's bot posted. Only a press that
+    // names no stored card can be on a private message, which Slack does not return: that one goes on as before.
+    if (uiAction?.containerType === 'message') {
+      const control = parseUiControl(uiAction);
+      const card = control ? await readUiSurface(execution.stores!, control.surfaceId) : undefined;
+      const refused = (card || !uiAction.isEphemeral) && await agentAppCardRefused(
+        card, { channelId: uiAction.channelId!, messageTs: uiAction.messageTs!, threadTs: uiAction.threadTs }, bot,
+      );
+      if (refused) {
+        // A card Slack could not be asked about may be a real one: the person is told, privately, rather than left with
+        // a button that does nothing.
+        if (refused.unread) {
+          const threadTs = card?.threadTs ?? uiAction.threadTs;
+          detach(c, sendUiNotice(context.client, {
+            channelId: uiAction.channelId, userId: uiAction.userId, text: uiRefusalText('unavailable'), ...(threadTs ? { threadTs } : {}),
+          }));
+        }
+        return;
+      }
+    }
     if (uiAction && opensModal(uiAction) && await openSlackUiModal(uiAction, context)) return;
     if (uiAction) {
       detach(c, handleSlackUiAction({ ...context, action: uiAction }).catch((error) => {
@@ -911,7 +940,23 @@ function handleAgentAppSlackInteractions(
       return;
     }
     const submission = parseSlackUiViewSubmission(payload);
-    if (submission) return receiveSlackUiViewSubmission(c, submission, platformEnv, context);
+    if (!submission) return;
+    // A modal is opened from a card, and its submission carries the same rule.
+    const cardId = submission.callbackId === KEY_FORM_CALLBACK_ID
+      ? (await import('../slack/ui/key-card.ts')).parseKeyFormMetadata(submission.privateMetadata)?.cardId
+      : viewSubmissionSurfaceId(submission);
+    const card = cardId ? await readUiSurface(execution.stores!, cardId) : undefined;
+    const refused = await agentAppCardRefused(
+      card, card?.messageTs ? { channelId: card.channelId, messageTs: card.messageTs, threadTs: card.threadTs } : undefined, bot,
+    );
+    if (!refused) return receiveSlackUiViewSubmission(c, submission, platformEnv, context);
+    // Only a read that failed: the modal stays open with what the person typed, and says it was not sent.
+    const ack = slackInteractionAckOf(platformEnv);
+    if (!cardId || !refused.unread || (ack && !ack.claim())) return;
+    const field = submission.callbackId === KEY_FORM_CALLBACK_ID
+      ? (await import('../slack/ui/key-card.ts')).keyFieldBlockId(cardId)
+      : formFieldBlockId(cardId, 0);
+    return Response.json({ response_action: 'errors', errors: { [field]: UNSENT_ANSWER_TEXT } });
   };
 }
 
@@ -2922,8 +2967,10 @@ function unsentModalAnswer(
     const read = readFormSubmission(surface, spec.form, submission.state);
     if (!read.ok) return { refusal: 'unavailable', text: formErrorsText(surface, spec.form, read.errors) };
   }
-  return { refusal: 'unavailable', text: 'Not sent yet. Try again, or reply in the thread instead.' };
+  return { refusal: 'unavailable', text: UNSENT_ANSWER_TEXT };
 }
+
+const UNSENT_ANSWER_TEXT = 'Not sent yet. Try again, or reply in the thread instead.';
 
 /**
  * The answer becomes a synthetic message from the person, through the same
@@ -3774,6 +3821,9 @@ async function processSlackEvent(
           return !chickpea;
         },
         agentAppAnswersHere: (agent) => agentAppAnswersIn(platformEnv, agent, turn.channelId),
+        ...(execution?.agentApp && execution.installationBot && installation.botUserId
+          ? { chickpeaBotIsIn: () => chickpeaBotIsMember({ botUserId: installation.botUserId!, transport: execution.installationBot! }, turn.channelId) }
+          : {}),
       });
       if (routed.kind === 'ignore') return;
       if (routed.kind !== 'routed' && ui) return;

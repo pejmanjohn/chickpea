@@ -41,8 +41,9 @@ only an Agent every workspace member may use (one placed in a public Channel),
 and @Chickpea. An Agent with private use only is refused.
 
 The Agent posts through Chickpea's bot under its own name and avatar, as it
-does elsewhere. An Agent with its own Slack app is refused: its bot has no
-group DM permission.
+does elsewhere. So does an Agent with its own Slack app: its bot cannot open a
+group DM, since it has no `mpim:write`, so Chickpea's bot opens it and posts
+as the Agent.
 
 The requester must still have active Chickpea access, and in a Channel the
 Agent must still be added there, as for the Lists tools. From a conversation

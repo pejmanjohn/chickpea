@@ -36,28 +36,31 @@ function appAgentsByBot(agents: readonly CustomAgentConfig[]): Map<string, Custo
  * An Agent app's own delivery selects its Agent only for a mention of its own
  * bot, in a Channel or a group DM, a message in its own DM, or a Stop press on
  * a run speaking as its own bot (decided by the run's stored speaker, outside
- * routing); a Channel message, a reaction, or a press about anyone else's run
- * selects nobody, and any other message it hears routes as it would on
- * Chickpea's delivery. On Chickpea's delivery a
- * Channel or group DM message that names an Agent app's bot is ignored while
- * that app can answer there, so one bot answers whichever delivery arrives
- * first; it is routed here when the app cannot (`appAnswersHere`): its bot is
- * not a member, the app is not live, or its token cannot be read. No app's bot
- * is in Chickpea's DM, so the same text there is routed here too.
+ * routing). Its ingress admits no other message (sender.ts), and a press
+ * about anyone else's run selects nobody. On Chickpea's delivery a Channel
+ * message that names an Agent app's bot is ignored while that app can answer
+ * there, so one bot answers whichever delivery arrives first; it is routed
+ * here when the app cannot (`appAnswersHere`): its bot is not a member, the
+ * app is not live, or its token cannot be read. In a group DM the one router
+ * is Chickpea's delivery whenever Chickpea's bot is a member
+ * (`chickpeaBotIsIn`), and the app's own delivery only when it is not. No
+ * app's bot is in Chickpea's DM, so the same text there is routed here too.
  */
 export async function agentAppRouteSelection(
   turn: Pick<NormalizedSlackTurn, 'text' | 'source' | 'channelType'>,
   agents: readonly CustomAgentConfig[],
   agentApp: { agentId: string } | undefined,
   appAnswersHere: (agent: CustomAgentConfig) => Promise<boolean>,
+  chickpeaBotIsIn: () => Promise<boolean> = async () => false,
 ): Promise<AgentAppRouteSelection | undefined> {
   const conversation = slackConversationKind(turn);
   if (agentApp) {
     // A message in its own DM that names its bot is normalized as a mention.
     const ownAddress = turn.source === 'app_mention' || (conversation === 'im' && turn.source === 'dm_message');
-    return ownAddress ? { kind: 'select', agentId: agentApp.agentId } : undefined;
+    if (!ownAddress) return undefined;
+    return conversation === 'mpim' && await chickpeaBotIsIn() ? { kind: 'ignore' } : { kind: 'select', agentId: agentApp.agentId };
   }
-  if (conversation === 'im') return undefined;
+  if (conversation === 'im' || conversation === 'mpim') return undefined;
   const apps = appAgentsByBot(agents);
   for (const match of turn.text.matchAll(USER_MENTION)) {
     const agent = apps.get(match[1]!);
