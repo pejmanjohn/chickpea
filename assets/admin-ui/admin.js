@@ -4981,8 +4981,8 @@
 
   var SLACK_APPS_API = "/admin/api/slack-apps";
   var SLACK_APPS_TOKEN_PATH = "/admin/destinations/slack/connection/token";
-  var SLACK_APP_SETTINGS_URL = "https://api.slack.com/apps";
   var SLACK_YOUR_APPS_URL = "https://api.slack.com/apps";
+  var SLACK_AUTHORIZE_ORIGIN = "https://slack.com";
   // A press that left for Slack's Allow page; the section tells its result once on return.
   var SLACK_APPS_PENDING_KEY = "chickpea.slackApps.pendingMoves";
   var SLACK_APPS_PENDING_MS = 24 * 60 * 60 * 1000;
@@ -5293,6 +5293,13 @@
       '<button type="button" class="btn btn-danger" data-action="slack-apps-confirm-apply"' + (busy ? " disabled" : "") + '>' + (busy ? '<span class="spinner"></span>' : '') + esc(confirmLabel) + '</button></div></div></div>';
   }
 
+  function dismissSlackAppsConfirm() {
+    var opener = state.slackApps.confirm === "off" ? "slack-apps-turn-off" : "slack-apps-token-remove";
+    state.slackApps.confirm = "";
+    render();
+    focusAction(opener);
+  }
+
   function slackAppsTokenIllustrationHtml() {
     var dots = new Array(23).join("&bull;");
     var workspace = slackAppsWorkspaceName();
@@ -5321,11 +5328,11 @@
     return '<div class="slack-token-page">' + back + title +
       '<p class="slack-token-intro">' + esc("Slack needs one token from you. You only do this once for " + workspace + ".") + '</p>' +
       '<ol class="slack-token-steps">' +
-      '<li><span class="slack-token-step">1</span><div><p>Open Slack&rsquo;s app settings.</p><a class="btn btn-soft btn-sm slack-token-open" href="' + SLACK_APP_SETTINGS_URL + '" target="_blank" rel="noopener" data-action="slack-apps-open-settings">Open Slack app settings <span aria-hidden="true">&nearr;</span></a></div></li>' +
+      '<li><span class="slack-token-step">1</span><div><p>Open Slack&rsquo;s app settings.</p><a class="btn btn-soft btn-sm slack-token-open" href="' + SLACK_YOUR_APPS_URL + '" target="_blank" rel="noopener">Open Slack app settings <span aria-hidden="true">&nearr;</span></a></div></li>' +
       '<li><span class="slack-token-step">2</span><div><p>Under <strong>Your App Configuration Tokens</strong>, choose <strong>Generate Token</strong> and pick <strong>' + esc(workspace) + '</strong>.</p></div></li>' +
       '<li><span class="slack-token-step">3</span><div><p>Copy the <strong>Refresh Token</strong> and paste it here.</p>' + slackAppsTokenIllustrationHtml() + '</div></li></ol>' +
       '<form class="slack-token-form" data-action="slack-apps-token-form" autocomplete="off"><label class="field-label" for="slack-apps-token">Refresh token</label>' +
-      '<div class="slack-token-field"><input id="slack-apps-token" class="input mono' + (token.error ? " input-error" : "") + '" type="password" name="refreshToken" maxlength="512" autocomplete="off" spellcheck="false" placeholder="xoxe-&hellip;" aria-describedby="slack-apps-token-status"' + (checking ? " disabled" : "") + '>' +
+      '<div class="slack-token-field"><input id="slack-apps-token" class="input mono' + (token.error ? " input-error" : "") + '" type="password" maxlength="512" autocomplete="off" spellcheck="false" placeholder="xoxe-&hellip;" aria-describedby="slack-apps-token-status"' + (checking ? " disabled" : "") + '>' +
       '<button type="submit" class="btn btn-primary"' + (checking ? " disabled" : "") + '>Connect</button></div>' + fieldStatus +
       (checking ? '<p class="slack-token-checking" role="status"><span class="spinner"></span>Checking with Slack&hellip;</p>' : '') + '</form>' +
       '<p class="hint slack-token-note">' + esc("Slack lets this token manage the Slack apps you created in " + workspace + ". Chickpea only changes the apps it creates for your Agents. It's stored encrypted, and you can remove it any time.") + '</p>' +
@@ -5338,14 +5345,14 @@
     state.channelScreen = "overview";
     state.destinationTab = "connection";
     state.profileScreen = "list";
-    apps.token = { open: true, phase: "empty", error: "", turnOn: !!turnOn, connectedMode: "", openedSlack: false };
+    apps.token = { open: true, phase: "empty", error: "", turnOn: !!turnOn, connectedMode: "" };
     render();
     revalidateCurrentVisibleResources({ navigation: true });
   }
 
   function closeSlackAppsToken() {
     var apps = slackAppsState();
-    apps.token = { open: false, phase: "empty", error: "", turnOn: false, connectedMode: "", openedSlack: false };
+    apps.token = { open: false, phase: "empty", error: "", turnOn: false, connectedMode: "" };
     openDestination("connection");
   }
 
@@ -5396,25 +5403,6 @@
       var retry = document.getElementById("slack-apps-token");
       if (retry && retry.focus) retry.focus();
     });
-  }
-
-  // Back from Slack's settings tab: if the browser already lets this page read
-  // the clipboard, and it holds a refresh token, put it in the field for the
-  // Owner to send. Never ask for the permission, and never send it unpasted.
-  function offerSlackAppsTokenFromClipboard() {
-    var token = state.slackApps && state.slackApps.token;
-    if (!token || !token.open || !token.openedSlack || token.phase === "checking" || token.phase === "success") return;
-    if (typeof navigator === "undefined" || !navigator.permissions || !navigator.clipboard || !navigator.clipboard.readText) return;
-    navigator.permissions.query({ name: "clipboard-read" }).then(function (status) {
-      if (!status || status.state !== "granted") return null;
-      return navigator.clipboard.readText();
-    }).then(function (text) {
-      var candidate = String(text || "").trim();
-      var field = document.getElementById("slack-apps-token");
-      if (!field || field.value || !/^xoxe-\d+-[A-Za-z0-9-]+$/.test(candidate)) return;
-      field.value = candidate;
-      if (field.focus) field.focus();
-    }).catch(function () {});
   }
 
   function setSlackAppsMode(mode) {
@@ -5496,7 +5484,7 @@
       if (body && body.next === "authorize") {
         var url;
         try { url = new URL(String(body.authorizeUrl || "")); } catch (error) { url = null; }
-        if (!url || url.protocol !== "https:") throw new Error("authorize_url_invalid");
+        if (!url || url.origin !== SLACK_AUTHORIZE_ORIGIN) throw new Error("authorize_url_invalid");
         var pending = slackAppsPending();
         pending[agentId] = Date.now();
         writeSlackAppsPending(pending);
@@ -5504,6 +5492,7 @@
         return;
       }
       apps.rowBusy = "";
+      invalidateVisibleResource("slack-apps", "");
       replaceSlackAppsRow(body && body.agent);
       render();
       scheduleSlackAppsPoll();
@@ -5511,7 +5500,10 @@
       apps.rowBusy = "";
       var code = error && error.message;
       var payload = error && error.payload;
-      if (payload && payload.agent) replaceSlackAppsRow(payload.agent);
+      if (payload && payload.agent) {
+        invalidateVisibleResource("slack-apps", "");
+        replaceSlackAppsRow(payload.agent);
+      }
       if (code === "token_needed") { openSlackAppsToken(false); return; }
       var agent = slackAppsAgentName(agentId);
       if (code === "permission_needed") {
@@ -5535,6 +5527,7 @@
       var pending = slackAppsPending();
       delete pending[agentId];
       writeSlackAppsPending(pending);
+      invalidateVisibleResource("slack-apps", "");
       replaceSlackAppsRow(body && body.agent);
       render();
     }).catch(function (error) {
@@ -17011,10 +17004,7 @@
 
     if (state.slackApps && state.slackApps.confirm) {
       if (action === "slack-apps-confirm-cancel" && !state.slackApps.busy) {
-        var cancelledSlackAppsConfirm = state.slackApps.confirm;
-        state.slackApps.confirm = "";
-        render();
-        focusAction(cancelledSlackAppsConfirm === "off" ? "slack-apps-turn-off" : "slack-apps-token-remove");
+        dismissSlackAppsConfirm();
       } else if (action === "slack-apps-confirm-apply") {
         if (state.slackApps.confirm === "off") setSlackAppsMode("shared");
         else removeSlackAppsToken();
@@ -17029,7 +17019,6 @@
       if (action === "slack-apps-token-remove") { slackAppsState().confirm = "remove-token"; slackAppsState().notice = null; render(); }
       if (action === "slack-apps-token-open") openSlackAppsToken(false);
       if (action === "slack-apps-token-back") closeSlackAppsToken();
-      if (action === "slack-apps-open-settings") slackAppsState().token.openedSlack = true;
       if (action === "slack-apps-start") startSlackApp(slackAppsAgent);
       if (action === "slack-apps-cancel") cancelSlackApp(slackAppsAgent);
       return;
@@ -18904,8 +18893,7 @@
       if (trapModalTab(event, '[data-role="slack-apps-dialog"]')) return;
       if ((event.key === "Escape" || event.key === "Esc") && !state.slackApps.busy) {
         event.preventDefault();
-        state.slackApps.confirm = "";
-        render();
+        dismissSlackAppsConfirm();
       }
       return;
     }
@@ -19326,7 +19314,6 @@
   // redraws #app before focus lands, so the clicked field is gone and nothing
   // is left for render() to restore. One task later, focus has settled.
   function revalidateAfterFocusReturn() {
-    offerSlackAppsTokenFromClipboard();
     if (typeof window !== "undefined" && typeof window.setTimeout === "function") {
       window.setTimeout(function () { revalidateCurrentVisibleResources(); }, 0);
       return;

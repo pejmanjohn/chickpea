@@ -80,7 +80,6 @@ async function harness(options: {
   path?: string;
   storage?: Record<string, string>;
   handle?: (path: string, method: string, body: unknown) => FakeResponse | Promise<FakeResponse | undefined> | undefined;
-  navigator?: Record<string, unknown>;
 } = {}) {
   const api = options.api ?? apiState();
   let html = '';
@@ -141,7 +140,7 @@ async function harness(options: {
       pushState(_state: unknown, _title: string, path: string) { location.pathname = new URL(path, 'https://chickpea.example').pathname; },
       replaceState(_state: unknown, _title: string, path: string) { location.pathname = new URL(path, 'https://chickpea.example').pathname; },
     },
-    navigator: options.navigator ?? {},
+    navigator: {},
     window: {
       addEventListener(type: string, listener: Listener) { if (!windowListeners[type]) windowListeners[type] = listener; },
       localStorage: {
@@ -205,6 +204,7 @@ test('off: one sentence and a button; with no token stored the button leads to t
   assert.match(text, /Copy the Refresh Token and paste it here\./);
   assert.match(page.html(), /class="slack-token-row highlighted"><span class="slack-token-label">Refresh Token</);
   assert.match(page.html(), /<input id="slack-apps-token" class="input mono" type="password"/);
+  assert.doesNotMatch(page.html(), /<input id="slack-apps-token"[^>]* name=/, 'a form sent by the browser itself could carry no token');
   assert.match(text, /Starts with xoxe-/);
   assert.match(text, /Slack lets this token manage the Slack apps you created in Acme\. Chickpea only changes the apps it creates for your Agents\. It&#39;s stored encrypted, and you can remove it any time\./);
   assert.match(text, /These apps belong to you in Slack\. Like any Slack app you own, you can see what its bot can see: messages people send that Agent, and the channels it(’|&rsquo;)s in\./);
@@ -397,8 +397,11 @@ test('a typed token is emptied from the field before it is sent; reached from a 
   assert.doesNotMatch(page.text(), /From now on/);
 });
 
-test('the browser follows only an https Allow URL', async () => {
-  for (const authorizeUrl of ['http://slack.com/oauth', 'javascript:alert(1)', '']) {
+test("the browser follows only Slack's own Allow URL", async () => {
+  for (const authorizeUrl of [
+    'http://slack.com/oauth/v2/authorize', 'https://slack.com.example/oauth/v2/authorize', 'https://example.com/?next=https://slack.com',
+    'javascript:alert(1)', '',
+  ]) {
     const page = await harness({
       handle: (path) => path.endsWith('/start')
         ? respond({ next: 'authorize', authorizeUrl, agent: row('agent_sales', 'Sales Desk', 'sales-desk', 'waiting_for_allow') })
@@ -410,31 +413,33 @@ test('the browser follows only an https Allow URL', async () => {
   }
 });
 
-test('back from Slack, a refresh token the browser already lets the page read fills the field, and nothing is sent or asked', async () => {
-  const clipboard = (permission: string) => {
-    const reads: string[] = [];
-    return {
-      reads,
-      navigator: {
-        permissions: { query: async () => ({ state: permission }) },
-        clipboard: { readText: async () => { reads.push('read'); return 'xoxe-1-from-the-clipboard'; } },
-      },
-    };
-  };
-  const granted = clipboard('granted');
-  const page = await harness({ path: '/admin/destinations/slack/connection/token', navigator: granted.navigator });
+test('the section shows a change made elsewhere when the Owner comes back to the window', async () => {
+  const page = await harness();
+  assert.match(page.html(), /data-agent="agent_sales"[^>]*>Move to its own app</);
+  page.api.agents = [row('agent_sales', 'Sales Desk', 'sales-desk', 'waiting_for_allow')];
+  page.api.setting = { mode: 'shared', changedBy: 'UOTHER', changedAt: 2 };
   await page.focusWindow();
-  assert.equal(page.field.value, '', 'nothing before the Owner opened Slack');
-  await page.click({ 'data-action': 'slack-apps-open-settings' });
-  await page.focusWindow();
-  assert.equal(page.field.value, 'xoxe-1-from-the-clipboard');
-  assert.equal(page.requests.some((request) => request.path === '/admin/api/slack-apps/token'), false, 'never sent until the Owner sends it');
-  assert.equal(page.html().includes('xoxe-1-from'), false);
+  assert.match(page.text(), /Ready\. Add Sales Desk to Slack to finish\./);
+  assert.match(page.text(), /Agents answer through the Chickpea app\./);
+});
 
-  const prompt = clipboard('prompt');
-  const asking = await harness({ path: '/admin/destinations/slack/connection/token', navigator: prompt.navigator });
-  await asking.click({ 'data-action': 'slack-apps-open-settings' });
-  await asking.focusWindow();
-  assert.deepEqual(prompt.reads, [], 'the clipboard is never read when reading it would ask');
-  assert.equal(asking.field.value, '');
+test('a read already on its way never undoes a Cancel that answered after it left', async () => {
+  let release: (response: FakeResponse) => void = () => {};
+  let reads = 0;
+  const page = await harness({
+    api: apiState({ agents: [row('agent_sales', 'Sales Desk', 'sales-desk', 'waiting_for_allow')] }),
+    handle: (path, method) => {
+      if (path.endsWith('/cancel')) return respond({ agent: row('agent_sales', 'Sales Desk', 'sales-desk', 'user_group') });
+      if (path !== '/admin/api/slack-apps' || method !== 'GET') return undefined;
+      reads += 1;
+      return reads === 2 ? new Promise<FakeResponse>((resolve) => { release = resolve; }) : undefined;
+    },
+  });
+  await page.focusWindow();
+  assert.equal(reads, 2, 'the second read is on its way');
+  await page.click({ 'data-action': 'slack-apps-cancel', 'data-agent': 'agent_sales' });
+  release(respond(apiState({ agents: [row('agent_sales', 'Sales Desk', 'sales-desk', 'waiting_for_allow')] })));
+  await flush();
+  assert.match(page.html(), /data-agent="agent_sales"[^>]*>Move to its own app</);
+  assert.doesNotMatch(page.text(), /Ready\. Add Sales Desk/);
 });

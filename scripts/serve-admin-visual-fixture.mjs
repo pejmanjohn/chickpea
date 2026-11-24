@@ -753,7 +753,6 @@ function closeServer(server) {
   });
 }
 
-/** Start one disposable, loopback-only real Admin fixture. */
 /**
  * Agents in Slack, for looking at Admin's section and token page: the port
  * is installed and the service is an in-memory stand-in. A paste of a token
@@ -842,6 +841,7 @@ async function visualAgentSlackApps(store) {
   };
 }
 
+/** Start one disposable, loopback-only real Admin fixture. */
 export async function startAdminVisualFixture(options = {}) {
   const host = options.host ?? DEFAULT_HOST;
   const port = options.port ?? 0;
