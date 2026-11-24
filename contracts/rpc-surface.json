@@ -3,11 +3,11 @@
   "schema": 1,
   "contract": {
     "type AgentAppLifecycle": {
-      "to": "fb485de3ccf5",
+      "to": "dab8c49b7c46",
       "reason": "allowDm only records where the Allow message was posted; no build, base or head, reads it. A press that sends the Owner's browser to Slack posts no message, so its record has none. Both builds read such a record the same way; safe from this release."
     },
     "type UserGroupPresence": {
-      "to": "fcfdb7cb1854",
+      "to": "a53c088fb1d3",
       "reason": "allowDm only records where the Allow message was posted; no build, base or head, reads it. A press that sends the Owner's browser to Slack posts no message, so its record has none. Both builds read such a record the same way; safe from this release."
     }
   },
