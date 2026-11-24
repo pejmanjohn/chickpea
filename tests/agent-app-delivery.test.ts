@@ -60,7 +60,13 @@ import { AGENT_CHANNEL_ADD_ACTION } from '../src/slack/agent-channel-offer.ts';
 import { invalidateStoredSlackPublicUrl } from '../src/slack/credentials.ts';
 import { canonicalSlackMarkdownText } from '../src/slack/message-format.ts';
 import { createSlackAttachmentAnalysis, formatSlackAttachmentSignal } from '../src/slack/attachment-context.ts';
-import { runAttachmentClient } from '../src/slack/agent-apps/files.ts';
+import { runAttachmentClient, runSlackClient } from '../src/slack/agent-apps/files.ts';
+import { createArtifactReceiptAccumulator, type SlackArtifactReceipts } from '../src/slack/artifact-receipts.ts';
+import { stageArtifactWithReceipt } from '../src/slack/artifact-staging.ts';
+import { createSlackFileTransport } from '../src/slack/file-transport.ts';
+import { WebClientPresenter } from '../src/slack/web-client-presenter.ts';
+import { invokeSlackWorkspaceManagementTool, turnSlackFiles, type SlackManagementSignal } from '../src/management/slack-tools.ts';
+import { skillMarkdown } from './helpers/zip.ts';
 import { configureHostedSlackPermissionsUpdate } from '../src/slack/hosted-permissions.ts';
 import { syncHostedWorkspaceInstallation } from '../src/slack/hosted-installation.ts';
 import { slackInstallationCredentialId, withHostedSlackApp } from '../src/slack/hosted-slack-app.ts';
@@ -148,6 +154,8 @@ interface Harness {
   ): Promise<Response>;
   /** Puts a message in a conversation in Slack, as a person sending it does, with no delivery. */
   hold(channelId: string, message: Record<string, unknown>): void;
+  /** The files the messages Slack holds in a conversation carry: what a person there sees. */
+  filesIn(channelId: string): string[];
   /** The same Slack event or click as Chickpea's own app receives it; settles once the work it detaches is done. */
   deliverToChickpea(body: unknown, kind?: 'events' | 'interactions'): Promise<Response>;
   secrets(): { credentials: EncryptedCredentialStore; keyring: ReturnType<typeof loadCredentialKeyring>; slack: ReturnType<typeof createAgentAppSlackApi> };
@@ -297,9 +305,13 @@ async function withHarness(
     if (!parent) return { ok: false, error: 'thread_not_found' };
     return { ok: true, messages: [parent, ...at.filter((message) => message.thread_ts === root && message.ts !== root)] };
   };
+  // Files a bot uploaded, by id, with the token that uploaded each. As in Slack, a file completed with no conversation
+  // is its uploader's alone until that bot posts its permalink where it is; a post of another bot's file shares nothing.
+  const made = new Map<string, { owner: string | undefined; file: Record<string, unknown> }>();
   // A file a person shared, for a bot that reads where it was shared: as in Slack, a DM's only by that DM's bot, and a
-  // Channel's by a bot in it. Its `preview` stands for its bytes.
+  // Channel's by a bot in it; and a file a bot made, for that bot. Its `preview` stands for its bytes.
   const sharedFile = (fileId: string, token: string | undefined) => {
+    if (token && made.get(fileId)?.owner === token) return made.get(fileId)!.file;
     for (const [channel, messages] of held) {
       for (const message of messages.values()) {
         const file = (message.files as Array<Record<string, unknown>> | undefined)?.find((candidate) => candidate.id === fileId);
@@ -312,6 +324,13 @@ async function withHarness(
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = input instanceof Request ? input : new Request(String(input), init);
     const url = new URL(request.url);
+    if (url.hostname === 'files.slack.com' && url.pathname.startsWith('/upload/')) {
+      const upload = made.get(url.pathname.split('/').at(-1) ?? '');
+      calls.push({ method: 'files.upload', token: upload?.owner, body: new URLSearchParams() });
+      if (!upload) return new Response(null, { status: 404 });
+      upload.file.preview = await request.text();
+      return new Response('OK');
+    }
     if (url.hostname === 'files.slack.com') {
       const token = request.headers.get('authorization')?.replace(/^Bearer /, '');
       calls.push({ method: 'files.download', token, body: new URLSearchParams() });
@@ -395,6 +414,21 @@ async function withHarness(
       const invited = BOTS.find(([, botUser]) => botUser === body.get('users'))?.[0];
       if (!outside.get(invited ?? '')?.delete(channel)) return Response.json({ ok: false, error: 'already_in_channel' });
     }
+    if (method === 'files.getUploadURLExternal') {
+      const id = `F0MADE${made.size + 1}`;
+      const name = body.get('filename') ?? 'file';
+      made.set(id, { owner: token, file: { id, name, mimetype: 'image/png', filetype: 'png', size: Number(body.get('length')), mode: 'hosted' } });
+      return Response.json({ ok: true, file_id: id, upload_url: `https://files.slack.com/upload/v1/${id}` });
+    }
+    if (method === 'files.completeUploadExternal') {
+      // Only a private completion: a run's files are shared by the reply that links them.
+      if (body.has('channel_id')) return Response.json({ ok: false, error: 'invalid_arguments' });
+      const ids = (JSON.parse(body.get('files') ?? '[]') as Array<{ id: string }>).map(({ id }) => id);
+      const files = ids.map((id) => made.get(id)).filter((upload) => upload?.owner === token).map((upload) => upload!.file);
+      if (files.length !== ids.length) return Response.json({ ok: false, error: 'file_not_found' });
+      const uploader = BOTS.find(([botToken]) => botToken === token)?.[1];
+      return Response.json({ ok: true, files: files.map((file) => ({ ...file, permalink: `https://tenant.slack.com/files/${uploader}/${file.id}/${file.name}` })) });
+    }
     if (method === 'files.info') {
       const file = sharedFile(body.get('file') ?? '', token);
       return Response.json(file
@@ -446,9 +480,12 @@ async function withHarness(
                   const ts = `1900000000.${String(100 + posted).padStart(6, '0')}`;
                   posters.set(`${channel} ${ts}`, token);
                   const threadTs = body.get('thread_ts');
+                  // The files this bot made that its post links: Slack shares them where the post is.
+                  const linked = [...made.values()].filter(({ owner, file }) => owner === token &&
+                    [...body.values()].some((value) => value.includes(`/${String(file.id)}/`))).map(({ file }) => file);
                   hold(channel, {
                     ts, user: BOTS.find(([botToken]) => botToken === token)?.[1], text: body.get('text') ?? '',
-                    ...(threadTs ? { thread_ts: threadTs } : {}),
+                    ...(threadTs ? { thread_ts: threadTs } : {}), ...(linked.length ? { files: linked } : {}),
                   });
                   return { ok: true, ts, channel: body.get('channel') ?? 'D1' };
                 })()
@@ -474,6 +511,8 @@ async function withHarness(
   const delivery = withAgentSlackAppHandoff(base, { kind: 'delivery', agentId: support.id, appId: AGENT_APP, signingSecret: AGENT_SECRET });
   await run({
     stores, calls, base, delivery, groupsOff, installedAt, hostedRevision, secrets, ownerMembershipId: owner.membership.id, hold,
+    filesIn: (channelId) => [...(held.get(channelId)?.values() ?? [])]
+      .flatMap((message) => ((message.files as Array<{ id: string }> | undefined) ?? []).map(({ id }) => id)),
     async deliver(kind, body, options = {}) {
       if (kind === 'events' && !options.forged) happened(body);
       const raw = kind === 'events' ? JSON.stringify(body) : new URLSearchParams({ payload: JSON.stringify(body) }).toString();
@@ -1309,8 +1348,12 @@ const C2_POSTS = [
   { user: 'U2', text: 'Thanks, all.', ts: '1900001600.000400' },
 ];
 
-/** One read of #C2 by an Agent answering the Owner in #C1: its result, or its refusal, and the bot tokens its Slack reads used. */
-async function readC2(h: Harness, agentId: string): Promise<{
+/**
+ * One read of #C2 by an Agent answering the Owner in #C1: its result, or its refusal, and the bot tokens its Slack reads
+ * used. An `ownBot` run is admitted from a mention of Support's own bot in #C1, so its stored speaker is that bot, and
+ * `admitted` runs once it is; any other run has no stored speaker.
+ */
+async function readC2(h: Harness, agentId: string, run: { ownBot?: boolean; admitted?: () => unknown } = {}): Promise<{
   authors?: Array<[string, string | null]>; refused?: SlackReadError; tokens: Array<string | undefined>;
 }> {
   await h.stores.config.putChannel({ workspaceId: TEAM, channelId: 'C2', label: 'refunds', lifecycle: 'active' }, 0).catch(() => undefined);
@@ -1320,14 +1363,23 @@ async function readC2(h: Harness, agentId: string): Promise<{
       createdByMembershipId: h.ownerMembershipId, channelLabel: 'refunds', channelIsPrivate: false,
     }, 0);
   }
+  let turnJobId = 'job_read';
+  if (run.ownBot) {
+    const ts = `${Math.floor(Date.now() / 1_000)}.${String(1100 + h.calls.length).padStart(6, '0')}`;
+    assert.equal((await h.deliver('events', channelMessage(ts, `<@${AGENT_BOT_USER}> what is in refunds?`).app, { settle: true })).status, 200);
+    const [job] = await turnsOn(h, ts);
+    assert.deepEqual(job?.turn.speaker, SUPPORT_BOT);
+    turnJobId = job.id;
+    await run.admitted?.();
+  }
   const before = h.calls.length;
-  const service = await slackReadingService({ agentId, actorMembershipId: h.ownerMembershipId }, {
-    agentId, workspaceId: TEAM, channelId: 'C1', threadTs: '1900001700.000100', conversationKind: 'channel',
-    slackUserId: 'U1', eventId: 'EvRead', messageTs: '1900001700.000100', turnJobId: 'job_read',
-  }, withHostedSlackApp(h.base, MAIN_APP));
   // Resolving the installation checks Chickpea's bot with auth.test first, whichever bot then reads.
   const tokens = () => [...new Set(h.calls.slice(before).filter((call) => call.method !== 'auth.test').map((call) => call.token))];
   try {
+    const service = await slackReadingService({ agentId, actorMembershipId: h.ownerMembershipId }, {
+      agentId, workspaceId: TEAM, channelId: 'C1', threadTs: '1900001700.000100', conversationKind: 'channel',
+      slackUserId: 'U1', eventId: 'EvRead', messageTs: '1900001700.000100', turnJobId,
+    }, withHostedSlackApp(h.base, MAIN_APP));
     const result = await service.readChannel({ target: { channelId: 'C2' } }) as { messages: Array<{ author: { kind: string; name?: string } }> };
     return {
       authors: result.messages.map(({ author }) => [author.kind, author.kind === 'person' ? null : author.name ?? null]),
@@ -1340,11 +1392,11 @@ async function readC2(h: Harness, agentId: string): Promise<{
 }
 
 test("an Agent with a live app reads Slack as its own bot, so a Channel Chickpea's bot isn't in is readable, and its own posts read as an Agent's", async (t) => withHarness(t, async (h) => {
-  const support = await readC2(h, 'agent_support');
+  const support = await readC2(h, 'agent_support', { ownBot: true });
   assert.deepEqual(support.tokens, [AGENT_BOT], "every read is the Agent's own bot's");
   assert.deepEqual(support.authors, [['agent', 'support'], ['agent', 'Finance'], ['app', 'PagerDuty'], ['person', null]],
     "its own post and Chickpea's bot's are Agents'; another app is an app");
-  assert.equal((await readC2(h, 'agent_support')).authors?.length, 4, "its app's own reads are not held to the shared app's pace");
+  assert.equal((await readC2(h, 'agent_support', { ownBot: true })).authors?.length, 4, "its app's own reads are not held to the shared app's pace");
 
   const finance = await readC2(h, 'agent_finance');
   assert.deepEqual(finance.tokens, [MAIN_BOT], "a user-group Agent reads as Chickpea's bot, as before");
@@ -1353,25 +1405,39 @@ test("an Agent with a live app reads Slack as its own bot, so a Channel Chickpea
 }, { notMemberOf: { [MAIN_BOT]: ['C2'] }, history: C2_POSTS }));
 
 test("an app Agent whose own bot isn't in a Channel is told its own app is missing there, not Chickpea's", async (t) => withHarness(t, async (h) => {
-  const { refused, tokens } = await readC2(h, 'agent_support');
+  const { refused, tokens } = await readC2(h, 'agent_support', { ownBot: true });
   assert.deepEqual(tokens, [AGENT_BOT]);
   assert.equal(refused?.code, 'needs_bot_invite');
   assert.equal(refused?.message, "This Agent's own Slack app is not in that channel yet. Someone in the channel can add it from the channel's Add people or agents.");
 }, { notMemberOf: { [AGENT_BOT]: ['C2'] }, history: C2_POSTS }));
 
+// Slack rate-limits the app's history reads once its run is admitted.
+const appHistoryLimited: string[] = [];
 test("a read Slack rate-limits on the app Agent's own bot is refused at once, as on Chickpea's bot, rather than waiting it out", async (t) => withHarness(t, async (h) => {
-  const started = Date.now();
-  const { refused, tokens } = await readC2(h, 'agent_support');
+  let started = 0;
+  const { refused, tokens } = await readC2(h, 'agent_support', { ownBot: true, admitted() {
+    appHistoryLimited.push(`conversations.history ${AGENT_BOT}`);
+    started = Date.now();
+  } });
   assert.deepEqual(tokens, [AGENT_BOT]);
   assert.equal(refused?.code, 'rate_limited');
   assert.ok(Date.now() - started < 1_000, 'the read does not wait for Retry-After');
-}, { history: C2_POSTS, rateLimited: [`conversations.history ${AGENT_BOT}`] }));
+}, { history: C2_POSTS, rateLimited: appHistoryLimited }));
 
 // Chickpea's shared app reads once a minute per workspace, so each case below reads in a workspace of its own.
 test("a user-group Agent reads as Chickpea's bot, as before, and reads an app Agent's posts as an Agent's", async (t) => withHarness(t, async (h) => {
   const finance = await readC2(h, 'agent_finance');
   assert.deepEqual(finance.tokens, [MAIN_BOT]);
   assert.deepEqual(finance.authors, [['agent', 'support'], ['agent', 'Finance'], ['app', 'PagerDuty'], ['person', null]]);
+}, { history: C2_POSTS }));
+
+// Mutation proof: reading through the installation when the app's bot cannot answer reads #C2 as Chickpea's bot.
+test("a run that speaks as an Agent app's bot reads nothing once that app can no longer answer, even where Chickpea's bot could", async (t) => withHarness(t, async (h) => {
+  const { refused, tokens } = await readC2(h, 'agent_support', { ownBot: true, admitted: () => setSupportApp(h, {
+    state: 'needs_attention', at: Date.now(), startedBy: 'U1', reason: 'app_removed', resume: 'icon_set', app: { appId: AGENT_APP, clientId: '1.client' },
+  }) });
+  assert.equal(refused?.code, 'unavailable');
+  assert.deepEqual(tokens, [], 'no bot reads');
 }, { history: C2_POSTS }));
 
 test("an Agent whose app is being removed reads as Chickpea's bot", async (t) => withHarness(t, async (h) => {
@@ -4717,4 +4783,114 @@ test("a file on a run that speaks as an Agent app's bot is not read once that ap
   assert.deepEqual(job.turn.speaker, SUPPORT_BOT);
   await setSupportApp(h, { state: 'needs_attention', at: Date.now(), startedBy: 'U1', reason: 'app_removed', resume: 'icon_set', app: { appId: AGENT_APP, clientId: '1.client' } });
   assert.deepEqual(await filesGiven(h, job), { status: 'failed', seen: [], readers: [] }, 'no bot reads it, so the run says it could not');
+}));
+
+const CHART = 'a bar chart of boxes, standing in for its PNG bytes';
+
+/**
+ * One run makes a chart, as its image or chart tool does, then the host posts the reply that shares it: staged with
+ * the client the run acts with, and posted by the bot the host's turn resolver gives the run. What each bot asked
+ * Slack for the file comes back.
+ */
+async function chartRun(h: Harness, job: PendingTurnJob, channelId: string): Promise<{ fileId: string; makers: unknown[] }> {
+  const env = withHostedSlackApp(h.base, MAIN_APP);
+  const agentId = job.assignment.agentId;
+  const before = h.calls.length;
+  let receipts: SlackArtifactReceipts = { schemaVersion: 1, receipts: [] };
+  const outcome = await stageArtifactWithReceipt({
+    transport: createSlackFileTransport(await runSlackClient(env, { agentId, conversation: { workspaceId: TEAM } }, job.id)),
+    artifact: { filename: 'boxes.png', bytes: new TextEncoder().encode(CHART), kind: 'chart', title: 'Boxes' },
+    destination: { workspaceId: TEAM, agentId, channelId, threadTs: job.turn.messageTs },
+    accumulator: createArtifactReceiptAccumulator((update) => { receipts = update(receipts); }),
+    writeReceipts: (written) => { receipts = written; },
+  });
+  assert.equal(outcome.attached, true);
+  const speaking = await withAgentAppExecution((workspaceId) => resolveSlackInstallationExecutionContext(workspaceId, env), env)(
+    TEAM, turnJobRunSpeaker(job),
+  );
+  await new WebClientPresenter(speaking.client, { channelId, threadTs: job.turn.messageTs, agentName: 'Support', agentId, workspaceId: TEAM })
+    .deliverFinal('Here is the chart.', 'markdown', 'complete', undefined, receipts.receipts);
+  const makers = h.calls.slice(before).filter(({ method }) => method.startsWith('files.')).map(({ method, token }) => [method, token]);
+  return { fileId: receipts.receipts[0]!.fileId, makers };
+}
+
+const MADE_BY = (token: string) => [['files.getUploadURLExternal', token], ['files.upload', token], ['files.completeUploadExternal', token]];
+
+// Mutation proof: staging with the installation's client, as before, leaves the person's DM without the chart and the
+// next run unable to read it.
+test("a chart an Agent makes in its own app's DM is its own bot's, is in the person's DM, and the next run there reads it back", async (t) => withHarness(t, async (h) => {
+  const now = Math.floor(Date.now() / 1_000);
+  const asked = `${now}.000960`;
+  assert.equal((await h.deliver('events', appDm(asked, { text: 'make me a chart of boxes' }), { settle: true })).status, 200);
+  const [job] = await turnsOn(h, asked);
+  assert.ok(job);
+  assert.deepEqual(job.turn.speaker, SUPPORT_BOT);
+  const { fileId, makers } = await chartRun(h, job, 'D1');
+  assert.deepEqual(makers, MADE_BY(AGENT_BOT), "uploaded by the Agent's own bot");
+  assert.deepEqual(h.filesIn('D1'), [fileId], "and in the person's DM with the reply that shares it");
+
+  const next = `${now}.000970`;
+  assert.equal((await h.deliver('events', appDm(next, { text: 'make the bars blue' }), { settle: true })).status, 200);
+  const [follow] = await turnsOn(h, next);
+  assert.ok(follow);
+  const read = await runAttachmentClient(withHostedSlackApp(h.base, MAIN_APP), { agentId: 'agent_support', conversation: { workspaceId: TEAM } }, follow.id)
+    .readAttachment(fileId, 1_000_000);
+  assert.equal(new TextDecoder().decode(read.bytes), CHART, 'the next run reads the chart back to change it');
+}));
+
+test("a chart an Agent makes where Chickpea's bot speaks for it is uploaded and shared by Chickpea's bot, as before", async (t) => withHarness(t, async (h) => {
+  const ts = `${Math.floor(Date.now() / 1_000)}.000980`;
+  const message = messageIn('C1', ts, `<@${AGENT_BOT_USER}> make me a chart of boxes`);
+  assert.equal((await h.deliverToChickpea(message.chickpea)).status, 200);
+  const [job] = await turnsOn(h, ts);
+  assert.ok(job);
+  assert.deepEqual([job.assignment.agentId, job.turn.speaker], SUPPORT_THROUGH_CHICKPEA);
+  const { fileId, makers } = await chartRun(h, job, 'C1');
+  assert.deepEqual(makers, MADE_BY(MAIN_BOT));
+  assert.deepEqual(h.filesIn('C1'), [fileId]);
+}, { notMemberOf: { [AGENT_BOT]: ['C1'] } }));
+
+// Mutation proof: answering with the installation's client when the app's bot cannot uploads the chart as Chickpea's bot.
+test("a run that speaks as an Agent app's bot uploads nothing once that app can no longer answer, and is told why", async (t) => withHarness(t, async (h) => {
+  const ts = `${Math.floor(Date.now() / 1_000)}.000990`;
+  const text = `<@${AGENT_BOT_USER}> make me a chart of boxes`;
+  const { app } = channelMessage(ts, text);
+  assert.equal((await h.deliver('events', app, { settle: true })).status, 200);
+  const [job] = await turnsOn(h, ts);
+  assert.ok(job);
+  assert.deepEqual(job.turn.speaker, SUPPORT_BOT);
+  await setSupportApp(h, { state: 'needs_attention', at: Date.now(), startedBy: 'U1', reason: 'app_removed', resume: 'icon_set', app: { appId: AGENT_APP, clientId: '1.client' } });
+  const before = h.calls.length;
+  await assert.rejects(
+    runSlackClient(withHostedSlackApp(h.base, MAIN_APP), { agentId: 'agent_support', conversation: { workspaceId: TEAM } }, job.id),
+    (error: unknown) => error instanceof SlackInstallationUnavailableError && error.reasonCode === 'agent_app_unavailable',
+  );
+  assert.deepEqual(h.calls.slice(before).filter(({ method }) => method.startsWith('files.') || method.startsWith('chat.')), [], 'no bot uploads or posts');
+}));
+
+// Mutation proof: the service's own reader, the installation's, cannot read a file in the Agent app's DM.
+test("upload_skills in an Agent app's own DM reads the person's skill file as that app's bot", async (t) => withHarness(t, async (h) => {
+  const ts = `${Math.floor(Date.now() / 1_000)}.001000`;
+  const file = {
+    id: 'F0OWNSKILL', name: 'SKILL.md', mimetype: 'text/markdown', filetype: 'markdown', mode: 'hosted',
+    preview: skillMarkdown('box-count', 'Count the boxes on an order.', '# Count\nAdd the boxes up.\n'),
+  };
+  h.hold('D1', { user: 'U1', text: 'add this skill', ts, files: [file] });
+  assert.equal((await h.deliver('events', appDm(ts, { subtype: 'file_share', text: 'add this skill', files: [file] }), { settle: true, forged: true })).status, 200);
+  const [job] = await turnsOn(h, ts);
+  assert.ok(job);
+  assert.deepEqual(job.turn.speaker, SUPPORT_BOT);
+  const env = withHostedSlackApp(h.base, MAIN_APP);
+  const signal: SlackManagementSignal = {
+    agentId: 'agent_support', workspaceId: TEAM, channelId: 'D1', threadTs: ts, conversationKind: 'im', slackUserId: 'U1',
+    eventId: 'EvOwnSkill', messageTs: ts, turnJobId: job.id, attachmentFileIds: [file.id], requesterText: 'add this skill',
+  };
+  const service = createLiveWorkspaceManagementService(env, { slackFiles: turnSlackFiles(env, signal) });
+  const before = h.calls.length;
+  const result = await invokeSlackWorkspaceManagementTool({
+    signal, identity: h.stores.identity, service, name: 'upload_skills', args: { idempotencyKey: 'slack-upload' },
+  });
+  assert.deepEqual(h.calls.slice(before).filter(({ method }) => method.startsWith('files.')).map(({ method, token }) => [method, token]),
+    [['files.info', AGENT_BOT], ['files.download', AGENT_BOT]]);
+  assert.ok(result.ok && JSON.stringify(result.result).includes('box-count'), JSON.stringify(result));
 }));

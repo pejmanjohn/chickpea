@@ -14,11 +14,10 @@ import {
 } from '../../config/state-backend.ts';
 import { parseSlackManagementSignal, type SlackManagementSignal } from '../../management/slack-tools.ts';
 import { type AgentAppBot, agentAppSiblings, listAgentAppBots } from '../agent-app-bots.ts';
-import { storedRunSpeaker, withAgentAppExecution } from '../agent-apps/index.ts';
+import { runOwnBot } from '../agent-apps/index.ts';
 import {
   resolveSlackInstallationExecutionContext,
   type SlackInstallationExecutionContext,
-  SlackInstallationUnavailableError,
 } from '../installation-execution.ts';
 import { assertSlackListsAccess } from '../lists/tools.ts';
 import { SlackListError } from '../lists/types.ts';
@@ -199,10 +198,10 @@ export function turnSlackReadAuthority(
 }
 
 /**
- * The bot an Agent reads as: the one its run speaks as, so an Agent answering
- * through Chickpea's bot reads the thread it answers in, and one answering as
- * its own app's bot reads the Channels that bot is in. A run stored before
- * its speaker reads as the live app's bot, and Chickpea's otherwise.
+ * The bot an Agent reads as: the one its run speaks as (runOwnBot), so an
+ * Agent answering through Chickpea's bot reads the thread it answers in, and
+ * one answering as its own app's bot reads the Channels that bot is in. A run
+ * whose app can no longer answer reads nothing.
  */
 export async function readingBot(
   workspace: SlackInstallationExecutionContext,
@@ -210,14 +209,6 @@ export async function readingBot(
   agentId: string,
   turnJobId: string,
 ): Promise<SlackInstallationExecutionContext> {
-  const speaker = await storedRunSpeaker(env, turnJobId);
-  try {
-    return await withAgentAppExecution(async () => workspace, env, { rejectRateLimitedCalls: true })(
-      workspace.workspaceId,
-      { agentId, ...(speaker ? { speaker } : {}) },
-    );
-  } catch (error) {
-    if (error instanceof SlackInstallationUnavailableError && error.reasonCode === 'agent_app_unavailable') return workspace;
-    throw error;
-  }
+  const bot = await runOwnBot(env, { workspaceId: workspace.workspaceId, agentId, turnJobId }, { rejectRateLimitedCalls: true });
+  return bot ?? workspace;
 }

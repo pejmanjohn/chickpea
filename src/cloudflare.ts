@@ -346,6 +346,7 @@ import {
   recordGatewayDeliveryDeadLetter,
 } from './slack/gateway/inbox.ts';
 import {
+  type GatewayAttachmentClient,
   GatewayDeploymentClient,
 } from './slack/gateway/client.ts';
 import { resolveChickpeaGatewayUrl } from './slack/gateway/runtime.ts';
@@ -385,6 +386,7 @@ import { createWaitUntilTelemetryLifecycle } from './telemetry/runtime.ts';
 import {
   invokeSlackWorkspaceManagementTool,
   resolveSlackManagementActor,
+  turnSlackFiles,
 } from './management/slack-tools.ts';
 import {
   executeHostSlackManagementApproval,
@@ -1015,10 +1017,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       return workspaceManagementRpcFailure();
     }
     try {
-      const { local, service } = localManagementRuntime(
-        stores,
-        this.env as PlatformEnv,
-      );
+      // The run's files are read by the bot it speaks as; its speaker is read from this store, not over RPC.
+      const files = turnSlackFiles(this.env as PlatformEnv, request.signal,
+        async (id) => stores.turnJobs.runnerView(id).job?.turn.speaker);
+      const { local, service } = localManagementRuntime(stores, this.env as PlatformEnv, undefined, files);
       const result = await invokeSlackWorkspaceManagementTool({
         signal: request.signal,
         identity: local.identity,
@@ -4186,6 +4188,7 @@ function localManagementRuntime(
   stores: TagStateStores,
   platformEnv: PlatformEnv,
   local: AppStores = localGatewayAppStores(stores),
+  slackFiles?: (installation: GatewayAttachmentClient) => GatewayAttachmentClient,
 ) {
   const settings = localSettingsStore(stores);
   return {
@@ -4198,6 +4201,7 @@ function localManagementRuntime(
         state: local.identity,
         keyring: loadCredentialKeyring(platformEnv),
       },
+      ...(slackFiles ? { slackFiles } : {}),
       overrides: {
         identity: local.identity,
         config: local.config,

@@ -59,6 +59,7 @@ import {
 } from '../slack/installation-credentials.ts';
 import { createDirectSlackTransport } from '../slack/transport/direct.ts';
 import { createSlackAttachmentClient } from '../slack/attachment-client.ts';
+import type { GatewayAttachmentClient } from '../slack/gateway/client.ts';
 import { createSkillReplacementJudge } from './skill-replacement-judge.ts';
 import { ownerUserGroupToken } from '../slack/user-group-authority.ts';
 import { createGatewaySlackTransport } from '../slack/transport/gateway.ts';
@@ -86,6 +87,8 @@ interface LiveWorkspaceManagementServiceOptions {
   /** Managed connection providers; by default resolved as Admin's are, when a connection needs one. */
   managedProviders?: ManagedConnectionProviderRegistry;
   overrides?: Partial<WorkspaceManagementServiceInput>;
+  /** How a Slack turn reads its files (turnSlackFiles); the installation's reader by default. */
+  slackFiles?: (installation: GatewayAttachmentClient) => GatewayAttachmentClient;
 }
 
 /** Keep production MCP, Slack, and Admin management dependencies aligned. */
@@ -208,12 +211,12 @@ export function createLiveWorkspaceManagementService(
         return config.getAgent(agent.id);
       }
     },
-    slackAttachments: createSlackAttachmentClient(env, {
+    slackAttachments: (options.slackFiles ?? ((installation) => installation))(createSlackAttachmentClient(env, {
       settings,
       config: config as ConfigStore,
       identity: slackCredentials.state,
       keyring: slackCredentials.keyring,
-    }),
+    })),
     judgeSkillReplacement: createSkillReplacementJudge({
       env,
       settings,

@@ -88,7 +88,6 @@ import {
   getConfigStore,
   getIdentityStore,
   getSettingsStore,
-  getSlackCredentialResolutionDependencies,
   getSlackStateStore,
   getUsageStore,
   type PlatformEnv,
@@ -233,7 +232,6 @@ import {
 } from '../memory/tool-policy.ts';
 import { useReadSlackFileTool } from '../slack/slack-file-tool.ts';
 import { useSlackAttachmentContext } from '../slack/attachment-context.ts';
-import { resolveSlackInstallationExecutionContext } from '../slack/installation-execution.ts';
 import { slackPresentationIntentCapability } from '../slack/presentation-intent.ts';
 import {
   createAskUserTool,
@@ -293,6 +291,7 @@ import { useSlackFollowUpFold, type SlackFollowUps } from '../slack/follow-up-fo
 import { answerReleaseSetting } from '../slack/answer-release-setting.ts';
 import { useSlackMidRunReplyTool } from '../slack/midrun-reply.ts';
 import type { GatewayAttachmentClient } from '../slack/gateway/client.ts';
+import type { WebClient } from '@slack/web-api';
 import {
   conversationThreadImageInventory,
   createThreadImageReader,
@@ -2074,35 +2073,25 @@ export function createRuntimePlanArtifactTools(
   options: RuntimePlanArtifactToolOptions = {},
 ) {
   let transport: Promise<SlackFileTransport> | undefined;
-  let installationClient: Promise<SlackInstallationClient> | undefined;
+  let runClient: Promise<WebClient> | undefined;
   const destination = {
     workspaceId: plan.conversation.workspaceId,
     agentId: plan.agentId,
     channelId: plan.artifactDestination.channelId,
     ...(plan.artifactDestination.threadTs ? { threadTs: plan.artifactDestination.threadTs } : {}),
   };
-  const resolveInstallationClient = (): Promise<SlackInstallationClient> => {
-    installationClient ??= (async () => {
-      const env = await resolveAgentPlatformEnv();
-      const installation = await resolveSlackInstallationExecutionContext(
-        plan.conversation.workspaceId,
-        env,
-        {
-          config: getConfigStore(env),
-          settings: getSettingsStore(env),
-          credentialDependencies: getSlackCredentialResolutionDependencies(env),
-        },
-      );
-      return installation.client;
-    })();
+  // The bot the run speaks as, so a file it makes belongs to the bot whose reply shares it.
+  const resolveRunClient = (): Promise<WebClient> => {
+    runClient ??= (async () => (await import('../slack/agent-apps/files.ts'))
+      .runSlackClient(await resolveAgentPlatformEnv(), plan, options.turn?.turnJobId))();
     // A failed resolve is retried by the next caller.
-    installationClient.catch(() => {
-      installationClient = undefined;
+    runClient.catch(() => {
+      runClient = undefined;
     });
-    return installationClient;
+    return runClient;
   };
   const resolveFileTransport = (): Promise<SlackFileTransport> => {
-    transport ??= (async () => createSlackFileTransport(await resolveInstallationClient()))();
+    transport ??= (async () => createSlackFileTransport(await resolveRunClient()))();
     return transport;
   };
   const binding = {
@@ -2200,7 +2189,7 @@ export function createRuntimePlanArtifactTools(
                 surface: plan.conversation.surface,
                 ...(plan.artifactDestination.threadTs ? { threadTs: plan.artifactDestination.threadTs } : {}),
                 client: async () => {
-                  const client = await resolveInstallationClient();
+                  const client = await resolveRunClient();
                   return {
                     postMessage: (args) => client.chat.postMessage(args as never),
                     postEphemeral: (args) => client.chat.postEphemeral(args as never),
@@ -2274,8 +2263,6 @@ export function createRuntimePlanArtifactTools(
     ...(uploadTool ? [uploadTool] : []),
   ];
 }
-
-type SlackInstallationClient = Awaited<ReturnType<typeof resolveSlackInstallationExecutionContext>>['client'];
 
 type RuntimePlanSlackSignal = NonNullable<ReturnType<typeof parseSlackManagementSignal>>;
 

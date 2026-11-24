@@ -14,7 +14,7 @@ export {
   withAgentAppExecution,
 } from './live.ts';
 export { ADD_LINK_ACTION } from './pages.ts';
-export { admissionSpeaker, agentAppAnswersIn, chickpeaBotIsMember, hostPostSpeaker, installationBotIsIn, isAgentAppDm, storedRunSpeaker } from './place.ts';
+export { admissionSpeaker, agentAppAnswersIn, chickpeaBotIsMember, hostPostSpeaker, installationBotIsIn, isAgentAppDm, runOwnBot, storedRunSpeaker } from './place.ts';
 export { agentAppPostingBot, agentAppRouteSelection, agentsByAppBot } from './routing.ts';
 export { createAgentSlackAppRoutes } from './routes.ts';
 export { readAgentSlackAppsSetting } from './setting.ts';
