@@ -122,7 +122,8 @@ type SlackAppsAuditAction =
  *   `{ error: 'paused' }` while creating apps is paused.
  * - `PUT /admin/api/slack-apps/token` `{ refreshToken }` → `{ token }`; 400 `{ error: 'not_refresh_token' | 'rejected' |
  *   'other_workspace' }`; 409 `{ error: 'paused' }`; 503 `{ error: 'slack_down' }`.
- * - `DELETE /admin/api/slack-apps/token` → `{ token: { stored: false }, removed: 'discarded' | 'unconfirmed' | 'none' }`.
+ * - `DELETE /admin/api/slack-apps/token` → `{ token: { stored: false }, removed: 'discarded' | 'left_listed' | 'unconfirmed' |
+ *   'none' }`; `left_listed` when Slack may still list the token.
  * - `POST /admin/api/slack-apps/agents/:agentId/start` → 200 `{ next: 'authorize', authorizeUrl, agent }`; 202
  *   `{ next: 'creating', agent }`; 409 `{ error: 'token_needed' | 'permission_needed' | 'app_limit' }` or
  *   `{ error: 'needs_attention' | 'already_own_app' | 'cancelling' | 'handle_taken' | 'paused', agent }`; 404. Slack's Allow then

@@ -616,7 +616,7 @@ async function drainMoves(h: Harness): Promise<string[]> {
 // whose run in the state store cannot read the configuration token or the app's record.
 test("a renamed Agent's own app is renamed by its job, armed at the save and run by the drain, through the real stores and Slack client", async (t) => withHarness(t, async (h) => {
   const rotated = { accessToken: 'xoxe.xoxp-1-config-access', refreshToken: 'xoxe-1-config-refresh', teamId: TEAM, expiresAt: Date.now() + 12 * 3_600_000 };
-  assert.equal(await saveConfigurationToken({ ...h.secrets(), slack: { rotate: async () => rotated } }, TEAM, 'xoxe-1-pasted-token-0000'), 'saved');
+  assert.equal(await saveConfigurationToken({ ...h.secrets(), slack: { rotate: async () => rotated, revoke: async () => {} } }, TEAM, 'xoxe-1-pasted-token-0000'), 'saved');
   const agent = await h.stores.config.getAgent('agent_support');
   await h.stores.config.updateAgent(agent.id, { name: 'Helpdesk' }, agent.revision);
   const reconciler = new AgentPresenceReconciler({
@@ -652,7 +652,7 @@ async function supportJobRows(h: Harness): Promise<string[]> {
 // request that saved it.
 test("Admin's avatar upload and Agent edit each arm one job for a live app, and call Slack only from the drain", async (t) => withHarness(t, async (h) => {
   const rotated = { accessToken: 'xoxe.xoxp-1-config-access', refreshToken: 'xoxe-1-config-refresh', teamId: TEAM, expiresAt: Date.now() + 12 * 3_600_000 };
-  assert.equal(await saveConfigurationToken({ ...h.secrets(), slack: { rotate: async () => rotated } }, TEAM, 'xoxe-1-pasted-token-0000'), 'saved');
+  assert.equal(await saveConfigurationToken({ ...h.secrets(), slack: { rotate: async () => rotated, revoke: async () => {} } }, TEAM, 'xoxe-1-pasted-token-0000'), 'saved');
   const admin = await ownerAdmin(h);
   const png = Buffer.from(await generatedAgentAvatarPng('a new picture'));
   const uploaded = await admin('/admin/api/agents/agent_support/avatar', {
@@ -1471,7 +1471,7 @@ async function hostedBotIsLost(h: Harness): Promise<void> {
 
 test("a tenant's end retires an Agent app with its own credentials when the hosted bot's cannot be read", async (t) => withHarness(t, async (h) => {
   const rotated = { accessToken: 'xoxe.xoxp-1-config-access', refreshToken: 'xoxe-1-config-refresh', teamId: TEAM, expiresAt: Date.now() + 12 * 3_600_000 };
-  assert.equal(await saveConfigurationToken({ ...h.secrets(), slack: { rotate: async () => rotated } }, TEAM, 'xoxe-1-pasted-token-0000'), 'saved');
+  assert.equal(await saveConfigurationToken({ ...h.secrets(), slack: { rotate: async () => rotated, revoke: async () => {} } }, TEAM, 'xoxe-1-pasted-token-0000'), 'saved');
   await hostedBotIsLost(h);
 
   assert.deepEqual(await retireAgentSlackApps(h.base), [{ agentId: 'agent_support', outcome: 'removed' }]);
@@ -1498,7 +1498,7 @@ test("a tenant's end that cannot tell the Owner about a left app still uninstall
 // group whose app record is attached is archived straight in the store and its Slack app is left behind.
 test("Admin's archive of an Agent not in Slack yet, with its app attached, retires that app", async (t) => withHarness(t, async (h) => {
   const rotated = { accessToken: 'xoxe.xoxp-1-config-access', refreshToken: 'xoxe-1-config-refresh', teamId: TEAM, expiresAt: Date.now() + 12 * 3_600_000 };
-  assert.equal(await saveConfigurationToken({ ...h.secrets(), slack: { rotate: async () => rotated } }, TEAM, 'xoxe-1-pasted-token-0000'), 'saved');
+  assert.equal(await saveConfigurationToken({ ...h.secrets(), slack: { rotate: async () => rotated, revoke: async () => {} } }, TEAM, 'xoxe-1-pasted-token-0000'), 'saved');
   const support = await h.stores.config.getAgent('agent_support');
   const waiting = await h.stores.config.updateAgent(support.id, {
     slackPresence: {
@@ -1546,7 +1546,7 @@ test("Add to Slack on a message from before it was a link answers with the link,
     },
   }, support.revision);
   const rotated = { accessToken: 'xoxe.xoxp-1-config-access', refreshToken: 'xoxe-1-config-refresh', teamId: TEAM, expiresAt: Date.now() + 12 * 3_600_000 };
-  assert.equal(await saveConfigurationToken({ ...h.secrets(), slack: { rotate: async () => rotated } }, TEAM, 'xoxe-1-pasted-token-0000'), 'saved');
+  assert.equal(await saveConfigurationToken({ ...h.secrets(), slack: { rotate: async () => rotated, revoke: async () => {} } }, TEAM, 'xoxe-1-pasted-token-0000'), 'saved');
   const replies = () => slackPosts(h, 'chat.postEphemeral').map((body) => [body.get('channel'), body.get('user'), body.get('thread_ts'), body.get('text')]);
 
   assert.equal((await h.deliverToChickpea(addToSlackPress('U2'), 'interactions')).status, 200);
@@ -2801,7 +2801,7 @@ test("an app record attached to a user group is found by Slack's URL check, whil
 // retire that rewrites the group instead of only dropping the record.
 test("a tenant's end retires an app record attached to a user group and leaves the group as it was", async (t) => withHarness(t, async (h) => {
   const rotated = { accessToken: 'xoxe.xoxp-1-config-access', refreshToken: 'xoxe-1-config-refresh', teamId: TEAM, expiresAt: Date.now() + 12 * 3_600_000 };
-  assert.equal(await saveConfigurationToken({ ...h.secrets(), slack: { rotate: async () => rotated } }, TEAM, 'xoxe-1-pasted-token-0000'), 'saved');
+  assert.equal(await saveConfigurationToken({ ...h.secrets(), slack: { rotate: async () => rotated, revoke: async () => {} } }, TEAM, 'xoxe-1-pasted-token-0000'), 'saved');
   await attachSupportApp(h);
   const { app: _app, ...group } = (await h.stores.config.getAgent('agent_support')).slackPresence!;
   h.calls.length = 0;

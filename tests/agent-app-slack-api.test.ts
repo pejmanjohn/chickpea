@@ -81,6 +81,26 @@ test('rotate sends the refresh token as a form field and parses the new pair', a
     error instanceof SlackUnavailable && error.reason === 'invalid_slack_response');
 });
 
+test('revoke sends only the token as a form field; one Slack already revoked is done, an expired one is refused', async () => {
+  for (const token of ['xoxe.xoxp-1-old', 'xoxe-1-old']) {
+    const { client, seen } = api(() => ok({ revoked: true }));
+    await client.revoke(token);
+    assert.equal(seen[0]?.method, 'auth.revoke');
+    assert.equal(seen[0]?.authorization, null, 'no credential but the token');
+    assert.equal(seen[0]?.contentType, 'application/x-www-form-urlencoded; charset=utf-8');
+    assert.deepEqual(seen[0]?.body, { token });
+  }
+  await api(() => refused('token_revoked')).client.revoke('xoxe-1-old');
+
+  await assert.rejects(() => api(() => refused('token_expired')).client.revoke('xoxe.xoxp-1-old'), (error: unknown) =>
+    error instanceof SlackRefused && error.code === 'token_expired' && !error.message.includes('xoxe'));
+  await assert.rejects(() => api(() => { throw new TypeError('fetch failed'); }).client.revoke('xoxe-1-old'), (error: unknown) =>
+    error instanceof SlackUnavailable && error.reason === 'network_error');
+  await assert.rejects(() => api(() => refused('internal_error', 500)).client.revoke('xoxe-1-old'), SlackUnavailable);
+  await assert.rejects(() => api(() => ok({ revoked: false })).client.revoke('xoxe-1-old'), (error: unknown) =>
+    error instanceof SlackUnavailable && error.reason === 'invalid_slack_response', 'only revoked: true is a revoke');
+});
+
 test('create carries the manifest under the configuration token and tells a refusal from an unknown answer', async () => {
   const { client, seen } = api((request) => {
     const refusal = slackManifestRefusal((request.body as { manifest?: unknown }).manifest);

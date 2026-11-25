@@ -256,6 +256,7 @@ test('off: one sentence and a button; with no token stored the button leads to t
   assert.match(text, /Open Slack(’|&rsquo;)s app settings\./);
   assert.match(page.html(), /<a class="btn btn-soft btn-sm slack-token-open" href="https:\/\/api\.slack\.com\/apps" target="_blank" rel="noopener"/);
   assert.match(text, /Under Your App Configuration Tokens , choose Generate Token and pick Acme \./);
+  assert.match(text, /If Slack already lists a token for Acme and Generate Token isn&#39;t available, copy that token&#39;s Refresh Token and paste it here\./);
   assert.match(text, /Copy the Refresh Token and paste it here\./);
   assert.match(page.html(), /class="slack-token-row highlighted"><span class="slack-token-label">Refresh Token</);
   assert.match(page.html(), /<input id="slack-apps-token" class="input mono" type="password"/);
@@ -310,7 +311,7 @@ test('a paste is sent once, the field is empty before it leaves, and success tur
 for (const [name, status, error, pasted, sentence] of [
   ['the Access Token', 400, 'not_refresh_token', 'xoxe.xoxp-1-access', "That's the Access Token. Copy the Refresh Token next to it."],
   ['something else', 400, 'not_refresh_token', 'hello', "That isn't a refresh token. Copy the Refresh Token, which starts with xoxe-."],
-  ['a token for another workspace', 400, 'other_workspace', 'xoxe-1-other', 'That token is for a different Slack workspace. Generate one for Acme.'],
+  ['a token for another workspace', 400, 'other_workspace', 'xoxe-1-other', 'That token is for a different Slack workspace and can no longer be used. Generate a new one for Acme.'],
   ['a token Slack refuses', 400, 'rejected', 'xoxe-1-refused', "Slack didn't accept that token. Generate a new one and paste its Refresh Token."],
   ['a paste while Slack is down', 503, 'slack_down', 'xoxe-1-down', "Slack didn't answer. Try again in a minute."],
 ] as const) {
@@ -786,9 +787,12 @@ test('a row whose start stopped before Slack made any app offers a quiet Cancel,
   assert.match(unanswered.html(), /<a class="hint-link" href="https:\/\/api\.slack\.com\/apps" target="_blank" rel="noopener">Open Your Apps in Slack &nearr;<\/a>/);
 });
 
-test('each removal says what it did: retired, not confirmed by Slack, or no token held', async () => {
+const YOUR_APPS_LINK = '<a class="hint-link" href="https://api.slack.com/apps" target="_blank" rel="noopener">Open Your Apps in Slack &nearr;</a>';
+
+test('each removal says what it did: retired, still listed at Slack, not confirmed by Slack, or no token held', async () => {
   for (const [removed, sentence, success] of [
     ['discarded', 'Chickpea deleted its copy of your configuration token and retired that token at Slack.', true],
+    ['left_listed', "Chickpea deleted its copy of your configuration token, but Slack may still list it. Delete it in Your Apps in Slack today, because after 12 hours Slack won't let you delete it or generate a new one.", false],
     ['unconfirmed', "Chickpea deleted its copy of your configuration token, but Slack didn't confirm the token stopped working, so Slack may still accept it.", false],
     ['none', 'Chickpea holds no configuration token for this workspace.', false],
     ['something_new', "Chickpea deleted its copy of your configuration token, but Slack didn't confirm the token stopped working, so Slack may still accept it.", false],
@@ -799,6 +803,7 @@ test('each removal says what it did: retired, not confirmed by Slack, or no toke
     await page.click({ 'data-action': 'slack-apps-confirm-apply' });
     assert.ok(page.text().includes(sentence.replace(/'/g, '&#39;')), removed);
     assert.equal(page.html().includes('callout callout-success slack-apps-callout'), success, removed);
+    assert.equal(page.html().includes(YOUR_APPS_LINK), removed === 'left_listed', `${removed}: only a token Slack may still list sends the Owner to Your Apps`);
   }
 });
 

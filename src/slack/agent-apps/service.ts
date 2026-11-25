@@ -116,6 +116,7 @@ import {
 } from './pages.ts';
 import {
   ConfigTokenNeeded,
+  type ConfigurationTokenRemoval,
   type ConfigurationTokenStatus,
   LostRevision,
   type SecretDeps,
@@ -937,8 +938,8 @@ export class AgentSlackApps {
     return configurationTokenStatus(this.secrets, (await this.installation()).teamId);
   }
 
-  /** Spends the stored token with one rotation it never keeps, then deletes Chickpea's copy whatever Slack answered. */
-  async removeConfigurationToken(): Promise<'discarded' | 'unconfirmed' | 'none'> {
+  /** Ends the stored token's chain at Slack, then deletes Chickpea's copy whatever Slack answered. */
+  async removeConfigurationToken(): Promise<ConfigurationTokenRemoval> {
     return discardConfigurationToken(this.secrets, (await this.installation()).teamId);
   }
 

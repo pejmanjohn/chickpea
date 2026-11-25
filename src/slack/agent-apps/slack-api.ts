@@ -32,7 +32,7 @@ export class SlackRefused extends Error {
   }
 }
 
-export type AgentAppSlackStep = 'rotate' | 'release_handle' | 'create' | 'export' | 'update' | 'icon' | 'exchange' | 'uninstall' | 'delete' | 'invite' | 'join' | 'restore_handle';
+export type AgentAppSlackStep = 'rotate' | 'revoke' | 'release_handle' | 'create' | 'export' | 'update' | 'icon' | 'exchange' | 'uninstall' | 'delete' | 'invite' | 'join' | 'restore_handle';
 
 /** One structured line per Slack refusal in an Agent app's lifecycle; for the operator, never the customer. */
 export function logSlackRefusal(
@@ -93,6 +93,8 @@ export interface AgentAppGrant {
 
 export interface AgentAppSlackApi {
   rotate(refreshToken: string): Promise<RotatedConfigurationToken>;
+  /** auth.revoke on a configuration access or refresh token, sent with no other credential; one already revoked is done. */
+  revoke(token: string): Promise<void>;
   /** Throws AmbiguousEffect when Slack's answer is unknown and SlackRefused when it said no. */
   create(token: string, manifest: SlackAppCreateManifest): Promise<CreatedAgentApp>;
   /** The bot scopes the app's own definition in Slack holds, from its exported manifest. */
@@ -187,6 +189,13 @@ export function createAgentAppSlackApi(options: AgentAppSlackApiOptions = {}): A
         teamId,
         expiresAt: expires * 1_000,
       };
+    },
+
+    async revoke(token) {
+      const answer = await call('auth.revoke', form({ token }));
+      if (answer.kind === 'refused' && answer.code === 'token_revoked') return;
+      const payload = settled('auth.revoke', answer);
+      if (payload.revoked !== true) throw new SlackUnavailable('auth.revoke', 'invalid_slack_response');
     },
 
     async create(token, manifest) {

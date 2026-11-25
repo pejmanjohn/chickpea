@@ -5313,7 +5313,8 @@
         '<button type="button" class="btn btn-soft btn-sm" data-action="slack-apps-token-open">Add a token</button></div>'
       : "";
     var notice = apps.notice
-      ? '<div class="callout' + (apps.notice.ok ? " callout-success" : "") + ' slack-apps-callout" role="status"><span>' + esc(apps.notice.text) + '</span></div>'
+      ? '<div class="callout' + (apps.notice.ok ? " callout-success" : "") + ' slack-apps-callout" role="status"><span>' + esc(apps.notice.text) +
+        (apps.notice.yourApps ? ' <a class="hint-link" href="' + SLACK_YOUR_APPS_URL + '" target="_blank" rel="noopener">Open Your Apps in Slack &nearr;</a>' : "") + '</span></div>'
       : "";
     var results = apps.results.map(slackAppsResultHtml).join("");
     var errorText = apps.error || (!on && apps.turnOnFailed) || "";
@@ -5593,7 +5594,8 @@
       '<p class="slack-token-intro">' + esc(intro) + '</p>' +
       '<ol class="slack-token-steps">' +
       '<li><span class="slack-token-step">1</span><div><p>Open Slack&rsquo;s app settings.</p><a class="btn btn-soft btn-sm slack-token-open" href="' + SLACK_YOUR_APPS_URL + '" target="_blank" rel="noopener">Open Slack app settings <span aria-hidden="true">&nearr;</span></a></div></li>' +
-      '<li><span class="slack-token-step">2</span><div><p>Under <strong>Your App Configuration Tokens</strong>, choose <strong>Generate Token</strong> and pick <strong>' + esc(workspace) + '</strong>.</p></div></li>' +
+      '<li><span class="slack-token-step">2</span><div><p>Under <strong>Your App Configuration Tokens</strong>, choose <strong>Generate Token</strong> and pick <strong>' + esc(workspace) + '</strong>.</p>' +
+      '<p class="hint">' + esc("If Slack already lists a token for " + workspace + " and Generate Token isn't available, copy that token's Refresh Token and paste it here.") + '</p></div></li>' +
       '<li><span class="slack-token-step">3</span><div><p>Copy the <strong>Refresh Token</strong> and paste it here.</p>' + slackAppsTokenIllustrationHtml() + '</div></li></ol>' +
       '<form class="slack-token-form" data-action="slack-apps-token-form" autocomplete="off"><label class="field-label" for="slack-apps-token">Refresh token</label>' +
       '<div class="slack-token-field"><input id="slack-apps-token" class="input mono' + (token.error ? " input-error" : "") + '" type="password" maxlength="512" autocomplete="off" spellcheck="false" placeholder="xoxe-&hellip;" aria-describedby="slack-apps-token-status"' + (checking ? " disabled" : "") + '>' +
@@ -5664,7 +5666,7 @@
         ? "That's the Access Token. Copy the Refresh Token next to it."
         : "That isn't a refresh token. Copy the Refresh Token, which starts with xoxe-.";
     }
-    if (code === "other_workspace") return "That token is for a different Slack workspace. Generate one for " + slackAppsWorkspaceName() + ".";
+    if (code === "other_workspace") return "That token is for a different Slack workspace and can no longer be used. Generate a new one for " + slackAppsWorkspaceName() + ".";
     return SLACK_TOKEN_ERRORS[code] || "Chickpea couldn't save the token. Try again.";
   }
 
@@ -5767,9 +5769,12 @@
   }
 
   // What each removal did. `none` held no token and says nothing about Slack;
-  // an answer the page doesn't know claims no more than `unconfirmed`.
+  // an answer the page doesn't know claims no more than `unconfirmed`. Slack
+  // refuses to delete a listed token once it is 12 hours old, and lets nobody
+  // generate a new one while it is listed, hence "today".
   var SLACK_TOKEN_REMOVED = {
     discarded: { ok: true, text: "Chickpea deleted its copy of your configuration token and retired that token at Slack." },
+    left_listed: { ok: false, yourApps: true, text: "Chickpea deleted its copy of your configuration token, but Slack may still list it. Delete it in Your Apps in Slack today, because after 12 hours Slack won't let you delete it or generate a new one." },
     unconfirmed: { ok: false, text: "Chickpea deleted its copy of your configuration token, but Slack didn't confirm the token stopped working, so Slack may still accept it." },
     none: { ok: false, text: "Chickpea holds no configuration token for this workspace." }
   };
