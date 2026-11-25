@@ -59,6 +59,8 @@ import { startSlackGroupDm } from '../src/slack/group-dm/runtime.ts';
 import { AGENT_CHANNEL_ADD_ACTION } from '../src/slack/agent-channel-offer.ts';
 import { invalidateStoredSlackPublicUrl } from '../src/slack/credentials.ts';
 import { canonicalSlackMarkdownText } from '../src/slack/message-format.ts';
+import { createSlackAttachmentAnalysis, formatSlackAttachmentSignal } from '../src/slack/attachment-context.ts';
+import { runAttachmentClient } from '../src/slack/agent-apps/files.ts';
 import { configureHostedSlackPermissionsUpdate } from '../src/slack/hosted-permissions.ts';
 import { syncHostedWorkspaceInstallation } from '../src/slack/hosted-installation.ts';
 import { slackInstallationCredentialId, withHostedSlackApp } from '../src/slack/hosted-slack-app.ts';
@@ -295,10 +297,27 @@ async function withHarness(
     if (!parent) return { ok: false, error: 'thread_not_found' };
     return { ok: true, messages: [parent, ...at.filter((message) => message.thread_ts === root && message.ts !== root)] };
   };
+  // A file a person shared, for a bot that reads where it was shared: as in Slack, a DM's only by that DM's bot, and a
+  // Channel's by a bot in it. Its `preview` stands for its bytes.
+  const sharedFile = (fileId: string, token: string | undefined) => {
+    for (const [channel, messages] of held) {
+      for (const message of messages.values()) {
+        const file = (message.files as Array<Record<string, unknown>> | undefined)?.find((candidate) => candidate.id === fileId);
+        if (file) return (DM_BOTS[channel] && DM_BOTS[channel] !== token) || outside.get(token ?? '')?.has(channel) ? undefined : file;
+      }
+    }
+    return undefined;
+  };
   let posted = 0;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = input instanceof Request ? input : new Request(String(input), init);
     const url = new URL(request.url);
+    if (url.hostname === 'files.slack.com') {
+      const token = request.headers.get('authorization')?.replace(/^Bearer /, '');
+      calls.push({ method: 'files.download', token, body: new URLSearchParams() });
+      const file = sharedFile(/-(F[A-Z0-9]+)\//.exec(url.pathname)?.[1] ?? '', token);
+      return file ? new Response(String(file.preview), { headers: { 'content-type': String(file.mimetype) } }) : new Response(null, { status: 404 });
+    }
     assert.equal(url.hostname, 'slack.com', `no call leaves for ${url.hostname}`);
     const method = url.pathname.split('/').at(-1)!;
     const body = new URLSearchParams(await request.clone().text().catch(() => ''));
@@ -375,6 +394,12 @@ async function withHarness(
       if (outside.get(token ?? '')?.has(channel)) return Response.json({ ok: false, error: 'not_in_channel' });
       const invited = BOTS.find(([, botUser]) => botUser === body.get('users'))?.[0];
       if (!outside.get(invited ?? '')?.delete(channel)) return Response.json({ ok: false, error: 'already_in_channel' });
+    }
+    if (method === 'files.info') {
+      const file = sharedFile(body.get('file') ?? '', token);
+      return Response.json(file
+        ? { ok: true, file: { ...file, url_private: `https://files.slack.com/files-pri/${TEAM}-${file.id}/${file.name}` } }
+        : { ok: false, error: 'file_not_found' });
     }
     const answer = method === 'auth.test'
       ? token === MAIN_BOT
@@ -4074,8 +4099,8 @@ test("an edit an Agent app delivers that changes nothing acted on, as Slack send
     assert.equal((await h.deliver('events', delivery, { settle: true })).status, 200);
     assert.equal(reads(), before + 1, Object.keys(patch).join());
   }
-  assert.deepEqual(notConfirmed(warn).map((line) => (line as { reason: string }).reason), ['deleted']);
-  assert.equal(warn.mock.calls.length, 1, 'and no line for a change that was not read');
+  assert.deepEqual(notConfirmed(warn), [], "a delete Slack's copy confirms goes on");
+  assert.equal(warn.mock.calls.length, 0, 'and no line for a change that was not read');
 }));
 
 test("a message through Chickpea's own app asks Slack nothing more", async (t) => withHarness(t, async (h) => {
@@ -4098,6 +4123,77 @@ test("a delete an Agent app delivers goes on only when Slack no longer holds the
   assert.equal((await h.deliver('events', deletion('1900010600.000300'), { settle: true })).status, 200);
   assert.equal(notConfirmed(warn).length, 1, 'a real delete goes on');
   assert.deepEqual(confirmations(h, ts).length, 3, 'the message, then each delete, read once');
+}));
+
+// Mutation proof: refusing a tombstone edit (the `deleted` refusal) leaves the words in the record; taking the
+// delivery's tombstone instead of Slack's copy forgets a message Slack still holds.
+test("a delete Slack sends as an edit to its placeholder forgets the message through an Agent app as through Chickpea's, and only when Slack shows the placeholder", async (t) => withHarness(t, async (h) => {
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  const words = 'refund order 12';
+  const placeholder = (ts: string, user = 'USLACKBOT') => ({
+    type: 'message', subtype: 'tombstone', user, text: 'This message was deleted.', hidden: true, ts, thread_ts: ts, reply_count: 1,
+  });
+  // Deleting a message that has replies: Slack keeps a placeholder in its place and sends it as an edit.
+  const deletedWithReplies = (ts: string, at: string, user?: string) => ({
+    subtype: 'message_changed', hidden: true, ts: at, event_ts: at, user: undefined, text: undefined, message: placeholder(ts, user),
+    previous_message: { type: 'message', user: 'U1', text: words, ts, thread_ts: ts, reply_count: 1 },
+  });
+  const seed = async (channel: string, ts: string, replied = true) => {
+    await h.stores.config.putSlackPublicContext({
+      workspaceId: TEAM, channelId: channel, rootTs: ts, messageTs: ts, role: 'human', text: words, authorId: 'U1',
+    });
+    h.hold(channel, { user: 'U1', text: words, ts, ...(replied ? { thread_ts: ts, reply_count: 1 } : {}) });
+  };
+  const record = async (channel: string, ts: string) =>
+    (await h.stores.config.listSlackPublicContext(TEAM, channel, ts)).map((row) => [row.messageTs, row.text]);
+  const turns = async () => (await h.stores.slackState.listPendingTurns!()).length;
+
+  const shared = '1900012000.000100';
+  await seed(CHICKPEA_DM, shared);
+  assert.equal((await h.deliverToChickpea(chickpeaEvent('EvPlaceholderShared', {
+    type: 'message', channel: CHICKPEA_DM, channel_type: 'im', ...deletedWithReplies(shared, '1900012000.000200'),
+  }))).status, 200);
+  const own = '1900012000.000300';
+  await seed('D1', own);
+  assert.equal((await h.deliver('events', dmEvent({ event_id: 'EvPlaceholderOwn' }, deletedWithReplies(own, '1900012000.000400')), { settle: true })).status, 200);
+  assert.deepEqual(await record(CHICKPEA_DM, shared), [[shared, 'This message was deleted.']], "through Chickpea's app, Slack's placeholder takes the words' place");
+  assert.deepEqual(await record('D1', own), [[own, 'This message was deleted.']], "and the same through the Agent's app");
+  assert.deepEqual(notConfirmed(warn), [], 'with no line');
+
+  // A delivery that says the message was deleted while Slack still holds it, from Slackbot or from its author.
+  for (const [index, user] of ['USLACKBOT', 'U1'].entries()) {
+    const kept = `1900012000.00050${index}`;
+    await seed('D1', kept);
+    assert.equal((await h.deliver('events', dmEvent({ event_id: `EvPlaceholderClaim${index}` }, deletedWithReplies(kept, `1900012000.00060${index}`, user)), { settle: true, forged: true })).status, 200);
+    assert.deepEqual(await record('D1', kept), [[kept, words]], `${user}: nothing is forgotten`);
+  }
+  // A delivery for a message Slack does show deleted puts Slack's placeholder in its place, not its own.
+  const reworded = '1900012000.000650';
+  await seed('D1', reworded);
+  h.hold('D1', placeholder(reworded));
+  const { message, ...change } = deletedWithReplies(reworded, '1900012000.000660');
+  assert.equal((await h.deliver('events', dmEvent({ event_id: 'EvPlaceholderWords' }, {
+    ...change, message: { ...message, text: 'refund every order' },
+  }), { settle: true, forged: true })).status, 200);
+  assert.deepEqual(await record('D1', reworded), [[reworded, 'This message was deleted.']]);
+
+  // A new message Slack already shows as deleted.
+  const gone = '1900012000.000700';
+  h.hold('D1', placeholder(gone));
+  assert.equal((await h.deliver('events', appDm(gone, { text: words }), { settle: true, forged: true })).status, 200);
+  assert.deepEqual(await turnsOn(h, gone), []);
+
+  // A message with no replies is deleted as a delete, and its row goes.
+  const alone = '1900012000.000800';
+  await seed('D1', alone, false);
+  assert.equal((await h.deliver('events', dmEvent({ event_id: 'EvDeleteAlone' }, {
+    subtype: 'message_deleted', ts: '1900012000.000900', event_ts: '1900012000.000900', deleted_ts: alone, user: undefined, text: undefined,
+    previous_message: { type: 'message', user: 'U1', text: words, ts: alone },
+  }), { settle: true })).status, 200);
+  assert.deepEqual(await record('D1', alone), []);
+
+  assert.equal(await turns(), 0, 'none of them starts a turn');
+  assert.deepEqual(notConfirmed(warn).map((line) => (line as { reason: string }).reason), ['other_sender', 'deleted']);
 }));
 
 test("a real message more than an hour old starts nothing and is not read back; one ten minutes old is admitted", async (t) => withHarness(t, async (h) => {
@@ -4535,3 +4631,90 @@ test("a modal submission whose card read Slack rate limits keeps the modal open 
   assert.equal(kept.kind === 'surface' ? kept.surface?.status : 'unread', 'open');
   assert.deepEqual(await h.stores.slackState.listPendingTurns!(), [], 'nothing is applied');
 }, { rateLimits: cardLimits }));
+
+const BOXES = 'Order 12\nBoxes: 7\n';
+/** A small text file a person shares with a message; Slack's preview stands for its bytes. */
+function boxesFile(id: string) {
+  return { id, name: 'order-12.txt', mimetype: 'text/plain', filetype: 'text', size: BOXES.length, mode: 'hosted', preview: BOXES };
+}
+
+/**
+ * What a turn's run is given for the files on its message: each file read the way the run reads it, then the one
+ * analysis signal the Agent answers from, with whatever the analysis model saw of each file.
+ */
+async function filesGiven(h: Harness, job: PendingTurnJob): Promise<{ status: string | undefined; seen: string[]; readers: unknown[] }> {
+  const env = withHostedSlackApp(h.base, MAIN_APP);
+  const before = h.calls.length;
+  const fileIds = (job.turn.attachments ?? []).map(({ fileId }) => fileId);
+  const seen: string[] = [];
+  const result = await createSlackAttachmentAnalysis({
+    intake: { kind: 'ready', request: job.turn.text, count: fileIds.length, fileIds },
+    gateway: runAttachmentClient(env, { agentId: job.assignment.agentId, conversation: { workspaceId: TEAM } as RuntimePlanV2['conversation'] }, job.id),
+    normalize: async (input) => {
+      const normalized = await (await import('../src/slack/attachment-normalization.ts')).normalizeSlackAttachments(input);
+      seen.push(...normalized.attachments.map((attachment) => JSON.stringify(attachment).includes('Boxes: 7') ? attachment.filename : 'unread'));
+      return normalized;
+    },
+    prompt: async () => ({ text: 'The order holds 7 boxes.' }),
+  });
+  const signal = formatSlackAttachmentSignal(result, { attributes: {} });
+  const readers = h.calls.slice(before).filter(({ method }) => method.startsWith('files.')).map(({ method, token }) => [method, token]);
+  return { status: signal.attributes.attachmentStatus, seen, readers };
+}
+
+// Mutation proof: reading every run's files with the installation's bot, as before, fails the Agent app's DM and mention.
+test("a file a person shares with an Agent in its own app's DM reaches its run as one in Chickpea's DM does, read by the bot each run speaks as", async (t) => withHarness(t, async (h) => {
+  const now = Math.floor(Date.now() / 1_000);
+  const own = `${now}.000910`;
+  h.hold('D1', { user: 'U1', text: 'how many boxes?', ts: own, files: [boxesFile('F0OWNBOXES')] });
+  assert.equal((await h.deliver('events', appDm(own, { subtype: 'file_share', text: 'how many boxes?', files: [boxesFile('F0OWNBOXES')] }), { settle: true, forged: true })).status, 200);
+  const shared = `${now}.000920`;
+  h.hold(CHICKPEA_DM, { user: 'U1', text: 'how many boxes?', ts: shared, files: [boxesFile('F0SHAREDBOXES')] });
+  const heard = chickpeaDmMessage(shared, shared, 'how many boxes?');
+  assert.equal((await h.deliverToChickpea({ ...heard, event: { ...heard.event, subtype: 'file_share', files: [boxesFile('F0SHAREDBOXES')] } })).status, 200);
+
+  const [ownJob] = await turnsOn(h, own);
+  const [sharedJob] = await turnsOn(h, shared);
+  assert.ok(ownJob && sharedJob);
+  assert.deepEqual(ownJob.turn.speaker, SUPPORT_BOT);
+  assert.deepEqual(await filesGiven(h, sharedJob), { status: 'complete', seen: ['order-12.txt'], readers: [['files.info', MAIN_BOT], ['files.download', MAIN_BOT]] });
+  assert.deepEqual(await filesGiven(h, ownJob), { status: 'complete', seen: ['order-12.txt'], readers: [['files.info', AGENT_BOT], ['files.download', AGENT_BOT]] },
+    "the Agent app's DM is its own bot's alone");
+}));
+
+test("a file on a mention of an Agent app's bot in a private Channel Chickpea's bot is not in is read by the Agent's bot", async (t) => withHarness(t, async (h) => {
+  const ts = `${Math.floor(Date.now() / 1_000)}.000930`;
+  const text = `<@${AGENT_BOT_USER}> how many boxes?`;
+  h.hold('C1', { user: 'U1', text, ts, files: [boxesFile('F0CHANNELBOXES')] });
+  const { app } = channelMessage(ts, text);
+  assert.equal((await h.deliver('events', { ...app, event: { ...app.event, files: [boxesFile('F0CHANNELBOXES')] } }, { settle: true, forged: true })).status, 200);
+  const [job] = await turnsOn(h, ts);
+  assert.ok(job);
+  assert.deepEqual(job.turn.speaker, SUPPORT_BOT);
+  assert.deepEqual(await filesGiven(h, job), { status: 'complete', seen: ['order-12.txt'], readers: [['files.info', AGENT_BOT], ['files.download', AGENT_BOT]] });
+}, { notMemberOf: { [MAIN_BOT]: ['C1'] }, privateChannels: ['C1'] }));
+
+test("a file on a mention of an Agent app's bot that Chickpea's bot answers, where the app's bot is not, is read by Chickpea's bot", async (t) => withHarness(t, async (h) => {
+  const ts = `${Math.floor(Date.now() / 1_000)}.000940`;
+  const message = messageIn('C1', ts, `<@${AGENT_BOT_USER}> how many boxes?`);
+  h.hold('C1', { user: 'U1', text: message.chickpea.event.text, ts, files: [boxesFile('F0ROUTEDBOXES')] });
+  assert.equal((await h.deliverToChickpea({ ...message.chickpea, event: { ...message.chickpea.event, files: [boxesFile('F0ROUTEDBOXES')] } })).status, 200);
+  const [job] = await turnsOn(h, ts);
+  assert.ok(job);
+  assert.deepEqual([job.assignment.agentId, job.turn.speaker], SUPPORT_THROUGH_CHICKPEA);
+  assert.deepEqual(await filesGiven(h, job), { status: 'complete', seen: ['order-12.txt'], readers: [['files.info', MAIN_BOT], ['files.download', MAIN_BOT]] });
+}, { notMemberOf: { [AGENT_BOT]: ['C1'] } }));
+
+// Mutation proof: reading through the installation when the app's bot can no longer answer reads the file as Chickpea's bot.
+test("a file on a run that speaks as an Agent app's bot is not read once that app can no longer answer, even where Chickpea's bot could read it", async (t) => withHarness(t, async (h) => {
+  const ts = `${Math.floor(Date.now() / 1_000)}.000950`;
+  const text = `<@${AGENT_BOT_USER}> how many boxes?`;
+  h.hold('C1', { user: 'U1', text, ts, files: [boxesFile('F0ENDEDBOXES')] });
+  const { app } = channelMessage(ts, text);
+  assert.equal((await h.deliver('events', { ...app, event: { ...app.event, files: [boxesFile('F0ENDEDBOXES')] } }, { settle: true, forged: true })).status, 200);
+  const [job] = await turnsOn(h, ts);
+  assert.ok(job);
+  assert.deepEqual(job.turn.speaker, SUPPORT_BOT);
+  await setSupportApp(h, { state: 'needs_attention', at: Date.now(), startedBy: 'U1', reason: 'app_removed', resume: 'icon_set', app: { appId: AGENT_APP, clientId: '1.client' } });
+  assert.deepEqual(await filesGiven(h, job), { status: 'failed', seen: [], readers: [] }, 'no bot reads it, so the run says it could not');
+}));

@@ -5,9 +5,10 @@
  * delivery that verifies can still name any member as its sender. A
  * message, mention, edit or delete it delivers is therefore read back from
  * Slack on the app's own bot token first, and goes on only when Slack holds
- * that message, in that conversation and thread, from that person. What goes
- * on is Slack's copy: the delivery's text, rich text and files are never
- * read, so an edit Slack already holds is admitted as edited. A press cannot
+ * that message, in that conversation and thread, from that person, or shows
+ * the placeholder a delete left in its place. What goes on is Slack's copy:
+ * the delivery's text, rich text and files are never read, so an edit Slack
+ * already holds is admitted as edited. A press cannot
  * be read back, but the card it was made on can (agentAppCardRefused).
  * Loaded only for an Agent app's delivery.
  */
@@ -176,7 +177,15 @@ export async function confirmAgentAppMessage(
   const held = read.message;
   if (deleted) return held && held.subtype !== 'tombstone' ? refused('still_in_slack') : { confirmed: true, event };
   if (!held || !claimed) return refused('not_in_slack');
-  if (held.subtype === 'tombstone') return refused('deleted');
+  // Of the delivery, only what kind of event it is and where it happened go on.
+  const { type, channel_type, event_ts } = event;
+  const where = { type, channel: channelId, channel_type, event_ts };
+  // Slack sends the delete of a message that has replies as an edit to the placeholder it leaves. Its own copy being
+  // that placeholder confirms the delete, and the placeholder goes on in the message's place, so the thread record
+  // forgets the message. A new message or mention Slack has already deleted starts nothing.
+  if (held.subtype === 'tombstone') {
+    return changed ? { confirmed: true, event: { ...where, subtype: event.subtype, ts: event.ts, message: held } } : refused('deleted');
+  }
   if (held.user !== claimed.user) return refused('other_sender');
   if (threadOf(held) !== threadOf(claimed)) return refused('other_thread');
   if (event.type === 'app_mention' && !String(held.text ?? '').includes(`<@${bot.botUserId}`)) return refused('not_a_mention');
@@ -184,10 +193,7 @@ export async function confirmAgentAppMessage(
   // A top-level message carries no `thread_ts` in its event, and Slack's copy gains one with its first reply.
   const { thread_ts: _thread, ...copy } = held;
   const message = typeof claimed.thread_ts === 'string' ? { ...copy, thread_ts: claimed.thread_ts } : copy;
-  // Of the delivery, only what kind of event it is and where it happened go on. An edit's earlier text stays the
-  // delivery's: it only decides whether Slack's copy counts as changed.
-  const { type, channel_type, event_ts } = event;
-  const where = { type, channel: channelId, channel_type, event_ts };
+  // An edit's earlier text stays the delivery's: it only decides whether Slack's copy counts as changed.
   return {
     confirmed: true,
     event: claimed === event
