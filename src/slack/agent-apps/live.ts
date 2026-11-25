@@ -151,12 +151,28 @@ export async function ownBotClient(
   agentId: string,
   speaker: SlackSpeaker | undefined,
 ): Promise<WebClient | undefined> {
+  const bot = await liveOwnBot(env, workspaceId, agentId, speaker);
+  return bot && createSlackWebClient(bot.botToken);
+}
+
+/**
+ * The live app bot an `own_bot` speaker names, undefined for any other
+ * speaker. One whose app is not live, whose token cannot be read, or whose bot
+ * user changed throws `agent_app_unavailable`: the caller never answers with
+ * Chickpea's bot instead.
+ */
+export async function liveOwnBot(
+  env: PlatformEnv | undefined,
+  workspaceId: string,
+  agentId: string,
+  speaker: SlackSpeaker | undefined,
+): Promise<AgentAppBotCredentials | undefined> {
   if (speaker?.kind !== 'own_bot') return undefined;
   const lookup = agentSlackAppsHost() ? await agentAppExecutionBot(env, agentId) : undefined;
   if (lookup?.kind !== 'live' || lookup.bot.botUserId !== speaker.botUserId) {
     throw new SlackInstallationUnavailableError(workspaceId, 'agent_app_unavailable', { retryable: false });
   }
-  return createSlackWebClient(lookup.bot.botToken);
+  return lookup.bot;
 }
 
 /**

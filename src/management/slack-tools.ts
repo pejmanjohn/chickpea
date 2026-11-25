@@ -85,6 +85,8 @@ import { parseAdmittedSlackListIds } from '../slack/lists/admission.ts';
 import { parseAttachmentFileIds } from '../slack/attachment-file-ids.ts';
 import { parseThreadFileIds } from '../slack/thread-files.ts';
 import { isRequesterTextSource, type RequesterTextSource } from '../slack/requester-text-source.ts';
+import type { GatewayAttachmentClient } from '../slack/gateway/client.ts';
+import type { SlackSpeaker } from '../slack/speaker.ts';
 
 const SIGNAL_ATTRIBUTE_KEYS = [
   'workspaceId',
@@ -1132,6 +1134,7 @@ async function invokeLiveSlackTool<TName extends WorkspaceManagementToolName>(
   const service = createLiveWorkspaceManagementService(env, {
     identity,
     settings,
+    slackFiles: turnSlackFiles(env, signal),
     overrides: { setupBaseUrl: () => resolveSlackPublicUrl(env, settings) },
   });
   return invokeSlackWorkspaceManagementTool({
@@ -1141,6 +1144,21 @@ async function invokeLiveSlackTool<TName extends WorkspaceManagementToolName>(
     name,
     args,
   });
+}
+
+/**
+ * A Slack turn's files for its management tools (upload_skills), read by the
+ * bot its run speaks as (runAttachmentClient), never by a bot the tool names.
+ * `installation` is the service's own reader, for every other run.
+ */
+export function turnSlackFiles(
+  env: PlatformEnv | undefined,
+  signal: Pick<SlackManagementSignal, 'agentId' | 'workspaceId' | 'turnJobId'>,
+  speakerOf?: (turnJobId: string) => Promise<SlackSpeaker | undefined>,
+): (installation: GatewayAttachmentClient) => GatewayAttachmentClient {
+  const plan = { agentId: signal.agentId, conversation: { workspaceId: signal.workspaceId } };
+  return (installation) => ({ readAttachment: async (...read) => (await import('../slack/agent-apps/files.ts'))
+    .runAttachmentClient(env, plan, signal.turnJobId, { installation, ...(speakerOf ? { speakerOf } : {}) }).readAttachment(...read) });
 }
 
 export async function invokeLiveSlackScheduleAction(

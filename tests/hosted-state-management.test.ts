@@ -20,6 +20,7 @@ import {
 } from '../src/management/slack-approval.ts';
 import {
   invokeSlackWorkspaceManagementTool,
+  turnSlackFiles,
   type SlackManagementSignal,
 } from '../src/management/slack-tools.ts';
 import type {
@@ -105,6 +106,7 @@ function productionStateManagement(input: {
     'invokeSlackWorkspaceManagementTool',
     'executeHostSlackManagementApproval',
     'agentAvatarInstallationField',
+    'turnSlackFiles',
     `${compiled}\nreturn { Probe, localSettingsStore };`,
   )(
     () => input.appStores,
@@ -114,6 +116,7 @@ function productionStateManagement(input: {
     invokeSlackWorkspaceManagementTool,
     executeHostSlackManagementApproval,
     agentAvatarInstallationField,
+    turnSlackFiles,
   ) as {
     Probe: new () => StateProbe;
     localSettingsStore: (stores: unknown) => SettingsStore;

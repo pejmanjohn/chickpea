@@ -9,13 +9,14 @@ import {
 } from '../../config/types.ts';
 import { isTransientSlackApiError, slackConversationsInfo, slackConversationsOpen } from '../credentials.ts';
 import { slackPlatformErrorCode } from '../errors.ts';
-import { ADMISSION_MEMBERSHIP_TTL_MS } from '../installation-execution.ts';
+import { ADMISSION_MEMBERSHIP_TTL_MS, type SlackInstallationExecutionContext } from '../installation-execution.ts';
 import { type SlackSpeaker, speakerFor } from '../speaker.ts';
 import { slackConversationKind } from '../thread-key.ts';
 import { type SlackTransport, SlackTransportError } from '../transport/types.ts';
 import type { NormalizedSlackTurn } from '../types.ts';
 import { agentSlackAppsHost } from './host.ts';
-import { agentAppBotCredentials } from './live.ts';
+import { agentAppBotCredentials, liveOwnBot } from './live.ts';
+import { createSlackWebClient } from '../web-client.ts';
 
 /** The bot that heard a turn at admission. */
 export interface SlackTurnHearing {
@@ -255,4 +256,30 @@ export async function installationBotIsIn(client: WebClient, channelId: string):
 export async function storedRunSpeaker(env: PlatformEnv | undefined, turnJobId: string): Promise<SlackSpeaker | undefined> {
   const view = await getSlackStateStore(env).turnJobView?.(turnJobId);
   return view?.job?.turn.speaker;
+}
+
+/**
+ * Who a run is in Slack. The bot of the speaker its admission stored: the
+ * Agent app's own bot for `own_bot`, and undefined, meaning the
+ * installation's bot, for every other run (Chickpea's bot speaking as the
+ * Agent, no turn job, or a job no longer pending). Whatever a run does in its
+ * conversation (reading it, reading or uploading its files, telling the
+ * requester something) goes through this, so neither a delivery nor the model
+ * picks the bot. An `own_bot` run whose app can no longer answer throws
+ * `agent_app_unavailable`, and nothing it does reaches Slack as Chickpea's bot
+ * instead. `speakerOf` reads the speaker where the state store is local.
+ */
+export async function runOwnBot(
+  env: PlatformEnv | undefined,
+  run: { workspaceId: string; agentId: string; turnJobId: string | undefined },
+  options: { rejectRateLimitedCalls?: boolean; speakerOf?: (turnJobId: string) => Promise<SlackSpeaker | undefined> } = {},
+): Promise<SlackInstallationExecutionContext | undefined> {
+  const { workspaceId, agentId, turnJobId } = run;
+  const speakerOf = options.speakerOf ?? ((id: string) => storedRunSpeaker(env, id));
+  const bot = await liveOwnBot(env, workspaceId, agentId, turnJobId ? await speakerOf(turnJobId) : undefined);
+  return bot && {
+    workspaceId, transportMode: 'direct', sharedAppReads: false,
+    botToken: bot.botToken, botUserId: bot.botUserId, displayName: bot.displayName,
+    client: createSlackWebClient(bot.botToken, { rejectRateLimitedCalls: options.rejectRateLimitedCalls === true }),
+  };
 }

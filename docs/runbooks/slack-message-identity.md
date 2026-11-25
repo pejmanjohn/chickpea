@@ -76,8 +76,28 @@ never used with a persona. Where Chickpea's bot posts for the Agent but no
 persona can be built (the installation is not healthy, or no avatar resolves),
 it posts as Chickpea, as it does for a user-group Agent. When the run's stored
 bot can no longer post, as when the app was removed after admission or the
-Agent apps port is gone, the turn ends unavailable. Files it uploads belong to the bot
-that posts. While the app is live, the memory lease accepts its bot as the
+Agent apps port is gone, the turn ends unavailable.
+
+Whatever else a run does in its conversation, it does as the same stored bot
+(`runOwnBot` in `src/slack/agent-apps/place.ts`): its Slack reading tools, the
+files shared with it, the files it makes, `upload_skills`' read of a person's
+skill file, and the browser's sign-in hand-off to the requester. A file the run
+makes (a chart, an image, an artifact) is staged and completed privately with
+that bot's token, and the reply that links it is posted by the same bot, so the
+file belongs to the bot that posts and the person in the app's own DM sees it.
+Where Chickpea's bot speaks for the Agent, Chickpea's bot uploads, as before.
+A scheduled run is the exception: it has no stored speaker, so Chickpea's bot
+uploads its files even where the schedule posts as the app's bot.
+To verify, check all four surfaces on the reply in the app's own DM: the app's
+name and icon as sender, the app's bot as the file's owner, the footer, and the
+file inside the reply for the person; then ask the Agent to change the image,
+which reads it back. A run whose app's bot can no longer answer makes none of
+these calls; none falls back to Chickpea's bot. Canvases, Lists, creating a
+Channel and starting a group DM act through Chickpea's bot by design: an Agent
+app holds no canvas scope, and the conversations those tools make are
+Chickpea's.
+
+While the app is live, the memory lease accepts its bot as the
 Agent's delivering bot. While Chickpea's record names the app's bot,
 uninstalling included, that bot counts as the installation's own: its posts
 echoed back by Slack are not recorded again as another app's, a thread handed
@@ -89,8 +109,8 @@ there. A run answered through Chickpea's bot reads as Chickpea's bot, so it
 can read the thread it answers in. A run reads the files shared with it as the
 same bot (the attachment analysis, `read_slack_file` and image inputs): a file
 in the app's own DM, or in a private Channel only its bot is in, is visible to
-that bot alone. A run whose app's bot can no longer answer reads no file; it
-never reads one as Chickpea's bot instead. Other Agents ask it by its
+that bot alone. A run whose app's bot can no longer answer reads nothing; it
+never reads as Chickpea's bot instead. Other Agents ask it by its
 bot user (`<@U…>`) instead of a user group. A person's Channel message that
 mentions its bot beside other Agents is answered by each, once, in the order
 named, as long as each Agent's own bot is in the Channel (see
