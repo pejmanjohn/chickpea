@@ -355,12 +355,18 @@ Home.
   rotation's, and last the second rotation's refresh token. The first failure
   stops it. A rotation is never retried, because Slack may have acted before
   its answer was lost; a revoke Slack did not answer is tried once more. Each
-  call waits at most 5 seconds. That a rotation also revokes an access token
-  that had already expired is assumed, not yet measured.
+  of these calls waits at most 5 seconds. The rotations whose pair Chickpea
+  keeps (a paste's own rotation, and the one that renews the stored token)
+  have no such limit: Slack answering after it would already have rotated,
+  and dropping that answer would leave the stored refresh token spent. That a
+  rotation also revokes an access token that had already expired is assumed,
+  not yet measured.
 - When every call succeeded, Admin says Chickpea retired the token at Slack.
   Otherwise Admin says Slack may still list it: if Your Apps still shows a
   token for the workspace, the Owner copies its Refresh Token, adds it in
-  Chickpea again, and removes it again. That works at any age, because the
+  Chickpea again (the notice carries Add a token, which leaves the setting as
+  it is), and removes it again. Slack shows the token only to the person who
+  generated it, so when someone else added it Admin names them. That works at any age, because the
   refresh token is revoked only after both access tokens, so a listed row
   always carries a refresh token that still rotates. Slack's own Delete is not
   the route: after a partial failure it can leave a row whose access token has
@@ -372,6 +378,8 @@ Home.
   stored one, and stops when Slack refuses the replaced token's first
   rotation, since the paste may be the newest token of that same chain. A
   token for another workspace is ended there the same way and is not stored.
+  A paste whose rotation Slack answers `ratelimited` reads as Slack not
+  answering, and Admin asks the Owner to try again, not for a new token.
 - Removing the token also revokes an access token a caller in flight already
   holds. A creation in flight then ends as Slack refusing the create, and an
   update of an app's definition holds as a token needed.

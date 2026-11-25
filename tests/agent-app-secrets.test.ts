@@ -498,34 +498,81 @@ test('no path that ends a chain logs a token', async (t) => {
   assert.equal(JSON.stringify(lines).includes('xoxe'), false, 'no token is logged');
 });
 
-// Defect caught: Slack's `errors` list on a token call reaching a log line, where it could quote the token sent.
+// Defect caught: Slack's `errors` list on a token call reaching a log line, where it could quote the token sent. The
+// port drops that list for every call without a manifest; this holds each log site to the code alone even if it did not.
 test('a refusal of a token call that quotes the token sent logs only its step and code', async (t) => {
   const lines: unknown[] = [];
   for (const method of ['log', 'info', 'warn', 'error', 'debug'] as const) t.mock.method(console, method, (...args: unknown[]) => { lines.push(args); });
   let rotations = 0;
-  const port = (refuse: 'tooling.tokens.rotate' | 'auth.revoke') => createAgentAppSlackApi({
-    apiBaseUrl: 'https://slack.test/api',
-    fetch: async (input, init) => {
-      const method = String(input).slice('https://slack.test/api/'.length);
-      const sent = [...new URLSearchParams(String(init?.body)).values()][0];
-      if (method === refuse) {
-        return Response.json({ ok: false, error: 'invalid_auth', errors: [{ message: `not a token: ${sent}`, pointer: '/token' }] });
-      }
-      rotations += 1;
-      return Response.json({ ok: true, token: `xoxe.xoxp-1-port-access-${rotations}`, refresh_token: `xoxe-1-port-refresh-${rotations}`, team_id: TEAM, exp: NOW / 1_000 + 43_200 });
-    },
-  });
-  const d = fixture(t);
+  const port = (refuse: 'tooling.tokens.rotate' | 'auth.revoke'): SecretDeps['slack'] => {
+    const refusal = (method: string, sent: string) => new SlackRefused(method, 'invalid_auth', [{ message: `not a token: ${sent}`, pointer: '/token' }]);
+    return {
+      async rotate(refreshToken) {
+        if (refuse === 'tooling.tokens.rotate') throw refusal(refuse, refreshToken);
+        rotations += 1;
+        return { accessToken: `xoxe.xoxp-1-port-access-${rotations}`, refreshToken: `xoxe-1-port-refresh-${rotations}`, teamId: TEAM, expiresAt: NOW + TWELVE_HOURS };
+      },
+      async revoke(token) {
+        if (refuse === 'auth.revoke') throw refusal(refuse, token);
+      },
+    };
+  };
+  let now = NOW;
+  const d = fixture(t, { now: () => now });
   assert.equal(await saveConfigurationToken({ ...d, slack: port('tooling.tokens.rotate') }, TEAM, PASTED), 'rejected', 'the paste');
   assert.equal(await saveConfigurationToken(d, TEAM, PASTED), 'saved');
   assert.equal(await discardConfigurationToken({ ...d, slack: port('tooling.tokens.rotate') }, TEAM), 'unconfirmed', 'a removal stopped at a rotation');
   assert.equal(await saveConfigurationToken({ ...d, slack: port('auth.revoke') }, TEAM, 'xoxe-1-another-pasted-token-000'), 'saved');
   assert.equal(await discardConfigurationToken({ ...d, slack: port('auth.revoke') }, TEAM), 'left_listed', 'a removal stopped at a revoke');
+  d.tokens.generate('xoxe-1-third-pasted-token-0000', 'UTHIRD', TEAM);
+  assert.equal(await saveConfigurationToken(d, TEAM, 'xoxe-1-third-pasted-token-0000'), 'saved');
+  now = NOW + TWELVE_HOURS;
+  await assert.rejects(() => withConfigurationToken({ ...d, slack: port('tooling.tokens.rotate') }, TEAM, async () => 'unused'), ConfigTokenNeeded, 'the natural rotation');
   const refusals = lines.map((line) => (line as [Record<string, unknown>])[0]).filter((line) => line?.event === 'chickpea.agent_app.slack_refused');
   assert.deepEqual(refusals.map((line) => [line.step, line.code, line.errors]), [
-    ['rotate', 'invalid_auth', []], ['rotate', 'invalid_auth', []], ['revoke', 'invalid_auth', []],
+    ['rotate', 'invalid_auth', []], ['rotate', 'invalid_auth', []], ['revoke', 'invalid_auth', []], ['rotate', 'invalid_auth', []],
   ]);
   assert.equal(JSON.stringify(lines).includes('xoxe'), false, 'no token is logged');
+});
+
+// Defect caught: a paste Slack rate limited read as a token Slack did not accept, so the Owner is told to generate a
+// new one, which Slack will not allow while it lists the one they hold.
+test('a paste Slack rate limits reads as Slack not answering and stores nothing', async (t) => {
+  const d = fixture(t);
+  d.refuse = 'ratelimited';
+  await assert.rejects(() => saveConfigurationToken(d, TEAM, PASTED), (error: unknown) =>
+    error instanceof SlackUnavailable && error.reason === 'ratelimited');
+  assert.equal(await hasConfigurationToken(d, TEAM), false);
+  delete d.refuse;
+  assert.equal(await saveConfigurationToken(d, TEAM, PASTED), 'saved', 'the same token, once Slack answers');
+});
+
+// Defect caught: the time limit on a rotation whose pair is kept, so a late answer is dropped after Slack rotated and
+// the stored token is dead; or no limit on a removal's calls, so a slow Slack holds the Owner's request.
+test('a slow Slack answer to a paste or a natural rotation is kept; a removal reads one as unanswered', async (t) => {
+  let rotations = 0;
+  const slow = createAgentAppSlackApi({
+    apiBaseUrl: 'https://slack.test/api',
+    chainEndTimeoutMs: 20,
+    fetch: (input, init) => new Promise<Response>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        rotations += 1;
+        resolve(String(input).endsWith('auth.revoke') ? Response.json({ ok: true, revoked: true }) : Response.json({
+          ok: true, token: `xoxe.xoxp-1-slow-access-${rotations}`, refresh_token: `xoxe-1-slow-refresh-${rotations}`, team_id: TEAM, exp: NOW / 1_000 + 43_200,
+        }));
+      }, 60);
+      init?.signal?.addEventListener('abort', () => { clearTimeout(timer); reject(init.signal!.reason); });
+    }),
+  });
+  let now = NOW;
+  const d = fixture(t, { now: () => now });
+  const slowly = { ...d, slack: slow };
+  assert.equal(await saveConfigurationToken(slowly, TEAM, PASTED), 'saved');
+  now = NOW + TWELVE_HOURS;
+  assert.equal(await withConfigurationToken(slowly, TEAM, async (token) => token), 'xoxe.xoxp-1-slow-access-2', 'the natural rotation');
+  assert.equal(await discardConfigurationToken(slowly, TEAM), 'unconfirmed');
+  assert.equal(rotations, 2, 'the removal\'s rotation was not waited for');
+  assert.equal(await hasConfigurationToken(d, TEAM), false);
 });
 
 test('a refused rotation still deletes the stored copy and says so; so does a pair that cannot be opened', async (t) => {

@@ -5314,7 +5314,9 @@
       : "";
     var notice = apps.notice
       ? '<div class="callout' + (apps.notice.ok ? " callout-success" : "") + ' slack-apps-callout" role="status"><span>' + esc(apps.notice.text) +
-        (apps.notice.yourApps ? ' <a class="hint-link" href="' + SLACK_YOUR_APPS_URL + '" target="_blank" rel="noopener">Open Your Apps in Slack &nearr;</a>' : "") + '</span></div>'
+        (apps.notice.yourApps ? ' <a class="hint-link" href="' + SLACK_YOUR_APPS_URL + '" target="_blank" rel="noopener">Open Your Apps in Slack &nearr;</a>' : "") + '</span>' +
+        // The route the notice names, without turning the setting on; with the setting on, the callout above has it.
+        (apps.notice.addToken && !data.token.stored && !needsToken ? '<button type="button" class="btn btn-soft btn-sm" data-action="slack-apps-token-open">Add a token</button>' : "") + '</div>'
       : "";
     var results = apps.results.map(slackAppsResultHtml).join("");
     var errorText = apps.error || (!on && apps.turnOnFailed) || "";
@@ -5774,19 +5776,35 @@
   // token of that chain that still rotates, at any age, and removing it from
   // here again ends the whole chain. Slack's own Delete can leave behind a
   // token nobody can delete once its access token has expired.
-  var SLACK_TOKEN_STILL_LISTED = "If Your Apps in Slack still shows a token for this workspace, copy its Refresh Token, add it in Chickpea again, and remove it again.";
-  var SLACK_TOKEN_REMOVED = {
-    discarded: { ok: true, text: "Chickpea deleted its copy of your configuration token and retired that token at Slack." },
-    left_listed: { ok: false, yourApps: true, text: "Chickpea deleted its copy of your configuration token, but Slack may still list it. " + SLACK_TOKEN_STILL_LISTED },
-    unconfirmed: { ok: false, yourApps: true, text: "Chickpea deleted its copy of your configuration token, but Slack didn't confirm the token stopped working, so Slack may still accept it. " + SLACK_TOKEN_STILL_LISTED },
-    none: { ok: false, text: "Chickpea holds no configuration token for this workspace." }
-  };
+  // Slack lists a configuration token only on Your Apps of the person who
+  // generated it, so a token someone else added is named as theirs.
+  function slackTokenStillListed(owner) {
+    return owner
+      ? "If Your Apps in Slack still shows " + owner + " a token for this workspace, " + owner + " can copy its Refresh Token, add it in Chickpea again, and remove it again."
+      : "If Your Apps in Slack still shows a token for this workspace, copy its Refresh Token, add it in Chickpea again, and remove it again.";
+  }
+  function slackTokenRemovedNotice(removed, owner) {
+    if (removed === "discarded") return { ok: true, text: "Chickpea deleted its copy of your configuration token and retired that token at Slack." };
+    if (removed === "none") return { ok: false, text: "Chickpea holds no configuration token for this workspace." };
+    var what = removed === "left_listed"
+      ? "Chickpea deleted its copy of your configuration token, but Slack may still list it. "
+      : "Chickpea deleted its copy of your configuration token, but Slack didn't confirm the token stopped working, so Slack may still accept it. ";
+    return { ok: false, yourApps: true, addToken: true, text: what + slackTokenStillListed(owner) };
+  }
+
+  // Who added the stored token, by name, when that is someone other than the viewer and the page knows them.
+  function slackTokenOwnerName(token) {
+    var people = slackAppsState().people || { viewer: "", names: {} };
+    if (!token || !token.pastedBy || token.pastedBy === people.viewer) return "";
+    return people.names[token.pastedBy] || "";
+  }
 
   function removeSlackAppsToken() {
     var apps = slackAppsState();
     if (apps.busy) return;
     apps.busy = "remove";
     apps.error = "";
+    var owner = slackTokenOwnerName(apps.data && apps.data.token);
     render();
     api(SLACK_APPS_API + "/token", { method: "DELETE" }).then(function (body) {
       apps.busy = "";
@@ -5794,7 +5812,7 @@
       if (apps.data) apps.data.token = { stored: false };
       apps.turnOnFailed = false;
       var removed = body && body.removed;
-      apps.notice = Object.prototype.hasOwnProperty.call(SLACK_TOKEN_REMOVED, removed) ? SLACK_TOKEN_REMOVED[removed] : SLACK_TOKEN_REMOVED.unconfirmed;
+      apps.notice = slackTokenRemovedNotice(removed === "discarded" || removed === "left_listed" || removed === "none" ? removed : "unconfirmed", owner);
       invalidateVisibleResource("slack-apps", "");
       render();
       loadSlackApps();

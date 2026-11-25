@@ -813,6 +813,66 @@ test('each removal says what it did: retired, still listed at Slack, not confirm
   }
 });
 
+// Defect caught: with the setting off, a removal that tells the Owner to add the token again on a page with no
+// control that does it, or whose only door turns the setting on.
+test('a removal Slack did not finish, with the setting off, offers Add a token, and pasting there leaves the setting off', async () => {
+  const opens = (html: string) => html.split('data-action="slack-apps-token-open"').length - 1;
+  for (const removed of ['left_listed', 'unconfirmed', 'discarded', 'none'] as const) {
+    const api = apiState({ setting: { mode: 'shared', changedBy: 'UOWNER', changedAt: 1 } });
+    const page = await harness({
+      api,
+      handle(path, method) {
+        if (path !== '/admin/api/slack-apps/token') return undefined;
+        if (method === 'DELETE') { api.token = { stored: false }; return respond({ token: api.token, removed }); }
+        if (method === 'PUT') { api.token = { stored: true, pastedBy: 'UOWNER', pastedAt: 3 }; return respond({ token: api.token }); }
+        return undefined;
+      },
+    });
+    await page.click({ 'data-action': 'slack-apps-token-remove' });
+    await page.click({ 'data-action': 'slack-apps-confirm-apply' });
+    const offered = removed === 'left_listed' || removed === 'unconfirmed';
+    assert.equal(opens(page.html()), offered ? 1 : 0, `${removed}: the route the notice names is on the page`);
+    if (!offered) continue;
+    await page.click({ 'data-action': 'slack-apps-token-open' });
+    await page.paste('xoxe-1-listed-refresh-token-000');
+    await flush();
+    assert.equal(tokenSends(page.requests).length, 1);
+    assert.equal(page.requests.some((request) => request.path === '/admin/api/slack-apps/mode'), false, `${removed}: the setting stays off`);
+    assert.equal(api.setting.mode, 'shared');
+  }
+
+  // With the setting on, the page's own Add a token callout carries the same action once.
+  const onApi = apiState();
+  const on = await harness({
+    api: onApi,
+    handle(path, method) {
+      if (path !== '/admin/api/slack-apps/token' || method !== 'DELETE') return undefined;
+      onApi.token = { stored: false };
+      return respond({ token: onApi.token, removed: 'left_listed' });
+    },
+  });
+  await on.click({ 'data-action': 'slack-apps-token-remove' });
+  await on.click({ 'data-action': 'slack-apps-confirm-apply' });
+  assert.match(on.text(), /Slack may still list it/);
+  assert.equal(opens(on.html()), 1);
+});
+
+// Defect caught: an Owner told to look on their own Your Apps page for a token only the person who added it can see.
+test('a removal Slack did not finish names the person whose Your Apps shows the token, when that is someone else the page knows', async () => {
+  for (const [pastedBy, sentence] of [
+    ['UOTHER', 'If Your Apps in Slack still shows Omar Owner a token for this workspace, Omar Owner can copy its Refresh Token, add it in Chickpea again, and remove it again.'],
+    ['UOWNER', STILL_LISTED],
+    ['UNKNOWN', STILL_LISTED],
+    [undefined, STILL_LISTED],
+  ] as const) {
+    const api = apiState({ token: { stored: true, ...(pastedBy ? { pastedBy } : {}), pastedAt: Date.UTC(2026, 10, 23, 12) } });
+    const page = await harness({ api, handle: (path, method) => path === '/admin/api/slack-apps/token' && method === 'DELETE' ? respond({ token: { stored: false }, removed: 'left_listed' }) : undefined });
+    await page.click({ 'data-action': 'slack-apps-token-remove' });
+    await page.click({ 'data-action': 'slack-apps-confirm-apply' });
+    assert.ok(page.text().includes(sentence), String(pastedBy));
+  }
+});
+
 // Defect caught: a route to the section in a tab the browser reports hidden loaded nothing, so it stayed on
 // "Loading…" until the tab was focused or the page reloaded.
 test('the section loads when its route opens in a hidden tab', async () => {

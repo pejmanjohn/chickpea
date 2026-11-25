@@ -296,6 +296,8 @@ export async function saveConfigurationToken(
   } catch (error) {
     if (!(error instanceof SlackRefused)) throw error;
     logTokenRefusal('rotate', error);
+    // A rate limit says nothing about the token: the Owner is told to try again, not to generate a new one.
+    if (error.code === 'ratelimited') throw new SlackUnavailable('tooling.tokens.rotate', error.code);
     return 'rejected';
   }
   if (rotated.teamId !== teamId) {
@@ -426,10 +428,13 @@ async function finishTokenChain(d: SecretDeps, pair: { accessToken: string; refr
     && await revokeToken(d, next.refreshToken);
 }
 
-/** Never retried: Slack may have rotated before its answer was lost, and the pair it returned is then unknown. */
+/**
+ * Never retried: Slack may have rotated before its answer was lost, and the pair it returned is then unknown. Only
+ * these rotations have a time limit, since nothing they return is kept.
+ */
 async function rotateOnce(d: SecretDeps, refreshToken: string) {
   try {
-    return await d.slack.rotate(refreshToken);
+    return await d.slack.rotate(refreshToken, { endingChain: true });
   } catch (error) {
     logChainStopped('rotate', error);
     return undefined;
