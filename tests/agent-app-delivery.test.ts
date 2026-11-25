@@ -4895,6 +4895,22 @@ test("a run whose stored speaker names a bot user its Agent's app no longer has 
   assert.deepEqual(h.calls.slice(before).filter(({ method }) => method.startsWith('files.') || method.startsWith('chat.')), [], 'no bot uploads or posts');
 }, { history: C2_POSTS }));
 
+// Mutation proof: taking the app's bot before the installation resolves uploads for a workspace whose installation is gone.
+test("a run that speaks as an Agent app's bot uploads nothing once the workspace's installation is revoked", async (t) => withHarness(t, async (h) => {
+  const ts = `${Math.floor(Date.now() / 1_000)}.000997`;
+  assert.equal((await h.deliver('events', appDm(ts, { text: 'make me a chart of boxes' }), { settle: true })).status, 200);
+  const [job] = await turnsOn(h, ts);
+  assert.ok(job);
+  assert.deepEqual(job.turn.speaker, SUPPORT_BOT);
+  await markSlackInstallationEnded(h.stores.config, TEAM, 'app_uninstalled');
+  const before = h.calls.length;
+  await assert.rejects(
+    runSlackClient(withHostedSlackApp(h.base, MAIN_APP), { agentId: 'agent_support', conversation: { workspaceId: TEAM } }, job.id),
+    (error: unknown) => error instanceof SlackInstallationUnavailableError && error.reasonCode === 'installation_revoked',
+  );
+  assert.deepEqual(h.calls.slice(before).filter(({ method }) => method.startsWith('files.') || method.startsWith('chat.')), [], 'no bot uploads or posts');
+}));
+
 // Mutation proof: the service's own reader, the installation's, cannot read a file in the Agent app's DM.
 test("upload_skills in an Agent app's own DM reads the person's skill file as that app's bot", async (t) => withHarness(t, async (h) => {
   const ts = `${Math.floor(Date.now() / 1_000)}.001000`;
