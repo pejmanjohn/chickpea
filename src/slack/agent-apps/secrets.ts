@@ -295,12 +295,12 @@ export async function saveConfigurationToken(
     rotated = await d.slack.rotate(token);
   } catch (error) {
     if (!(error instanceof SlackRefused)) throw error;
-    logSlackRefusal('rotate', {}, error);
+    logTokenRefusal('rotate', error);
     return 'rejected';
   }
   if (rotated.teamId !== teamId) {
-    // The pasted refresh token is spent already; left at that, the other workspace would list a token for 12 hours and
-    // then refuse to delete it.
+    // The pasted refresh token is spent already; left at that, the other workspace would list a token that nobody can
+    // delete once its access token has expired.
     await finishTokenChain(d, rotated);
     return 'other_workspace';
   }
@@ -360,33 +360,32 @@ const CHAIN_ENDS: readonly TokenChainEnd[] = ['ended', 'left_listed', 'not_rotat
 
 /**
  * Removal. The stored pair's chain is ended at Slack, and the stored copy is
- * deleted whatever Slack answers. A rotation that writes a newer pair first
- * has that pair's chain ended and deleted on the retry, and the answer is the
- * more cautious of the two; throws LostRevision when a pair still stays.
+ * deleted whatever Slack answers. When the delete loses to a newer write, the
+ * record is read again: one that still holds the refresh token this removal
+ * already ended or tried (a rotation's claim, or another removal) is only
+ * deleted, keeping the first answer, since Slack would refuse that token now.
+ * One holding another refresh token (a rotation that won, or a paste that
+ * completed after this removal began) has that chain ended and deleted too,
+ * and the answer is the more cautious of the two. Throws LostRevision when a
+ * pair still stays.
  */
 export async function discardConfigurationToken(d: SecretDeps, teamId: string): Promise<ConfigurationTokenRemoval> {
   const key = configurationTokenKey(teamId);
-  let ended: TokenChainEnd | undefined;
+  let ended: { result: TokenChainEnd; refreshToken: string | undefined } | undefined;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const record = await d.credentials.getEncryptedCredentialRevision(key);
     if (!record) break;
-    const result = await endStoredChain(d, teamId, record);
-    ended = ended === undefined || CHAIN_ENDS.indexOf(result) > CHAIN_ENDS.indexOf(ended) ? result : ended;
-    if (await d.credentials.deleteEncryptedCredentialRevision(key, record.revision)) return REMOVAL[ended];
+    // A pair that cannot be opened was never rotated by this removal.
+    const refreshToken = (await openPair(d, teamId, record).catch(unopenedAsNone))?.refreshToken;
+    if (!ended || ended.refreshToken !== refreshToken) {
+      const result = refreshToken ? await endTokenChain(d, refreshToken) : 'not_rotated';
+      ended = { result: ended && CHAIN_ENDS.indexOf(ended.result) > CHAIN_ENDS.indexOf(result) ? ended.result : result, refreshToken };
+    }
+    if (await d.credentials.deleteEncryptedCredentialRevision(key, record.revision)) return REMOVAL[ended.result];
   }
   if (ended === undefined) return 'none';
   if (await d.credentials.getEncryptedCredentialRevision(key)) throw new LostRevision(key);
-  return REMOVAL[ended];
-}
-
-/** A pair that cannot be opened was never rotated by this removal. */
-async function endStoredChain(
-  d: SecretDeps,
-  teamId: string,
-  record: { revision: string; envelope: Parameters<typeof decryptSlackSecretEnvelope>[2] },
-): Promise<TokenChainEnd> {
-  const pair = await openPair(d, teamId, record).catch(unopenedAsNone);
-  return pair ? endTokenChain(d, pair.refreshToken) : 'not_rotated';
+  return REMOVAL[ended.result];
 }
 
 function unopenedAsNone(error: unknown): undefined {
@@ -402,7 +401,9 @@ function unopenedAsNone(error: unknown): undefined {
  * rotation revokes the access token two before the one it returns, so two
  * rotations retire every access token older than the first rotation's, held
  * or not; the two left are revoked, then the newest refresh token. The first
- * failure stops it.
+ * failure stops it. This relies on a rotation also revoking an access token
+ * that had already expired, which is assumed, not measured: a stored pair is
+ * usually past its 12 hours when it is removed.
  */
 async function endTokenChain(d: SecretDeps, refreshToken: string): Promise<TokenChainEnd> {
   const first = await rotateOnce(d, refreshToken);
@@ -414,8 +415,8 @@ async function endTokenChain(d: SecretDeps, refreshToken: string): Promise<Token
  * The rest of the chain's end from a pair just rotated. The refresh token is
  * revoked last, once both access tokens are gone: a listed token whose refresh
  * token still works can be copied back out of Slack and pasted, while a listed
- * token with no working refresh token is one nobody can use or, after 12
- * hours, delete. True when Slack confirmed every step.
+ * token with no working refresh token is one nobody can use or, once its
+ * access token has expired, delete. True when Slack confirmed every step.
  */
 async function finishTokenChain(d: SecretDeps, pair: { accessToken: string; refreshToken: string }): Promise<boolean> {
   const next = await rotateOnce(d, pair.refreshToken);
@@ -449,8 +450,13 @@ async function revokeToken(d: SecretDeps, token: string): Promise<boolean> {
   }
 }
 
+/** The code only: Slack's `errors` list on a token call could quote the token it was sent. */
+function logTokenRefusal(step: 'rotate' | 'revoke', error: SlackRefused): void {
+  logSlackRefusal(step, {}, { code: error.code });
+}
+
 function logChainStopped(step: 'rotate' | 'revoke', error: unknown): void {
-  if (error instanceof SlackRefused) logSlackRefusal(step, {}, error);
+  if (error instanceof SlackRefused) logTokenRefusal(step, error);
   else {
     console.warn({
       event: 'chickpea.agent_app.token_chain_stopped',
@@ -514,7 +520,7 @@ async function rotateHolding(
     rotated = await d.slack.rotate(pair.refreshToken);
   } catch (error) {
     if (!(error instanceof SlackRefused)) throw error;
-    logSlackRefusal('rotate', {}, error);
+    logTokenRefusal('rotate', error);
     const refusedToken = TOKEN_REFUSALS.has(error.code);
     if (!refusedToken && error.code !== DEAD_REFRESH_TOKEN) throw new SlackUnavailable('tooling.tokens.rotate', error.code);
     const latest = await readPair(d, teamId);

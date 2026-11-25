@@ -9,6 +9,12 @@ import type { SlackAppCreateManifest, SlackAppManifest } from '../app-manifest.t
 const SLACK_API = 'https://slack.com/api';
 const MAX_RESPONSE_BYTES = 64 * 1_024;
 const ICON_TIMEOUT_MS = 5_000;
+/**
+ * Per call. A removal or a paste makes at most nine token calls in one Owner
+ * request, so at worst 45 s, well inside the 100 s Cloudflare waits for a
+ * response; a slow call stops the chain instead of holding the request.
+ */
+const TOKEN_CALL_TIMEOUT_MS = 5_000;
 const SLACK_ID = /^[A-Z][A-Z0-9]{1,63}$/;
 const MAX_PROBLEMS = 5;
 const MAX_PROBLEM_TEXT = 200;
@@ -127,8 +133,8 @@ export function createAgentAppSlackApi(options: AgentAppSlackApiOptions = {}): A
     let response: Response;
     try {
       response = await fetchImpl(url(method), init);
-    } catch {
-      return { kind: 'unavailable', reason: 'network_error' };
+    } catch (error) {
+      return { kind: 'unavailable', reason: error instanceof Error && error.name === 'TimeoutError' ? 'timeout' : 'network_error' };
     }
     let payload: Record<string, unknown>;
     try {
@@ -168,6 +174,10 @@ export function createAgentAppSlackApi(options: AgentAppSlackApiOptions = {}): A
     },
     body: new URLSearchParams(params).toString(),
   });
+  const tokenCall = (params: Record<string, string>): RequestInit => ({
+    ...form(params),
+    signal: AbortSignal.timeout(TOKEN_CALL_TIMEOUT_MS),
+  });
 
   function settled(method: string, answer: Answer): Record<string, unknown> {
     if (answer.kind === 'ok') return answer.payload;
@@ -177,7 +187,7 @@ export function createAgentAppSlackApi(options: AgentAppSlackApiOptions = {}): A
 
   return {
     async rotate(refreshToken) {
-      const payload = settled('tooling.tokens.rotate', await call('tooling.tokens.rotate', form({ refresh_token: refreshToken })));
+      const payload = settled('tooling.tokens.rotate', await call('tooling.tokens.rotate', tokenCall({ refresh_token: refreshToken })));
       const expires = payload.exp;
       const teamId = payload.team_id;
       if (typeof expires !== 'number' || !Number.isFinite(expires) || typeof teamId !== 'string' || !SLACK_ID.test(teamId)) {
@@ -192,7 +202,7 @@ export function createAgentAppSlackApi(options: AgentAppSlackApiOptions = {}): A
     },
 
     async revoke(token) {
-      const answer = await call('auth.revoke', form({ token }));
+      const answer = await call('auth.revoke', tokenCall({ token }));
       if (answer.kind === 'refused' && answer.code === 'token_revoked') return;
       const payload = settled('auth.revoke', answer);
       if (payload.revoked !== true) throw new SlackUnavailable('auth.revoke', 'invalid_slack_response');

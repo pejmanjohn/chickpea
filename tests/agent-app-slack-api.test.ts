@@ -101,6 +101,26 @@ test('revoke sends only the token as a form field; one Slack already revoked is 
     error instanceof SlackUnavailable && error.reason === 'invalid_slack_response', 'only revoked: true is a revoke');
 });
 
+// Defect caught: a token call with no time limit holding the Owner's request, so a removal cut short keeps a stored
+// copy whose refresh token is spent.
+test('rotate and revoke stop waiting after a time limit and read that as Slack not answering', async () => {
+  for (const call of [
+    (client: ReturnType<typeof api>['client']) => client.rotate('xoxe-1-old'),
+    (client: ReturnType<typeof api>['client']) => client.revoke('xoxe-1-old'),
+  ]) {
+    let signal: AbortSignal | null | undefined;
+    const client = createAgentAppSlackApi({
+      apiBaseUrl: 'https://slack.test/api/',
+      fetch: async (_input, init) => {
+        signal = init?.signal;
+        throw new DOMException('The operation timed out.', 'TimeoutError');
+      },
+    });
+    await assert.rejects(() => call(client), (error: unknown) => error instanceof SlackUnavailable && error.reason === 'timeout');
+    assert.ok(signal instanceof AbortSignal && !signal.aborted, 'each call carries its own time limit');
+  }
+});
+
 test('create carries the manifest under the configuration token and tells a refusal from an unknown answer', async () => {
   const { client, seen } = api((request) => {
     const refusal = slackManifestRefusal((request.body as { manifest?: unknown }).manifest);

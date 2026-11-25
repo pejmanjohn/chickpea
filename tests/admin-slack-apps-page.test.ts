@@ -789,13 +789,18 @@ test('a row whose start stopped before Slack made any app offers a quiet Cancel,
 
 const YOUR_APPS_LINK = '<a class="hint-link" href="https://api.slack.com/apps" target="_blank" rel="noopener">Open Your Apps in Slack &nearr;</a>';
 
+const STILL_LISTED = 'If Your Apps in Slack still shows a token for this workspace, copy its Refresh Token, add it in Chickpea again, and remove it again.';
+const UNCONFIRMED = `Chickpea deleted its copy of your configuration token, but Slack didn't confirm the token stopped working, so Slack may still accept it. ${STILL_LISTED}`;
+
+// Defect caught: a removal Slack did not finish that sends the Owner to Slack's own Delete, which can leave a token
+// nobody can delete or replace; or one that gives no route at all.
 test('each removal says what it did: retired, still listed at Slack, not confirmed by Slack, or no token held', async () => {
   for (const [removed, sentence, success] of [
     ['discarded', 'Chickpea deleted its copy of your configuration token and retired that token at Slack.', true],
-    ['left_listed', "Chickpea deleted its copy of your configuration token, but Slack may still list it. Delete it in Your Apps in Slack today, because after 12 hours Slack won't let you delete it or generate a new one.", false],
-    ['unconfirmed', "Chickpea deleted its copy of your configuration token, but Slack didn't confirm the token stopped working, so Slack may still accept it.", false],
+    ['left_listed', `Chickpea deleted its copy of your configuration token, but Slack may still list it. ${STILL_LISTED}`, false],
+    ['unconfirmed', UNCONFIRMED, false],
     ['none', 'Chickpea holds no configuration token for this workspace.', false],
-    ['something_new', "Chickpea deleted its copy of your configuration token, but Slack didn't confirm the token stopped working, so Slack may still accept it.", false],
+    ['something_new', UNCONFIRMED, false],
   ] as const) {
     const page = await harness({ handle: (path, method) => path === '/admin/api/slack-apps/token' && method === 'DELETE' ? respond({ token: { stored: false }, removed }) : undefined });
     await page.click({ 'data-action': 'slack-apps-token-remove' });
@@ -803,7 +808,8 @@ test('each removal says what it did: retired, still listed at Slack, not confirm
     await page.click({ 'data-action': 'slack-apps-confirm-apply' });
     assert.ok(page.text().includes(sentence.replace(/'/g, '&#39;')), removed);
     assert.equal(page.html().includes('callout callout-success slack-apps-callout'), success, removed);
-    assert.equal(page.html().includes(YOUR_APPS_LINK), removed === 'left_listed', `${removed}: only a token Slack may still list sends the Owner to Your Apps`);
+    assert.equal(page.html().includes(YOUR_APPS_LINK), removed !== 'discarded' && removed !== 'none', `${removed}: a token Slack may still list sends the Owner to Your Apps`);
+    assert.equal(/Delete it|12 hours/.test(page.text()), false, `${removed}: never Slack's own Delete, and no clock`);
   }
 });
 

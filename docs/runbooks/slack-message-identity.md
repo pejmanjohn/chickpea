@@ -334,24 +334,47 @@ Home.
 
 ### The configuration token's limits
 
-- Slack caps how many configuration tokens one person holds in a workspace,
-  and leaves the workspace out of Generate Token's picker once the cap is
-  reached. The Owner deletes a token they no longer use under Your App
-  Configuration Tokens, or another Owner does this step. Separate tokens rotate
-  independently, so Chickpea's token and the Owner's own tools never replace
-  each other's.
+- Slack lists one configuration token for a person and a workspace, and
+  leaves the workspace out of Generate Token's picker while one is listed.
+  Slack lists it while the person holds any access token for the workspace
+  that is not revoked, expired ones included, and nobody can revoke an expired
+  access token. The listed row shows the newest pair of its chain, and its
+  refresh token keeps working after its access token expires, so the token
+  page tells an Owner who cannot generate a token to paste the listed Refresh
+  Token instead. If another tool of theirs holds that token, the paste spends
+  that tool's refresh token.
 - The token can manage every app its person created in the workspace.
   Chickpea changes only the apps it creates for Agents.
-- Chickpea rotates the pasted token at once, and Slack keeps listing the
-  rotated token under Your App Configuration Tokens until it expires (12
-  hours). So the list can show two rows for the workspace, both Chickpea's.
-- Chickpea cannot revoke the token: revoking the access token leaves the
-  refresh token working. **Remove the configuration token** on the token page
-  deletes Chickpea's copy only. The Owner then chooses Delete token for every
-  configuration token listed for the workspace and reloads Your Apps to check
-  that none is left: the page can show a row as gone before a reload shows it
-  again. Agent apps already created keep working; archiving one later leaves
-  its definition for the Owner.
+- Each rotation leaves the previous access token valid and revokes the one
+  before it, so a chain never has more than two access tokens that are not
+  revoked. Chickpea rotates the pasted token at once.
+- **Remove the configuration token** on the token page ends the token's chain
+  at Slack, then deletes Chickpea's copy whatever Slack answered. Chickpea
+  rotates twice, which retires every older access token, held or not, then
+  calls `auth.revoke` on the second rotation's access token, the first
+  rotation's, and last the second rotation's refresh token. The first failure
+  stops it. A rotation is never retried, because Slack may have acted before
+  its answer was lost; a revoke Slack did not answer is tried once more. Each
+  call waits at most 5 seconds. That a rotation also revokes an access token
+  that had already expired is assumed, not yet measured.
+- When every call succeeded, Admin says Chickpea retired the token at Slack.
+  Otherwise Admin says Slack may still list it: if Your Apps still shows a
+  token for the workspace, the Owner copies its Refresh Token, adds it in
+  Chickpea again, and removes it again. That works at any age, because the
+  refresh token is revoked only after both access tokens, so a listed row
+  always carries a refresh token that still rotates. Slack's own Delete is not
+  the route: after a partial failure it can leave a row whose access token has
+  expired and whose refresh token is spent, which nobody can delete and which
+  blocks Generate Token. Agent apps already created keep working; archiving
+  one later leaves its definition for the Owner.
+- A paste over a stored token ends the replaced chain the same way, best
+  effort, after the new pair is stored. It skips a pasted token equal to the
+  stored one, and stops when Slack refuses the replaced token's first
+  rotation, since the paste may be the newest token of that same chain. A
+  token for another workspace is ended there the same way and is not stored.
+- Removing the token also revokes an access token a caller in flight already
+  holds. A creation in flight then ends as Slack refusing the create, and an
+  update of an app's definition holds as a token needed.
 - When the stored refresh token is spent, the sequence stops and the Owner is
   asked to paste a new one.
 

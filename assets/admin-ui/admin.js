@@ -5769,13 +5769,16 @@
   }
 
   // What each removal did. `none` held no token and says nothing about Slack;
-  // an answer the page doesn't know claims no more than `unconfirmed`. Slack
-  // refuses to delete a listed token once it is 12 hours old, and lets nobody
-  // generate a new one while it is listed, hence "today".
+  // an answer the page doesn't know claims no more than `unconfirmed`. When
+  // Slack may still list a token, the row it shows carries the one refresh
+  // token of that chain that still rotates, at any age, and removing it from
+  // here again ends the whole chain. Slack's own Delete can leave behind a
+  // token nobody can delete once its access token has expired.
+  var SLACK_TOKEN_STILL_LISTED = "If Your Apps in Slack still shows a token for this workspace, copy its Refresh Token, add it in Chickpea again, and remove it again.";
   var SLACK_TOKEN_REMOVED = {
     discarded: { ok: true, text: "Chickpea deleted its copy of your configuration token and retired that token at Slack." },
-    left_listed: { ok: false, yourApps: true, text: "Chickpea deleted its copy of your configuration token, but Slack may still list it. Delete it in Your Apps in Slack today, because after 12 hours Slack won't let you delete it or generate a new one." },
-    unconfirmed: { ok: false, text: "Chickpea deleted its copy of your configuration token, but Slack didn't confirm the token stopped working, so Slack may still accept it." },
+    left_listed: { ok: false, yourApps: true, text: "Chickpea deleted its copy of your configuration token, but Slack may still list it. " + SLACK_TOKEN_STILL_LISTED },
+    unconfirmed: { ok: false, yourApps: true, text: "Chickpea deleted its copy of your configuration token, but Slack didn't confirm the token stopped working, so Slack may still accept it. " + SLACK_TOKEN_STILL_LISTED },
     none: { ok: false, text: "Chickpea holds no configuration token for this workspace." }
   };
 
