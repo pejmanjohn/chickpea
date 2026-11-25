@@ -86,6 +86,8 @@ makes (a chart, an image, an artifact) is staged and completed privately with
 that bot's token, and the reply that links it is posted by the same bot, so the
 file belongs to the bot that posts and the person in the app's own DM sees it.
 Where Chickpea's bot speaks for the Agent, Chickpea's bot uploads, as before.
+A scheduled run is the exception: it has no stored speaker, so Chickpea's bot
+uploads its files even where the schedule posts as the app's bot.
 To verify, check all four surfaces on the reply in the app's own DM: the app's
 name and icon as sender, the app's bot as the file's owner, the footer, and the
 file inside the reply for the person; then ask the Agent to change the image,

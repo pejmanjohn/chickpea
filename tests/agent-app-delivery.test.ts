@@ -4868,6 +4868,33 @@ test("a run that speaks as an Agent app's bot uploads nothing once that app can 
   assert.deepEqual(h.calls.slice(before).filter(({ method }) => method.startsWith('files.') || method.startsWith('chat.')), [], 'no bot uploads or posts');
 }));
 
+// Mutation proof: taking the Agent's live app bot whichever bot the stored speaker names acts as a bot the run was never admitted to speak as.
+test("a run whose stored speaker names a bot user its Agent's app no longer has acts as no bot: nothing is read, uploaded or posted", async (t) => withHarness(t, async (h) => {
+  const ts = `${Math.floor(Date.now() / 1_000)}.000995`;
+  const text = `<@${AGENT_BOT_USER}> how many boxes?`;
+  h.hold('C1', { user: 'U1', text, ts, files: [boxesFile('F0REPLACEDBOXES')] });
+  const { app } = channelMessage(ts, text);
+  assert.equal((await h.deliver('events', { ...app, event: { ...app.event, files: [boxesFile('F0REPLACEDBOXES')] } }, { settle: true, forged: true })).status, 200);
+  const [job] = await turnsOn(h, ts);
+  assert.ok(job);
+  assert.deepEqual(job.turn.speaker, SUPPORT_BOT);
+  // The Agent's app is live again under another bot user, with a token Chickpea can read.
+  const replaced = () => setSupportApp(h, {
+    state: 'active', at: Date.now(), app: { appId: AGENT_APP, clientId: '1.client' }, icon: 'agent_avatar',
+    botUserId: 'UAGENTBOT2', installedAt: Date.now(), installedBy: 'U1',
+  });
+  const { refused, tokens } = await readC2(h, 'agent_support', { ownBot: true, admitted: replaced });
+  assert.equal(refused?.code, 'unavailable');
+  assert.deepEqual(tokens, [], 'no bot reads the Channel');
+  const before = h.calls.length;
+  await assert.rejects(
+    runSlackClient(withHostedSlackApp(h.base, MAIN_APP), { agentId: 'agent_support', conversation: { workspaceId: TEAM } }, job.id),
+    (error: unknown) => error instanceof SlackInstallationUnavailableError && error.reasonCode === 'agent_app_unavailable',
+  );
+  assert.deepEqual(await filesGiven(h, job), { status: 'failed', seen: [], readers: [] }, 'no bot reads the file');
+  assert.deepEqual(h.calls.slice(before).filter(({ method }) => method.startsWith('files.') || method.startsWith('chat.')), [], 'no bot uploads or posts');
+}, { history: C2_POSTS }));
+
 // Mutation proof: the service's own reader, the installation's, cannot read a file in the Agent app's DM.
 test("upload_skills in an Agent app's own DM reads the person's skill file as that app's bot", async (t) => withHarness(t, async (h) => {
   const ts = `${Math.floor(Date.now() / 1_000)}.001000`;
