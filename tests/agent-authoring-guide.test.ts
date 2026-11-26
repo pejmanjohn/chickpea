@@ -187,19 +187,22 @@ test('a new Agent\'s empty tool list is dropped at the door, a named tool is ref
       () => precheck({ idempotencyKey: 'k', operations: [{
         itemId: 'update', kind: 'update_agent', agentId: 'demo_alpha', expectedRevision: 1, patch: { allowedTools },
       }] }),
-      /operations\.0\.patch\.allowedTools: schema is false/,
+      /operations\.0\.patch\.allowedTools: unknown field/,
     );
   }
 
-  // Pi answers a refused operation with what other kinds require. Here no line names the Channel that is missing.
+  // The description tells the model to correct each field a refusal names, so every line Pi sends must be true
+  // of the kind sent. Pi 1.1 drew its lines from other kinds and never named this missing Channel.
   assert.throws(
     () => precheck({ idempotencyKey: 'k', operations: [{ itemId: 'grant', kind: 'grant_agent_channel', agentId: 'demo_alpha' }] }),
-    (error: Error) => {
-      const refusal = error.message.split('\n\nReceived arguments:')[0]!;
-      return /operations\.0\.agent: must have required properties agent/.test(refusal) && !/channelId/.test(refusal);
-    },
+    (error: Error) => error.message.split('\n\nReceived arguments:')[0] === [
+      'Validation failed for tool "apply_workspace_changes":',
+      '  - operations.0.workspaceId: missing',
+      '  - operations.0.channelId: missing',
+      '  - operations.0.expectedRevision: missing',
+    ].join('\n'),
   );
-  assert.match(description, /A call refused for its arguments changed nothing: correct it and call again in the same turn\. The refusal also lists what other operation kinds require, so act only on a line that is true of the kind you sent, and keep every field that kind takes\./);
+  assert.match(description, /A call refused for its arguments changed nothing: correct each field the refusal names and call again in the same turn, keeping every field that kind takes\./);
   assert.match(AGENT_AUTHORING_GUIDE, /send that `mcpServers` entry with a new `allowedTools`[^.]*\. The Agent itself has no `allowedTools`/);
 });
 
