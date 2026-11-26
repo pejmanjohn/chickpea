@@ -2469,7 +2469,6 @@ test('the Agents list names each Agent model from the active catalog, then Pi', 
     const { agents } = await response.json() as { agents: Array<Record<string, any>> };
     const policy = (id: string) => agents.find((agent) => agent.id === id)?.modelPolicy;
     assert.equal(policy('agent_cataloged').effectiveModel, 'openai/gpt-6.1-terra');
-    // Pi 1.1 has no GPT-6.1 Terra; only the catalog names it.
     assert.equal(policy('agent_cataloged').effectiveModelName, 'GPT-6.1 Terra');
     assert.equal(policy('agent_gemini').effectiveModelName, 'Gemini 4 Argon');
     assert.equal(policy('agent_openrouter').effectiveModelName, 'DeepSeek: DeepSeek V4.1 Flash');
