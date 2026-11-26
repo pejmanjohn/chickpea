@@ -1,5 +1,5 @@
 import { normalizeContext } from '@earendil-works/pi-ai';
-import type { AssistantMessage, Context, Provider } from '@earendil-works/pi-ai';
+import type { Api, AssistantMessage, Context, Model, Provider } from '@earendil-works/pi-ai';
 import { setProvider, type LlmMessage } from '@flue/runtime';
 
 import { modelAccessRequest } from './model-access.ts';
@@ -210,13 +210,13 @@ function withChickpeaProviderPolicy(provider: Provider): Provider {
   // A proxy, not a copy: a provider may be a class instance whose other
   // members rely on their own `this`.
   const stream: Provider['stream'] = (model, context, options) => {
-    const request = modelAccessRequest(provider.id, model, options);
+    const request = modelAccessRequest(provider.id, withoutMessageThreads(model), options);
     return request.send((sent) => request.redact(
       provider.stream(sent, normalizeContext(restoreForRequest(sent, context)), request.options),
     ));
   };
   const streamSimple: Provider['streamSimple'] = (model, context, options) => {
-    const request = modelAccessRequest(provider.id, model, options);
+    const request = modelAccessRequest(provider.id, withoutMessageThreads(model), options);
     return request.send((sent) => request.redact(
       provider.streamSimple(sent, normalizeContext(restoreForRequest(sent, context)), request.options),
     ));
@@ -229,6 +229,19 @@ function withChickpeaProviderPolicy(provider: Provider): Provider {
       return typeof value === 'function' ? value.bind(target) : value;
     },
   });
+}
+
+/**
+ * Since Pi 1.5.1, an Anthropic request with a session id, which Flue always
+ * sets, continues a server-side message thread: it sends only the new
+ * messages, and the provider keeps the rest. Chickpea has not measured
+ * threads against its prompt caching, payload hooks and charges, so every
+ * Anthropic request still sends the whole conversation.
+ */
+function withoutMessageThreads<TApi extends Api>(model: Model<TApi>): Model<TApi> {
+  if (model.api !== 'anthropic-messages') return model;
+  const compat = (model as Model<'anthropic-messages'>).compat;
+  return { ...model, compat: { ...compat, supportsMessageThreads: false } } as Model<TApi>;
 }
 
 function restoreForRequest(model: { provider: string; api: string }, context: Context): Context {
