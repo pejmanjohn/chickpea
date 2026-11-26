@@ -219,14 +219,14 @@ test('models pi-ai ships route natively on API-key lanes and through reviewed pr
   assert.equal(resolveActiveCatalogRoute('openai/gpt-6-astra', 'openai_api_key')?.model.thinkingLevelMap?.off, null);
 });
 
-test('GPT-6.1 Terra, which pi-ai does not ship, routes through reviewed profiles on both lanes and both sources', async () => {
+test('GPT-6.1 Terra routes to Pi\'s own entry with an API key and through the reviewed profile on the subscription, from both sources', async () => {
   const published = parseModelCatalogBytes(await readFile(new URL('../catalog/current.json', import.meta.url)));
   for (const source of ['bundled', 'hosted'] as const) {
     resetModelCatalogActivationForTests();
     if (source === 'bundled') activateBundledModelCatalog();
     else activateModelCatalog({ document: published, sha256: 'e'.repeat(64) });
     const apiKey = resolveActiveCatalogRoute('openai/gpt-6.1-terra', 'openai_api_key');
-    assert.equal(apiKey?.source, 'catalog', `${source} API key`);
+    assert.equal(apiKey?.source, 'pi_native', `${source} API key`);
     assert.equal(apiKey.model.provider, 'openai');
     assert.equal(apiKey.model.thinkingLevelMap?.off, 'none', 'Terra accepts the none effort');
     const subscription = resolveActiveCatalogRoute('openai/gpt-6.1-terra', 'openai_subscription');

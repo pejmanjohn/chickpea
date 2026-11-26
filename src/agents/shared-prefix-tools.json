@@ -5989,7 +5989,7 @@
     }
    },
    "output_config": {
-    "effort": "high"
+    "effort": "low"
    },
    "service_tier": "standard_only"
   },
@@ -6007,7 +6007,7 @@
     }
    },
    "output_config": {
-    "effort": "high"
+    "effort": "low"
    },
    "service_tier": "standard_only"
   }
