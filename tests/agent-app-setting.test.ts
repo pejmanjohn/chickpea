@@ -514,15 +514,15 @@ test('each paste outcome answers as the token page does, and the token never lea
   assert.deepEqual(owner.audits().map((audit) => audit.action), ['agent_apps.token_pasted'], 'only the paste that stored a token is recorded');
 });
 
-test('removing the token ends its chain at Slack; a second remove is harmless', async (t) => {
+test('removing the token retires it at Slack; a second remove is harmless', async (t) => {
   const owner = await adminApp(t);
   assert.equal((await owner.request(`${API}/token`, owner.json('PUT', { refreshToken: PASTED }))).status, 200);
   const { result: removed, lines } = await consoleLines(async () => owner.request(`${API}/token`, owner.json('DELETE')));
   assert.equal(removed.status, 200);
   const body = await removed.text();
   assert.deepEqual(JSON.parse(body), { token: { stored: false }, removed: 'discarded' });
-  assert.deepEqual(owner.script.spent, [PASTED, 'xoxe-1-rotated-1-0000', 'xoxe-1-rotated-2-0000'], 'the stored refresh token and the one it returned are rotated');
-  assert.deepEqual(owner.script.revoked, ['xoxe.xoxp-1-access-3', 'xoxe.xoxp-1-access-2', 'xoxe-1-rotated-3-0000'], 'both live access tokens, then the last refresh token');
+  assert.deepEqual(owner.script.spent, [PASTED, 'xoxe-1-rotated-1-0000'], 'the stored refresh token is rotated once');
+  assert.deepEqual(owner.script.revoked, ['xoxe.xoxp-1-access-2', 'xoxe.xoxp-1-access-1'], 'both access tokens it knows, never a refresh token');
   assert.equal(await owner.settings.getEncryptedCredentialRevision(configurationTokenKey(TEAM)), undefined, 'and nothing replaces it');
   for (const secret of [PASTED, 'xoxe-1-rotated', 'xoxe.xoxp-1-access']) {
     assert.equal(body.includes(secret), false);
@@ -533,7 +533,7 @@ test('removing the token ends its chain at Slack; a second remove is harmless', 
   const again = await owner.request(`${API}/token`, owner.json('DELETE'));
   assert.equal(again.status, 200);
   assert.deepEqual(await again.json(), { token: { stored: false }, removed: 'none' }, 'a second removal makes no claim about Slack');
-  assert.equal(owner.script.spent.length, 3, 'nothing left to rotate');
+  assert.equal(owner.script.spent.length, 2, 'nothing left to rotate');
   assert.deepEqual(owner.audits().map((audit) => [audit.action, audit.reasonCode]), [
     ['agent_apps.token_pasted', undefined],
     ['agent_apps.token_removed', 'discarded'],
@@ -541,18 +541,19 @@ test('removing the token ends its chain at Slack; a second remove is harmless', 
   ]);
 });
 
-test('a revoke Slack refuses after the rotations deletes the stored copy and says Slack may still list the token', async (t) => {
+// Defect caught: a refused revoke turning a token that no longer works into a removal Admin calls unconfirmed.
+test('a revoke Slack refuses after the rotation deletes the stored copy and still answers discarded', async (t) => {
   const owner = await adminApp(t);
   assert.equal((await owner.request(`${API}/token`, owner.json('PUT', { refreshToken: PASTED }))).status, 200);
   owner.script.revoke = async () => { throw new SlackRefused('auth.revoke', 'token_expired'); };
   const { result: removed, lines } = await consoleLines(async () => owner.request(`${API}/token`, owner.json('DELETE')));
-  assert.deepEqual(await removed.json(), { token: { stored: false }, removed: 'left_listed' });
+  assert.deepEqual(await removed.json(), { token: { stored: false }, removed: 'discarded' });
   assert.equal(await owner.settings.getEncryptedCredentialRevision(configurationTokenKey(TEAM)), undefined);
   for (const secret of [PASTED, 'xoxe-1-rotated', 'xoxe.xoxp-1-access']) assert.equal(lines.includes(secret), false);
   assert.deepEqual((await (await owner.request(`${API}/token`, owner.json('DELETE'))).json()), { token: { stored: false }, removed: 'none' });
   assert.deepEqual(owner.audits().map((audit) => [audit.action, audit.reasonCode]), [
     ['agent_apps.token_pasted', undefined],
-    ['agent_apps.token_removed', 'left_listed'],
+    ['agent_apps.token_removed', 'discarded'],
     ['agent_apps.token_removed', 'none'],
   ]);
 });
@@ -574,7 +575,7 @@ test('a rotation Slack refuses or does not answer still deletes the stored copy,
 
 // Defects caught: Slack asked to retire the stored pair before the pasted one is kept, so a request that ends there
 // leaves the pasted token spent and nothing new stored.
-test('a token pasted over a stored one keeps the new pair first, then ends the stored one at Slack', async (t) => {
+test('a token pasted over a stored one keeps the new pair first, then retires the stored one at Slack', async (t) => {
   const owner = await adminApp(t);
   assert.equal((await owner.request(`${API}/token`, owner.json('PUT', { refreshToken: PASTED }))).status, 200);
   const key = configurationTokenKey(TEAM);
@@ -588,15 +589,15 @@ test('a token pasted over a stored one keeps the new pair first, then ends the s
   assert.equal((await owner.request(`${API}/token`, owner.json('PUT', { refreshToken: PASTED_AGAIN }))).status, 200);
   owner.script.rotate = undefined;
   assert.ok(storedWhenRetired && storedWhenRetired !== first, 'the new pair was already kept when the old one was retired');
-  assert.deepEqual(owner.script.spent, [PASTED, PASTED_AGAIN, 'xoxe-1-rotated-1-0000', 'xoxe-1-rotated-3-0000'], 'the earlier chain is rotated twice');
-  assert.deepEqual(owner.script.revoked, ['xoxe.xoxp-1-access-p4', 'xoxe.xoxp-1-access-p3', 'xoxe-1-rotated-4-0000'], 'and ended, nothing of the new pair');
+  assert.deepEqual(owner.script.spent, [PASTED, PASTED_AGAIN, 'xoxe-1-rotated-1-0000'], 'the earlier pair is rotated once');
+  assert.deepEqual(owner.script.revoked, ['xoxe.xoxp-1-access-p3', 'xoxe.xoxp-1-access-1'], 'and its access tokens revoked, nothing of the new pair');
   assert.equal((await owner.request(`${API}/agents/agent_support/start`, owner.json('POST', {}))).status, 200, 'the new pair works');
 
   // Slack refusing the earlier pair does not stop the paste.
   owner.script.spent.push('xoxe-1-rotated-2-0000');
   assert.equal((await owner.request(`${API}/token`, owner.json('PUT', { refreshToken: PASTED_THIRD }))).status, 200);
   assert.deepEqual(JSON.parse(await (await owner.request(API)).text()).token, { stored: true, pastedBy: OWNER, pastedAt: NOW });
-  assert.equal(owner.script.revoked.length, 3, 'a refused first rotation calls nothing after it');
+  assert.equal(owner.script.revoked.length, 2, 'a refused rotation calls nothing after it');
 });
 
 test('the read lists each user Agent with its name, handle, avatar, Channels and Slack state', async (t) => {

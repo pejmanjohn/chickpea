@@ -10,13 +10,14 @@ const SLACK_API = 'https://slack.com/api';
 const MAX_RESPONSE_BYTES = 64 * 1_024;
 const ICON_TIMEOUT_MS = 5_000;
 /**
- * Per call that ends a chain, where an unanswered call stops the chain and
- * leaves it recoverable. Ending one chain makes at most eight such calls, and
- * a removal whose second try ends a second chain sixteen, so at worst 80 s,
- * under the 100 s Cloudflare waits for a response. A paste ends at most one
- * chain, 40 s, after its own rotation, which has no limit.
+ * Per call that retires a pair Chickpea no longer keeps, where an unanswered
+ * call loses nothing. Retiring one pair makes at most five such calls (a
+ * rotation and two revokes, each tried twice), and a removal whose second try
+ * retires a second pair ten, so at worst 50 s, under the 100 s Cloudflare
+ * waits for a response. A paste retires at most one pair, 25 s, after its own
+ * rotation, which has no limit.
  */
-const CHAIN_END_TIMEOUT_MS = 5_000;
+const RETIRE_TIMEOUT_MS = 5_000;
 const SLACK_ID = /^[A-Z][A-Z0-9]{1,63}$/;
 const MAX_PROBLEMS = 5;
 const MAX_PROBLEM_TEXT = 200;
@@ -101,14 +102,14 @@ export interface AgentAppGrant {
 
 export interface AgentAppSlackApi {
   /**
-   * `endingChain` puts a time limit on the call. A rotation whose pair is kept
+   * `retiring` puts a time limit on the call. A rotation whose pair is kept
    * has none: Slack answering after the limit would have rotated, and the
    * stored refresh token would be spent with its successor dropped.
    */
-  rotate(refreshToken: string, options?: { endingChain?: boolean }): Promise<RotatedConfigurationToken>;
+  rotate(refreshToken: string, options?: { retiring?: boolean }): Promise<RotatedConfigurationToken>;
   /**
-   * auth.revoke on a configuration access or refresh token, sent with no other credential; one already revoked is done.
-   * Only ending a chain revokes, so it always has the time limit.
+   * auth.revoke on a configuration access token, sent with no other credential; one already revoked is done. Only
+   * retiring a pair revokes, so it always has the time limit. Chickpea never revokes a refresh token: see `retirePair`.
    */
   revoke(token: string): Promise<void>;
   /** Throws AmbiguousEffect when Slack's answer is unknown and SlackRefused when it said no. */
@@ -128,7 +129,7 @@ export interface AgentAppSlackApiOptions {
   fetch?: typeof fetch;
   apiBaseUrl?: string;
   /** For tests. */
-  chainEndTimeoutMs?: number;
+  retireTimeoutMs?: number;
 }
 
 type Answer =
@@ -140,7 +141,7 @@ export function createAgentAppSlackApi(options: AgentAppSlackApiOptions = {}): A
   const fetchImpl = options.fetch ?? fetch;
   const base = options.apiBaseUrl?.trim().replace(/\/+$/, '') || SLACK_API;
   const url = (method: string): string => `${base}/${method}`;
-  const chainEndTimeoutMs = options.chainEndTimeoutMs ?? CHAIN_END_TIMEOUT_MS;
+  const retireTimeoutMs = options.retireTimeoutMs ?? RETIRE_TIMEOUT_MS;
 
   async function call(method: string, init: RequestInit, manifest?: SlackAppCreateManifest | SlackAppManifest): Promise<Answer> {
     let response: Response;
@@ -188,9 +189,9 @@ export function createAgentAppSlackApi(options: AgentAppSlackApiOptions = {}): A
     },
     body: new URLSearchParams(params).toString(),
   });
-  const tokenCall = (params: Record<string, string>, endingChain: boolean): RequestInit => ({
+  const tokenCall = (params: Record<string, string>, retiring: boolean): RequestInit => ({
     ...form(params),
-    ...(endingChain ? { signal: AbortSignal.timeout(chainEndTimeoutMs) } : {}),
+    ...(retiring ? { signal: AbortSignal.timeout(retireTimeoutMs) } : {}),
   });
 
   function settled(method: string, answer: Answer): Record<string, unknown> {
@@ -201,7 +202,7 @@ export function createAgentAppSlackApi(options: AgentAppSlackApiOptions = {}): A
 
   return {
     async rotate(refreshToken, rotateOptions) {
-      const payload = settled('tooling.tokens.rotate', await call('tooling.tokens.rotate', tokenCall({ refresh_token: refreshToken }, rotateOptions?.endingChain === true)));
+      const payload = settled('tooling.tokens.rotate', await call('tooling.tokens.rotate', tokenCall({ refresh_token: refreshToken }, rotateOptions?.retiring === true)));
       const expires = payload.exp;
       const teamId = payload.team_id;
       if (typeof expires !== 'number' || !Number.isFinite(expires) || typeof teamId !== 'string' || !SLACK_ID.test(teamId)) {

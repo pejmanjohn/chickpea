@@ -938,7 +938,7 @@ export class AgentSlackApps {
     return configurationTokenStatus(this.secrets, (await this.installation()).teamId);
   }
 
-  /** Ends the stored token's chain at Slack, then deletes Chickpea's copy whatever Slack answered. */
+  /** Retires the stored token at Slack, then deletes Chickpea's copy whatever Slack answered. */
   async removeConfigurationToken(): Promise<ConfigurationTokenRemoval> {
     return discardConfigurationToken(this.secrets, (await this.installation()).teamId);
   }

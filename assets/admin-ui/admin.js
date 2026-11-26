@@ -5597,7 +5597,7 @@
       '<ol class="slack-token-steps">' +
       '<li><span class="slack-token-step">1</span><div><p>Open Slack&rsquo;s app settings.</p><a class="btn btn-soft btn-sm slack-token-open" href="' + SLACK_YOUR_APPS_URL + '" target="_blank" rel="noopener">Open Slack app settings <span aria-hidden="true">&nearr;</span></a></div></li>' +
       '<li><span class="slack-token-step">2</span><div><p>Under <strong>Your App Configuration Tokens</strong>, choose <strong>Generate Token</strong> and pick <strong>' + esc(workspace) + '</strong>.</p>' +
-      '<p class="hint">' + esc("If Slack already lists a token for " + workspace + " and Generate Token isn't available, copy that token's Refresh Token and paste it here.") + '</p></div></li>' +
+      '<p class="hint">' + esc("If Slack already lists a token for " + workspace + " and Generate Token isn't available, don't delete that token: copy its Refresh Token and paste it here.") + '</p></div></li>' +
       '<li><span class="slack-token-step">3</span><div><p>Copy the <strong>Refresh Token</strong> and paste it here.</p>' + slackAppsTokenIllustrationHtml() + '</div></li></ol>' +
       '<form class="slack-token-form" data-action="slack-apps-token-form" autocomplete="off"><label class="field-label" for="slack-apps-token">Refresh token</label>' +
       '<div class="slack-token-field"><input id="slack-apps-token" class="input mono' + (token.error ? " input-error" : "") + '" type="password" maxlength="512" autocomplete="off" spellcheck="false" placeholder="xoxe-&hellip;" aria-describedby="slack-apps-token-status"' + (checking ? " disabled" : "") + '>' +
@@ -5771,25 +5771,34 @@
   }
 
   // What each removal did. `none` held no token and says nothing about Slack;
-  // an answer the page doesn't know claims no more than `unconfirmed`. When
-  // Slack may still list a token, the row it shows carries the one refresh
-  // token of that chain that still rotates, at any age, and removing it from
-  // here again ends the whole chain. Slack's own Delete can leave behind a
-  // token nobody can delete once its access token has expired.
+  // an answer the page doesn't know claims no more than `unconfirmed`. After
+  // either, Slack may still list a token: nobody can revoke an expired access
+  // token, so it stays listed until Slack clears it. The row carries a refresh
+  // token that still rotates, so it can be added here again; Slack's own
+  // Delete on an expired row revokes that refresh token and then fails, which
+  // leaves a token nobody can use, replace or delete. After `unconfirmed`,
+  // removing it from here again is what makes it stop working.
   // Slack lists a configuration token only on Your Apps of the person who
   // generated it, so a token someone else added is named as theirs.
+  function slackTokenMayStayListed(owner) {
+    return owner
+      ? "Slack may still show " + owner + " a token for this workspace for a while, possibly as expired; " + owner + " should leave it alone rather than deleting it in Slack, and can copy its Refresh Token and add it in Chickpea to use it here again."
+      : "Slack may still list a token for this workspace for a while, possibly as expired; leave it alone rather than deleting it in Slack, and to use it here again, copy its Refresh Token and add it in Chickpea.";
+  }
   function slackTokenStillListed(owner) {
     return owner
       ? "If Your Apps in Slack still shows " + owner + " a token for this workspace, " + owner + " can copy its Refresh Token, add it in Chickpea again, and remove it again."
       : "If Your Apps in Slack still shows a token for this workspace, copy its Refresh Token, add it in Chickpea again, and remove it again.";
   }
   function slackTokenRemovedNotice(removed, owner) {
-    if (removed === "discarded") return { ok: true, text: "Chickpea deleted its copy of your configuration token and retired that token at Slack." };
+    if (removed === "discarded") return { ok: true, text: "Chickpea deleted its copy of your configuration token and retired that token at Slack. " + slackTokenMayStayListed(owner) };
     if (removed === "none") return { ok: false, text: "Chickpea holds no configuration token for this workspace." };
-    var what = removed === "left_listed"
-      ? "Chickpea deleted its copy of your configuration token, but Slack may still list it. "
-      : "Chickpea deleted its copy of your configuration token, but Slack didn't confirm the token stopped working, so Slack may still accept it. ";
-    return { ok: false, yourApps: true, addToken: true, text: what + slackTokenStillListed(owner) };
+    return {
+      ok: false,
+      yourApps: true,
+      addToken: true,
+      text: "Chickpea deleted its copy of your configuration token, but Slack didn't confirm the token stopped working, so Slack may still accept it. " + slackTokenStillListed(owner)
+    };
   }
 
   // Who added the stored token, by name, when that is someone other than the viewer and the page knows them.
@@ -5812,7 +5821,7 @@
       if (apps.data) apps.data.token = { stored: false };
       apps.turnOnFailed = false;
       var removed = body && body.removed;
-      apps.notice = slackTokenRemovedNotice(removed === "discarded" || removed === "left_listed" || removed === "none" ? removed : "unconfirmed", owner);
+      apps.notice = slackTokenRemovedNotice(removed === "discarded" || removed === "none" ? removed : "unconfirmed", owner);
       invalidateVisibleResource("slack-apps", "");
       render();
       loadSlackApps();

@@ -33,16 +33,17 @@ const PASTED = 'xoxe-1-pasted-refresh-token-000';
 const OWNER = 'UOWNER';
 
 /**
- * Slack's configuration tokens. Each Generate Token starts a chain for one
- * person and workspace. A rotation spends its refresh token, and revokes the
- * access token two before the one it returns; that it does so for one that
- * has already expired too is assumed here, not measured. auth.revoke ends an
- * access token that has not expired, or a refresh token whose own access
- * token has not expired; one already revoked is done (the port reads Slack's
- * `token_revoked` so), and otherwise Slack answers `token_expired`. Slack
- * lists a token while the person holds any access token for the workspace
- * that is not revoked, expired ones included, and its row shows the newest of
- * those with the newest refresh token not revoked.
+ * Slack's configuration tokens, as measured. Each Generate Token starts a
+ * chain for one person and workspace. A rotation spends its refresh token,
+ * even one whose access token has expired, and revokes the access token two
+ * before the one it returns only if that one has not expired. auth.revoke
+ * ends an access token that has not expired, or a refresh token; one already
+ * revoked is done (the port reads Slack's `token_revoked` so), and an expired
+ * access token answers `token_expired`. Slack lists a token while the person
+ * holds any access token for the workspace that is not revoked, expired ones
+ * included, and its row shows the newest of those with the newest refresh
+ * token not revoked. That a refresh token alone keeps no row is assumed.
+ * Product code revoking a refresh token fails the test that did it.
  */
 interface SlackTokens {
   rotate(refreshToken: string): Promise<RotatedConfigurationToken>;
@@ -58,6 +59,8 @@ interface SlackTokens {
   /** Slack rotates this refresh token. */
   rotates(refreshToken: string): boolean;
   calls: Array<{ method: 'rotate' | 'revoke'; token: string }>;
+  /** Refresh tokens product code sent to auth.revoke; never any. */
+  refreshRevokes: string[];
   /** Asked before each call acts; an error returned is thrown instead. */
   fault?: ((call: TokenCall) => Error | undefined) | undefined;
   /** Asked after each call acts; an error returned is thrown in place of Slack's answer. */
@@ -89,12 +92,11 @@ function slackTokens(now: () => number, rotations: string[], flags: () => { refu
     }
     const r = refresh.get(token);
     if (!r) throw new SlackRefused('auth.revoke', 'invalid_auth');
-    if (r.revoked) return;
-    if (now() >= access.get(r.access)!.expiresAt) throw new SlackRefused('auth.revoke', 'token_expired');
     r.revoked = true;
   };
   const fakes: SlackTokens = {
     calls: [],
+    refreshRevokes: [],
     generate(refreshToken, person, team) {
       assert.equal(fakes.listed(person, team), false, 'Generate Token is unavailable while Slack lists a token');
       const chain: Chain = { person, team, access: [], refresh: [] };
@@ -118,7 +120,7 @@ function slackTokens(now: () => number, rotations: string[], flags: () => { refu
       const next = `xoxe-1-refresh-${n}`;
       issue(held.chain, accessToken, next);
       const retired = held.chain.access.at(-3);
-      if (retired) access.get(retired)!.revoked = true;
+      if (retired && now() < access.get(retired)!.expiresAt) access.get(retired)!.revoked = true;
       const lost = fakes.lost?.(call);
       if (lost) throw lost;
       return { accessToken, refreshToken: next, teamId: held.chain.team, expiresAt: access.get(accessToken)!.expiresAt };
@@ -127,6 +129,7 @@ function slackTokens(now: () => number, rotations: string[], flags: () => { refu
       const call: TokenCall = { method: 'revoke', token, index: fakes.calls.length };
       const fault = fakes.fault?.(call);
       fakes.calls.push({ method: 'revoke', token });
+      if (refresh.has(token)) fakes.refreshRevokes.push(`call ${call.index}`);
       if (fault) throw fault;
       revokeNow(token);
       const lost = fakes.lost?.(call);
@@ -184,6 +187,7 @@ function fixture(t: TestContext, options: { keyring?: CredentialKeyring; setting
     slack: tokens,
   };
   flags = fixtureState;
+  t.after(() => assert.deepEqual(tokens.refreshRevokes, [], 'Chickpea never revokes a refresh token'));
   tokens.generate(PASTED, OWNER, TEAM);
   return fixtureState;
 }
@@ -325,11 +329,13 @@ test('a pair that cannot be opened asks the Owner again, and a paste replaces it
 test('removing a freshly pasted token leaves Slack listing nothing, so its Owner can generate another; then it asks for a paste', async (t) => {
   const d = fixture(t);
   assert.equal(await discardConfigurationToken(d, TEAM), 'none');
-  assert.deepEqual(d.tokens.calls, [], 'nothing stored, nothing to end');
+  assert.deepEqual(d.tokens.calls, [], 'nothing stored, nothing to retire');
   assert.equal(await saveConfigurationToken(d, TEAM, PASTED, OWNER), 'saved');
   assert.equal(d.tokens.listed(OWNER, TEAM), true);
   assert.deepEqual(await configurationTokenStatus(d, TEAM), { stored: true, pastedBy: OWNER, pastedAt: NOW });
+  const stored = await withConfigurationToken(d, TEAM, async (token) => token);
   assert.equal(await discardConfigurationToken(d, TEAM), 'discarded');
+  assert.equal(d.tokens.accepts(stored), false, 'the token Chickpea held no longer works');
   assert.equal(d.tokens.listed(OWNER, TEAM), false, 'Slack lists nothing');
   d.tokens.generate('xoxe-1-generated-again-token-000', OWNER, TEAM);
   assert.equal(await hasConfigurationToken(d, TEAM), false, 'and no pair Slack returned is stored');
@@ -340,29 +346,58 @@ test('removing a freshly pasted token leaves Slack listing nothing, so its Owner
   assert.equal(await discardConfigurationToken(d, TEAM), 'none', 'a second removal makes no claim');
 });
 
-// The fake assumes a rotation also revokes an access token that had already expired; this test is only as true as that.
-test('removing a pair whose access tokens expired long ago still leaves Slack listing nothing', async (t) => {
+// Defects caught: a removal of an aged pair that revokes the listed refresh token, leaving a token nobody can use,
+// replace or delete; one that sends Slack the expired access token and logs the refusal on every ordinary removal; or
+// one that answers anything but `discarded` when the token Chickpea held no longer works.
+test('removing a pair older than 12 hours answers discarded, logs nothing, and leaves an expired token listed that can be added again', async (t) => {
   let now = NOW;
   const d = fixture(t, { now: () => now });
-  assert.equal(await saveConfigurationToken(d, TEAM, PASTED), 'saved');
-  now = NOW + 30 * TWELVE_HOURS;
-  assert.equal(d.tokens.listed(OWNER, TEAM), true, 'expired access tokens are still listed');
+  assert.equal(await saveConfigurationToken(d, TEAM, PASTED, OWNER), 'saved');
+  now = NOW + TWELVE_HOURS + 21 * 60_000;
+  const lines: unknown[] = [];
+  for (const method of ['log', 'info', 'warn', 'error', 'debug'] as const) t.mock.method(console, method, (...args: unknown[]) => { lines.push(args); });
   assert.equal(await discardConfigurationToken(d, TEAM), 'discarded');
-  assert.equal(d.tokens.listed(OWNER, TEAM), false);
+  assert.deepEqual(lines, [], 'no refusal or warning');
+  assert.deepEqual(d.tokens.calls.slice(1).map((call) => call.method), ['rotate', 'revoke'], 'the expired access token is not sent');
+  assert.equal(await hasConfigurationToken(d, TEAM), false);
+
+  const row = d.tokens.shown(OWNER, TEAM);
+  assert.ok(row, 'Slack still lists the expired token');
+  assert.equal(d.tokens.accepts(row.accessToken), false);
+  assert.equal(d.tokens.rotates(row.refreshToken), true, 'and its Refresh Token still rotates');
+  assert.equal(await saveConfigurationToken(d, TEAM, row.refreshToken, OWNER), 'saved');
+  assert.equal(d.tokens.accepts(await withConfigurationToken(d, TEAM, async (token) => token)), true, 'pasted back, it works');
 });
 
-test('a paste over another person\'s stored token ends that person\'s chain, and the new pair works', async (t) => {
+// Why Admin never names Slack's own Delete: on that aged row it revokes the refresh token and then fails on the expired
+// access token, which leaves a token nobody can use, replace or delete.
+test('Slack\'s own Delete on the expired row a removal leaves produces a token nobody can use, replace or delete', async (t) => {
+  let now = NOW;
+  const d = fixture(t, { now: () => now });
+  assert.equal(await saveConfigurationToken(d, TEAM, PASTED, OWNER), 'saved');
+  now = NOW + 30 * TWELVE_HOURS;
+  assert.equal(await discardConfigurationToken(d, TEAM), 'discarded');
+  await assert.rejects(() => d.tokens.slackDelete(OWNER, TEAM), (error: unknown) => error instanceof SlackRefused && error.code === 'token_expired');
+  assert.equal(d.tokens.listed(OWNER, TEAM), true, 'Slack still lists a token, so Generate Token stays unavailable');
+  const row = d.tokens.shown(OWNER, TEAM);
+  assert.equal(row !== undefined && d.tokens.rotates(row.refreshToken), false, 'and no Refresh Token it shows rotates');
+  await assert.rejects(() => d.tokens.slackDelete(OWNER, TEAM), (error: unknown) => error instanceof SlackRefused && error.code === 'token_expired');
+});
+
+test('a paste over another person\'s stored token retires that person\'s token, and the new pair works', async (t) => {
   const d = fixture(t);
   assert.equal(await saveConfigurationToken(d, TEAM, PASTED, OWNER), 'saved');
+  const replaced = await withConfigurationToken(d, TEAM, async (token) => token);
   d.tokens.generate('xoxe-1-second-owner-token-000', 'USECOND', TEAM);
   assert.equal(await saveConfigurationToken(d, TEAM, 'xoxe-1-second-owner-token-000', 'USECOND'), 'saved');
-  assert.equal(d.tokens.listed(OWNER, TEAM), false, 'the first Owner can generate a token again');
+  assert.equal(d.tokens.accepts(replaced), false, 'the replaced token no longer works');
+  assert.equal(d.tokens.listed(OWNER, TEAM), false, 'a token pasted minutes ago leaves the first Owner free to generate one');
   const access = await withConfigurationToken(d, TEAM, async (token) => token);
   assert.equal(d.tokens.accepts(access), true, 'the new pair works');
   assert.equal(d.tokens.listed('USECOND', TEAM), true);
 });
 
-// Defect caught: ending the replaced chain when the Owner pasted the newest token of that same chain, which revokes
+// Defect caught: retiring the replaced pair when the Owner pasted the newest token of that same chain, which revokes
 // the pair just stored and leaves the workspace with no working token.
 test('pasting the newest token of the chain Chickpea already holds keeps the new pair working', async (t) => {
   let now = NOW;
@@ -392,87 +427,92 @@ test('a token for another workspace leaves that workspace listing nothing and st
   assert.equal(await hasConfigurationToken(d, TEAM), false);
 });
 
-// Defect caught: a token for another workspace whose end at Slack fails, leaving that workspace a listed token whose
-// refresh token no longer rotates, or storing it here.
-test('a token for another workspace whose end at Slack fails is still not stored, and pasting the token Slack lists there ends it', async (t) => {
-  const d = fixture(t);
-  d.tokens.generate('xoxe-1-other-workspace-token-000', OWNER, 'TOTHER');
-  const from = d.tokens.calls.length;
-  d.tokens.fault = (call) => call.index - from === 1 ? new SlackUnavailable('tooling.tokens.rotate', 'network_error') : undefined;
-  assert.equal(await saveConfigurationToken(d, TEAM, 'xoxe-1-other-workspace-token-000'), 'other_workspace');
-  assert.equal(await hasConfigurationToken(d, TEAM), false);
-  delete d.tokens.fault;
-  const row = d.tokens.shown(OWNER, 'TOTHER');
-  assert.ok(row && d.tokens.rotates(row.refreshToken), 'that workspace lists a token whose Refresh Token still rotates');
-  assert.equal(await saveConfigurationToken(d, TEAM, row.refreshToken), 'other_workspace');
-  assert.equal(d.tokens.listed(OWNER, 'TOTHER'), false);
-  assert.equal(await hasConfigurationToken(d, TEAM), false);
-});
+/**
+ * Each path that retires a pair, from setup to the act. The pair it retires
+ * always holds the fixture's first rotated access token, `HELD`. The paste
+ * paths make their own rotation before the pair is retired.
+ */
+const HELD = 'xoxe.xoxp-1-access-1';
+const PATHS = {
+  removal: {
+    person: OWNER, team: TEAM, pastedRotates: false,
+    async setup(d: Fixture) { assert.equal(await saveConfigurationToken(d, TEAM, PASTED, OWNER), 'saved'); },
+    async act(d: Fixture, failed: boolean) {
+      assert.equal(await discardConfigurationToken(d, TEAM), failed ? 'unconfirmed' : 'discarded');
+      assert.equal(await hasConfigurationToken(d, TEAM), false, 'the stored copy is deleted');
+      assert.equal(await discardConfigurationToken(d, TEAM), 'none');
+    },
+  },
+  'paste over another person\'s token': {
+    person: OWNER, team: TEAM, pastedRotates: true,
+    async setup(d: Fixture) { assert.equal(await saveConfigurationToken(d, TEAM, PASTED, OWNER), 'saved'); },
+    async act(d: Fixture) {
+      d.tokens.generate('xoxe-1-second-owner-token-000', 'USECOND', TEAM);
+      assert.equal(await saveConfigurationToken(d, TEAM, 'xoxe-1-second-owner-token-000', 'USECOND'), 'saved');
+      assert.equal(d.tokens.accepts(await withConfigurationToken(d, TEAM, async (token) => token)), true, 'the new pair works');
+    },
+  },
+  'another workspace\'s token': {
+    person: OWNER, team: 'TOTHER', pastedRotates: true,
+    async setup(d: Fixture) { d.tokens.generate('xoxe-1-other-workspace-token-000', OWNER, 'TOTHER'); },
+    async act(d: Fixture) {
+      assert.equal(await saveConfigurationToken(d, TEAM, 'xoxe-1-other-workspace-token-000'), 'other_workspace');
+      assert.equal(await hasConfigurationToken(d, TEAM), false);
+    },
+  },
+} as const;
+const CALLS = ['rotation', 'revoke of the access token it returned', 'revoke of the held access token'] as const;
+const AGES = [['pasted minutes ago', 0], ['pasted long ago', 30 * TWELVE_HOURS]] as const;
+// The invariant: whatever Slack does to any call, a token Slack lists afterwards has a Refresh Token that still
+// rotates, and adding it in Chickpea stores a working pair. "answer lost" is Slack acting and the answer never arriving.
+for (const [path, p] of Object.entries(PATHS)) {
+  for (const [step, name] of CALLS.entries()) {
+    for (const kind of ['refused', 'unanswered', 'answer lost'] as const) {
+      for (const [age, after] of AGES) {
+        test(`${path}, ${age}, whose ${name} is ${kind}: a token Slack still lists can be added again`, async (t) => {
+          let now = NOW;
+          const d = fixture(t, { now: () => now });
+          await p.setup(d);
+          now += after;
+          const from = d.tokens.calls.length + (p.pastedRotates ? 1 : 0);
+          const which = (call: TokenCall) => call.index < from ? undefined
+            : call.method === 'rotate' ? 0 : call.token === HELD ? 2 : 1;
+          const failure = (call: TokenCall) => kind === 'refused'
+            ? new SlackRefused(call.method === 'rotate' ? 'tooling.tokens.rotate' : 'auth.revoke', 'invalid_auth')
+            : new SlackUnavailable(call.method, 'network_error');
+          const failing = (call: TokenCall) => which(call) === step ? failure(call) : undefined;
+          if (kind === 'answer lost') d.tokens.lost = failing;
+          else d.tokens.fault = failing;
+          const lines: unknown[] = [];
+          for (const method of ['log', 'info', 'warn', 'error', 'debug'] as const) t.mock.method(console, method, (...args: unknown[]) => { lines.push(args); });
+          // An aged stored pair's own access token is expired, so it is never sent; another workspace's was just rotated.
+          const heldSent = after === 0 || path === 'another workspace\'s token';
+          const sent = step < 2 || heldSent;
+          await p.act(d, sent && step === 0);
 
-const STEPS = ['first rotation', 'second rotation', 'newest access token', 'earlier access token', 'refresh token'] as const;
-const AGES = [['freshly stored', 0], ['stored long ago', 30 * TWELVE_HOURS]] as const;
-// Defects caught: a step that fails and lets a later one run; a removal that keeps the stored copy; and a failure that
-// leaves Slack listing a token with no refresh token that rotates, so the route Admin names (paste the listed Refresh
-// Token, remove again) cannot end it. "answer lost" is Slack acting and the answer never arriving.
-for (const [step, name] of STEPS.entries()) {
-  for (const kind of ['refused', 'unanswered', 'answer lost'] as const) {
-    for (const [age, after] of AGES) {
-      test(`a removal of a pair ${age} whose ${name} step is ${kind} stops there, and Admin's route ends what Slack still lists`, async (t) => {
-        let now = NOW;
-        const d = fixture(t, { now: () => now });
-        assert.equal(await saveConfigurationToken(d, TEAM, PASTED, OWNER), 'saved');
-        now += after;
-        const from = d.tokens.calls.length;
-        const method = step < 2 ? 'rotate' : 'revoke';
-        const failing = (call: TokenCall) => call.index - from === step || (kind !== 'refused' && method === 'revoke' && call.index - from === step + 1);
-        const failure = () => kind === 'refused'
-          ? new SlackRefused(method === 'rotate' ? 'tooling.tokens.rotate' : 'auth.revoke', 'invalid_auth')
-          : new SlackUnavailable(method, 'network_error');
-        if (kind === 'answer lost') d.tokens.lost = (call) => failing(call) ? failure() : undefined;
-        else d.tokens.fault = (call) => failing(call) ? failure() : undefined;
-        const warn = t.mock.method(console, 'warn', () => undefined);
-        assert.equal(await discardConfigurationToken(d, TEAM), step === 0 ? 'unconfirmed' : 'left_listed');
-        const made = d.tokens.calls.slice(from).map((call) => call.method);
-        const expected = ['rotate', 'rotate', 'revoke', 'revoke', 'revoke'].slice(0, step + 1);
-        if (kind !== 'refused' && method === 'revoke') expected.push('revoke');
-        assert.deepEqual(made, expected, 'a revoke Slack did not answer is tried once more, a rotation never, and nothing follows the failure');
-        assert.equal(await hasConfigurationToken(d, TEAM), false, 'the stored copy is deleted');
-        assert.equal(await discardConfigurationToken(d, TEAM), 'none');
-        assert.equal(JSON.stringify(warn.mock.calls).includes('xoxe'), false, 'no token is logged');
+          const made = d.tokens.calls.slice(from).map((call, i) => which({ ...call, index: from + i }));
+          const tries = (n: number) => step === n && kind !== 'refused' ? [n, n] : [n];
+          const expected = step === 0 ? [0] : [0, ...tries(1), ...(heldSent ? tries(2) : [])];
+          assert.deepEqual(made, expected,
+            'a rotation is never retried and nothing follows its failure; an unanswered revoke is tried once more; both revokes are tried');
+          assert.equal(sent ? lines.length > 0 : lines.length === 0, true, 'a failure is logged, and nothing else is');
+          assert.equal(JSON.stringify(lines).includes('xoxe'), false, 'no token is logged');
 
-        delete d.tokens.fault;
-        delete d.tokens.lost;
-        const row = d.tokens.shown(OWNER, TEAM);
-        if (row) {
-          assert.equal(await saveConfigurationToken(d, TEAM, row.refreshToken, OWNER), 'saved', 'the Refresh Token Slack shows still rotates');
-          assert.equal(await discardConfigurationToken(d, TEAM), 'discarded');
-        }
-        assert.equal(d.tokens.listed(OWNER, TEAM), false, 'nothing is listed at the end');
-        d.tokens.generate('xoxe-1-generated-again-token-000', OWNER, TEAM);
-      });
+          delete d.tokens.fault;
+          delete d.tokens.lost;
+          const row = d.tokens.shown(p.person, p.team);
+          assert.equal(row !== undefined, d.tokens.listed(p.person, p.team), 'a listed token shows a refresh token');
+          if (!row) return;
+          assert.equal(d.tokens.rotates(row.refreshToken), true, 'the Refresh Token Slack shows still rotates');
+          assert.equal(await saveConfigurationToken(d, p.team, row.refreshToken, p.person), 'saved');
+          assert.equal(d.tokens.accepts(await withConfigurationToken(d, p.team, async (token) => token)), true, 'and pasted, it works');
+        });
+      }
     }
   }
 }
 
-// Why Admin never names Slack's own Delete: after a second rotation Slack refused, of a pair stored long ago, Delete
-// clears the newest row and the list falls back to an expired access token whose refresh token is spent.
-test('Slack\'s own Delete after a removal stopped at its second rotation can leave a token nobody can delete or replace', async (t) => {
-  let now = NOW;
-  const d = fixture(t, { now: () => now });
-  assert.equal(await saveConfigurationToken(d, TEAM, PASTED, OWNER), 'saved');
-  now += 30 * TWELVE_HOURS;
-  const from = d.tokens.calls.length;
-  d.tokens.fault = (call) => call.index - from === 1 ? new SlackRefused('tooling.tokens.rotate', 'ratelimited') : undefined;
-  assert.equal(await discardConfigurationToken(d, TEAM), 'left_listed');
-  delete d.tokens.fault;
-  await d.tokens.slackDelete(OWNER, TEAM);
-  const row = d.tokens.shown(OWNER, TEAM);
-  assert.ok(row, 'Slack still lists a token');
-  assert.equal(d.tokens.rotates(row.refreshToken), false, 'and its Refresh Token no longer rotates');
-  await assert.rejects(() => d.tokens.slackDelete(OWNER, TEAM), (error: unknown) => error instanceof SlackRefused && error.code === 'token_expired');
-});
-
-test('a revoke Slack does not answer once and then confirms still ends the chain', async (t) => {
+test('a revoke Slack does not answer once and then confirms still leaves nothing listed', async (t) => {
   const d = fixture(t);
   assert.equal(await saveConfigurationToken(d, TEAM, PASTED), 'saved');
   let dropped = false;
@@ -481,7 +521,7 @@ test('a revoke Slack does not answer once and then confirms still ends the chain
   assert.equal(d.tokens.listed(OWNER, TEAM), false);
 });
 
-test('no path that ends a chain logs a token', async (t) => {
+test('no path that retires a pair logs a token', async (t) => {
   const lines: unknown[] = [];
   for (const method of ['log', 'info', 'warn', 'error', 'debug'] as const) t.mock.method(console, method, (...args: unknown[]) => { lines.push(args); });
   const d = fixture(t);
@@ -493,9 +533,12 @@ test('no path that ends a chain logs a token', async (t) => {
   d.tokens.fault = (call) => call.method === 'rotate' && call.token !== 'xoxe-1-other-workspace-token-000' ? new SlackUnavailable('tooling.tokens.rotate', 'network_error') : undefined;
   assert.equal(await saveConfigurationToken(d, TEAM, 'xoxe-1-other-workspace-token-000'), 'other_workspace');
   d.tokens.fault = (call) => call.method === 'revoke' ? new Error('a fault in the client') : undefined;
-  assert.equal(await discardConfigurationToken(d, TEAM), 'left_listed');
-  assert.ok(lines.length >= 3, 'each stop is logged');
+  assert.equal(await discardConfigurationToken(d, TEAM), 'discarded', 'a failed revoke changes nothing else');
+  assert.ok(lines.length >= 5, 'each failure is logged');
   assert.equal(JSON.stringify(lines).includes('xoxe'), false, 'no token is logged');
+  d.tokens.fault = () => new SlackRefused('tooling.tokens.rotate', 'ratelimited');
+  await assert.rejects(() => saveConfigurationToken(d, TEAM, 'xoxe-1-rate-limited-token-000'), (error: unknown) =>
+    error instanceof SlackUnavailable && !`${String(error)} ${JSON.stringify(error)}`.includes('xoxe'), 'no token in a thrown error');
 });
 
 // Defect caught: Slack's `errors` list on a token call reaching a log line, where it could quote the token sent. The
@@ -523,14 +566,15 @@ test('a refusal of a token call that quotes the token sent logs only its step an
   assert.equal(await saveConfigurationToken(d, TEAM, PASTED), 'saved');
   assert.equal(await discardConfigurationToken({ ...d, slack: port('tooling.tokens.rotate') }, TEAM), 'unconfirmed', 'a removal stopped at a rotation');
   assert.equal(await saveConfigurationToken({ ...d, slack: port('auth.revoke') }, TEAM, 'xoxe-1-another-pasted-token-000'), 'saved');
-  assert.equal(await discardConfigurationToken({ ...d, slack: port('auth.revoke') }, TEAM), 'left_listed', 'a removal stopped at a revoke');
+  assert.equal(await discardConfigurationToken({ ...d, slack: port('auth.revoke') }, TEAM), 'discarded', 'a removal whose revokes are refused');
   d.tokens.generate('xoxe-1-third-pasted-token-0000', 'UTHIRD', TEAM);
   assert.equal(await saveConfigurationToken(d, TEAM, 'xoxe-1-third-pasted-token-0000'), 'saved');
   now = NOW + TWELVE_HOURS;
   await assert.rejects(() => withConfigurationToken({ ...d, slack: port('tooling.tokens.rotate') }, TEAM, async () => 'unused'), ConfigTokenNeeded, 'the natural rotation');
   const refusals = lines.map((line) => (line as [Record<string, unknown>])[0]).filter((line) => line?.event === 'chickpea.agent_app.slack_refused');
   assert.deepEqual(refusals.map((line) => [line.step, line.code, line.errors]), [
-    ['rotate', 'invalid_auth', []], ['rotate', 'invalid_auth', []], ['revoke', 'invalid_auth', []], ['rotate', 'invalid_auth', []],
+    ['rotate', 'invalid_auth', []], ['rotate', 'invalid_auth', []], ['revoke', 'invalid_auth', []], ['revoke', 'invalid_auth', []],
+    ['rotate', 'invalid_auth', []],
   ]);
   assert.equal(JSON.stringify(lines).includes('xoxe'), false, 'no token is logged');
 });
@@ -553,7 +597,7 @@ test('a slow Slack answer to a paste or a natural rotation is kept; a removal re
   let rotations = 0;
   const slow = createAgentAppSlackApi({
     apiBaseUrl: 'https://slack.test/api',
-    chainEndTimeoutMs: 20,
+    retireTimeoutMs: 20,
     fetch: (input, init) => new Promise<Response>((resolve, reject) => {
       const timer = setTimeout(() => {
         rotations += 1;
@@ -601,7 +645,7 @@ test('who pasted the token, and when, is kept through every rotation', async (t)
   assert.deepEqual(await configurationTokenStatus(d, TEAM), { stored: true, pastedBy: 'UOWNER', pastedAt: NOW });
 });
 
-test('removing the token when the removal rotates first: the rotation is refused, forgets the pair, and the removal ended the chain', async (t) => {
+test('removing the token when the removal rotates first: the rotation is refused, forgets the pair, and the removal retired it', async (t) => {
   const d = fixture(t);
   assert.equal(await saveConfigurationToken(d, TEAM, PASTED), 'saved');
   const rotator: SecretDeps = { ...d, now: () => NOW + TWELVE_HOURS };
@@ -615,15 +659,15 @@ test('removing the token when the removal rotates first: the rotation is refused
   });
   assert.equal(await discardConfigurationToken(d, TEAM), 'discarded');
   assert.equal(await d.settings.getEncryptedCredentialRevision(configurationTokenKey(TEAM)), undefined, 'nothing is stored');
-  assert.deepEqual(d.rotations.slice(1), ['xoxe-1-refresh-1', 'xoxe-1-refresh-2', 'xoxe-1-refresh-1'],
-    'the removal ended the stored chain, and Slack refused the rotation that came second');
+  assert.deepEqual(d.rotations.slice(1), ['xoxe-1-refresh-1', 'xoxe-1-refresh-1'],
+    'the removal rotated the stored token, and Slack refused the rotation that came second');
   assert.equal(d.tokens.listed(OWNER, TEAM), false);
 });
 
-// The removal tried the stored refresh token, which the rotation had spent, then ended the newer chain. Slack lists
+// The removal tried the stored refresh token, which the rotation had spent, then retired the newer pair. Slack lists
 // nothing, but the answer stays the more cautious of the two: a removal cannot tell a token another caller spent on
 // the same chain from one Slack refused for another reason.
-test('removing the token when a rotation rotates first: the removal ends the newer pair, Slack lists nothing, and the answer errs cautious; a pair that keeps changing is reported', async (t) => {
+test('removing the token when a rotation rotates first: the removal retires the newer pair, Slack lists nothing, and the answer errs cautious; a pair that keeps changing is reported', async (t) => {
   const d = fixture(t);
   assert.equal(await saveConfigurationToken(d, TEAM, PASTED), 'saved');
   const rotator: SecretDeps = { ...d, now: () => NOW + TWELVE_HOURS };
@@ -642,7 +686,7 @@ test('removing the token when a rotation rotates first: the removal ends the new
   assert.equal(await discardConfigurationToken(removal, TEAM), 'unconfirmed', 'cautious, though the chain ended');
   assert.equal(await d.settings.getEncryptedCredentialRevision(configurationTokenKey(TEAM)), undefined, 'the newer pair is gone too');
   assert.deepEqual(d.rotations.slice(1, 4), ['xoxe-1-refresh-1', 'xoxe-1-refresh-1', 'xoxe-1-refresh-2'],
-    'the rotation spent the stored token, Slack refused the removal its spent token, and the removal ended the newer one');
+    'the rotation spent the stored token, Slack refused the removal its spent token, and the removal retired the newer one');
   assert.equal(d.tokens.listed(OWNER, TEAM), false);
 
   d.tokens.generate('xoxe-1-pasted-again-token-000', OWNER, TEAM);
@@ -652,9 +696,9 @@ test('removing the token when a rotation rotates first: the removal ends the new
   assert.ok(await d.settings.getEncryptedCredentialRevision(configurationTokenKey(TEAM)), 'a pair that keeps changing is reported, not called removed');
 });
 
-// Defect caught: a removal whose delete loses to a rotation's claim running the chain again on the refresh token it
-// just ended, which Slack refuses, so a removal that ended everything answers unconfirmed.
-test('a removal that loses its delete to a rotation\'s claim deletes the pair without ending it again, and says it ended', async (t) => {
+// Defect caught: a removal whose delete loses to a rotation's claim retiring again the refresh token it just rotated,
+// which Slack refuses, so a removal that retired the token answers unconfirmed.
+test('a removal that loses its delete to a rotation\'s claim deletes the pair without retiring it again, and says it retired it', async (t) => {
   const d = fixture(t);
   assert.equal(await saveConfigurationToken(d, TEAM, PASTED), 'saved');
   const key = configurationTokenKey(TEAM);
@@ -672,12 +716,12 @@ test('a removal that loses its delete to a rotation\'s claim deletes the pair wi
   });
   const from = d.tokens.calls.length;
   assert.equal(await discardConfigurationToken(d, TEAM), 'discarded');
-  assert.equal(d.tokens.calls.slice(from).filter((call) => call.method === 'rotate').length, 2, 'the chain is ended once');
+  assert.equal(d.tokens.calls.slice(from).filter((call) => call.method === 'rotate').length, 1, 'the pair is retired once');
   assert.equal(await d.settings.getEncryptedCredentialRevision(key), undefined, 'nothing is stored');
   assert.equal(d.tokens.listed(OWNER, TEAM), false);
 });
 
-// Defect caught: two removals at once leaving a stored copy, or each ending the chain again from a spent token.
+// Defect caught: two removals at once leaving a stored copy, or each retiring the pair again from a spent token.
 test('two removals at once delete the stored copy and leave Slack listing nothing; the one Slack refused errs cautious', async (t) => {
   const d = fixture(t);
   assert.equal(await saveConfigurationToken(d, TEAM, PASTED, OWNER), 'saved');
@@ -685,8 +729,8 @@ test('two removals at once delete the stored copy and leave Slack listing nothin
   const from = d.tokens.calls.length;
   const answers = await Promise.all([discardConfigurationToken(d, TEAM), discardConfigurationToken(d, TEAM)]);
   assert.deepEqual(answers.sort(), ['discarded', 'unconfirmed']);
-  assert.deepEqual(d.tokens.calls.slice(from).map((call) => call.method).sort(), ['revoke', 'revoke', 'revoke', 'rotate', 'rotate', 'rotate'],
-    'one removal ends the chain, the other tries the token once and stops');
+  assert.deepEqual(d.tokens.calls.slice(from).map((call) => call.method).sort(), ['revoke', 'revoke', 'rotate', 'rotate'],
+    'one removal retires the pair, the other tries the token once and stops');
   assert.equal(await hasConfigurationToken(d, TEAM), false);
   assert.equal(d.tokens.listed(OWNER, TEAM), false);
 });

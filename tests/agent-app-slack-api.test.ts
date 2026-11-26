@@ -101,13 +101,13 @@ test('revoke sends only the token as a form field; one Slack already revoked is 
     error instanceof SlackUnavailable && error.reason === 'invalid_slack_response', 'only revoked: true is a revoke');
 });
 
-// Defects caught: a call that ends a chain with no time limit holding the Owner's request, so a removal cut short
+// Defects caught: a call that retires a pair with no time limit holding the Owner's request, so a removal cut short
 // keeps a stored copy whose refresh token is spent; or the limit on a rotation whose pair is kept, so an answer Slack
 // sends late is dropped after Slack rotated and the stored token is dead.
-test('only the calls that end a chain stop waiting after a time limit; a slow answer to a kept rotation is accepted', async () => {
+test('only the calls that retire a pair stop waiting after a time limit; a slow answer to a kept rotation is accepted', async () => {
   const slow = (ms: number) => createAgentAppSlackApi({
     apiBaseUrl: 'https://slack.test/api/',
-    chainEndTimeoutMs: 20,
+    retireTimeoutMs: 20,
     fetch: (input, init) => new Promise<Response>((resolve, reject) => {
       const signal = init?.signal;
       const timer = setTimeout(() => resolve(String(input).endsWith('auth.revoke')
@@ -118,7 +118,7 @@ test('only the calls that end a chain stop waiting after a time limit; a slow an
   });
   assert.equal((await slow(60).rotate('xoxe-1-old')).refreshToken, 'xoxe-1-new', 'a kept rotation waits for its answer');
   for (const call of [
-    (client: ReturnType<typeof slow>) => client.rotate('xoxe-1-old', { endingChain: true }),
+    (client: ReturnType<typeof slow>) => client.rotate('xoxe-1-old', { retiring: true }),
     (client: ReturnType<typeof slow>) => client.revoke('xoxe-1-old'),
   ]) {
     await assert.rejects(() => call(slow(60)), (error: unknown) => error instanceof SlackUnavailable && error.reason === 'timeout');
@@ -132,7 +132,7 @@ test('a refused call that sent no manifest carries none of Slack\'s errors list'
   const echo = api((request) => Response.json({
     ok: false, error: 'invalid_auth', errors: [{ message: `not a token: ${JSON.stringify(request.body)}`, pointer: '/token' }],
   }));
-  for (const call of [() => echo.client.rotate('xoxe-1-old'), () => echo.client.rotate('xoxe-1-old', { endingChain: true }), () => echo.client.revoke('xoxe-1-old')]) {
+  for (const call of [() => echo.client.rotate('xoxe-1-old'), () => echo.client.rotate('xoxe-1-old', { retiring: true }), () => echo.client.revoke('xoxe-1-old')]) {
     await assert.rejects(call, (error: unknown) => error instanceof SlackRefused && error.code === 'invalid_auth' && error.errors.length === 0);
   }
 });

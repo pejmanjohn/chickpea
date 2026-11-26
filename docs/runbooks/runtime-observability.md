@@ -953,16 +953,18 @@ line is for the operator. It carries no token, secret, or URL.
 
 Filter a bounded capture with `wrangler tail --search agent_app.slack_refused`.
 
-Removing a configuration token, or replacing it with a paste, ends its chain
-at Slack in five calls (see
+Removing a configuration token, or replacing it with a paste, retires the
+pair at Slack with one rotation and up to two revokes (see
 [Slack message identity](slack-message-identity.md#the-configuration-tokens-limits)).
-A refusal that stops the chain logs `slack_refused` as above. A call Slack did
-not answer logs one `console.warn` object with `event:
-"chickpea.agent_app.token_chain_stopped"`, `step` (`rotate` or `revoke`), and
-`error`: the reason, such as `network_error`, `timeout` (a call that ends a
-chain waits at most 5 seconds) or `http_502`, or the error's name for a fault in Chickpea. A revoke
-logs only once its one retry has also failed. Neither line carries a token.
-Filter with `wrangler tail --search agent_app.token_chain`.
+A refusal logs `slack_refused` as above. A call Slack did not answer logs one
+`console.warn` object with `event: "chickpea.agent_app.token_retire_failed"`,
+`step` (`rotate` or `revoke`), and `error`: the reason, such as
+`network_error`, `timeout` (each of these calls waits at most 5 seconds) or
+`http_502`, or the error's name for a fault in Chickpea. A revoke logs only
+once its one retry has also failed. A failed revoke changes nothing else, and
+a stored access token Chickpea's record shows as expired is not sent, so an
+ordinary removal logs nothing. Neither line carries a token. Filter with
+`wrangler tail --search agent_app.token_retire`.
 
 ## Deliveries that add no turn
 
