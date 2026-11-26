@@ -141,7 +141,8 @@ test('an OpenRouter model discovered live is registered before runtime resolutio
     assert.equal(bounded.contextWindow, 2_000_000);
     assert.equal(bounded.maxTokens, 128_000);
     assert.equal(bounded.cost.input, -1_000_000);
-    assert.equal(bounded.cost.output, -1_000_000);
+    // An unreadable price keeps the template's, which Pi 1.2 and later list as 0.
+    assert.equal(bounded.cost.output, 0);
   } finally {
     settings.close();
   }

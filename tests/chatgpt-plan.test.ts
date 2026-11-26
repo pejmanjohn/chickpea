@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { cancelPlanConnection, completePlanHandoff, confirmPlanConnection, disconnectPlan, planStatus, pollPlanHandoff, preparePlanConnection, resolvePlanSession, type PlanDependencies } from '../src/chatgpt-plan/connection.ts';
-import { completedResponse, normalizePlanPayload, planFetch } from '../src/chatgpt-plan/provider.ts';
+import { normalizeContext, type Context, type SimpleStreamOptions } from '@earendil-works/pi-ai';
+import { bindChatgptPlanProvider, CHATGPT_PLAN_PROVIDER, completedResponse, normalizePlanPayload, planFetch } from '../src/chatgpt-plan/provider.ts';
+import { withDeploymentLane } from '../src/config/model-access.ts';
+import { registeredPiProvider } from '../src/config/pi-provider-registry.ts';
 import { chatgptAuthorizationUrl, exchangeChatgptCode } from '../src/chatgpt-plan/protocol.ts';
 
 function harness() {
@@ -99,6 +102,85 @@ test('subscription transport uses public Responses, namespaces tools, strips uns
   await response.text(); assert.equal(sent, true);
   await h.store.setSetting('provider.openai.authMethod', 'api_key');
   await assert.rejects(call('https://api.openai.com/v1/responses', { method: 'POST', body: JSON.stringify(payload) }));
+});
+
+const LOOKUP = { name: 'lookup', description: 'Look up a word.', parameters: { type: 'object', properties: { word: { type: 'string' } } } as never };
+
+/** The one request body a plan turn sends for the context. */
+async function planTurn(t: TestContext, modelId: string, context: Context, options?: SimpleStreamOptions): Promise<Record<string, any>> {
+  const h = harness(); t.after(() => h.store.close());
+  const bodies: Array<Record<string, any>> = [];
+  const completed = { type: 'response.completed', response: { id: 'r', status: 'completed', output: [], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } };
+  h.d.fetch = async (url, init) => {
+    if (String(url).endsWith('/responses')) {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(`data: ${JSON.stringify(completed)}\n\n`, { headers: { 'content-type': 'text/event-stream' } });
+    }
+    return Response.json({ models: [{ slug: modelId, display_name: modelId, visibility: 'list' }] });
+  };
+  await h.connect();
+  await bindChatgptPlanProvider(h.d, modelId);
+  const provider = registeredPiProvider(CHATGPT_PLAN_PROVIDER)!;
+  const model = provider.getModels().find(candidate => candidate.id === modelId)!;
+  const result = await withDeploymentLane(undefined, 'run_plan', 'reply', () => provider.streamSimple(model, normalizeContext(context), options).result());
+  assert.equal(result.stopReason, 'stop');
+  assert.equal(bodies.length, 1);
+  return bodies[0]!;
+}
+
+function declaredTools(body: Record<string, any>): Array<Record<string, any>> {
+  return [body.tools ?? [], ...body.input.filter((item: any) => 'tools' in item).map((item: any) => item.tools)].flat();
+}
+
+// Defect caught: on a model that takes `additional_tools`, pi-ai declares the
+// tools in input items that the transport does not namespace, while every
+// replayed function call still names the `chickpea` namespace.
+test('a GPT-5.6 plan turn declares every tool in the namespace its replayed calls name', async t => {
+  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+  const body = await planTurn(t, 'gpt-5.6-terra', {
+    systemPrompt: 'policy',
+    tools: [LOOKUP],
+    messages: [
+      { role: 'user', content: 'Look up chickpea.', timestamp: 1 },
+      { role: 'assistant', api: 'openai-responses', provider: CHATGPT_PLAN_PROVIDER, model: 'gpt-5.6-terra', usage, stopReason: 'toolUse', timestamp: 2,
+        content: [{ type: 'toolCall', id: 'call_1|fc_1', name: 'lookup', arguments: { word: 'chickpea' } }] },
+      { role: 'toolResult', toolCallId: 'call_1|fc_1', toolName: 'lookup', content: [{ type: 'text', text: 'A legume.' }], isError: false, timestamp: 3 },
+    ],
+  });
+
+  const declared = declaredTools(body);
+  assert.deepEqual(declared.map((tool: any) => tool.type), ['namespace'], 'every tool is in one namespace');
+  const calls = body.input.filter((item: any) => item.type === 'function_call');
+  assert.deepEqual(calls.map((call: any) => [call.namespace, call.name]), [['chickpea', 'lookup']]);
+  assert.deepEqual([declared[0]!.name, declared[0]!.tools.map((tool: any) => tool.name)], ['chickpea', ['lookup']], 'the call names a declared tool');
+});
+
+// Defect caught: a tool added mid-conversation rides in a synthetic tool
+// search result, outside the namespace.
+test('a tool added mid-conversation on a plan turn joins the namespaced list', async t => {
+  const body = await planTurn(t, 'gpt-5.6-terra', {
+    messages: [
+      { role: 'system', content: 'policy', toolsAdded: [LOOKUP], timestamp: 1 },
+      { role: 'user', content: 'Look up chickpea.', timestamp: 2 },
+      { role: 'system', content: 'A tool is now available.', toolsAdded: [{ ...LOOKUP, name: 'define' }], timestamp: 3 },
+    ],
+  });
+
+  const declared = declaredTools(body);
+  assert.deepEqual(declared.map((tool: any) => tool.type), ['namespace']);
+  assert.deepEqual(declared[0]!.tools.map((tool: any) => tool.name), ['lookup', 'define']);
+});
+
+// Defect caught: pi-ai no longer reads the request as Sign in with ChatGPT,
+// so it moves a GPT-6 model's effort into a `configuration_update` input
+// item, which the plan rejects, and pins `reasoning.effort` to `medium`.
+test('a GPT-6 plan turn sends its effort in the reasoning field', async t => {
+  const body = await planTurn(t, 'gpt-6-astra', {
+    systemPrompt: 'policy', messages: [{ role: 'user', content: 'Hello.', timestamp: 1 }],
+  }, { reasoning: 'high' });
+
+  assert.deepEqual(body.input.map((item: any) => item.type ?? item.role), ['developer', 'user']);
+  assert.equal(body.reasoning.effort, 'high');
 });
 
 test('stream completion requires response.completed and rejects late failures', async () => {

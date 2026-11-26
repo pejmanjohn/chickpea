@@ -1252,7 +1252,6 @@ test('models endpoint names each suggestion it knows and leaves the rest unnamed
       providers: Array<{ id: string; suggestions: string[]; modelNames: Record<string, string> }>;
     };
     const names = (id: string) => providers.find((provider) => provider.id === id)?.modelNames;
-    // Pi 1.1 has no GPT-6.1 Terra; only the catalog names it.
     assert.equal(names('openai')?.['openai/gpt-6.1-terra'], 'GPT-6.1 Terra');
     assert.equal(names('google')?.['google/gemini-4-argon'], 'Gemini 4 Argon');
     assert.equal(names('cloudflare')?.['cloudflare/@cf/zai-org/glm-4.7-flash'], 'GLM-4.7-Flash');

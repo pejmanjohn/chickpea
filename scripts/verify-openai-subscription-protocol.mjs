@@ -7,7 +7,7 @@
 
 import { readFileSync } from 'node:fs';
 
-import { Type, validateToolCall } from '@earendil-works/pi-ai';
+import { validateToolCall } from '@earendil-works/pi-ai';
 
 import { assertNodeVersion } from './lib/node-version.mjs';
 import { withDeploymentLane } from '../src/config/model-access.ts';
@@ -133,10 +133,12 @@ try {
   const tool = {
     name: PROOF_TOOL_NAME,
     description: 'Confirm the Chickpea subscription adapter function-call path.',
-    parameters: Type.Object(
-      { proof: Type.Literal(PROOF_TOOL_ARGUMENT) },
-      { additionalProperties: false },
-    ),
+    parameters: {
+      type: 'object',
+      required: ['proof'],
+      properties: { proof: { type: 'string', const: PROOF_TOOL_ARGUMENT } },
+      additionalProperties: false,
+    },
   };
   const context = {
     systemPrompt:

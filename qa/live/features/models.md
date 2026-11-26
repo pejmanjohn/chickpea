@@ -38,7 +38,7 @@ Docs: `/agents/models-and-providers/`. Record areas: `providers`. Legacy contrac
 - The image path once failed only under workerd, through a fetch option Node accepts. Node-only tests never prove the deployed image path.
 - Workers AI `gpt-oss` models can emit raw Harmony framing as content. Any `<|channel|>` marker or analysis text that reaches Slack fails the case as `product`.
 - OpenRouter tiers can require provider-account settings and answer 403 or 404 until they are set. That is the provider account, not Chickpea.
-- Gemini 4 Argon runs on a Chickpea-added model row: Pi 1.1 does not know it. Its requests must carry `thinkingConfig.thinkingLevel` and no `thinkingBudget`.
+- Gemini 4 Argon requests must carry `thinkingConfig.thinkingLevel` and no `thinkingBudget`. Pi sends a level for Gemini 4 and later models.
 - A hosted catalog that names a profile the install does not compile is rejected whole. `npm run verify:model-catalog:served` checks what is hosted; after any Refresh, confirm every pin and the default are unchanged.
 - Image generation and inspection costs are not yet in Usage, so a Usage readback cannot prove an image call.
 - On an Agent's Model tab, a lane-browser click on a typeahead option can time out. A DOM click on the listbox option (pointerdown, mousedown, then click) selects it. Save changes shows no notice, so confirm a pin from the reloaded Agents list.

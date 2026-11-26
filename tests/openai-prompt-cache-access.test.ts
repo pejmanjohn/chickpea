@@ -203,6 +203,9 @@ test('gpt-5.5 and a customer\'s proxy endpoint get pi-ai\'s request as it was bu
   assert.equal(proxy.body.input[0].content, SLACK_TEXT);
 });
 
+// Defect caught: Core's OpenAI prompt cache hook reaches a route that is
+// not OpenAI's own endpoint, such as the Codex subscription lane, which
+// serves the same GPT-5.6 model IDs.
 test('customer-funded Anthropic, OpenRouter and openai-codex requests still get no Core hook', async (t) => {
   proxied(t);
   const callerHook: StreamOptions['onPayload'] = (payload) => payload;
@@ -216,7 +219,7 @@ test('customer-funded Anthropic, OpenRouter and openai-codex requests still get 
       withModelAccess(grant('anthropic', 'customer', 'inst_byok'), hostedEnv('inst_byok'), 'reply', async () => fn())],
     ['openrouter', model('openrouter', 'openai/gpt-5'), (fn: () => unknown) =>
       withModelAccess(grant('openrouter', 'customer', 'inst_byok'), hostedEnv('inst_byok'), 'reply', async () => fn())],
-    ['openai-codex', model('openai-codex', 'gpt-5.5'), (fn: () => unknown) =>
+    ['openai-codex', model('openai-codex', 'gpt-5.6-terra'), (fn: () => unknown) =>
       withDeploymentLane(undefined, 'run_codex', 'reply', async () => fn())],
   ] as const;
 

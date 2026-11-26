@@ -30,6 +30,9 @@ export function registerChatgptPlanModel(id: string, name = id) {
     reasoning: baseline?.reasoning ?? true, input: baseline?.input ?? ['text', 'image'],
     contextWindow: baseline?.contextWindow ?? 128_000, maxTokens: baseline?.maxTokens ?? 16_384,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    // normalizePlanPayload namespaces only the top-level tool list. Pi would
+    // declare the tools of GPT-5.6 and later in input items instead.
+    compat: { ...baseline?.compat, supportsAdditionalTools: false, supportsToolSearch: false },
   });
   registerPiProvider(createChickpeaPiProvider({ id: CHATGPT_PLAN_PROVIDER, name: 'ChatGPT', apiKey: MARKER,
     models: [...models.values()], api: planStreams() }));

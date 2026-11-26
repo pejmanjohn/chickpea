@@ -86,17 +86,25 @@ test('activating agent-authoring adds the change tools inline on Anthropic: the 
   assert.deepEqual(after!.system[0].cache_control, { type: 'ephemeral', ttl: '1h' });
 });
 
+// Defect caught: the activation rewrites the tools ahead of the conversation,
+// which loses the cached prefix, instead of adding the change tools in one
+// `additional_tools` item after it.
 test('activating agent-authoring adds the change tools on OpenAI as additional tools, and the tool list holds', async () => {
   const [before, after] = (await renderSlackThread(thread({ provider: 'openai' }), [{ text: 'Create an Agent named Scout.', replies: [ACTIVATE] }]))[0]!;
   assert.equal(before!.model, 'gpt-5.6-terra');
-  assert.equal(JSON.stringify(after!.tools), JSON.stringify(before!.tools));
+  assert.equal(before!.input[0].type, 'additional_tools', 'pi-ai declares the first tools at the head of the input');
+  assert.equal(before!.tools, undefined, 'and sends no top-level tool list');
+  assert.equal(after!.tools, undefined);
   assert.equal(after!.instructions, before!.instructions);
-  for (const tool of CHANGE_TOOLS) assert.ok(!names(before!.tools).includes(tool));
+  assert.equal(JSON.stringify(after!.input.slice(0, before!.input.length)), JSON.stringify(before!.input),
+    'the earlier input, tools item first, is sent again byte for byte');
   const additions = (request: RenderedRequest) => request.input
     .filter((item: any) => item.type === 'additional_tools')
     .map((item: any) => names(item.tools));
-  assert.deepEqual(additions(before!), []);
-  assert.deepEqual(additions(after!), [[...CHANGE_TOOLS]]);
+  const mounted = names(before!.input[0].tools);
+  for (const tool of CHANGE_TOOLS) assert.ok(!mounted.includes(tool));
+  assert.deepEqual(additions(before!), [mounted]);
+  assert.deepEqual(additions(after!), [mounted, [...CHANGE_TOOLS]]);
 });
 
 test('another skill\'s activation mounts nothing', async () => {

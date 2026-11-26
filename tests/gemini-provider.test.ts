@@ -98,9 +98,9 @@ test('Gemini 4 Argon sends the requested thinking level and never a token budget
   assert.equal(thinking?.includeThoughts, true, 'thought summaries stay on');
 });
 
-test('the Gemini models Pi already routes reach Google exactly as Pi builds them', async () => {
+test('each reviewed Gemini model reaches Google exactly as Pi builds it, plus the request-log opt-out', async () => {
   const streams = googleGenerativeAIApi();
-  for (const modelId of ['gemini-3.8-flash', 'gemini-3.5-flash-lite'] as const) {
+  for (const modelId of REVIEWED as (keyof typeof GEMINI_MODELS)[]) {
     for (const effort of ['low', 'high', undefined] as const) {
       const model = { ...GEMINI_MODELS[modelId], baseUrl: BASE_URL } as Model<Api>;
       const plain = await withGeminiWire(async (requests) => {
@@ -125,9 +125,9 @@ test('the request-log opt-out ships on and reaches Google as a top-level store: 
   }
 
   const payload = { model: 'gemini-3.8-flash', contents: [], config: { thinkingConfig: { thinkingLevel: 'MEDIUM' } } };
-  const on = withGeminiPayloadPolicy(payload, GEMINI_MODELS['gemini-3.8-flash'], 'medium', { storeOptOut: true });
+  const on = withGeminiPayloadPolicy(payload, { storeOptOut: true });
   assert.deepEqual((on.config as { httpOptions?: unknown }).httpOptions, { extraBody: { store: false } });
-  assert.equal(withGeminiPayloadPolicy(payload, GEMINI_MODELS['gemini-3.8-flash'], 'medium', { storeOptOut: false }), payload);
+  assert.equal(withGeminiPayloadPolicy(payload, { storeOptOut: false }), payload);
 });
 
 test('the policy composes with a caller payload hook, which runs first', async () => {
@@ -146,15 +146,18 @@ test('the policy composes with a caller payload hook, which runs first', async (
     }).result();
     return { hooked, sent: requests[0]!.body };
   });
-  assert.equal((seen.hooked?.config as { thinkingConfig: { thinkingBudget: number } }).thinkingConfig.thinkingBudget, -1,
-    'the caller sees the payload Pi built');
+  assert.equal((seen.hooked?.config as { httpOptions?: unknown }).httpOptions, undefined,
+    'the caller sees the payload Pi built, before the opt-out');
   assert.equal((seen.sent.generationConfig as { temperature: number }).temperature, 0.25);
+  assert.equal(seen.sent.store, false);
   assert.equal(wireThinking({ body: seen.sent } as CapturedRequest)?.thinkingLevel, 'MEDIUM');
 });
 
-test('Chickpea carries Argon only until Pi ships it', () => {
-  assert.equal((GOOGLE_MODELS as Record<string, unknown>)['gemini-4-argon'], undefined,
-    'Pi now ships Gemini 4 Argon: delete its row in gemini-models.ts and the thinking rewrite in gemini-payload.ts');
+test('every reviewed Gemini model but Flash-Lite\'s display name is Pi\'s own entry', () => {
+  assert.equal(GEMINI_MODELS['gemini-4-argon'], GOOGLE_MODELS['gemini-4-argon']);
+  assert.equal(GEMINI_MODELS['gemini-3.8-flash'], GOOGLE_MODELS['gemini-3.8-flash']);
+  assert.deepEqual({ ...GEMINI_MODELS['gemini-3.5-flash-lite'], name: GOOGLE_MODELS['gemini-3.5-flash-lite'].name },
+    GOOGLE_MODELS['gemini-3.5-flash-lite']);
 });
 
 test('the Google provider registers only the reviewed Gemini models, with their names', () => {

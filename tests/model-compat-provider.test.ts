@@ -16,13 +16,20 @@ import {
   RuntimeModelReadinessError,
 } from '../src/config/runtime-model.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
-import { catalogModelForLane } from '../src/model-catalog/index.ts';
+import {
+  configureModelAccessResolver,
+  resetModelAccessForTests,
+  withModelAccess,
+  type ModelAccessGrant,
+} from '../src/config/model-access.ts';
+import { BUNDLED_MODEL_CATALOG, catalogModelForLane, materializeCatalogModel } from '../src/model-catalog/index.ts';
 import {
   ANTHROPIC_COMPAT_PROVIDER_ID,
   ANTHROPIC_COMPAT_API,
   createModelCompatibilityStream,
   OPENAI_PLATFORM_COMPAT_API,
   OPENAI_PLATFORM_COMPAT_PROVIDER_ID,
+  registerCapturedModelCompatibilityProvider,
   registerModelCompatibilityApis,
 } from '../src/model-compat/provider.ts';
 import { registeredPiProvider } from '../src/config/pi-provider-registry.ts';
@@ -139,6 +146,62 @@ test('the compatibility stream reconstructs the canonical model and rewrites his
   if (events[1]?.type === 'done') {
     assert.equal(events[1].message.provider, revisionedProvider);
     assert.equal(events[1].message.api, revisionedApi);
+  }
+});
+
+// Defect caught: a hosted catalog's Anthropic alias reaches the provider
+// proxy under its own API name, so the proxy's message-thread switch skips
+// it, and the catalog model it sends opens a server-side thread.
+test('a hosted Anthropic alias with a session id opens no message thread', async (t) => {
+  resetModelAccessForTests();
+  t.after(resetModelAccessForTests);
+  configureModelAccessResolver({ resolve: async () => ({ apiKey: 'sk-compat-thread-test' }) });
+  const entry = BUNDLED_MODEL_CATALOG.find((candidate) => candidate.lanes.anthropic_api_key);
+  assert.ok(entry, 'the bundled catalog has an Anthropic entry');
+  const hosted = { ...materializeCatalogModel(entry, 'anthropic_api_key'), id: 'claude-hosted-only', name: 'Hosted only' };
+  assert.equal(hosted.baseUrl, 'https://api.anthropic.com', 'the endpoint where pi-ai turns threads on by default');
+  const alias = registerCapturedModelCompatibilityProvider({
+    provider: 'anthropic', revision: 851, sha256: 'c'.repeat(64), models: [hosted],
+  });
+  assert.ok(alias);
+  const provider = registeredPiProvider(alias.providerId);
+  const model = provider?.getModels().find((candidate) => candidate.id === hosted.id);
+  assert.ok(provider && model);
+
+  const sse = (event: Record<string, unknown>) => `event: ${String(event.type)}\ndata: ${JSON.stringify(event)}\n\n`;
+  const answer = [
+    sse({ type: 'message_start', message: {
+      id: 'msg_compat', type: 'message', role: 'assistant', model: hosted.id, content: [],
+      usage: { input_tokens: 4, output_tokens: 1 },
+    } }),
+    sse({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
+    sse({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Done.' } }),
+    sse({ type: 'content_block_stop', index: 0 }),
+    sse({ type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 3 } }),
+    sse({ type: 'message_stop' }),
+  ].join('');
+  const grant: ModelAccessGrant = {
+    installationId: 'inst_compat_thread', providerId: 'anthropic', runId: 'run_compat_thread', fundingSource: 'customer',
+    credentialRefId: 'cred_anthropic', credentialVersion: 1,
+  };
+  for (const simple of [true, false]) {
+    let sent: { betas: string[]; body: Record<string, unknown> } | undefined;
+    const network: typeof fetch = async (_input, init) => {
+      sent = {
+        betas: (new Headers(init?.headers).get('anthropic-beta') ?? '').split(',').map((beta) => beta.trim()),
+        body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+      };
+      return new Response(answer, { headers: { 'content-type': 'text/event-stream; charset=utf-8' } });
+    };
+    const context = normalizeContext({ systemPrompt: 'Synthetic.', messages: [{ role: 'user', content: 'Hello.', timestamp: 1 }] });
+    const options = { fetch: network, maxRetries: 0, sessionId: 'agent_thread' };
+    const reply: AssistantMessage = await withModelAccess(grant, {}, 'reply', (): Promise<AssistantMessage> =>
+      (simple ? provider.streamSimple(model, context, options) : provider.stream(model, context, options)).result());
+    assert.equal(reply.stopReason, 'stop');
+    assert.ok(sent, 'pi-ai sent the request');
+    assert.equal('thread' in sent.body, false);
+    assert.equal(sent.betas.some((beta) => beta.startsWith('message-threads-')), false);
+    assert.equal((sent.body.messages as unknown[]).length, 1, 'the whole conversation is sent');
   }
 });
 
