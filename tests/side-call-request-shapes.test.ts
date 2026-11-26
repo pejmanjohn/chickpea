@@ -81,6 +81,16 @@ function effectiveOutputConfig(body: Record<string, any>, topLevel: unknown): un
   return trailing?.output_config ?? topLevel;
 }
 
+/**
+ * The reasoning effort the model answers with. On GPT-6 models with an API
+ * key, pi-ai keeps `reasoning.effort` at `medium` and sends the active
+ * effort in a trailing `configuration_update` input item.
+ */
+function effectiveReasoningEffort(body: Record<string, any>): unknown {
+  const update = (body.input as Array<Record<string, any>> | undefined)?.findLast((item) => item.type === 'configuration_update');
+  return update?.reasoning?.effort ?? body.reasoning?.effort;
+}
+
 function refusal(message: string): Response {
   return new Response(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message } }),
     { status: 400, headers: { 'content-type': 'application/json' } });
@@ -105,7 +115,7 @@ function strictProvider(t: TestContext, model: string, text: string): Array<Reco
       const room = body.max_tokens - (thinks ? THOUGHT_TOKENS : 0) >= ANSWER_TOKENS;
       return new Response(anthropicStream(room ? text : undefined), { status: 200, headers: { 'content-type': 'text/event-stream' } });
     }
-    const thinks = body.reasoning?.effort !== 'none';
+    const thinks = effectiveReasoningEffort(body) !== 'none';
     const room = body.max_output_tokens - (thinks ? THOUGHT_TOKENS : 0) >= ANSWER_TOKENS;
     return new Response(openAiStream(room ? text : undefined), { status: 200, headers: { 'content-type': 'text/event-stream' } });
   }) as typeof fetch;
@@ -156,7 +166,8 @@ for (const model of [...ANTHROPIC_MODELS, ...OPENAI_MODELS]) {
     assert.equal(classification.intent.disposition, 'work');
     assert.equal(temperature, undefined, 'no side call sends a temperature');
     if (thinking?.type === 'adaptive') assert.deepEqual(effectiveOutputConfig(bodies[0]!, outputConfig), { effort: 'low' });
-    if (reasoning && reasoning.effort !== 'none') assert.equal(reasoning.effort, 'low');
+    const effort = effectiveReasoningEffort(bodies[0]!);
+    if (effort !== undefined && effort !== 'none') assert.equal(effort, 'low');
     if (model.startsWith('anthropic/')) {
       const { system, messages } = bodies[0]!;
       assert.deepEqual(system.map((block: { cache_control?: unknown }) => block.cache_control), [{ type: 'ephemeral' }],
