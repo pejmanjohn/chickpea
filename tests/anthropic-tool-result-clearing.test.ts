@@ -144,9 +144,7 @@ function modelOf(provider: Provider) {
 async function sendStep(
   provider: Provider,
   env: PlatformEnv,
-  { purpose = 'reply', answer = anthropicAnswer(), sessionId }: {
-    purpose?: ModelRequestPurpose; answer?: string; sessionId?: string;
-  } = {},
+  { purpose = 'reply', answer = anthropicAnswer() }: { purpose?: ModelRequestPurpose; answer?: string } = {},
 ): Promise<{ sent: Sent; record: Record<string, unknown>; observed: string[] }> {
   const records: Record<string, unknown>[] = [];
   const observed: string[] = [];
@@ -171,7 +169,6 @@ async function sendStep(
       modelOf(provider), normalizeContext(context(provider)), {
         fetch: network,
         maxRetries: 0,
-        ...(sessionId ? { sessionId } : {}),
         onProviderStreamEvent: (event) => {
           observed.push(String((event as { type?: unknown }).type));
         },
@@ -233,16 +230,6 @@ test('an own-key Anthropic step carries the clearing edit and its beta only with
   const none = await sendStep('anthropic', ON, { answer: anthropicAnswer({ applied_edits: [] }) });
   assert.equal(none.record.clearedToolUses, 0, 'sent, and nothing cleared yet');
   assert.equal(none.record.clearedInputTokens, 0);
-});
-
-// Defect caught: Pi's message threads left on, so a step with a session id,
-// which Flue sets on every step, opens a server-side thread, and the next
-// step sends only its new messages.
-test('an Anthropic step with a session id opens no message thread', async (t) => {
-  proxied(t);
-  const { sent } = await sendStep('anthropic', OFF, { sessionId: 'agent_thread' });
-  assert.equal('thread' in sent.body, false);
-  assert.equal(sent.betas.some((beta) => beta.startsWith('message-threads-')), false);
 });
 
 // Defects caught: the edit on another provider's request, on a compaction

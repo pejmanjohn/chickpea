@@ -92,9 +92,11 @@ effective price; see [price review](price-review.md).
    messages, and later system messages can add or remove tools. Read them with
    `getCurrentSystemPrompt()` and `getCurrentTools()`. Create provider input
    only with `normalizeContext()`. Turn off any request behavior that a new Pi
-   turns on by default until it is measured. Pi 1.5.1 turned on Anthropic
-   message threads, and `withChickpeaProviderPolicy`
-   (`src/config/pi-provider-registry.ts`) turns them off.
+   turns on by default until it is measured: add it to
+   `TURNED_OFF_PI_DEFAULTS` in `src/config/pi-provider-registry.ts`, which
+   every request applies. It turns off Pi 1.5.1's Anthropic message threads,
+   and Pi 1.3's OpenAI `configuration_update` effort, which OpenAI applied
+   only in part when measured.
 4. Run `npm run catalog:reconcile`. It reports catalog API-key lanes that the
    new Pi now ships natively. An API-key lane routes to Pi's own model as soon
    as Pi ships it (`resolveActiveCatalogRoute` in

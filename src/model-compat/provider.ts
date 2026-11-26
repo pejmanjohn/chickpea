@@ -1,4 +1,4 @@
-import { registerPiProvider, withoutMessageThreads } from '../config/pi-provider-registry.ts';
+import { registerPiProvider, withChickpeaRequestCompat } from '../config/pi-provider-registry.ts';
 import {
   createAssistantMessageEventStream,
   normalizeContext,
@@ -207,10 +207,11 @@ export function createModelCompatibilityStream(
   }
   // The optional base URL is supplied only by the run's model access (for
   // example a standalone ANTHROPIC_BASE_URL), never by catalog data.
-  const adapterModel = {
+  // The provider proxy saw this lane's alias API, not the catalog model's.
+  const adapterModel = withChickpeaRequestCompat({
     ...compiled,
     baseUrl: incomingModel.baseUrl,
-  };
+  });
   const mappedContext = mapHistory(context, incomingModel.provider, compiled.provider, compiled.api);
 
   const createSource = (
@@ -232,8 +233,7 @@ export function createModelCompatibilityStream(
           openAiOptions as OpenAIResponsesOptions | undefined,
         );
     }
-    // The provider proxy saw this lane's alias API, not `anthropic-messages`.
-    const model = withoutMessageThreads(adapterModel as Model<'anthropic-messages'>);
+    const model = adapterModel as Model<'anthropic-messages'>;
     return simple
       ? (adapters.anthropicStreamSimple ?? streamSimpleAnthropic)(
         model,

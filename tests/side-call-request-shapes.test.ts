@@ -82,13 +82,14 @@ function effectiveOutputConfig(body: Record<string, any>, topLevel: unknown): un
 }
 
 /**
- * The reasoning effort the model answers with. On GPT-6 models with an API
- * key, pi-ai keeps `reasoning.effort` at `medium` and sends the active
- * effort in a trailing `configuration_update` input item.
+ * The reasoning effort the model answers with. Chickpea turns off pi-ai's
+ * `configuration_update` effort items, which OpenAI applies only in part, so
+ * the level is always `reasoning.effort`.
  */
 function effectiveReasoningEffort(body: Record<string, any>): unknown {
-  const update = (body.input as Array<Record<string, any>> | undefined)?.findLast((item) => item.type === 'configuration_update');
-  return update?.reasoning?.effort ?? body.reasoning?.effort;
+  const items = (body.input as Array<Record<string, any>> | undefined) ?? [];
+  assert.equal(items.some((item) => item.type === 'configuration_update'), false, 'no configuration_update effort item');
+  return body.reasoning?.effort;
 }
 
 function refusal(message: string): Response {

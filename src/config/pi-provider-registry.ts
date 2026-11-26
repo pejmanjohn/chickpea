@@ -210,13 +210,13 @@ function withChickpeaProviderPolicy(provider: Provider): Provider {
   // A proxy, not a copy: a provider may be a class instance whose other
   // members rely on their own `this`.
   const stream: Provider['stream'] = (model, context, options) => {
-    const request = modelAccessRequest(provider.id, withoutMessageThreads(model), options);
+    const request = modelAccessRequest(provider.id, withChickpeaRequestCompat(model), options);
     return request.send((sent) => request.redact(
       provider.stream(sent, normalizeContext(restoreForRequest(sent, context)), request.options),
     ));
   };
   const streamSimple: Provider['streamSimple'] = (model, context, options) => {
-    const request = modelAccessRequest(provider.id, withoutMessageThreads(model), options);
+    const request = modelAccessRequest(provider.id, withChickpeaRequestCompat(model), options);
     return request.send((sent) => request.redact(
       provider.streamSimple(sent, normalizeContext(restoreForRequest(sent, context)), request.options),
     ));
@@ -232,18 +232,32 @@ function withChickpeaProviderPolicy(provider: Provider): Provider {
 }
 
 /**
- * Since Pi 1.5.1, an Anthropic request with a session id, which Flue always
- * sets, continues a server-side message thread: it sends only the new
- * messages, and the provider keeps the rest. Chickpea has not measured
- * threads against its prompt caching, payload hooks and charges, so every
- * Anthropic request still sends the whole conversation. A compatibility
- * alias reaches the proxy under its own API name and sends a catalog model
- * instead, so that lane applies this to the model it sends.
+ * Pi defaults every Chickpea request turns off, by API.
+ *
+ * - Anthropic message threads (Pi 1.5.1). A request with a session id, which
+ *   Flue always sets, continues a server-side thread and sends only the new
+ *   messages. Chickpea has not measured threads against its prompt caching,
+ *   payload hooks and charges.
+ * - OpenAI mid-conversation effort (Pi 1.3). GPT-6 requests keep
+ *   `reasoning.effort` at medium and send the level in a `configuration_update`
+ *   item. Measured on 2026-11-26, gpt-6.1-sol at high reasoned about a fifth
+ *   less that way, so the level rides in `reasoning.effort`, as before.
  */
-export function withoutMessageThreads<TApi extends Api>(model: Model<TApi>): Model<TApi> {
-  if (model.api !== 'anthropic-messages') return model;
-  const compat = (model as Model<'anthropic-messages'>).compat;
-  return { ...model, compat: { ...compat, supportsMessageThreads: false } } as Model<TApi>;
+const TURNED_OFF_PI_DEFAULTS: {
+  readonly [TApi in 'anthropic-messages' | 'openai-responses']: NonNullable<Model<TApi>['compat']>;
+} = {
+  'anthropic-messages': { supportsMessageThreads: false },
+  'openai-responses': { supportsMidConvoEffort: false },
+};
+
+/**
+ * A compatibility alias reaches the proxy under its own API name and sends a
+ * catalog model instead, so that lane applies this to the model it sends.
+ */
+export function withChickpeaRequestCompat<TApi extends Api>(model: Model<TApi>): Model<TApi> {
+  const turnedOff = (TURNED_OFF_PI_DEFAULTS as Partial<Record<string, object>>)[model.api];
+  if (!turnedOff) return model;
+  return { ...model, compat: { ...(model.compat as object | undefined), ...turnedOff } } as Model<TApi>;
 }
 
 function restoreForRequest(model: { provider: string; api: string }, context: Context): Context {
