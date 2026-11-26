@@ -6,7 +6,10 @@
  * breakpoints, a Slack turn whose developer message opens with a constant
  * block gets one breakpoint after that block and a key its installation
  * shares. `prompt_cache_options` stays as pi-ai built it: explicit mode would
- * drop the implicit write that same-thread follow-ups read.
+ * drop the implicit write that same-thread follow-ups read. A model that
+ * takes `additional_tools` gets its tools in an item at the head of the
+ * input, so the breakpoint covers them before the constant block, as it
+ * covers a top-level tool list.
  */
 import type { Api, Model, OpenAIResponsesCompat } from '@earendil-works/pi-ai';
 
@@ -37,7 +40,7 @@ export type LeaveReason =
   /** pi-ai sent no key, or explicit mode, which caches nothing without breakpoints. */
   | 'caching_off'
   | 'caller_breakpoints'
-  /** `input[0]` is not a developer message with string content. */
+  /** The input does not open with a developer message with string content, after an `additional_tools` item if one leads. */
   | 'no_developer_text'
   | 'not_shared_slack_turn'
   | 'reduced_slack_turn';
@@ -73,7 +76,7 @@ export function planPromptCache(payload: Payload, model: Model<Api>): PromptCach
   }
   const input = Array.isArray(payload.input) ? payload.input : [];
   if (input.some(carriesBreakpoint)) return leave('caller_breakpoints');
-  const [developer] = input;
+  const developer = input[developerIndex(input)];
   if (!isRecord(developer) || developer.role !== 'developer' || typeof developer.content !== 'string') {
     return leave('no_developer_text');
   }
@@ -89,11 +92,13 @@ export async function promptCacheKey(scope: PromptCacheScope): Promise<PromptCac
 
 /**
  * For a payload `planPromptCache` shares: replaces only `prompt_cache_key`
- * and `input[0].content`, whose `input_text` parts join to the original
- * text. Copies, never mutates.
+ * and the developer message's `content`, whose `input_text` parts join to
+ * the original text. Copies, never mutates.
  */
 export function applyPromptCachePlan(payload: Payload, cuts: readonly PrefixCut[], key: PromptCacheKey): Payload {
-  const [developer, ...rest] = payload.input as [Payload, ...unknown[]];
+  const input = [...payload.input as unknown[]];
+  const at = developerIndex(input);
+  const developer = input[at] as Payload;
   const text = developer.content as string;
   const bounds = [0, ...cuts.map((cut) => cut.offset), text.length];
   const content = bounds.slice(1).flatMap((end, index) => {
@@ -103,7 +108,8 @@ export function applyPromptCachePlan(payload: Payload, cuts: readonly PrefixCut[
       ? { type: 'input_text', text: part, prompt_cache_breakpoint: { mode: 'explicit' } }
       : { type: 'input_text', text: part }];
   });
-  return { ...payload, prompt_cache_key: key, input: [{ ...developer, content }, ...rest] };
+  input[at] = { ...developer, content };
+  return { ...payload, prompt_cache_key: key, input };
 }
 
 /** Any throw sends the payload as given. The charge's shared prefix stays Anthropic's alone. */
@@ -141,10 +147,20 @@ function leave(reason: LeaveReason): PromptCachePlan {
   return { action: 'leave', reason };
 }
 
-/** Only a Slack turn mounts the last universal tool. */
+/** pi-ai declares every tool of a model that takes `additional_tools` in items, starting with one at the head of the input. */
+function isAdditionalTools(item: unknown): item is Payload & { readonly tools: unknown } {
+  return isRecord(item) && item.type === 'additional_tools';
+}
+
+function developerIndex(input: readonly unknown[]): number {
+  return isAdditionalTools(input[0]) ? 1 : 0;
+}
+
+/** Only a Slack turn mounts the last universal tool, in the top-level list or an `additional_tools` item. */
 function mountsSlackTools(payload: Payload): boolean {
-  return Array.isArray(payload.tools) &&
-    payload.tools.some((tool) => isRecord(tool) && tool.name === SHARED_PREFIX_LAST_TOOL);
+  const input = Array.isArray(payload.input) ? payload.input : [];
+  return [payload.tools, ...input.filter(isAdditionalTools).map((item) => item.tools)].some((tools) =>
+    Array.isArray(tools) && tools.some((tool) => isRecord(tool) && tool.name === SHARED_PREFIX_LAST_TOOL));
 }
 
 function explicitMode(options: unknown): boolean {

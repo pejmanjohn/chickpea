@@ -39,11 +39,20 @@ function slackText(kind: 'system' | 'user', tenant: string): string {
   return `${sharedSystemBlock(kind)}\n\n${tenant}${FLUE_TAIL}`;
 }
 
-/** A Responses request as pi-ai's buildParams shapes it. */
-function responsesPayload(developer: unknown, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+/**
+ * A Responses request as pi-ai's buildParams shapes it for a model that takes
+ * `additional_tools`: every tool goes in an item at the head of the input,
+ * and there is no top-level tool list.
+ */
+function responsesPayload(
+  developer: unknown,
+  overrides: Record<string, unknown> = {},
+  tools: readonly unknown[] = [LOOKUP_TOOL],
+): Record<string, unknown> {
   return {
     model: 'gpt-5.6-terra',
     input: [
+      { type: 'additional_tools', role: 'developer', tools },
       { role: 'developer', content: developer },
       { role: 'user', content: [{ type: 'input_text', text: 'What can you help me with?' }] },
     ],
@@ -52,10 +61,15 @@ function responsesPayload(developer: unknown, overrides: Record<string, unknown>
     prompt_cache_retention: undefined,
     prompt_cache_options: undefined,
     store: false,
-    tools: [LOOKUP_TOOL],
     reasoning: { effort: 'none' },
     ...overrides,
   };
+}
+
+/** The same request as pi-ai shapes it with the tools in a top-level list, or with no tools. */
+function topLevelToolsPayload(developer: unknown, tools: readonly unknown[] | undefined): Record<string, unknown> {
+  const { input: [, ...input], ...payload } = responsesPayload(developer) as { input: unknown[] };
+  return { ...payload, input, ...(tools ? { tools } : {}) };
 }
 
 async function shared(payload: Record<string, unknown>, scope = SCOPE): Promise<Record<string, any>> {
@@ -73,7 +87,7 @@ test('parts join to the developer text for every cut', async () => {
   for (const kind of ['system', 'user'] as const) {
     for (const tenant of tenants) {
       const text = slackText(kind, tenant);
-      const content = (await shared(responsesPayload(text))).input[0].content as Array<Record<string, unknown>>;
+      const content = (await shared(responsesPayload(text))).input[1].content as Array<Record<string, unknown>>;
       assert.equal(content.map((part) => part.text).join(''), text, `${kind}: the parts join to the original bytes`);
       assert.equal(content.length, 2);
       assert.ok(content.every((part) => part.type === 'input_text' && (part.text as string).length > 0));
@@ -82,7 +96,7 @@ test('parts join to the developer text for every cut', async () => {
   }
 
   const constantOnly = `${sharedSystemBlock('system')}\n\n`;
-  const content = (await shared(responsesPayload(constantOnly))).input[0].content as Array<Record<string, unknown>>;
+  const content = (await shared(responsesPayload(constantOnly))).input[1].content as Array<Record<string, unknown>>;
   assert.deepEqual(content, [{ type: 'input_text', text: constantOnly, prompt_cache_breakpoint: { mode: 'explicit' } }],
     'an empty tail adds no empty part');
 });
@@ -96,7 +110,8 @@ test('a recognized turn gets one breakpoint after the constant block and the ins
   });
   const sent = await shared(payload);
   assert.equal(sent.prompt_cache_key, await promptCacheKey(SCOPE));
-  assert.deepEqual(sent.input[0], {
+  assert.equal(sent.input[0], (payload.input as unknown[])[0], 'the tools item ahead of the breakpoint is sent as built');
+  assert.deepEqual(sent.input[1], {
     role: 'developer',
     content: [
       { type: 'input_text', text: `${sharedSystemBlock('user')}\n\n`, prompt_cache_breakpoint: { mode: 'explicit' } },
@@ -104,6 +119,22 @@ test('a recognized turn gets one breakpoint after the constant block and the ins
     ],
   });
   assert.equal(sent.prompt_cache_options, undefined, 'the implicit write stays on');
+});
+
+// Defect caught: the planner reads only one of pi-ai's two layouts, so a
+// model with a top-level tool list, or a request with no tools, loses the
+// shared prefix.
+test('a request with a top-level tool list or no tools gets the same cut in its first input item', async () => {
+  const text = slackText('system', 'Tenant.');
+  for (const [name, tools] of [['a top-level tool list', [LOOKUP_TOOL]], ['no tools', undefined]] as const) {
+    const payload = topLevelToolsPayload(text, tools);
+    assert.deepEqual(planPromptCache(payload, TERRA), { action: 'share', cuts: [{ offset: sharedSystemBlock('system').length + 2 }] }, name);
+    const sent = await shared(payload);
+    assert.deepEqual(sent.input[0].content[0], {
+      type: 'input_text', text: `${sharedSystemBlock('system')}\n\n`, prompt_cache_breakpoint: { mode: 'explicit' },
+    }, name);
+    assert.deepEqual(sent.tools, tools, `${name}: the tools are sent as built`);
+  }
 });
 
 test('keys: one installation\'s threads match, installations differ, at most 64 characters, no raw ID', async () => {
@@ -161,7 +192,7 @@ test('a model without the flag or a foreign base URL is untouched without readin
 test('caller breakpoints, explicit mode, missing key, non-string developer content are untouched', async () => {
   const text = slackText('system', 'Tenant.');
   const withCallerBreakpoint = responsesPayload(text);
-  (withCallerBreakpoint.input as any[])[1].content[0].prompt_cache_breakpoint = { mode: 'explicit' };
+  (withCallerBreakpoint.input as any[])[2].content[0].prompt_cache_breakpoint = { mode: 'explicit' };
   const withOutputBreakpoint = responsesPayload(text);
   (withOutputBreakpoint.input as any[]).push({
     type: 'function_call_output', call_id: 'call_1', output: [{ type: 'input_text', text: 'ok', prompt_cache_breakpoint: { mode: 'explicit' } }],
@@ -174,6 +205,12 @@ test('caller breakpoints, explicit mode, missing key, non-string developer conte
     ['parts already', responsesPayload([{ type: 'input_text', text }]), 'no_developer_text'],
     ['a system-role message', { ...responsesPayload(text), input: [{ role: 'system', content: text }] }, 'no_developer_text'],
     ['a user message first', { ...responsesPayload(text), input: [{ role: 'user', content: text }] }, 'no_developer_text'],
+    ['a user message after the tools item', {
+      ...responsesPayload(text), input: [(responsesPayload(text).input as unknown[])[0], { role: 'user', content: text }],
+    }, 'no_developer_text'],
+    ['a developer message after two tools items', {
+      ...responsesPayload(text), input: [...(responsesPayload(text).input as unknown[]).slice(0, 1), ...(responsesPayload(text).input as unknown[])],
+    }, 'no_developer_text'],
     ['no input', { ...responsesPayload(text), input: undefined }, 'no_developer_text'],
   ] as const;
   for (const [name, payload, reason] of cases) {
@@ -182,7 +219,7 @@ test('caller breakpoints, explicit mode, missing key, non-string developer conte
   }
 });
 
-test('only prompt_cache_key and input[0].content differ', async () => {
+test('only prompt_cache_key and the developer message\'s content differ', async () => {
   const payload = responsesPayload(slackText('user', 'Tenant.'));
   const before = structuredClone(payload);
   const plan = planPromptCache(payload, TERRA);
@@ -191,12 +228,13 @@ test('only prompt_cache_key and input[0].content differ', async () => {
   const sent = applyPromptCachePlan(payload, plan.cuts, key) as Record<string, any>;
 
   assert.deepEqual(payload, before, 'the given payload is not mutated');
-  const { prompt_cache_key: sentKey, input: [developer, ...rest], ...others } = sent;
-  const { prompt_cache_key: _key, input: [original, ...originalRest], ...originalOthers } = payload as Record<string, any>;
+  const { prompt_cache_key: sentKey, input: [tools, developer, ...rest], ...others } = sent;
+  const { prompt_cache_key: _key, input: [originalTools, original, ...originalRest], ...originalOthers } = payload as Record<string, any>;
   assert.equal(sentKey, key);
   assert.deepEqual(others, originalOthers);
   assert.deepEqual(Object.keys(sent), Object.keys(payload), 'no field is added or reordered');
   assert.deepEqual({ ...developer, content: original.content }, original, 'only the developer content changes');
+  assert.equal(tools, originalTools, 'the tools item is passed by reference');
   assert.equal(rest.length, originalRest.length);
   rest.forEach((item: unknown, index: number) => assert.equal(item, originalRest[index], 'later input is passed by reference'));
 });
@@ -224,13 +262,13 @@ test('a throwing planner returns the payload and logs no prompt text', async (t)
 
 test('an unrecognized reply-purpose Slack turn warns with model, reason and request ID only', async (t) => {
   const warn = t.mock.method(console, 'warn', () => undefined);
-  const slack = (developer: unknown, overrides: Record<string, unknown> = {}) =>
-    responsesPayload(developer, { tools: SLACK_TOOLS, ...overrides });
+  const slack = (developer: unknown) => responsesPayload(developer, {}, SLACK_TOOLS);
   const drifted = `Changed. ${slackText('system', 'Tenant secret.')}`;
   const reduced = `${slackSystemBase({ kind: 'user', managementMounted: true, memberToolsMounted: false })}\n\nTenant secret.`;
 
   await shareOpenAIPromptCache(slack(drifted), REQUEST);
-  await shareOpenAIPromptCache({ ...slack(drifted), input: [{ role: 'system', content: drifted }] }, REQUEST);
+  const slackTools = (slack(drifted).input as unknown[])[0];
+  await shareOpenAIPromptCache({ ...slack(drifted), input: [slackTools, { role: 'system', content: drifted }] }, REQUEST);
   for (const [name, payload, request] of [
     ['a turn that shares', slack(slackText('system', 'Tenant secret.')), REQUEST],
     ['a reduced turn', slack(reduced), REQUEST],
