@@ -147,10 +147,17 @@ function listPriceUsdMicros(route: Route, input: number, output: number): number
     price.rate.unitScale);
 }
 
+/**
+ * The declared tools: the top-level list, or the `additional_tools` item at
+ * the head of the input, where pi-ai declares every tool of a model that
+ * takes them, such as GPT-5.6.
+ */
 function tools(body: Record<string, unknown>): Array<Record<string, unknown>> {
+  const [head] = Array.isArray(body.input) ? body.input as Array<Record<string, unknown>> : [];
+  const declared = body.tools ?? (head?.type === 'additional_tools' ? head.tools : undefined);
   // pi-ai may follow the declared tool with its deferred-loading placeholder.
-  assert.ok(Array.isArray(body.tools) && body.tools[0]?.name === 'lookup', JSON.stringify(body.tools));
-  return body.tools as Array<Record<string, unknown>>;
+  assert.ok(Array.isArray(declared) && declared[0]?.name === 'lookup', JSON.stringify(declared ?? Object.keys(body)));
+  return declared as Array<Record<string, unknown>>;
 }
 
 function assertNoModeKeys(body: Record<string, unknown>, keys: readonly string[], label = ''): void {
