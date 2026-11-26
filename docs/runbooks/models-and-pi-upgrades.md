@@ -38,11 +38,10 @@ released installation reject the whole document.
 
 1. Add the model to `GEMINI_MODELS` in `src/config/gemini-models.ts`, copied
    from Pi's `GOOGLE_MODELS` when Pi ships it.
-2. Check that Pi's `usesGoogleThinkingLevel` matches the id. If it does not,
-   Pi sends a token budget instead of a thinking level, and
-   `src/config/gemini-payload.ts` rewrites it. Gemini 4 Argon needs this on
-   Pi 1.1. When Pi ships Argon, delete its row and the rewrite;
-   `tests/gemini-provider.test.ts` fails as a reminder.
+2. Check that Pi sends a `thinkingLevel`, not a token budget, for the id.
+   Pi 1.3 and later send a level for Gemini 4 and later models.
+   `tests/gemini-provider.test.ts` checks the level that Argon sends at each
+   effort.
 3. Add its price to a new catalog file, as for any model.
 4. Update the unsupported-model text in `src/config/model-readiness.ts` and
    the Admin onboarding note if the model changes the recommended choices.
@@ -92,7 +91,10 @@ effective price; see [price review](price-review.md).
    receive a `TranscriptContext`: the system prompt and tools are system
    messages, and later system messages can add or remove tools. Read them with
    `getCurrentSystemPrompt()` and `getCurrentTools()`. Create provider input
-   only with `normalizeContext()`.
+   only with `normalizeContext()`. Turn off any request behavior that a new Pi
+   turns on by default until it is measured. Pi 1.5.1 turned on Anthropic
+   message threads, and `withChickpeaProviderPolicy`
+   (`src/config/pi-provider-registry.ts`) turns them off.
 4. Run `npm run catalog:reconcile`. It reports catalog API-key lanes that the
    new Pi now ships natively. An API-key lane routes to Pi's own model as soon
    as Pi ships it (`resolveActiveCatalogRoute` in
