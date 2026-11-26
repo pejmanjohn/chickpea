@@ -1,4 +1,4 @@
-import { registerPiProvider } from '../config/pi-provider-registry.ts';
+import { registerPiProvider, withoutMessageThreads } from '../config/pi-provider-registry.ts';
 import {
   createAssistantMessageEventStream,
   normalizeContext,
@@ -232,7 +232,8 @@ export function createModelCompatibilityStream(
           openAiOptions as OpenAIResponsesOptions | undefined,
         );
     }
-    const model = adapterModel as Model<'anthropic-messages'>;
+    // The provider proxy saw this lane's alias API, not `anthropic-messages`.
+    const model = withoutMessageThreads(adapterModel as Model<'anthropic-messages'>);
     return simple
       ? (adapters.anthropicStreamSimple ?? streamSimpleAnthropic)(
         model,

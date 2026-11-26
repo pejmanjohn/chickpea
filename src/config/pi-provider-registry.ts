@@ -236,9 +236,11 @@ function withChickpeaProviderPolicy(provider: Provider): Provider {
  * sets, continues a server-side message thread: it sends only the new
  * messages, and the provider keeps the rest. Chickpea has not measured
  * threads against its prompt caching, payload hooks and charges, so every
- * Anthropic request still sends the whole conversation.
+ * Anthropic request still sends the whole conversation. A compatibility
+ * alias reaches the proxy under its own API name and sends a catalog model
+ * instead, so that lane applies this to the model it sends.
  */
-function withoutMessageThreads<TApi extends Api>(model: Model<TApi>): Model<TApi> {
+export function withoutMessageThreads<TApi extends Api>(model: Model<TApi>): Model<TApi> {
   if (model.api !== 'anthropic-messages') return model;
   const compat = (model as Model<'anthropic-messages'>).compat;
   return { ...model, compat: { ...compat, supportsMessageThreads: false } } as Model<TApi>;
