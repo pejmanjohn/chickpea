@@ -4,7 +4,10 @@ import { test } from 'node:test';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { cancelPlanConnection, completePlanHandoff, confirmPlanConnection, disconnectPlan, planStatus, pollPlanHandoff, preparePlanConnection, resolvePlanSession, type PlanDependencies } from '../src/chatgpt-plan/connection.ts';
-import { completedResponse, normalizePlanPayload, planFetch } from '../src/chatgpt-plan/provider.ts';
+import { normalizeContext, type Context } from '@earendil-works/pi-ai';
+import { bindChatgptPlanProvider, CHATGPT_PLAN_PROVIDER, completedResponse, normalizePlanPayload, planFetch } from '../src/chatgpt-plan/provider.ts';
+import { withDeploymentLane } from '../src/config/model-access.ts';
+import { registeredPiProvider } from '../src/config/pi-provider-registry.ts';
 import { chatgptAuthorizationUrl, exchangeChatgptCode } from '../src/chatgpt-plan/protocol.ts';
 
 function harness() {
@@ -99,6 +102,48 @@ test('subscription transport uses public Responses, namespaces tools, strips uns
   await response.text(); assert.equal(sent, true);
   await h.store.setSetting('provider.openai.authMethod', 'api_key');
   await assert.rejects(call('https://api.openai.com/v1/responses', { method: 'POST', body: JSON.stringify(payload) }));
+});
+
+// Defect caught: on a model that takes `additional_tools`, pi-ai declares the
+// tools in input items that the transport does not namespace, while every
+// replayed function call still names the `chickpea` namespace.
+test('a GPT-5.6 plan turn declares every tool in the namespace its replayed calls name', async t => {
+  const h = harness(); t.after(() => h.store.close());
+  const bodies: Array<Record<string, any>> = [];
+  const completed = { type: 'response.completed', response: { id: 'r', status: 'completed', output: [], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } };
+  h.d.fetch = async (url, init) => {
+    if (String(url).endsWith('/responses')) {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(`data: ${JSON.stringify(completed)}\n\n`, { headers: { 'content-type': 'text/event-stream' } });
+    }
+    return Response.json({ models: [{ slug: 'gpt-5.6-terra', display_name: 'GPT-5.6 Terra', visibility: 'list' }] });
+  };
+  await h.connect();
+  await bindChatgptPlanProvider(h.d, 'gpt-5.6-terra');
+  const provider = registeredPiProvider(CHATGPT_PLAN_PROVIDER)!;
+  const model = provider.getModels().find(candidate => candidate.id === 'gpt-5.6-terra')!;
+  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+  const context: Context = {
+    systemPrompt: 'policy',
+    tools: [{ name: 'lookup', description: 'Look up a word.', parameters: { type: 'object', properties: { word: { type: 'string' } } } as never }],
+    messages: [
+      { role: 'user', content: 'Look up chickpea.', timestamp: 1 },
+      { role: 'assistant', api: 'openai-responses', provider: CHATGPT_PLAN_PROVIDER, model: model.id, usage, stopReason: 'toolUse', timestamp: 2,
+        content: [{ type: 'toolCall', id: 'call_1|fc_1', name: 'lookup', arguments: { word: 'chickpea' } }] },
+      { role: 'toolResult', toolCallId: 'call_1|fc_1', toolName: 'lookup', content: [{ type: 'text', text: 'A legume.' }], isError: false, timestamp: 3 },
+    ],
+  };
+
+  const result = await withDeploymentLane(undefined, 'run_plan', 'reply', () => provider.streamSimple(model, normalizeContext(context)).result());
+
+  assert.equal(result.stopReason, 'stop');
+  assert.equal(bodies.length, 1);
+  const [body] = bodies as [Record<string, any>];
+  const declared = [body.tools ?? [], ...body.input.filter((item: any) => item.type === 'additional_tools').map((item: any) => item.tools)].flat();
+  assert.deepEqual(declared.map((tool: any) => tool.type), ['namespace'], 'every tool is in one namespace');
+  const calls = body.input.filter((item: any) => item.type === 'function_call');
+  assert.deepEqual(calls.map((call: any) => [call.namespace, call.name]), [['chickpea', 'lookup']]);
+  assert.deepEqual([declared[0].name, declared[0].tools.map((tool: any) => tool.name)], ['chickpea', ['lookup']], 'the call names a declared tool');
 });
 
 test('stream completion requires response.completed and rejects late failures', async () => {
