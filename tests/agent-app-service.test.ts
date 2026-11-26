@@ -81,6 +81,7 @@ class FakeSlack implements AgentAppSlackApi {
     assert.match(refreshToken, /^xoxe-1-/);
     return { accessToken: `xoxe.xoxp-1-access-${this.rotations}`, refreshToken: `xoxe-1-refresh-${this.rotations}`, teamId: TEAM, expiresAt: NOW + 12 * 3_600_000 };
   }
+  async revoke() {}
   create(token: string, manifest: SlackAppCreateManifest) {
     return this.calls.through('create', async () => {
       assert.match(token, /^xoxe\.xoxp-1-access-/);

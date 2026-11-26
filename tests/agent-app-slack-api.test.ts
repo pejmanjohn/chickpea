@@ -81,6 +81,62 @@ test('rotate sends the refresh token as a form field and parses the new pair', a
     error instanceof SlackUnavailable && error.reason === 'invalid_slack_response');
 });
 
+test('revoke sends only the token as a form field; one Slack already revoked is done, an expired one is refused', async () => {
+  for (const token of ['xoxe.xoxp-1-old', 'xoxe-1-old']) {
+    const { client, seen } = api(() => ok({ revoked: true }));
+    await client.revoke(token);
+    assert.equal(seen[0]?.method, 'auth.revoke');
+    assert.equal(seen[0]?.authorization, null, 'no credential but the token');
+    assert.equal(seen[0]?.contentType, 'application/x-www-form-urlencoded; charset=utf-8');
+    assert.deepEqual(seen[0]?.body, { token });
+  }
+  await api(() => refused('token_revoked')).client.revoke('xoxe-1-old');
+
+  await assert.rejects(() => api(() => refused('token_expired')).client.revoke('xoxe.xoxp-1-old'), (error: unknown) =>
+    error instanceof SlackRefused && error.code === 'token_expired' && !error.message.includes('xoxe'));
+  await assert.rejects(() => api(() => { throw new TypeError('fetch failed'); }).client.revoke('xoxe-1-old'), (error: unknown) =>
+    error instanceof SlackUnavailable && error.reason === 'network_error');
+  await assert.rejects(() => api(() => refused('internal_error', 500)).client.revoke('xoxe-1-old'), SlackUnavailable);
+  await assert.rejects(() => api(() => ok({ revoked: false })).client.revoke('xoxe-1-old'), (error: unknown) =>
+    error instanceof SlackUnavailable && error.reason === 'invalid_slack_response', 'only revoked: true is a revoke');
+});
+
+// Defects caught: a call that retires a pair with no time limit holding the Owner's request, so a removal cut short
+// keeps a stored copy whose refresh token is spent; or the limit on a rotation whose pair is kept, so an answer Slack
+// sends late is dropped after Slack rotated and the stored token is dead.
+test('only the calls that retire a pair stop waiting after a time limit; a slow answer to a kept rotation is accepted', async () => {
+  const slow = (ms: number) => createAgentAppSlackApi({
+    apiBaseUrl: 'https://slack.test/api/',
+    retireTimeoutMs: 20,
+    fetch: (input, init) => new Promise<Response>((resolve, reject) => {
+      const signal = init?.signal;
+      const timer = setTimeout(() => resolve(String(input).endsWith('auth.revoke')
+        ? ok({ revoked: true })
+        : ok({ token: 'xoxe.xoxp-1-new', refresh_token: 'xoxe-1-new', team_id: 'TACME', exp: 1_800_000_000 })), ms);
+      signal?.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason); });
+    }),
+  });
+  assert.equal((await slow(60).rotate('xoxe-1-old')).refreshToken, 'xoxe-1-new', 'a kept rotation waits for its answer');
+  for (const call of [
+    (client: ReturnType<typeof slow>) => client.rotate('xoxe-1-old', { retiring: true }),
+    (client: ReturnType<typeof slow>) => client.revoke('xoxe-1-old'),
+  ]) {
+    await assert.rejects(() => call(slow(60)), (error: unknown) => error instanceof SlackUnavailable && error.reason === 'timeout');
+    await call(slow(1));
+  }
+});
+
+// Defect caught: Slack's `errors` list, meant for `invalid_manifest`, carried on the error a token call throws, where
+// it can quote the token sent.
+test('a refused call that sent no manifest carries none of Slack\'s errors list', async () => {
+  const echo = api((request) => Response.json({
+    ok: false, error: 'invalid_auth', errors: [{ message: `not a token: ${JSON.stringify(request.body)}`, pointer: '/token' }],
+  }));
+  for (const call of [() => echo.client.rotate('xoxe-1-old'), () => echo.client.rotate('xoxe-1-old', { retiring: true }), () => echo.client.revoke('xoxe-1-old')]) {
+    await assert.rejects(call, (error: unknown) => error instanceof SlackRefused && error.code === 'invalid_auth' && error.errors.length === 0);
+  }
+});
+
 test('create carries the manifest under the configuration token and tells a refusal from an unknown answer', async () => {
   const { client, seen } = api((request) => {
     const refusal = slackManifestRefusal((request.body as { manifest?: unknown }).manifest);

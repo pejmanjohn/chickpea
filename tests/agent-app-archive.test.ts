@@ -50,6 +50,7 @@ class FakeSlack implements AgentAppSlackApi {
     this.rotations += 1;
     return { accessToken: `xoxe.xoxp-1-access-${this.rotations}`, refreshToken: `xoxe-1-refresh-${this.rotations}`, teamId: TEAM, expiresAt: NOW + 12 * 3_600_000 };
   }
+  async revoke() {}
   async create(): Promise<never> { throw new Error('not in this unit'); }
   async definedBotScopes() {
     if (this.deletedInSlack) throw new SlackRefused('apps.manifest.export', 'app_not_found');

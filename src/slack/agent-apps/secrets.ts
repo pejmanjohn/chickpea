@@ -23,7 +23,7 @@ export interface AgentAppSecrets {
 export interface SecretDeps {
   credentials: EncryptedCredentialStore;
   keyring: CredentialKeyring;
-  slack: Pick<AgentAppSlackApi, 'rotate'>;
+  slack: Pick<AgentAppSlackApi, 'rotate' | 'revoke'>;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -278,9 +278,9 @@ async function writePair(
 }
 
 /**
- * Paste: refuses an access token, rotates at once, refuses another team, then
- * retires any stored pair as removal does, best effort, and stores the new
- * pair with who pasted it.
+ * Paste: refuses an access token, rotates at once, retires the pair of a token
+ * for another team, stores the new pair with who pasted it, then retires any
+ * pair it replaced as removal does, best effort.
  */
 export async function saveConfigurationToken(
   d: SecretDeps,
@@ -295,10 +295,16 @@ export async function saveConfigurationToken(
     rotated = await d.slack.rotate(token);
   } catch (error) {
     if (!(error instanceof SlackRefused)) throw error;
-    logSlackRefusal('rotate', {}, error);
+    logTokenRefusal('rotate', error);
+    // A rate limit says nothing about the token: the Owner is told to try again, not to generate a new one.
+    if (error.code === 'ratelimited') throw new SlackUnavailable('tooling.tokens.rotate', error.code);
     return 'rejected';
   }
-  if (rotated.teamId !== teamId) return 'other_workspace';
+  if (rotated.teamId !== teamId) {
+    // The pasted refresh token is spent already; the pair it returned is retired as a removal would.
+    await retirePair(d, rotated);
+    return 'other_workspace';
+  }
   const pair: ConfigurationTokenPair = {
     accessToken: rotated.accessToken,
     refreshToken: rotated.refreshToken,
@@ -310,8 +316,10 @@ export async function saveConfigurationToken(
     const replaced = current ? await openPair(d, teamId, current).catch(unopenedAsNone) : undefined;
     // The new pair is kept before Slack is asked anything, so a request that ends here loses nothing pasted.
     if (!(await writePair(d, teamId, pair, current?.revision ?? null))) continue;
-    // Then the pair it replaced is retired at Slack, best effort, so nobody holds a working copy of it.
-    if (replaced) await retireRefreshToken(d, replaced.refreshToken);
+    // Then the pair it replaced is retired at Slack, best effort. A paste of the stored refresh token spent it, and a
+    // replaced token whose rotation Slack refuses may be from the very chain just pasted: nothing else is called then,
+    // so nothing of the new pair is revoked.
+    if (replaced && replaced.refreshToken !== token) await retirePair(d, replaced);
     return 'saved';
   }
   throw new LostRevision(configurationTokenKey(teamId));
@@ -334,38 +342,45 @@ export async function configurationTokenStatus(d: SecretDeps, teamId: string): P
 }
 
 /**
- * Removal. Slack has no revoke call, and stops listing a token while its
- * refresh token still works, so the stored refresh token is rotated once and
- * the new pair is never kept: nobody then holds a working one. The stored copy
- * is deleted whatever Slack answers; `unconfirmed` means the rotation did not
- * succeed, so Slack may still accept the token. A rotation that writes a newer
- * pair first has that pair spent and deleted on the retry; throws LostRevision
- * when a pair still stays.
+ * What a removal tells Admin. `discarded`: Slack rotated the stored refresh
+ * token, so the token Chickpea held no longer works. Slack may still list a
+ * token for its person and workspace, and Chickpea cannot tell. `unconfirmed`:
+ * Slack did not confirm the rotation, so it may still accept that token.
  */
-export async function discardConfigurationToken(d: SecretDeps, teamId: string): Promise<'discarded' | 'unconfirmed' | 'none'> {
+export type ConfigurationTokenRemoval = 'discarded' | 'unconfirmed' | 'none';
+
+/**
+ * Removal. The stored pair is retired at Slack, and the stored copy is
+ * deleted whatever Slack answers. When the delete loses to a newer write, the
+ * record is read again: one that still holds the refresh token this removal
+ * already rotated or tried (a rotation's claim, or another removal) is only
+ * deleted, keeping the first answer, since Slack would refuse that token now.
+ * One holding another refresh token (a rotation that won, or a paste that
+ * completed after this removal began) is retired and deleted too, and the
+ * answer is `discarded` only if both rotations were. Throws LostRevision when a
+ * pair still stays.
+ */
+export async function discardConfigurationToken(d: SecretDeps, teamId: string): Promise<ConfigurationTokenRemoval> {
   const key = configurationTokenKey(teamId);
-  let spent: boolean | undefined;
+  let retired: { rotated: boolean; refreshToken: string | undefined } | undefined;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const record = await d.credentials.getEncryptedCredentialRevision(key);
     if (!record) break;
-    spent = (await spendRefreshToken(d, teamId, record)) && spent !== false;
-    if (await d.credentials.deleteEncryptedCredentialRevision(key, record.revision)) {
-      return spent ? 'discarded' : 'unconfirmed';
+    // A pair that cannot be opened was never rotated by this removal.
+    const pair = await openPair(d, teamId, record).catch(unopenedAsNone);
+    if (!retired || retired.refreshToken !== pair?.refreshToken) {
+      const rotated = pair ? await retirePair(d, pair) : false;
+      retired = { rotated: (retired?.rotated ?? true) && rotated, refreshToken: pair?.refreshToken };
     }
+    if (await d.credentials.deleteEncryptedCredentialRevision(key, record.revision)) return removal(retired.rotated);
   }
-  if (spent === undefined) return 'none';
+  if (retired === undefined) return 'none';
   if (await d.credentials.getEncryptedCredentialRevision(key)) throw new LostRevision(key);
-  return spent ? 'discarded' : 'unconfirmed';
+  return removal(retired.rotated);
 }
 
-/** One rotation whose result is dropped; false when Slack did not rotate it, or the pair cannot be opened. */
-async function spendRefreshToken(
-  d: SecretDeps,
-  teamId: string,
-  record: { revision: string; envelope: Parameters<typeof decryptSlackSecretEnvelope>[2] },
-): Promise<boolean> {
-  const pair = await openPair(d, teamId, record).catch(unopenedAsNone);
-  return pair ? retireRefreshToken(d, pair.refreshToken) : false;
+function removal(rotated: boolean): ConfigurationTokenRemoval {
+  return rotated ? 'discarded' : 'unconfirmed';
 }
 
 function unopenedAsNone(error: unknown): undefined {
@@ -373,15 +388,67 @@ function unopenedAsNone(error: unknown): undefined {
   throw error;
 }
 
-/** One rotation whose result is dropped; false when Slack did not rotate it. */
-async function retireRefreshToken(d: SecretDeps, refreshToken: string): Promise<boolean> {
+/**
+ * Makes a pair Chickpea no longer keeps stop working at Slack; true when Slack
+ * rotated its refresh token. The rotation spends that refresh token and, as
+ * every rotation does, revokes the access token two before the one it returns
+ * while that one is still valid. Then the access token it returned and the
+ * pair's own are revoked, the latter only while it is valid: Slack refuses an
+ * expired one. Nobody can revoke an expired access token, and Slack keeps
+ * listing one, so Slack may still list a token afterwards, with the newest
+ * refresh token not revoked on its row. That is why Chickpea never revokes a
+ * refresh token: the listed one still rotates, so it can be pasted back here,
+ * while a listed token with no working refresh token can be neither used,
+ * replaced nor deleted.
+ */
+async function retirePair(d: SecretDeps, pair: { accessToken: string; refreshToken: string; expiresAt: number }): Promise<boolean> {
+  const next = await rotateOnce(d, pair.refreshToken);
+  if (!next) return false;
+  await revokeToken(d, next.accessToken);
+  if (pair.expiresAt > (d.now?.() ?? Date.now())) await revokeToken(d, pair.accessToken);
+  return true;
+}
+
+/**
+ * Never retried: Slack may have rotated before its answer was lost, and the pair it returned is then unknown. Only
+ * these rotations have a time limit, since nothing they return is kept.
+ */
+async function rotateOnce(d: SecretDeps, refreshToken: string) {
   try {
-    await d.slack.rotate(refreshToken);
-    return true;
+    return await d.slack.rotate(refreshToken, { retiring: true });
   } catch (error) {
-    if (error instanceof SlackRefused) logSlackRefusal('rotate', {}, error);
-    else console.warn({ event: 'chickpea.agent_app.token_not_spent', error: error instanceof Error ? error.name : 'unknown' });
-    return false;
+    logRetireFailed('rotate', error);
+    return undefined;
+  }
+}
+
+/** Revoking a token twice is harmless, so a revoke Slack did not answer is tried once more. */
+async function revokeToken(d: SecretDeps, token: string): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await d.slack.revoke(token);
+      return;
+    } catch (error) {
+      if (error instanceof SlackUnavailable && attempt === 0) continue;
+      logRetireFailed('revoke', error);
+      return;
+    }
+  }
+}
+
+/** The code only: Slack's `errors` list on a token call could quote the token it was sent. */
+function logTokenRefusal(step: 'rotate' | 'revoke', error: SlackRefused): void {
+  logSlackRefusal(step, {}, { code: error.code });
+}
+
+function logRetireFailed(step: 'rotate' | 'revoke', error: unknown): void {
+  if (error instanceof SlackRefused) logTokenRefusal(step, error);
+  else {
+    console.warn({
+      event: 'chickpea.agent_app.token_retire_failed',
+      step,
+      error: error instanceof SlackUnavailable ? error.reason : error instanceof Error ? error.name : 'unknown',
+    });
   }
 }
 
@@ -439,7 +506,7 @@ async function rotateHolding(
     rotated = await d.slack.rotate(pair.refreshToken);
   } catch (error) {
     if (!(error instanceof SlackRefused)) throw error;
-    logSlackRefusal('rotate', {}, error);
+    logTokenRefusal('rotate', error);
     const refusedToken = TOKEN_REFUSALS.has(error.code);
     if (!refusedToken && error.code !== DEAD_REFRESH_TOKEN) throw new SlackUnavailable('tooling.tokens.rotate', error.code);
     const latest = await readPair(d, teamId);

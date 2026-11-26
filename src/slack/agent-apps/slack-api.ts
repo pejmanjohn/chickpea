@@ -9,6 +9,15 @@ import type { SlackAppCreateManifest, SlackAppManifest } from '../app-manifest.t
 const SLACK_API = 'https://slack.com/api';
 const MAX_RESPONSE_BYTES = 64 * 1_024;
 const ICON_TIMEOUT_MS = 5_000;
+/**
+ * Per call that retires a pair Chickpea no longer keeps, where an unanswered
+ * call loses nothing. Retiring one pair makes at most five such calls (a
+ * rotation and two revokes, each tried twice), and a removal whose second try
+ * retires a second pair ten, so at worst 50 s, under the 100 s Cloudflare
+ * waits for a response. A paste retires at most one pair, 25 s, after its own
+ * rotation, which has no limit.
+ */
+const RETIRE_TIMEOUT_MS = 5_000;
 const SLACK_ID = /^[A-Z][A-Z0-9]{1,63}$/;
 const MAX_PROBLEMS = 5;
 const MAX_PROBLEM_TEXT = 200;
@@ -32,7 +41,7 @@ export class SlackRefused extends Error {
   }
 }
 
-export type AgentAppSlackStep = 'rotate' | 'release_handle' | 'create' | 'export' | 'update' | 'icon' | 'exchange' | 'uninstall' | 'delete' | 'invite' | 'join' | 'restore_handle';
+export type AgentAppSlackStep = 'rotate' | 'revoke' | 'release_handle' | 'create' | 'export' | 'update' | 'icon' | 'exchange' | 'uninstall' | 'delete' | 'invite' | 'join' | 'restore_handle';
 
 /** One structured line per Slack refusal in an Agent app's lifecycle; for the operator, never the customer. */
 export function logSlackRefusal(
@@ -92,7 +101,17 @@ export interface AgentAppGrant {
 }
 
 export interface AgentAppSlackApi {
-  rotate(refreshToken: string): Promise<RotatedConfigurationToken>;
+  /**
+   * `retiring` puts a time limit on the call. A rotation whose pair is kept
+   * has none: Slack answering after the limit would have rotated, and the
+   * stored refresh token would be spent with its successor dropped.
+   */
+  rotate(refreshToken: string, options?: { retiring?: boolean }): Promise<RotatedConfigurationToken>;
+  /**
+   * auth.revoke on a configuration access token, sent with no other credential; one already revoked is done. Only
+   * retiring a pair revokes, so it always has the time limit. Chickpea never revokes a refresh token: see `retirePair`.
+   */
+  revoke(token: string): Promise<void>;
   /** Throws AmbiguousEffect when Slack's answer is unknown and SlackRefused when it said no. */
   create(token: string, manifest: SlackAppCreateManifest): Promise<CreatedAgentApp>;
   /** The bot scopes the app's own definition in Slack holds, from its exported manifest. */
@@ -109,6 +128,8 @@ export interface AgentAppSlackApi {
 export interface AgentAppSlackApiOptions {
   fetch?: typeof fetch;
   apiBaseUrl?: string;
+  /** For tests. */
+  retireTimeoutMs?: number;
 }
 
 type Answer =
@@ -120,13 +141,14 @@ export function createAgentAppSlackApi(options: AgentAppSlackApiOptions = {}): A
   const fetchImpl = options.fetch ?? fetch;
   const base = options.apiBaseUrl?.trim().replace(/\/+$/, '') || SLACK_API;
   const url = (method: string): string => `${base}/${method}`;
+  const retireTimeoutMs = options.retireTimeoutMs ?? RETIRE_TIMEOUT_MS;
 
   async function call(method: string, init: RequestInit, manifest?: SlackAppCreateManifest | SlackAppManifest): Promise<Answer> {
     let response: Response;
     try {
       response = await fetchImpl(url(method), init);
-    } catch {
-      return { kind: 'unavailable', reason: 'network_error' };
+    } catch (error) {
+      return { kind: 'unavailable', reason: error instanceof Error && error.name === 'TimeoutError' ? 'timeout' : 'network_error' };
     }
     let payload: Record<string, unknown>;
     try {
@@ -149,7 +171,8 @@ export function createAgentAppSlackApi(options: AgentAppSlackApiOptions = {}): A
     return {
       kind: 'refused',
       code: code || (response.status === 429 ? 'ratelimited' : `http_${response.status}`),
-      errors: manifestProblems(payload.errors, manifest),
+      // `errors` is Slack's list for `invalid_manifest`; on any other call it could quote what was sent.
+      errors: manifest ? manifestProblems(payload.errors, manifest) : [],
     };
   }
 
@@ -166,6 +189,10 @@ export function createAgentAppSlackApi(options: AgentAppSlackApiOptions = {}): A
     },
     body: new URLSearchParams(params).toString(),
   });
+  const tokenCall = (params: Record<string, string>, retiring: boolean): RequestInit => ({
+    ...form(params),
+    ...(retiring ? { signal: AbortSignal.timeout(retireTimeoutMs) } : {}),
+  });
 
   function settled(method: string, answer: Answer): Record<string, unknown> {
     if (answer.kind === 'ok') return answer.payload;
@@ -174,8 +201,8 @@ export function createAgentAppSlackApi(options: AgentAppSlackApiOptions = {}): A
   }
 
   return {
-    async rotate(refreshToken) {
-      const payload = settled('tooling.tokens.rotate', await call('tooling.tokens.rotate', form({ refresh_token: refreshToken })));
+    async rotate(refreshToken, rotateOptions) {
+      const payload = settled('tooling.tokens.rotate', await call('tooling.tokens.rotate', tokenCall({ refresh_token: refreshToken }, rotateOptions?.retiring === true)));
       const expires = payload.exp;
       const teamId = payload.team_id;
       if (typeof expires !== 'number' || !Number.isFinite(expires) || typeof teamId !== 'string' || !SLACK_ID.test(teamId)) {
@@ -187,6 +214,13 @@ export function createAgentAppSlackApi(options: AgentAppSlackApiOptions = {}): A
         teamId,
         expiresAt: expires * 1_000,
       };
+    },
+
+    async revoke(token) {
+      const answer = await call('auth.revoke', tokenCall({ token }, true));
+      if (answer.kind === 'refused' && answer.code === 'token_revoked') return;
+      const payload = settled('auth.revoke', answer);
+      if (payload.revoked !== true) throw new SlackUnavailable('auth.revoke', 'invalid_slack_response');
     },
 
     async create(token, manifest) {
@@ -282,9 +316,9 @@ export function createAgentAppSlackApi(options: AgentAppSlackApiOptions = {}): A
  * carries its app's path token. A message that quotes any of the manifest's
  * own strings is dropped, since those hold the Agent's name and description.
  */
-function manifestProblems(value: unknown, manifest: SlackAppCreateManifest | SlackAppManifest | undefined): SlackManifestProblem[] {
+function manifestProblems(value: unknown, manifest: SlackAppCreateManifest | SlackAppManifest): SlackManifestProblem[] {
   if (!Array.isArray(value)) return [];
-  const quotable = manifest ? stringsIn(manifest) : [];
+  const quotable = stringsIn(manifest);
   return value.slice(0, MAX_PROBLEMS).map((entry) => {
     const problem = asRecord(entry);
     const pointer = problemText(problem.pointer);

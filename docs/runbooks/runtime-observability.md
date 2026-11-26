@@ -945,13 +945,26 @@ line is for the operator. It carries no token, secret, or URL.
 
 | Field | Value |
 | --- | --- |
-| `step` | `rotate` (configuration token), `release_handle`, `create`, `update` (adds the Request URLs), `icon`, `exchange` (the Allow callback), `uninstall`, `delete`, `invite` (Chickpea's bot inviting the app's bot into a Channel the Agent was added to) |
-| `agentId`, `appId` | The Agent and its Slack app, or `null` before Slack names the app; `rotate` names neither |
+| `step` | `rotate` and `revoke` (configuration token), `release_handle`, `create`, `update` (adds the Request URLs), `icon`, `exchange` (the Allow callback), `uninstall`, `delete`, `invite` (Chickpea's bot inviting the app's bot into a Channel the Agent was added to) |
+| `agentId`, `appId` | The Agent and its Slack app, or `null` before Slack names the app; `rotate` and `revoke` name neither |
 | `channelId` | `invite` only: the Channel |
 | `code` | Slack's error code, such as `invalid_manifest` or `ratelimited`. `invite` also logs `credentials_unavailable` when Chickpea's bot token cannot be read, so nothing was sent, and `failed` when Slack gave no answer |
-| `errors` | Slack's `{ message, pointer }` list, as sent with `invalid_manifest`: at most five entries of 200 characters each, any URL replaced by `<url>`. A message that quotes one of the manifest's own strings, such as the Agent's name or description, is left out and only its `pointer` is logged |
+| `errors` | Slack's `{ message, pointer }` list, as sent with `invalid_manifest`: at most five entries of 200 characters each, any URL replaced by `<url>`. A message that quotes one of the manifest's own strings, such as the Agent's name or description, is left out and only its `pointer` is logged. Always `[]` for a call that sent no manifest, such as `rotate` and `revoke`, whose messages could quote the token sent |
 
 Filter a bounded capture with `wrangler tail --search agent_app.slack_refused`.
+
+Removing a configuration token, or replacing it with a paste, retires the
+pair at Slack with one rotation and up to two revokes (see
+[Slack message identity](slack-message-identity.md#the-configuration-tokens-limits)).
+A refusal logs `slack_refused` as above. A call Slack did not answer logs one
+`console.warn` object with `event: "chickpea.agent_app.token_retire_failed"`,
+`step` (`rotate` or `revoke`), and `error`: the reason, such as
+`network_error`, `timeout` (each of these calls waits at most 5 seconds) or
+`http_502`, or the error's name for a fault in Chickpea. A revoke logs only
+once its one retry has also failed. A failed revoke changes nothing else, and
+a stored access token Chickpea's record shows as expired is not sent, so an
+ordinary removal logs nothing. Neither line carries a token. Filter with
+`wrangler tail --search agent_app.token_retire`.
 
 ## Deliveries that add no turn
 

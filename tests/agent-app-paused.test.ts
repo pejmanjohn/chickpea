@@ -75,6 +75,9 @@ class FakeSlack implements AgentAppSlackApi {
     const n = this.calls.length;
     return { accessToken: `xoxe.xoxp-1-access-${n}`, refreshToken: `${refreshToken}-r${n}`, teamId: TEAM, expiresAt: NOW + 12 * 3_600_000 };
   }
+  async revoke() {
+    this.calls.push('auth.revoke');
+  }
   async create(_token: string, manifest: Parameters<AgentAppSlackApi['create']>[1]) {
     this.calls.push('apps.manifest.create');
     refuseLikeSlack('apps.manifest.create', manifest);

@@ -256,6 +256,7 @@ test('off: one sentence and a button; with no token stored the button leads to t
   assert.match(text, /Open Slack(’|&rsquo;)s app settings\./);
   assert.match(page.html(), /<a class="btn btn-soft btn-sm slack-token-open" href="https:\/\/api\.slack\.com\/apps" target="_blank" rel="noopener"/);
   assert.match(text, /Under Your App Configuration Tokens , choose Generate Token and pick Acme \./);
+  assert.match(text, /If Slack already lists a token for Acme and Generate Token isn&#39;t available, don&#39;t delete that token: copy its Refresh Token and paste it here\./);
   assert.match(text, /Copy the Refresh Token and paste it here\./);
   assert.match(page.html(), /class="slack-token-row highlighted"><span class="slack-token-label">Refresh Token</);
   assert.match(page.html(), /<input id="slack-apps-token" class="input mono" type="password"/);
@@ -310,7 +311,7 @@ test('a paste is sent once, the field is empty before it leaves, and success tur
 for (const [name, status, error, pasted, sentence] of [
   ['the Access Token', 400, 'not_refresh_token', 'xoxe.xoxp-1-access', "That's the Access Token. Copy the Refresh Token next to it."],
   ['something else', 400, 'not_refresh_token', 'hello', "That isn't a refresh token. Copy the Refresh Token, which starts with xoxe-."],
-  ['a token for another workspace', 400, 'other_workspace', 'xoxe-1-other', 'That token is for a different Slack workspace. Generate one for Acme.'],
+  ['a token for another workspace', 400, 'other_workspace', 'xoxe-1-other', 'That token is for a different Slack workspace and can no longer be used. Generate a new one for Acme.'],
   ['a token Slack refuses', 400, 'rejected', 'xoxe-1-refused', "Slack didn't accept that token. Generate a new one and paste its Refresh Token."],
   ['a paste while Slack is down', 503, 'slack_down', 'xoxe-1-down', "Slack didn't answer. Try again in a minute."],
 ] as const) {
@@ -786,12 +787,21 @@ test('a row whose start stopped before Slack made any app offers a quiet Cancel,
   assert.match(unanswered.html(), /<a class="hint-link" href="https:\/\/api\.slack\.com\/apps" target="_blank" rel="noopener">Open Your Apps in Slack &nearr;<\/a>/);
 });
 
-test('each removal says what it did: retired, not confirmed by Slack, or no token held', async () => {
+const YOUR_APPS_LINK = '<a class="hint-link" href="https://api.slack.com/apps" target="_blank" rel="noopener">Open Your Apps in Slack &nearr;</a>';
+
+const STILL_LISTED = 'If Your Apps in Slack still shows a token for this workspace, copy its Refresh Token, add it in Chickpea again, and remove it again.';
+const UNCONFIRMED = `Chickpea deleted its copy of your configuration token, but Slack didn't confirm the token stopped working, so Slack may still accept it. ${STILL_LISTED}`;
+const LEAVE_IT = 'Slack may still list a token for this workspace for a while, possibly as expired; leave it alone rather than deleting it in Slack, and to use it here again, copy its Refresh Token and add it in Chickpea.';
+const DISCARDED = `Chickpea deleted its copy of your configuration token and retired that token at Slack. ${LEAVE_IT}`;
+
+// Defects caught: a removal that sends the Owner to Slack's own Delete, which on an expired row leaves a token nobody
+// can use, replace or delete; a success that promises Slack lists nothing; or a removal that gives no route at all.
+test('each removal says what it did: retired, not confirmed by Slack, or no token held; an answer the page does not know claims no more than unconfirmed', async () => {
   for (const [removed, sentence, success] of [
-    ['discarded', 'Chickpea deleted its copy of your configuration token and retired that token at Slack.', true],
-    ['unconfirmed', "Chickpea deleted its copy of your configuration token, but Slack didn't confirm the token stopped working, so Slack may still accept it.", false],
+    ['discarded', DISCARDED, true],
+    ['unconfirmed', UNCONFIRMED, false],
     ['none', 'Chickpea holds no configuration token for this workspace.', false],
-    ['something_new', "Chickpea deleted its copy of your configuration token, but Slack didn't confirm the token stopped working, so Slack may still accept it.", false],
+    ['something_new', UNCONFIRMED, false],
   ] as const) {
     const page = await harness({ handle: (path, method) => path === '/admin/api/slack-apps/token' && method === 'DELETE' ? respond({ token: { stored: false }, removed }) : undefined });
     await page.click({ 'data-action': 'slack-apps-token-remove' });
@@ -799,6 +809,69 @@ test('each removal says what it did: retired, not confirmed by Slack, or no toke
     await page.click({ 'data-action': 'slack-apps-confirm-apply' });
     assert.ok(page.text().includes(sentence.replace(/'/g, '&#39;')), removed);
     assert.equal(page.html().includes('callout callout-success slack-apps-callout'), success, removed);
+    assert.equal(page.html().includes(YOUR_APPS_LINK), removed !== 'discarded' && removed !== 'none', `${removed}: a token Slack may still accept sends the Owner to Your Apps`);
+    assert.equal(/delete it in|Delete it|Delete token|12 hours|lists nothing|no longer lists/i.test(page.text()), false,
+      `${removed}: never an instruction to delete in Slack, no clock, no promise of an empty list`);
+  }
+});
+
+// Defect caught: with the setting off, a removal that tells the Owner to add the token again on a page with no
+// control that does it, or whose only door turns the setting on.
+test('a removal Slack did not finish, with the setting off, offers Add a token, and pasting there leaves the setting off', async () => {
+  const opens = (html: string) => html.split('data-action="slack-apps-token-open"').length - 1;
+  for (const removed of ['unconfirmed', 'something_new', 'discarded', 'none'] as const) {
+    const api = apiState({ setting: { mode: 'shared', changedBy: 'UOWNER', changedAt: 1 } });
+    const page = await harness({
+      api,
+      handle(path, method) {
+        if (path !== '/admin/api/slack-apps/token') return undefined;
+        if (method === 'DELETE') { api.token = { stored: false }; return respond({ token: api.token, removed }); }
+        if (method === 'PUT') { api.token = { stored: true, pastedBy: 'UOWNER', pastedAt: 3 }; return respond({ token: api.token }); }
+        return undefined;
+      },
+    });
+    await page.click({ 'data-action': 'slack-apps-token-remove' });
+    await page.click({ 'data-action': 'slack-apps-confirm-apply' });
+    const offered = removed !== 'discarded' && removed !== 'none';
+    assert.equal(opens(page.html()), offered ? 1 : 0, `${removed}: the route the notice names is on the page`);
+    if (!offered) continue;
+    await page.click({ 'data-action': 'slack-apps-token-open' });
+    await page.paste('xoxe-1-listed-refresh-token-000');
+    await flush();
+    assert.equal(tokenSends(page.requests).length, 1);
+    assert.equal(page.requests.some((request) => request.path === '/admin/api/slack-apps/mode'), false, `${removed}: the setting stays off`);
+    assert.equal(api.setting.mode, 'shared');
+  }
+
+  // With the setting on, the page's own Add a token callout carries the same action once.
+  const onApi = apiState();
+  const on = await harness({
+    api: onApi,
+    handle(path, method) {
+      if (path !== '/admin/api/slack-apps/token' || method !== 'DELETE') return undefined;
+      onApi.token = { stored: false };
+      return respond({ token: onApi.token, removed: 'unconfirmed' });
+    },
+  });
+  await on.click({ 'data-action': 'slack-apps-token-remove' });
+  await on.click({ 'data-action': 'slack-apps-confirm-apply' });
+  assert.match(on.text(), /Slack may still accept it/);
+  assert.equal(opens(on.html()), 1);
+});
+
+// Defect caught: an Owner told to look on their own Your Apps page for a token only the person who added it can see.
+test('each removal notice names the person whose Your Apps shows the token, when that is someone else the page knows', async () => {
+  for (const [removed, named, plain] of [
+    ['unconfirmed', 'If Your Apps in Slack still shows Omar Owner a token for this workspace, Omar Owner can copy its Refresh Token, add it in Chickpea again, and remove it again.', STILL_LISTED],
+    ['discarded', 'Slack may still show Omar Owner a token for this workspace for a while, possibly as expired; Omar Owner should leave it alone rather than deleting it in Slack, and can copy its Refresh Token and add it in Chickpea to use it here again.', LEAVE_IT],
+  ] as const) {
+    for (const [pastedBy, sentence] of [['UOTHER', named], ['UOWNER', plain], ['UNKNOWN', plain], [undefined, plain]] as const) {
+      const api = apiState({ token: { stored: true, ...(pastedBy ? { pastedBy } : {}), pastedAt: Date.UTC(2026, 10, 23, 12) } });
+      const page = await harness({ api, handle: (path, method) => path === '/admin/api/slack-apps/token' && method === 'DELETE' ? respond({ token: { stored: false }, removed }) : undefined });
+      await page.click({ 'data-action': 'slack-apps-token-remove' });
+      await page.click({ 'data-action': 'slack-apps-confirm-apply' });
+      assert.ok(page.text().includes(sentence), `${removed} ${String(pastedBy)}`);
+    }
   }
 });
 

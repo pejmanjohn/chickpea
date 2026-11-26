@@ -67,6 +67,7 @@ class FakeSlack implements AgentAppSlackApi {
   async rotate() {
     return { accessToken: 'xoxe.xoxp-1-access', refreshToken: 'xoxe-1-refresh', teamId: TEAM, expiresAt: NOW + 365 * 86_400_000 };
   }
+  async revoke() {}
   /** Slack's answer to the next create, as an `ok: false` code. */
   createRefusal: string | undefined;
   create() {

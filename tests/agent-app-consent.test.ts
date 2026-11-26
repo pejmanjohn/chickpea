@@ -35,6 +35,7 @@ class FakeSlack implements AgentAppSlackApi {
   fail: Error | undefined;
   refuseUninstall: SlackRefused | undefined;
   async rotate(): Promise<never> { throw new Error('not in this unit'); }
+  async revoke(): Promise<never> { throw new Error('not in this unit'); }
   async create(): Promise<never> { throw new Error('not in this unit'); }
   async definedBotScopes(): Promise<never> { throw new Error('not in this unit'); }
   async update(): Promise<never> { throw new Error('not in this unit'); }

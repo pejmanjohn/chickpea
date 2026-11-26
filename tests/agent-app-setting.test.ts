@@ -95,6 +95,9 @@ interface SlackScript {
   rotate?: AgentAppSlackApi['rotate'] | undefined;
   /** Every refresh token Slack rotated; Slack refuses each one after that. */
   spent: string[];
+  /** Every token auth.revoke ended. */
+  revoked: string[];
+  revoke?: AgentAppSlackApi['revoke'] | undefined;
   deleted: string[];
   created: number;
   update?: 'unanswered' | undefined;
@@ -188,7 +191,7 @@ async function adminApp(t: TestContext, options: {
   const support = await config.createAgent(agent('agent_support', 'Support', group('support')));
   await config.ensureWorkspaceInstallation({ workspaceId: TEAM, teamId: TEAM, transportMode: 'direct', defaultAgentId: support.id, runtimeContract: 'chickpea-v1' });
   let rotations = 0;
-  const script: SlackScript = { spent: [], deleted: [], created: 0, now: NOW, auditFails: false };
+  const script: SlackScript = { spent: [], revoked: [], deleted: [], created: 0, now: NOW, auditFails: false };
   const slack: AgentAppSlackApi = {
     rotate: async (refreshToken) => {
       if (script.spent.includes(refreshToken)) throw new SlackRefused('tooling.tokens.rotate', 'invalid_refresh_token');
@@ -201,6 +204,10 @@ async function adminApp(t: TestContext, options: {
       }
       script.spent.push(refreshToken);
       return rotated;
+    },
+    revoke: async (token) => {
+      if (script.revoke) await script.revoke(token);
+      script.revoked.push(token);
     },
     create: async (_token, manifest) => {
       refuseLikeSlack('apps.manifest.create', manifest);
@@ -507,21 +514,17 @@ test('each paste outcome answers as the token page does, and the token never lea
   assert.deepEqual(owner.audits().map((audit) => audit.action), ['agent_apps.token_pasted'], 'only the paste that stored a token is recorded');
 });
 
-test('removing the token spends it with one rotation and discards the result; a second remove is harmless', async (t) => {
+test('removing the token retires it at Slack; a second remove is harmless', async (t) => {
   const owner = await adminApp(t);
-  const spent: string[] = [];
   assert.equal((await owner.request(`${API}/token`, owner.json('PUT', { refreshToken: PASTED }))).status, 200);
-  owner.script.rotate = async (refreshToken) => {
-    spent.push(refreshToken);
-    return { accessToken: 'xoxe.xoxp-1-discarded', refreshToken: 'xoxe-1-discarded-0000', teamId: TEAM, expiresAt: NOW + 3_600_000 };
-  };
   const { result: removed, lines } = await consoleLines(async () => owner.request(`${API}/token`, owner.json('DELETE')));
   assert.equal(removed.status, 200);
   const body = await removed.text();
   assert.deepEqual(JSON.parse(body), { token: { stored: false }, removed: 'discarded' });
-  assert.deepEqual(spent, ['xoxe-1-rotated-1-0000'], 'the stored refresh token is rotated once');
+  assert.deepEqual(owner.script.spent, [PASTED, 'xoxe-1-rotated-1-0000'], 'the stored refresh token is rotated once');
+  assert.deepEqual(owner.script.revoked, ['xoxe.xoxp-1-access-2', 'xoxe.xoxp-1-access-1'], 'both access tokens it knows, never a refresh token');
   assert.equal(await owner.settings.getEncryptedCredentialRevision(configurationTokenKey(TEAM)), undefined, 'and nothing replaces it');
-  for (const secret of ['xoxe-1-discarded-0000', 'xoxe.xoxp-1-discarded', 'xoxe-1-rotated-1-0000']) {
+  for (const secret of [PASTED, 'xoxe-1-rotated', 'xoxe.xoxp-1-access']) {
     assert.equal(body.includes(secret), false);
     assert.equal(lines.includes(secret), false);
   }
@@ -530,7 +533,24 @@ test('removing the token spends it with one rotation and discards the result; a 
   const again = await owner.request(`${API}/token`, owner.json('DELETE'));
   assert.equal(again.status, 200);
   assert.deepEqual(await again.json(), { token: { stored: false }, removed: 'none' }, 'a second removal makes no claim about Slack');
-  assert.equal(spent.length, 1, 'nothing left to rotate');
+  assert.equal(owner.script.spent.length, 2, 'nothing left to rotate');
+  assert.deepEqual(owner.audits().map((audit) => [audit.action, audit.reasonCode]), [
+    ['agent_apps.token_pasted', undefined],
+    ['agent_apps.token_removed', 'discarded'],
+    ['agent_apps.token_removed', 'none'],
+  ]);
+});
+
+// Defect caught: a refused revoke turning a token that no longer works into a removal Admin calls unconfirmed.
+test('a revoke Slack refuses after the rotation deletes the stored copy and still answers discarded', async (t) => {
+  const owner = await adminApp(t);
+  assert.equal((await owner.request(`${API}/token`, owner.json('PUT', { refreshToken: PASTED }))).status, 200);
+  owner.script.revoke = async () => { throw new SlackRefused('auth.revoke', 'token_expired'); };
+  const { result: removed, lines } = await consoleLines(async () => owner.request(`${API}/token`, owner.json('DELETE')));
+  assert.deepEqual(await removed.json(), { token: { stored: false }, removed: 'discarded' });
+  assert.equal(await owner.settings.getEncryptedCredentialRevision(configurationTokenKey(TEAM)), undefined);
+  for (const secret of [PASTED, 'xoxe-1-rotated', 'xoxe.xoxp-1-access']) assert.equal(lines.includes(secret), false);
+  assert.deepEqual((await (await owner.request(`${API}/token`, owner.json('DELETE'))).json()), { token: { stored: false }, removed: 'none' });
   assert.deepEqual(owner.audits().map((audit) => [audit.action, audit.reasonCode]), [
     ['agent_apps.token_pasted', undefined],
     ['agent_apps.token_removed', 'discarded'],
@@ -563,18 +583,21 @@ test('a token pasted over a stored one keeps the new pair first, then retires th
   let storedWhenRetired: string | undefined;
   owner.script.rotate = async (refreshToken) => {
     if (refreshToken === 'xoxe-1-rotated-1-0000') storedWhenRetired = (await owner.settings.getEncryptedCredentialRevision(key))?.revision;
-    return { accessToken: 'xoxe.xoxp-1-access-2', refreshToken: `xoxe-1-rotated-${owner.script.spent.length + 1}-0000`, teamId: TEAM, expiresAt: NOW + 12 * 3_600_000 };
+    const n = owner.script.spent.length + 1;
+    return { accessToken: `xoxe.xoxp-1-access-p${n}`, refreshToken: `xoxe-1-rotated-${n}-0000`, teamId: TEAM, expiresAt: NOW + 12 * 3_600_000 };
   };
   assert.equal((await owner.request(`${API}/token`, owner.json('PUT', { refreshToken: PASTED_AGAIN }))).status, 200);
   owner.script.rotate = undefined;
   assert.ok(storedWhenRetired && storedWhenRetired !== first, 'the new pair was already kept when the old one was retired');
-  assert.deepEqual(owner.script.spent, [PASTED, PASTED_AGAIN, 'xoxe-1-rotated-1-0000'], 'the earlier pair is spent, its result dropped');
+  assert.deepEqual(owner.script.spent, [PASTED, PASTED_AGAIN, 'xoxe-1-rotated-1-0000'], 'the earlier pair is rotated once');
+  assert.deepEqual(owner.script.revoked, ['xoxe.xoxp-1-access-p3', 'xoxe.xoxp-1-access-1'], 'and its access tokens revoked, nothing of the new pair');
   assert.equal((await owner.request(`${API}/agents/agent_support/start`, owner.json('POST', {}))).status, 200, 'the new pair works');
 
   // Slack refusing the earlier pair does not stop the paste.
   owner.script.spent.push('xoxe-1-rotated-2-0000');
   assert.equal((await owner.request(`${API}/token`, owner.json('PUT', { refreshToken: PASTED_THIRD }))).status, 200);
   assert.deepEqual(JSON.parse(await (await owner.request(API)).text()).token, { stored: true, pastedBy: OWNER, pastedAt: NOW });
+  assert.equal(owner.script.revoked.length, 2, 'a refused rotation calls nothing after it');
 });
 
 test('the read lists each user Agent with its name, handle, avatar, Channels and Slack state', async (t) => {
@@ -1346,7 +1369,7 @@ test('a stored token that cannot be opened makes Start ask for a token at once, 
   const owner = await adminApp(t);
   const elsewhere: SecretDeps = {
     credentials: owner.settings, keyring: generateCredentialKeyring('another-key'), now: () => NOW,
-    slack: { rotate: async () => ({ accessToken: 'xoxe.xoxp-1-x', refreshToken: 'xoxe-1-x-0000', teamId: TEAM, expiresAt: NOW + 12 * 3_600_000 }) },
+    slack: { rotate: async () => ({ accessToken: 'xoxe.xoxp-1-x', refreshToken: 'xoxe-1-x-0000', teamId: TEAM, expiresAt: NOW + 12 * 3_600_000 }), revoke: async () => {} },
   };
   assert.equal(await saveConfigurationToken(elsewhere, TEAM, PASTED), 'saved');
   const before = (await owner.config.getAgent('agent_support')).slackPresence;
